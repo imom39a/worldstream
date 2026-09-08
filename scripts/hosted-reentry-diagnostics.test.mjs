@@ -97,3 +97,19 @@ test("re-entry probe classifies only fixed database and Gateway status categorie
   const response = new Response(null, { status: 200 });
   assert.equal(await diagnosticFetch(async () => response, configuration, () => { throw new Error("sink failed"); })(target, { method: "POST" }), response);
 });
+
+test("re-entry probe covers hosted session admission, status and ticket requests", async () => {
+  const events = [];
+  const response = new Response("private-session-response", { status: 503 });
+  const wrapped = diagnosticFetch(async () => response, configuration, (event) => events.push(event));
+  for (const operation of ["admit", "status", "stream-ticket"]) {
+    await wrapped(`${configuration.gatewayOrigin}/v1/hosted/browser-sessions/${operation}`, {
+      method: "POST", body: "private-session-token",
+    });
+  }
+  assert.deepEqual(events.map(({ stage }) => stage), [
+    "gateway_admit_session", "gateway_session_status", "gateway_stream_ticket",
+  ]);
+  assert.equal(response.bodyUsed, false);
+  assert.doesNotMatch(JSON.stringify(events), /private-session/u);
+});

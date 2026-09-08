@@ -6,6 +6,35 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8, 02:22 UTC — acceptance blocked on post-restart session health
+
+CI `34177427443` finished unsuccessfully. Its application and database boundary
+jobs passed. The connected local story passed initial participant/spectator
+stream admission, external-Agent disconnect and Catch-up, and a fake-provider
+House endorsement. After the retained Runtime restarted, both participants
+received new handoffs successfully. The external Agent's subsequent session
+health request returned `503 participant_session_unavailable`, so the full
+story did not pass and produced no acceptance artifact.
+
+This is distinct from the corrected catalog launch rejection. Investigate the
+post-restart session-health path against an Agent with a retained acknowledged
+Cursor; do not count successful handoff redemption as synchronized re-entry.
+The temporary native diagnostic is debug-build-only, while canonical acceptance
+builds release binaries, so its empty trace does not establish absence of a
+Runtime error. Public admission and House activation remain closed. No live
+provider completion or end-to-end production acceptance is claimed.
+
+Call-path inspection ruled out the legacy Console `health()` attach as the
+cause of this hosted failure: hosted status uses `HostedBrowserSessionBrokerV1`
+and the read-only Membership-status endpoint instead. The exploratory legacy
+health regression was removed, and its unfinished isolated compile was stopped;
+neither is passing or failing regression evidence. No legacy health behavior
+was changed. The CI-only fetch probe now also covers hosted session admission,
+status, and Stream Admission Ticket requests without reading bodies or headers.
+Its added coverage test failed before the probe change and all eight diagnostic
+tests passed afterward. A new canonical run is required to locate the actual
+upstream failure; the original reconnect defect is not yet fixed.
+
 ### September 8, 01:30 UTC — recovery verified; launch defect reproduced
 
 The source-`8705db7`, schema-15 prelaunch checkpoint passed the canonical

@@ -25,6 +25,11 @@ export function diagnosticFetch(dispatch, configuration, emit) {
       const method = init?.method ?? (input instanceof Request ? input.method : "GET");
       if (url.search === "" && url.hash === "" && url.username === "" && url.password === "") {
         if (url.origin === gateway && method === "POST" && url.pathname === "/v1/hosted/browser-handoffs/issue") stage = "gateway_issue_handoff";
+        if (url.origin === gateway && method === "POST") {
+          if (url.pathname === "/v1/hosted/browser-sessions/admit") stage = "gateway_admit_session";
+          if (url.pathname === "/v1/hosted/browser-sessions/status") stage = "gateway_session_status";
+          if (url.pathname === "/v1/hosted/browser-sessions/stream-ticket") stage = "gateway_stream_ticket";
+        }
         if (url.origin === database) {
           if (method === "GET" && url.pathname === "/auth/v1/user") stage = "auth_user";
           if (method === "POST" && url.pathname === "/rest/v1/rpc/sync_github_identity_v1") stage = "database_identity";
