@@ -8,6 +8,14 @@ use worldstream_hosted_gateway::{
 };
 use zeroize::Zeroizing;
 
+const HOST_ADAPTER_OPERATION_TIMEOUT: Duration = Duration::from_secs(25);
+
+#[test]
+fn host_adapter_budget_contains_two_bounded_runtime_result_reads() {
+    assert!(HOST_ADAPTER_OPERATION_TIMEOUT > Duration::from_secs(20));
+    assert!(HOST_ADAPTER_OPERATION_TIMEOUT <= Duration::from_secs(30));
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     tracing_subscriber::fmt()
@@ -27,7 +35,9 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let backend = FixedHostAdapterBackend::new(
         upstream,
         controller_authority.to_string(),
-        Duration::from_secs(5),
+        // A result read performs two sequential bounded Runtime operations:
+        // current Projection and Replay. Leave room for both and decoding.
+        HOST_ADAPTER_OPERATION_TIMEOUT,
     )?;
     let public_authority = required("WORLDSTREAM_PUBLIC_AUTHORITY")?;
     let service_authority = required_secret("WORLDSTREAM_VERCEL_SERVICE_AUTHORITY")?;

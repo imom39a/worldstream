@@ -8,7 +8,7 @@ import {
   taggedBlake3,
   type CanonicalObject,
 } from "@worldstream/pack-sdk";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 
 import {
   HttpHostedResultSourceClient,
@@ -457,6 +457,20 @@ test("candidate passes are hard-bounded and ignore the separate Genesis lane", a
     reconcileActivityResultCandidates(dependencies(source, data), 101),
     ResultReconciliationRejectedError,
   );
+});
+
+test("default result request outlasts the two-read Gateway budget", async () => {
+  const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(new AbortController().signal);
+  try {
+    const client = new HttpHostedResultSourceClient({
+      baseUrl: "https://host.example",
+      serviceAuthority: "synthetic-service-authority-at-least-32-bytes",
+      fetchImplementation: async () => Response.json(sourceEvidence("agent-heist-terminal-input.json")),
+    });
+    await client.readResultSource({schema: "worldstream/hosted-result-source-request/v1", run_id: RUN,
+      listing_revision_digest: LISTING, launch_request_digest: LAUNCH, room_setup_operation_id: "hosted-result-01"});
+    assert.deepEqual(timeout.mock.calls, [[30_000]]);
+  } finally { timeout.mockRestore(); }
 });
 
 test("HTTP result source uses only the fixed service route and bounds responses", async () => {

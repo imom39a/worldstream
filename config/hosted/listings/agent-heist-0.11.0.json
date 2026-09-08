@@ -45,8 +45,8 @@
         "house_agent_fill"
       ],
       "allowed_house_agent_revisions": [
-        "blake3:620b487a5e8b1863b549d0869acc1ef61f799445e2d3c1987d594ae910ca6c30",
-        "blake3:204814436c55bf86ab9c1fa54dac5f64f83eb468f1ed01712ce52aa2c2c7c3d7"
+        "blake3:d2936ee4df434903345ea866b0a9cbea77e69921c938bbb5e79b0234b8add978",
+        "blake3:07169cd01e2bb39ab0a7f5ffa764752e225d1b4b62468eb3c76ff4faac554c18"
       ]
     },
     {
@@ -60,8 +60,8 @@
         "house_agent_fill"
       ],
       "allowed_house_agent_revisions": [
-        "blake3:620b487a5e8b1863b549d0869acc1ef61f799445e2d3c1987d594ae910ca6c30",
-        "blake3:204814436c55bf86ab9c1fa54dac5f64f83eb468f1ed01712ce52aa2c2c7c3d7"
+        "blake3:d2936ee4df434903345ea866b0a9cbea77e69921c938bbb5e79b0234b8add978",
+        "blake3:07169cd01e2bb39ab0a7f5ffa764752e225d1b4b62468eb3c76ff4faac554c18"
       ]
     },
     {
@@ -75,8 +75,8 @@
         "house_agent_fill"
       ],
       "allowed_house_agent_revisions": [
-        "blake3:620b487a5e8b1863b549d0869acc1ef61f799445e2d3c1987d594ae910ca6c30",
-        "blake3:204814436c55bf86ab9c1fa54dac5f64f83eb468f1ed01712ce52aa2c2c7c3d7"
+        "blake3:d2936ee4df434903345ea866b0a9cbea77e69921c938bbb5e79b0234b8add978",
+        "blake3:07169cd01e2bb39ab0a7f5ffa764752e225d1b4b62468eb3c76ff4faac554c18"
       ]
     }
   ],

@@ -90,7 +90,7 @@ test("House Runner import is exact and has no secret environment", () => {
     "a".repeat(64),
   );
   assert.equal(manifest.template_id, "openrouter-house");
-  assert.equal(manifest.revision, "5");
+  assert.equal(manifest.revision, "6");
   assert.deepEqual(manifest.compatibility, [{
     activity_pack_id: "worldstream.agent-heist",
     exact_revisions: ["0.3.0"],
@@ -126,7 +126,7 @@ test("fresh local and Fly imports bind the two Granite strategies to distinct ex
     assert.deepEqual(profile.non_secret_configuration, {});
     assert.deepEqual(profile.host_contract, {
       kind: "managed_house_openrouter", host_contract_revision: "1",
-      runner_template: { template_id: "openrouter-house", revision: "5" },
+      runner_template: { template_id: "openrouter-house", revision: "6" },
     });
   }
 });

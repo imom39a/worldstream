@@ -114,7 +114,7 @@ export function renderHouseRunnerTemplate(executable, digest) {
   return {
     schema: "worldstream/runner-template/v1",
     template_id: "openrouter-house",
-    revision: "5",
+    revision: "6",
     display_name: "Hosted OpenRouter House Agent",
     executable: { path: executable, blake3: digest },
     compatibility: [{
@@ -126,7 +126,7 @@ export function renderHouseRunnerTemplate(executable, digest) {
     non_secret_environment: { WORLDSTREAM_RUNNER_MODE: "hosted-house" },
     secret_environment: [],
     // Instance IDs are unique across retained immutable template revisions.
-    instances: [{ instance_id: "hosted-house-r5-01", health_address: "127.0.0.1:9595" }],
+    instances: [{ instance_id: "hosted-house-r6-01", health_address: "127.0.0.1:9596" }],
   };
 }
 
@@ -290,7 +290,7 @@ export function renderHouseAgentProfiles() {
   const hostContract = {
     kind: "managed_house_openrouter",
     host_contract_revision: "1",
-    runner_template: { template_id: "openrouter-house", revision: "5" },
+    runner_template: { template_id: "openrouter-house", revision: "6" },
   };
   const cooperative = {
     schema: "worldstream/studio-agent-profile-publish/v2",

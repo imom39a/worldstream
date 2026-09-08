@@ -242,7 +242,9 @@ export class HttpHostedResultSourceClient implements HostedResultSourceClient {
     ) {
       throw new ResultReconciliationRejectedError("invalid_result_source_configuration");
     }
-    const timeoutMs = input.timeoutMs ?? 5_000;
+    // Outlast the Gateway's 25-second Controller budget, which contains both
+    // the current Projection and Replay reads. This is not a health probe.
+    const timeoutMs = input.timeoutMs ?? 30_000;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000) {
       throw new ResultReconciliationRejectedError("invalid_result_source_timeout");
     }

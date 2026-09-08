@@ -120,7 +120,7 @@ test("discovery uses two Granite strategies while retained Listings keep their o
   const planner = strategies.find(({ value }) => value.house_agent_id === "worldstream.house.cooperative-planner");
   assert.equal(planner?.value.agent_profile.revision, "7");
   assert.equal(planner?.value.version, "7");
-  assert.equal(planner?.value.runner_template.revision, "5");
+  assert.equal(planner?.value.runner_template.revision, "6");
   const oldPlanner = [...retained.houseAgents.values()].find(({ value }) => value.house_agent_id === "worldstream.house.cooperative-planner");
   assert.equal(oldPlanner?.value.route.model_slug, "qwen/qwen3.8-flash-20260826");
   assert.equal(oldPlanner?.value.agent_profile.revision, "1");

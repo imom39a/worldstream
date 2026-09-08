@@ -32,7 +32,7 @@ import {
 } from "./hosted-artifacts.generated.js";
 
 export const AGENT_HEIST_LISTING_DIGEST =
-  "blake3:4d6e5bddae0c8495b3ed433dd3d27cfd60de752325c40e775a91cd5dbf7103e7";
+  "blake3:e202f7b24dbd99caeef6d8a1c904ae8131143d38af17a9512e562fe523654ed0";
 
 export interface PublicHostedActivity {
   readonly slug: "agent-heist" | "negotiate";

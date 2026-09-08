@@ -17,7 +17,7 @@ import {
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEVELOPMENT_MODE = "visible-local-only";
-const LISTING_DIGEST = "blake3:4d6e5bddae0c8495b3ed433dd3d27cfd60de752325c40e775a91cd5dbf7103e7";
+const LISTING_DIGEST = "blake3:e202f7b24dbd99caeef6d8a1c904ae8131143d38af17a9512e562fe523654ed0";
 const RETAINED_LISTING_DIGESTS = [
   "blake3:8252e311f9ebbe20d1041877511932c9fac51155e0b26f6a247046fb383ddd99",
   "blake3:8106c3f34f52c8a2a216f2a88c842cea7b44db0241db4b0430e2c02a38f34f13",

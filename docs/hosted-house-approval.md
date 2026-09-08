@@ -10,7 +10,7 @@ Cooperative Planner `7` and Skeptical Auditor `6`. Both use the exact Granite
 model and DeepInfra provider route declared in their immutable files. Their
 instructions differ; this is a two-strategy exhibition, not a comparison of two
 models. This candidate pins the clock-safe Pack `0.3.0`, v4 Activity Client,
-result projector `0.3.0`, and Runner Template `5`. The provider route and hard
+result projector `0.3.0`, and Runner Template `6`. The provider route and hard
 allowances are unchanged. Check the deployment record before treating the
 candidate as installed or approved.
 
@@ -39,9 +39,11 @@ Retain Listing `0.10.0`, Planner `6` and Auditor `5` unchanged. The `0.11.0`
 candidate adds public Heist guidance in behavior policy revision `2`, including
 clue ownership and commitment priority. It does not embed fixture answers or
 increase allowances. The helper now responds to protocol heartbeats and includes
-the sealed role on each observation. Verify the actual executable still matches
-Template `5` before approving it; never overwrite an installed template to make
-an executable mismatch pass. Candidate metadata is not evidence of live gameplay.
+the sealed role on each observation. Its changed executable requires Template
+`6` and a new instance on port `9596`; retain Template `5` unchanged. Verify the
+actual executable before approving it. Candidate metadata is not evidence of
+live gameplay. The draft 0.11.0 metadata was corrected before its first hosted
+publication; the unqualified image from commit `2419456` must not be deployed.
 
 ## What this evidence means
 
@@ -108,11 +110,11 @@ generated SDK build.
      `house-cooperative-planner` revision `7`;
    - `agent-profiles/revisions/<hex profile ID>/36.json` for
      `house-skeptical-auditor` revision `6`;
-   - `runner-templates/installed/openrouter-house--5.json`;
+   - `runner-templates/installed/openrouter-house--6.json`;
    - `model-provider-credentials/installed/hosted-openrouter.json`.
 
    Profile path components are the lowercase hexadecimal encoding of UTF-8;
-   `35` encodes revision `5`; `36` encodes revision `6`. Capture the actual
+   `36` encodes revision `6`; `37` encodes revision `7`. Capture the actual
    `/usr/local/bin/worldstream-managed-agent-host` binary separately.
    Do not capture or open vault secret files, the OpenRouter API key, controller
    credentials, or process environment. The named credential record contains

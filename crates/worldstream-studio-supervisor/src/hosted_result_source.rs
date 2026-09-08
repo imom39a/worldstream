@@ -35,7 +35,7 @@ const MAX_RESULT_SOURCE_BYTES: usize = 512 * 1024;
 const MAX_RESULT_SOURCE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Bounded hosted evidence-read budget, separate from lightweight health probes.
-pub const HOSTED_RESULT_SOURCE_TIMEOUT: Duration = Duration::from_secs(5);
+pub const HOSTED_RESULT_SOURCE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Closed Host-side result-source failures.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -453,7 +453,7 @@ mod tests {
     use crate::secrets::{FileSecretVaultV1, SecretKindV1};
 
     #[test]
-    fn hosted_replay_can_finish_after_the_health_probe_deadline() {
+    fn hosted_replay_can_finish_after_the_old_five_second_deadline() {
         let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("fixture: {error}"));
         let vault = FileSecretVaultV1::open(&directory.path().join("vault"))
             .unwrap_or_else(|error| panic!("vault: {error}"));
@@ -481,7 +481,7 @@ mod tests {
                 request.push(byte[0]);
                 assert!(request.len() < 4096);
             }
-            thread::sleep(Duration::from_secs(1));
+            thread::sleep(Duration::from_secs(6));
             let _ = socket
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
         });

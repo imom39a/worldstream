@@ -6,6 +6,30 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8, 12:33 UTC — pre-deployment qualification corrections
+
+The isolated `2419456` image test failed before any hosted rollout: Gateway
+admitted the new digest but the Controller's embedded catalog omitted it.
+The native inventory now includes Listing 0.11.0 and both new House revisions;
+the Controller/Gateway catalog conformance test checks the complete set.
+The built model-host executable also changed, so the draft candidate now pins
+Template 6, a distinct instance and port 9596. Template 5 and all deployed
+0.10.0-or-earlier artifacts remain unchanged. No 0.11.0 metadata has been applied
+to hosted Supabase or approved on Fly. Do not deploy the unqualified 2419456 image.
+
+A read-only indexer probe found valid Projection and verified Replay responses
+requiring 6,958 ms and 3,360 ms respectively on the live Machine. The old
+5-second budgets in the Runtime adapter, Gateway and BFF cannot contain this
+sequence. The candidate uses 10 seconds per Runtime evidence read, 25 seconds
+for the Gateway-to-Controller operation and 30 seconds for the BFF request.
+These are evidence-read limits, not model allowances. Full live qualification
+is still required; a stored terminal result alone does not prove the public API
+works. The result endpoint currently returns 503 on the old deployed source.
+
+At 12:19:48 UTC the dedicated OpenRouter key reported USD 0.00339024 used,
+USD 1.99660976 remaining, a USD 2 lifetime limit and no limit reset. No further
+paid Room was created during these deterministic repairs.
+
 ### September 8, 12:16 UTC — timeout repair deployed; House acceptance still failed
 
 Fly and Vercel run source `1527a1da40b3009c39b83e7fca4aca87d0e46ff6`.

@@ -24,7 +24,7 @@
   },
   "runner_template": {
     "template_id": "openrouter-house",
-    "revision": "5"
+    "revision": "6"
   },
   "tools": [],
   "accounting_tokenizer": {
