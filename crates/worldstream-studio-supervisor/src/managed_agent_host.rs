@@ -1481,6 +1481,14 @@ impl ManagedAgentHostProcessLauncherV1 for OsManagedAgentHostProcessLauncherV1 {
         if let Some(working_directory) = plan.host_working_directory() {
             worldstream_runtime::validate_data_directory(working_directory)
                 .map_err(|_| ManagedAgentHostErrorV1::Unavailable)?;
+            // Operator retirement is installed only while the Controller and
+            // its children are stopped. Retain this fence across restarts and
+            // reject links and inspection errors as well as ordinary files.
+            // It is not an Outcome and never refunds provider allowance.
+            match std::fs::symlink_metadata(working_directory.join("operator-retired.json")) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                _ => return Err(ManagedAgentHostErrorV1::Unavailable),
+            }
         }
         let mut helper = Command::new(plan.helper_program())
             .args(plan.helper_arguments())
@@ -2003,6 +2011,60 @@ mod tests {
         );
         assert!(!frame.windows(7).any(|window| window == b"room_id"));
         assert!(!frame.windows(9).any(|window| window == b"member_id"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retired_house_unit_cannot_spawn_either_child() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let helper = root.join("worldstream-assignment-mcp");
+        std::fs::write(&helper, b"#!/bin/sh\nexec /bin/cat\n").unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let bytes = CanonicalJsonV1::parse(HOUSE_REVISION)
+            .unwrap()
+            .to_bytes()
+            .unwrap();
+        let revision = HouseAgentRevision::from_canonical_bytes(&bytes).unwrap();
+        let plan = ManagedAgentHostLaunchPlanV1::new_house(
+            &helper,
+            &root,
+            SECRET_REFERENCE,
+            Path::new("/bin/cat"),
+            &root,
+            "house-unit-01",
+            &revision,
+        )
+        .unwrap();
+        let marker = root.join("operator-retired.json");
+        let mut active = super::OsManagedAgentHostProcessLauncherV1
+            .launch_bridged(&plan, &Zeroizing::new(vec![0xab; 32]))
+            .expect("an unfenced House unit can start");
+        active.stop().unwrap();
+        // Contents are operator evidence, not executable instructions or authority.
+        std::fs::write(&marker, b"{}").unwrap();
+        let result = super::OsManagedAgentHostProcessLauncherV1
+            .launch_bridged(&plan, &Zeroizing::new(vec![0xab; 32]));
+        let rejected = result.is_err();
+        if let Ok(mut process) = result {
+            process.stop().unwrap();
+        }
+        assert!(
+            rejected,
+            "a retained retirement marker must prevent restart"
+        );
+
+        // A broken link must not be treated as an absent fence.
+        std::fs::remove_file(&marker).unwrap();
+        std::os::unix::fs::symlink(root.join("missing-receipt"), &marker).unwrap();
+        assert!(
+            super::OsManagedAgentHostProcessLauncherV1
+                .launch_bridged(&plan, &Zeroizing::new(vec![0xab; 32]))
+                .is_err()
+        );
     }
 
     #[test]
