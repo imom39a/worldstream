@@ -35,6 +35,25 @@ The Pack and v4 client are unchanged. Old executable approvals must not be
 silently rebound to new bytes; prepare exact new approvals after installation.
 No new listing is enabled until the corrected image and approvals are verified.
 
+A 32-output-token route diagnostic from Fly returned HTTP 200 from DeepInfra
+and reported USD 0.0000095 cost. It was a provider connectivity check, not an
+in-Room Action. Its requested and selected endpoint model were the dated
+Granite slug; the top-level response used `ibm-granite/granite-4.2-8b`.
+The [OpenRouter endpoint catalog](https://openrouter.ai/api/v1/models/ibm-granite/granite-4.2-8b-20260831/endpoints)
+confirms that exact canonical ID. The decoder now permits only that explicit
+mapping, while still requiring exact requested/selected model evidence.
+The catalog had two endpoints but only DeepInfra was available and selected.
+[Router metadata](https://openrouter.ai/docs/guides/features/router-metadata)
+counts candidates separately from attempts; total candidates need not be one.
+The decoder still requires one available selected endpoint, attempt 1, the
+pinned provider, and no fallback or transformation. Changed model/provider
+evidence remains rejected by the regression matrix.
+
+Supabase migration `20260908065533` applied locally and remotely and retained
+the existing Run. It adds two House definitions and one Listing, with no
+operating approval. The security advisor reported no error; the existing
+leaked-password-protection warning remains (GitHub OAuth is the tested path).
+
 ### September 8 — live WebSocket restored; House startup recovery corrected
 
 Fly now runs source `c07a7d58338d16db6336ee74920907451a48e506`, image

@@ -1789,7 +1789,7 @@ fn decode_provider_reply(
     {
         return Err(HouseModelErrorV1::InvalidResponse);
     }
-    if response.model != revision.model_slug()
+    if !response_model_corresponds(&response.model, revision.model_slug())
         || response.openrouter_metadata.requested != revision.model_slug()
     {
         return Err(HouseModelErrorV1::RouteMismatch);
@@ -1867,7 +1867,9 @@ fn validate_route_metadata(
     {
         return Err(HouseModelErrorV1::FallbackDetected);
     }
-    if metadata.endpoints.total != 1 || metadata.endpoints.available.len() != 1 {
+    // `total` counts catalog candidates before filtering, not attempted calls.
+    // The selected endpoint and first-success attempt remain exact below.
+    if metadata.endpoints.total == 0 || metadata.endpoints.available.len() != 1 {
         return Err(HouseModelErrorV1::RouteMismatch);
     }
     let endpoint = metadata
@@ -1899,6 +1901,14 @@ fn validate_route_metadata(
         return Err(HouseModelErrorV1::RouteMismatch);
     }
     Ok(())
+}
+
+fn response_model_corresponds(reported: &str, configured: &str) -> bool {
+    // OpenRouter's verified endpoint catalog maps this exact dated slug to
+    // the canonical response ID. Do not generally strip model revisions.
+    reported == configured
+        || (configured == "ibm-granite/granite-4.2-8b-20260831"
+            && reported == "ibm-granite/granite-4.2-8b")
 }
 
 fn provider_corresponds(reported: &str, configured: &str) -> bool {
@@ -2272,6 +2282,52 @@ mod tests {
         assert_eq!(usage.attempts, 1);
         assert_eq!(usage.active_calls, 0);
         assert!(usage.consumed_output_units < 1_000);
+        Ok(())
+    }
+
+    #[test]
+    fn granite_response_uses_catalog_model_id_and_prefilter_endpoint_count()
+    -> Result<(), Box<dyn Error>> {
+        let canonical = CanonicalJsonV1::parse(include_bytes!(
+            "../../../config/hosted/house-agents/cooperative-planner-4.json"
+        ))?
+        .to_bytes()?;
+        let revision = HouseAgentRevision::from_canonical_bytes(&canonical)?;
+        let (request, schemas) = build_provider_request(&revision, &json!({}), &offers())?;
+        let mut metadata = first_attempt_metadata();
+        metadata["requested"] = json!(revision.model_slug());
+        metadata["endpoints"] = json!({
+            "total": 2,
+            "available": [{"provider":"DeepInfra", "model":revision.model_slug(), "selected":true}]
+        });
+        let reply = MetadataReplyProvider(Some(metadata)).dispatch(&request, &credential()?)?;
+        let mut wire: Value = serde_json::from_slice(reply.body())?;
+        wire["model"] = json!("ibm-granite/granite-4.2-8b");
+        let decode = |value: &Value| {
+            let reply = HouseProviderReplyV1::new(serde_json::to_vec(value).unwrap()).unwrap();
+            super::decode_provider_reply(&reply, &revision, &schemas, "fixture-request")
+        };
+        assert!(decode(&wire).is_ok());
+        for (pointer, invalid) in [
+            ("/model", json!("ibm-granite/granite-4.1-8b")),
+            ("/openrouter_metadata/requested", json!("another/model")),
+            ("/openrouter_metadata/endpoints/total", json!(0)),
+            (
+                "/openrouter_metadata/endpoints/available/0/model",
+                json!("another/model"),
+            ),
+            (
+                "/openrouter_metadata/endpoints/available/0/provider",
+                json!("CoreWeave"),
+            ),
+            ("/openrouter_metadata/attempt", json!(2)),
+        ] {
+            let mut changed = wire.clone();
+            *changed
+                .pointer_mut(pointer)
+                .ok_or("invalid fixture pointer")? = invalid;
+            assert!(decode(&changed).is_err(), "{pointer}");
+        }
         Ok(())
     }
 
