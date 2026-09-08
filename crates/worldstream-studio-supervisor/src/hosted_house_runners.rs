@@ -663,6 +663,7 @@ fn map_managed_start_error(error: ManagedAgentHostErrorV1) -> StartErrorV1 {
 #[derive(Clone)]
 pub struct HostedHouseRunnerOperationsV1 {
     reservations: Arc<PathBuf>,
+    units: Arc<PathBuf>,
     launch_bindings: Arc<PathBuf>,
     host_installation_id: Arc<str>,
     listings: Arc<BTreeMap<String, ListingRevision>>,
@@ -812,6 +813,10 @@ impl HostedHouseRunnerOperationsV1 {
         let root_key = hmac::Key::new(hmac::HMAC_SHA256, receipt_key.as_slice());
         let derived = hmac::sign(&root_key, RECEIPT_KEY_DOMAIN);
         let operations = Self {
+            units: Arc::new(
+                prepare_data_directory(&root.join("units"))
+                    .map_err(|_| HostedHouseRunnerErrorV1::Unavailable)?,
+            ),
             reservations: Arc::new(
                 prepare_data_directory(&root.join("reservations"))
                     .map_err(|_| HostedHouseRunnerErrorV1::Unavailable)?,
@@ -874,6 +879,13 @@ impl HostedHouseRunnerOperationsV1 {
             .iter()
             .filter(|item| item.receipt.outcome == HostedHouseRunnerReservationOutcomeV1::Succeeded)
             .collect::<Vec<_>>();
+        // An offline operator retirement fences process startup before the
+        // platform releases its matching slot. Keep immutable receipts and
+        // per-launch uniqueness; only global concurrent capacity is reusable.
+        let active_count = successful.iter().try_fold(0_usize, |count, item| {
+            self.operator_retired(&item.receipt)
+                .map(|retired| count + usize::from(!retired))
+        })?;
         let same_launch = successful
             .iter()
             .filter(|item| item.request.launch_request_id == request.launch_request_id)
@@ -894,7 +906,7 @@ impl HostedHouseRunnerOperationsV1 {
                 failed_binding_digest(request, code)?,
             ),
             Ok(_digest)
-                if successful.len() >= MAX_HOUSE_RUNNERS
+                if active_count >= MAX_HOUSE_RUNNERS
                     || same_launch.len() >= MAX_HOUSE_RUNNERS_PER_LAUNCH =>
             {
                 (
@@ -947,6 +959,38 @@ impl HostedHouseRunnerOperationsV1 {
             &record,
         )?;
         Ok(receipt)
+    }
+
+    fn operator_retired(
+        &self,
+        receipt: &HostedHouseRunnerReservationReceiptV1,
+    ) -> Result<bool, HostedHouseRunnerErrorV1> {
+        let unit = receipt
+            .runner_unit_id
+            .as_ref()
+            .ok_or(HostedHouseRunnerErrorV1::Unavailable)?;
+        let directory = self.units.join(unit);
+        let evidence: serde_json::Value =
+            match read_record(&directory.join("operator-retired.json")) {
+                Ok(value) => value,
+                Err(RecordReadErrorV1::NotFound) => return Ok(false),
+                Err(RecordReadErrorV1::Unavailable) => {
+                    return Err(HostedHouseRunnerErrorV1::Unavailable);
+                }
+            };
+        worldstream_runtime::validate_data_directory(&directory)
+            .map_err(|_| HostedHouseRunnerErrorV1::Unavailable)?;
+        if evidence["schema"] != "worldstream/operator-house-retirement/v1"
+            || evidence["authority"] != "operator_observation_not_runtime_attestation"
+            || evidence["installation_id"] != self.host_installation_id.as_ref()
+            || evidence["runner_unit_id"] != *unit
+            || evidence["reservation_operation_id"] != receipt.reservation_operation_id
+            || evidence["launch_request_id"] != receipt.launch_request_id
+            || evidence["allowance_reset"] != false
+        {
+            return Err(HostedHouseRunnerErrorV1::Unavailable);
+        }
+        Ok(true)
     }
 
     /// Reads one exact reservation identity without re-running dependency checks.
@@ -1755,6 +1799,72 @@ mod tests {
             .unwrap_or_else(|error| unreachable!("per-launch cap: {error:?}"));
         assert_eq!(
             per_launch.failure_code.as_deref(),
+            Some("house_runner_capacity_exhausted")
+        );
+    }
+
+    #[test]
+    fn retired_units_release_global_capacity_without_rewriting_reservations() {
+        let directory = tempdir().unwrap();
+        let (operations, listing, revisions) =
+            make_operations(directory.path(), FakeSource::ready());
+        let first_request = request(1, 1, "navigator", &revisions[0], &listing);
+        let first = operations.reserve(&first_request).unwrap();
+        for index in 2..=4 {
+            assert_eq!(
+                operations
+                    .reserve(&request(index, index, "navigator", &revisions[0], &listing))
+                    .unwrap()
+                    .outcome,
+                HostedHouseRunnerReservationOutcomeV1::Succeeded
+            );
+        }
+        let unit = first.runner_unit_id.as_ref().unwrap();
+        let root =
+            worldstream_runtime::prepare_data_directory(&directory.path().join("units").join(unit))
+                .unwrap();
+        let evidence = serde_json::json!({
+            "schema":"worldstream/operator-house-retirement/v1",
+            "authority":"operator_observation_not_runtime_attestation",
+            "installation_id": first.host_installation_id,
+            "runner_unit_id":unit,
+            "reservation_operation_id":first.reservation_operation_id,
+            "launch_request_id":first.launch_request_id,
+            "allowance_reset":false,
+        });
+        super::persist_new(&root.join("operator-retired.json"), &evidence).unwrap();
+        let mut wrong = evidence.clone();
+        wrong["runner_unit_id"] = serde_json::json!("another-unit");
+        std::fs::write(
+            root.join("operator-retired.json"),
+            serde_json::to_vec(&wrong).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            operations.reserve(&request(5, 5, "navigator", &revisions[0], &listing)),
+            Err(HostedHouseRunnerErrorV1::Unavailable)
+        );
+        std::fs::write(
+            root.join("operator-retired.json"),
+            serde_json::to_vec(&evidence).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            operations
+                .reserve(&request(5, 5, "navigator", &revisions[0], &listing))
+                .unwrap()
+                .outcome,
+            HostedHouseRunnerReservationOutcomeV1::Succeeded
+        );
+        assert_eq!(operations.reserve(&first_request).unwrap(), first);
+        let (reopened, _, _) = make_operations(directory.path(), FakeSource::ready());
+        assert_eq!(reopened.reserve(&first_request).unwrap(), first);
+        assert_eq!(
+            operations
+                .reserve(&request(6, 6, "navigator", &revisions[0], &listing))
+                .unwrap()
+                .failure_code
+                .as_deref(),
             Some("house_runner_capacity_exhausted")
         );
     }

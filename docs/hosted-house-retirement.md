@@ -18,6 +18,9 @@ an automatic timeout, an Activity Outcome, or a provider allowance reset.
 4. Deploy a Host with retirement-fence support before reopening admission.
    The production process launcher must reject the retained marker before
    spawning either child. A link or inspection error must also fail closed.
+   Its reservation coordinator must exclude only exact, private retirement
+   records from global concurrent capacity. Retained per-launch limits and
+   original reservation receipts remain unchanged.
    Never remove the marker or run a pre-fence binary after releasing capacity.
 5. In one reviewed platform transaction, lock the installation capacity gate
    and exact reservation rows. Recheck maintenance and exact terminal evidence.
