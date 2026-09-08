@@ -6,6 +6,24 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8, 14:46 UTC — current local House pool corrected; match still unqualified
+
+The corrected `c74ed1d` source passed all prerequisites and started the local
+stack. Its House match then failed before Genesis with
+`insufficient_candidates`: the development seed still approved older House
+definitions, not those allowed by Listing 0.12.0. No provider dispatch occurred.
+The local-only seed now retains the older approvals as unavailable and adds
+the current Planner 8 and Auditor 7 synthetic approvals. Production approvals,
+metadata and allowances are unchanged.
+
+A rollback-only database integration check reproduced the empty candidate
+intersection, then passed after correction. It checks both selectable current
+strategies, seed idempotency and preservation of an unavailable old approval.
+It runs against the local CLI database, requires loopback, and does not echo
+connection errors or credentials. The same check is now an acceptance
+prerequisite, and ordinary development checks the current House pool before
+starting services. Full hosted gameplay remains pending a rerun.
+
 ### September 8, 14:34 UTC — local qualification found a fresh-import defect
 
 Candidate `a2f94dfea15fe8c148adb944988cff1adc04090a` passed the focused

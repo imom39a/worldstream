@@ -541,11 +541,11 @@ async function seedSupabase(supabase, environment) {
       "-v",
       "ON_ERROR_STOP=1",
       "-c",
-      `select (select count(*) from platform_store.activity_listing_revisions where listing_revision_digest = '${LISTING_DIGEST}'), (select count(*) from platform_store.github_identities where (auth_user_id = '${DEVELOPMENT_USER_ID}' and provider_subject = '${DEVELOPMENT_PROVIDER_SUBJECT}') or (auth_user_id = '${DEVELOPMENT_AGENT_USER_ID}' and provider_subject = '${DEVELOPMENT_AGENT_PROVIDER_SUBJECT}'));`,
+      `select (select count(*) from platform_store.activity_listing_revisions where listing_revision_digest = '${LISTING_DIGEST}'), (select count(*) from platform_store.github_identities where (auth_user_id = '${DEVELOPMENT_USER_ID}' and provider_subject = '${DEVELOPMENT_PROVIDER_SUBJECT}') or (auth_user_id = '${DEVELOPMENT_AGENT_USER_ID}' and provider_subject = '${DEVELOPMENT_AGENT_PROVIDER_SUBJECT}')), (select count(distinct approvals.house_agent_revision_digest) from platform_store.house_agent_host_approvals approvals join platform_store.activity_listing_revisions listings on listings.listing_revision_digest = '${LISTING_DIGEST}' cross join lateral jsonb_array_elements(listings.seat_templates) seats(value) where approvals.host_installation_id = '${HOST_INSTALLATION_ID}' and approvals.available_for_new_assignments and approvals.revoked_at is null and (seats.value -> 'allowed_house_agent_revisions') ? approvals.house_agent_revision_digest);`,
     ],
     { capture: true, sensitive: true, environment },
   );
-  if (verified.stdout.trim() !== "1|2") throw new Error("local Supabase seed verification failed");
+  if (verified.stdout.trim() !== "1|2|2") throw new Error("local Supabase seed verification failed: current Listing, development identities and both House strategies are required");
 }
 
 async function importHostedDeclarations(

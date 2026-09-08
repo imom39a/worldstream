@@ -40,7 +40,7 @@ insert into platform_store.house_agent_host_approvals (
   'blake3:3333333333333333333333333333333333333333333333333333333333333333',
   'openrouter-house',
   extensions.digest(convert_to('hosted-dev:cooperative-planner:2', 'utf8'), 'sha256'),
-  true
+  false
 ),
 (
   'hosted-dev',
@@ -50,16 +50,39 @@ insert into platform_store.house_agent_host_approvals (
   'blake3:3333333333333333333333333333333333333333333333333333333333333333',
   'openrouter-house',
   extensions.digest(convert_to('hosted-dev:skeptical-auditor:1', 'utf8'), 'sha256'),
+  false
+),
+(
+  'hosted-dev',
+  'blake3:1665aa7c527861012829c237b1fdab760cbce918036a128d10ba06b7fa4cd098',
+  'blake3:8888888888888888888888888888888888888888888888888888888888888888',
+  'blake3:7777777777777777777777777777777777777777777777777777777777777777',
+  'blake3:3333333333333333333333333333333333333333333333333333333333333333',
+  'openrouter-house',
+  extensions.digest(convert_to('hosted-dev:cooperative-planner:8', 'utf8'), 'sha256'),
+  true
+),
+(
+  'hosted-dev',
+  'blake3:5a826962c0f09c40a1b760d2c0eec9af216b9eb703b2e6f971fc24e32f0564d1',
+  'blake3:7777777777777777777777777777777777777777777777777777777777777777',
+  'blake3:7777777777777777777777777777777777777777777777777777777777777777',
+  'blake3:3333333333333333333333333333333333333333333333333333333333333333',
+  'openrouter-house',
+  extensions.digest(convert_to('hosted-dev:skeptical-auditor:7', 'utf8'), 'sha256'),
   true
 )
 on conflict (host_installation_id, house_agent_revision_digest) do nothing;
 
--- The acknowledged fake-provider installation retains its old revision but
--- never selects the obsolete Qwen route for a new development assignment.
+-- These synthetic approvals are for the acknowledged local fake provider only.
+-- Retain old identities, but select only the current reviewed Heist strategies.
 update platform_store.house_agent_host_approvals
 set available_for_new_assignments = false, availability_checked_at = clock_timestamp()
 where host_installation_id = 'hosted-dev'
-  and house_agent_revision_digest = 'blake3:a664f616c754f03b484f40b930822411aba8579325731c48ee0cd72302805e81'
+  and house_agent_revision_digest not in (
+    'blake3:1665aa7c527861012829c237b1fdab760cbce918036a128d10ba06b7fa4cd098',
+    'blake3:5a826962c0f09c40a1b760d2c0eec9af216b9eb703b2e6f971fc24e32f0564d1'
+  )
   and available_for_new_assignments;
 
 do $$

@@ -15,6 +15,7 @@ export const HOSTED_ACCEPTANCE_PREREQUISITES = Object.freeze([
   ["pnpm", ["--filter", "@worldstream/client", "test"]],
   ...["hosted-platform:check", "activity-clients:check", "demos:lint", "demos:test",
     "hosted:dev:test", "hosted:package:test", "hosted:package:smoke"].map((suite) => ["pnpm", [suite]]),
+  ["node", ["scripts/verify-development-house-catalog.mjs"]],
   ["supabase", ["test", "db"]],
   ["pnpm", ["hosted-formation:concurrency"]],
   ["supabase", ["db", "lint", "--local", "--schema", "platform_store,platform_api", "--level", "warning", "--fail-on", "error"]],
