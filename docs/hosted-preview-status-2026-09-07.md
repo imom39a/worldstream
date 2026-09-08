@@ -6,6 +6,41 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8, 14:34 UTC — local qualification found a fresh-import defect
+
+Candidate `a2f94dfea15fe8c148adb944988cff1adc04090a` passed the focused
+House/Heist checks and the hosted negative/security prerequisites, including
+388 database checks, formation concurrency, schema exposure and local advisors.
+The full gameplay story did **not** start: the fresh local import declaration
+still loaded client v3 while its bindings required v5. Correcting that reference
+makes the actual `worldstreamctl init --preview` operation pass. A new regression
+test first failed on this exact missing release, then passed with the correction.
+The complete hosted story must be rerun on the corrected source.
+
+The original production-appliance smoke also passed with the exact a2f94df
+release executables on a Docker named volume: Room creation, same-volume restart
+and explicit participant re-entry passed. Its earlier failure on Docker overlay
+storage was the Runtime's deliberate ext4/XFS storage rejection, not a House
+failure. The scripts and assertions were unchanged; the executable files were
+staged at the smoke script's expected paths. Linux Rust prerequisites used one
+test thread after amd64-emulation socket interruptions in a parallel run;
+internal concurrent-client assertions still ran. Neither test-environment
+workaround changes the supported production storage or admission rules.
+
+The separately tested a2f94df image
+`sha256:45db45b0e8f6eec29b738abe230dd007df92343ab62a25ab90c7c9ec9bef69df`
+started with one CPU and 512 MiB, launched a non-House lobby, and synchronized
+two authorized participant WebSockets. Peak memory was 214380544 bytes with
+no OOM. This is startup/transport evidence, not completed model gameplay.
+The image and local Vercel build are not deployed. All calls in these local
+checks used synthetic credentials; no paid model call or allowance change occurred.
+
+Populated cross-store disaster recovery is still unqualified: the available
+verifier accepts only zero-history checkpoints. Capturing the existing state
+does not establish a verified restore. A limited-preview exception has been
+requested from the operator; no approval is assumed and no production change
+is made while that release decision remains unresolved.
+
 ### September 8, 13:35 UTC — agent-ready candidate; not deployed
 
 Local work for IMO-185 and IMO-186 now includes an authorized plan selector,

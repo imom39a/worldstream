@@ -12,6 +12,19 @@ import {
   renderHostedDevelopmentConfig,
 } from "./hosted-dev.mjs";
 
+test("fresh hosted client import supplies every exact deployment release", async () => {
+  const declarationUrl = new URL("../config/activity-clients/hosted-local-import.json", import.meta.url);
+  const declaration = JSON.parse(await readFile(declarationUrl, "utf8"));
+  const bindings = JSON.parse(await readFile(new URL(declaration.bindings_file, declarationUrl), "utf8"));
+  const releases = await Promise.all(declaration.release_files.map(async (path) =>
+    JSON.parse(await readFile(new URL(path, declarationUrl), "utf8"))));
+  for (const deployment of bindings.deployments) {
+    assert.ok(releases.some((release) => release.client_id === deployment.client_id &&
+      release.release_digest === deployment.release_digest),
+    `fresh import is missing the exact release for ${deployment.deployment_id}`);
+  }
+});
+
 test("the local launch probe accepts both committed and pending Gateway responses", () => {
   assert.equal(hostedDevelopmentLaunchHttpAccepted(200), true);
   assert.equal(hostedDevelopmentLaunchHttpAccepted(202), true);
