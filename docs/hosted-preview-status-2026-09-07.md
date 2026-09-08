@@ -6,6 +6,68 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8 — corrected transport deployed; bounded live test in progress
+
+Both live services now report source
+`cdf801c824404a8dcc0426c381f7b18a323ccc04`:
+
+- Vercel: `dpl_Q3jhrdDXpG3NtjPLLCBdt1xrFEzX`, published from local prebuilt output.
+- Fly image manifest:
+  `sha256:5bb01e047b38608d9e4a6f1484238746b9998916e9683a1781ba9823996f67a7`.
+- Supabase head: `20260908065533`; active Listing `0.8.0`.
+
+The exact local image passed the network-isolated, two-participant launch test
+under one CPU and 512 MiB. Startup took 4766 ms; observed peak memory was
+271851520 bytes, with no OOM. This test makes no provider call. Its build used
+the retained local Rust builder cache `worldstream-hosted-builder:1a91134`
+and pinned Node runtime; it is not a fresh dependency rebuild.
+
+Before updating Fly, the populated volume was captured in checkpoint
+`dc067ed9-3b48-4b2c-8a92-b27984aa0cfa`. The existing completed Room, Runtime,
+Controller, and allowances were retained. This is a volume checkpoint, not a
+paired Supabase restore proof. The same one-CPU/512 MiB Machine and 1 GiB volume
+remain in use, with normal entrypoint and no sleep override.
+
+Installed Template 3 and Planner 4 / Auditor 3 were captured and approved against
+the actual executable digest
+`blake3:65c0fe58d3557d56401ddc8c363f358d19246daaa80f8241e8482486b201065f`.
+Approvals were inserted unavailable, then separately activated after public
+readiness succeeded. Launches and House fill were reopened at operating
+generation 4. The provider key reported USD 0.0000095 usage and USD 1.9999905
+remaining under its USD 2 total limit with no reset before this test.
+
+The real browser test is launch `d7e1d637-5e78-4985-b6a3-a3debbce2c54`,
+Room `01M1ZXRDH145SNF0M7FRCKP2FE`. Navigator entered, inspected `route`, and
+published `route_roof`. It completed with `failure / no_strict_majority / 0`
+and public result `33196167e981e4b99188854dd5ee7650`. Both new House processes
+exited with status 1 after initialization, before a new allowance/provider
+attempt was recorded. Thus **live LLM acceptance still fails**. At operating
+generation 5, human launches remain open but new House fill is disabled.
+
+The existing allowance ledger retains three ambiguous attempts for each old
+Room House unit; none is a verified completion. Inspection of the new units
+found retained leased Activations. A bounded helper-only diagnostic later
+observed lease-expired followed by no-Activation for each unit, without calling
+a provider. This is not proof of the original exit cause; local protocol
+diagnosis is in progress. Do not treat process readiness as gameplay proof.
+
+A further diagnostic launch `7a3ecc66-3fd7-4028-8bea-893263d231b7` failed
+before Genesis with `runner_capacity_unavailable`. The four reservations from
+the two completed matches remain conservatively retained. No capacity limit
+was raised and no reservation, allowance, or historical result was erased.
+House fill was briefly enabled for that check and is disabled again at
+operating generation **7**; human launches remain open. A safe release needs
+verified shutdown evidence, not a blind database capacity reset.
+
+The local instrumented image diagnostic is not acceptance evidence: it used
+an isolated helper wrapper to record only protocol result codes, synthetic
+credentials, and `--network=none`. It could launch a Room and accept a human
+clue inspection, but did not reproduce the live House exit or prove a model
+turn. Its repeated `assignment_activation_none_available` responses must not
+be counted as successful agent participation. Owned diagnostic containers and
+their fresh volumes were removed; private diagnostic scripts remain outside
+the repository for continued investigation.
+
 ### September 8 — first live result; OpenRouter TLS half-close isolated
 
 Vercel `eebb0a577b91d606e6c036f20ca4d3872e26a65a` is deployed as
