@@ -6,6 +6,87 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8 — retained-volume import conflict identified and tested
+
+Runner Template 2 reused Template 1's `hosted-house-01` instance identity.
+The installed registry requires unique instance IDs across every retained
+revision, so the complete startup import was rejected. Both templates name
+the same executable digest; changed executable bytes were not the cause.
+
+The successor now uses `hosted-house-r2-01` and a distinct loopback health
+listener, `127.0.0.1:9592`. Template 1 and its retained data stay unchanged.
+A new regression test failed before this change and passed after it. The
+complete import preview, including profiles and client, then passed against
+the actual Fly volume with the proposed successor. This preview did not
+install or approve execution. The focused Node suites passed 15 tests with
+three explicitly skipped environment-dependent tests.
+
+The temporary diagnostic shell/sleep startup override was restored to the
+normal image entrypoint and bounded restart policy. The Machine remains
+stopped while the corrected image is prepared. Launches and paid calls remain
+closed. A published image and real end-user match are still required.
+
+### September 8, 05:48 UTC — builds published; retained-volume startup needs repair
+
+The exact source `81a2cbaef690cd226c9c5b62e78600bc7d7831d0` release image
+built locally and passed the two-participant direct-WebSocket hosted launch
+probe at one CPU/512 MiB with no network/provider access. Startup took 4.5 s,
+both clients synchronized, one setup ledger entry was created, and peak memory
+was 275,496,960 bytes with zero OOM events. This is not full gameplay or a
+House-provider acceptance result. Its local image ID is
+`sha256:a05a7507c2fb28371e7f6deb88e0e34aa1638b317ccf8cf3d6f75b70e09edae3`.
+
+Fly received the same image, registry manifest
+`sha256:3bdbe9344dd6c70f2e26d6314b6af4e3ddaefbd97606eb7e3d369f856fdb0e6c`,
+on the existing Machine and 1 GiB volume. Its guest remains one shared CPU and
+512 MiB; autostart and autostop are disabled. The CLI set a bounded on-failure
+policy with three retries. Startup then failed at
+`hosted_ctl_init_--runner-template_failed` against the retained installation,
+and the Machine stopped after its retries. An explicit start reproduced that
+same failure. Do not restart repeatedly or claim the Runtime is operational.
+The next task is to inspect the rejected initialization import against retained
+state. Fresh-volume launch success did not verify this upgrade path.
+
+Vercel production is now `dpl_6uBH3a9DBvs8GPpxcPimAqAffCGa`, published from
+local prebuilt output. `/api/deployment` verifies the exact source, schema
+`20260908040223`, Listing 0.7, Pack 0.3, and Client v4 identities. The first
+CLI deployment lacked Git-specific runtime identity. Republished the same
+artifact with documented GitHub CLI metadata; no provider environment value
+was fabricated or set as a project secret. See Vercel's
+[CLI metadata guidance](https://vercel.com/kb/guide/branch-variables-and-domains-not-linked-to-cli-deployments).
+
+The maintenance marker remains present. Platform launches and House calls stay
+closed. No paid provider call, purchase, upgrade, extra Machine, volume, or
+database resource was created. The public UI is deployed, but live matches are
+not yet operational.
+
+### September 8, 05:41 UTC — local web build ready; provisioning means Room busy
+
+The corrected native smoke still returned `setup_incomplete/member_capability`
+on its fourth attempt after three passes. A further opt-in probe captured the
+closed response error code: HTTP 429 **`room_busy`**, not `rate_limited`.
+The limiter locking defect is real and regression-tested, but it did not fix
+this setup symptom. Do not describe it as the provisioning root cause.
+Temporary native probes have been removed from the working source again.
+
+The hosted operation backend explicitly resumes an existing Room Setup Operation
+rather than creating another one. The remaining acceptance check is that this
+normal bounded lifecycle contention recovers through the actual hosted launch
+flow. The failed one-shot CLI smoke is retained as failure evidence; no retry
+was added to it and it is not being relabelled as passed.
+
+Remote Supabase migration `20260908040223` is applied and verified. The new
+Listing exists exactly once. Launches and House fill remain closed, maintenance
+is active, and there are no retained Runs. This was the only pending migration;
+it adds immutable metadata without changing Auth, RLS, limits, or approvals.
+
+The local Vercel production build from clean source `81a2cba` passed in an
+isolated checkout, including exact Heist v4 artifact verification and retained
+v3/v2 builds. The downloaded local environment had an empty Git revision; only
+that empty value was removed so the build reads the real checked-out commit.
+Secret placeholders were not replaced or uploaded as project settings. The
+Fly release image is still building locally. Neither new build is deployed yet.
+
 ### September 8 — MVP deployment proceeds from local, not CI
 
 The user confirmed that the priority is a working live application and that

@@ -125,7 +125,8 @@ export function renderHouseRunnerTemplate(executable, digest) {
     health: { path: "/healthz", timeout_ms: 1_000, stale_after_ms: 60_000 },
     non_secret_environment: { WORLDSTREAM_RUNNER_MODE: "hosted-house" },
     secret_environment: [],
-    instances: [{ instance_id: "hosted-house-01", health_address: "127.0.0.1:9591" }],
+    // Instance IDs are unique across retained immutable template revisions.
+    instances: [{ instance_id: "hosted-house-r2-01", health_address: "127.0.0.1:9592" }],
   };
 }
 

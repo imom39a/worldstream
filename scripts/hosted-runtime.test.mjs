@@ -88,6 +88,17 @@ test("House Runner import is exact and has no secret environment", () => {
   assert.equal(manifest.capacity.maximum_concurrent_invocations, 4);
 });
 
+test("successor House Runner instances coexist with the retained revision-one installation", () => {
+  const retained = { instance_id: "hosted-house-01", health_address: "127.0.0.1:9591" };
+  const successor = renderHouseRunnerTemplate("/usr/local/bin/worldstream-managed-agent-host", "a".repeat(64));
+  for (const instance of successor.instances) {
+    assert.notEqual(instance.instance_id, retained.instance_id,
+      "the registry rejects duplicate instance IDs across immutable revisions");
+    assert.notEqual(instance.health_address, retained.health_address,
+      "retained and successor runners must not compete for one listener");
+  }
+});
+
 test("fresh local and Fly imports bind the two Granite strategies to distinct exact profile revisions", () => {
   const profiles = renderHouseAgentProfiles();
   assert.deepEqual(Object.values(profiles).map(({ profile_id, revision }) => ({ profile_id, revision })), [
