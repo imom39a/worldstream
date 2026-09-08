@@ -767,6 +767,34 @@ fn fixed_daemon_gateway_authenticates_syncs_and_submits_exact_stable_action() {
 }
 
 #[test]
+fn assignment_operation_budget_survives_slow_valid_synchronization() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| unreachable!("bind fixture: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| unreachable!("fixture address: {error}"));
+    let fixture = thread::spawn(move || {
+        serve_action_fixture_with_delay(&listener, None, Duration::from_secs(1));
+    });
+    let gateway = FixedDaemonAssignmentMcpActionGatewayV1::new(
+        address,
+        assignment_mcp_actions::ASSIGNMENT_OPERATION_TIMEOUT,
+    )
+    .unwrap_or_else(|error| unreachable!("gateway: {error:?}"));
+    let response = gateway.submit_exact(&authority(ASSIGNMENT), &exact_gateway_request());
+    assert!(
+        matches!(
+            response,
+            Ok(AssignmentMcpActionDaemonResultV1::Accepted { .. })
+        ),
+        "a valid slow synchronization must reach Action submission: {response:?}"
+    );
+    fixture
+        .join()
+        .unwrap_or_else(|error| unreachable!("fixture: {error:?}"));
+}
+
+#[test]
 fn fixed_daemon_gateway_accepts_scoped_live_frames_during_sync_and_action_reply() {
     assert_fixed_daemon_action_flow(true);
 }
@@ -939,6 +967,14 @@ fn serve_action_fixture(listener: &TcpListener, interleaved_frames: bool) {
 }
 
 fn serve_action_fixture_with_member(listener: &TcpListener, frame_member: Option<&str>) {
+    serve_action_fixture_with_delay(listener, frame_member, Duration::ZERO);
+}
+
+fn serve_action_fixture_with_delay(
+    listener: &TcpListener,
+    frame_member: Option<&str>,
+    delay: Duration,
+) {
     let (stream, _) = listener
         .accept()
         .unwrap_or_else(|error| unreachable!("accept Action fixture: {error}"));
@@ -946,6 +982,7 @@ fn serve_action_fixture_with_member(listener: &TcpListener, frame_member: Option
         .unwrap_or_else(|error| unreachable!("Action fixture handshake: {error}"));
     let hello = read_fixture(&mut socket);
     assert_eq!(hello["type"], "client.hello");
+    thread::sleep(delay);
     send_fixture(
         &mut socket,
         "server.welcome",

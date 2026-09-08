@@ -6,7 +6,7 @@
 //! the ordinary retained Room setup lifecycle. It is not a generic Host proxy.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::Write as _,
     path::{Path, PathBuf},
@@ -271,6 +271,7 @@ pub struct HostedLaunchOperationsV1 {
     house_runners: Option<Arc<dyn HostedHouseRunnerBackendV1>>,
     result_source: Option<Arc<dyn HostedResultSourceBackendV1>>,
     mutation: Arc<Mutex<()>>,
+    launched_lobbies: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl HostedLaunchOperationsV1 {
@@ -337,6 +338,7 @@ impl HostedLaunchOperationsV1 {
             house_runners: None,
             result_source: None,
             mutation: Arc::new(Mutex::new(())),
+            launched_lobbies: Arc::new(Mutex::new(BTreeSet::new())),
         })
     }
 
@@ -686,8 +688,28 @@ impl HostedLaunchOperationsV1 {
     /// be read safely. A Room that is not ready remains unchanged.
     pub fn reconcile_ready_lobbies(&self) -> Result<(), HostedLaunchErrorV1> {
         let _guard = self.lock();
+        let mut launched = self
+            .launched_lobbies
+            .lock()
+            .map_err(|_| HostedLaunchErrorV1::Unavailable)?;
         for binding in self.bindings_unlocked()? {
+            if launched.contains(&binding.room_setup_operation_id) {
+                continue;
+            }
             let status = self.backend.inspect(&binding.room_setup_operation_id)?;
+            if status.assessment.as_ref().is_some_and(|assessment| {
+                assessment
+                    .launch
+                    .as_ref()
+                    .is_some_and(|launch| launch.state == TaskLaunchStateV1::Launched)
+            }) {
+                // Launch success is final for this immutable setup operation.
+                // This bounded process-local cache skips only Lobby polling;
+                // explicit reads still validate current Runtime state. Restart
+                // starts empty and rechecks retained evidence once.
+                launched.insert(binding.room_setup_operation_id);
+                continue;
+            }
             if !status.complete
                 || status.assessment.as_ref().is_some_and(|assessment| {
                     assessment.launch.as_ref().is_some_and(|launch| {
@@ -1254,6 +1276,7 @@ mod tests {
         statuses: Arc<Mutex<BTreeMap<String, RoomSetupOperationStatusV1>>>,
         advances: Arc<Mutex<Vec<String>>>,
         launches: Arc<Mutex<Vec<String>>>,
+        inspections: Arc<Mutex<Vec<String>>>,
         complete_on_advance: Arc<Mutex<bool>>,
         genesis: Arc<Mutex<Option<RoomSetupGenesisEvidenceV1>>>,
     }
@@ -1303,6 +1326,10 @@ mod tests {
             &self,
             operation: &str,
         ) -> Result<RoomSetupOperationStatusV1, HostedLaunchErrorV1> {
+            self.inspections
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(operation.to_owned());
             self.statuses
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -1840,6 +1867,45 @@ mod tests {
                     .len(),
                 expected
             );
+            if state == TaskLaunchStateV1::Launched {
+                backend
+                    .inspections
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clear();
+                operations
+                    .clone()
+                    .reconcile_ready_lobbies()
+                    .unwrap_or_else(|error| unreachable!("repeat reconcile: {error:?}"));
+                assert!(
+                    backend
+                        .inspections
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .is_empty(),
+                    "an already launched Room must not be repeatedly inspected by the Lobby poller"
+                );
+                let reopened = HostedLaunchOperationsV1::open_with_backend(
+                    &directory.path().join("hosted"),
+                    "hosted-test",
+                    vec![listing()],
+                    Vec::new(),
+                    backend.clone(),
+                )
+                .unwrap_or_else(|error| unreachable!("reopen: {error:?}"));
+                reopened
+                    .reconcile_ready_lobbies()
+                    .unwrap_or_else(|error| unreachable!("restart reconcile: {error:?}"));
+                assert_eq!(
+                    backend
+                        .inspections
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .len(),
+                    1,
+                    "restart must recheck retained launch evidence"
+                );
+            }
         }
     }
 

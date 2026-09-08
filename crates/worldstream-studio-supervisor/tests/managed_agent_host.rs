@@ -1153,6 +1153,18 @@ fn dropping_a_live_bridge_reaps_both_children() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn separate_reference_host_process_completes_one_real_stdio_mcp_turn_via_loopback_provider() {
+    assert_reference_host_recovers_submission("assignment_activation_lease_expired");
+}
+
+#[cfg(unix)]
+#[test]
+fn reference_host_closes_stale_action_turn_without_repeating_provider_call() {
+    assert_reference_host_recovers_submission("assignment_action_unoffered");
+}
+
+#[cfg(unix)]
+#[allow(clippy::too_many_lines)]
+fn assert_reference_host_recovers_submission(submission_code: &str) {
     use std::{
         io::{Read as _, Write as _},
         net::TcpListener,
@@ -1199,9 +1211,18 @@ for line in sys.stdin:
             if terminal_submission:
                 raise RuntimeError("unexpected duplicate managed submission")
             terminal_submission = True
-            result = {{"content":[],"structuredContent":{{"code":"assignment_activation_lease_expired","retryable":True,"next_action":"request_next_activation"}},"isError":True}}
+            value = {{"code":{submission_code:?},"retryable":True,"next_action":"request_next_activation"}}
+            if value["code"] == "assignment_action_unoffered":
+                value["retryable"] = False
+                value["next_action"] = "list_current_offers"
+            result = {{"content":[],"structuredContent":value,"isError":True}}
             print(json.dumps({{"jsonrpc":"2.0","id":request["id"],"result":result}}), flush=True)
             continue
+        elif name == "worldstream.fail_managed_turn":
+            if not terminal_submission or completed:
+                raise RuntimeError("unexpected failed-turn completion")
+            completed = True
+            value = {{"schema":"worldstream/managed-turn-failure/v1","action_submitted":False}}
         else:
             raise RuntimeError("unexpected tool")
         result = {{"content":[],"structuredContent":value,"isError":False}}
@@ -1330,6 +1351,13 @@ for line in sys.stdin:
                 .zip(value.get("arguments").cloned())
         })
         .collect::<Vec<_>>();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|(name, _)| name == "worldstream.fail_managed_turn")
+            .count(),
+        usize::from(submission_code == "assignment_action_unoffered")
+    );
     assert!(calls.iter().all(|(name, _)| {
         !matches!(
             name.as_str(),

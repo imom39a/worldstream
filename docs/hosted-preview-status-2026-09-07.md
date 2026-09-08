@@ -6,6 +6,37 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8 — House submission diagnosis and repair candidate
+
+The two latest House journals retain `inspect_clue` requests in `prepared`
+state, with no Runtime Action receipt. Their immutable helper launch records
+both used a **750 ms** timeout inherited from the Controller's status probe.
+A read-only, same-Machine handshake check used each exact scoped Membership
+without submitting an Action or acknowledging its Cursor. Synchronization took
+12,003 ms for Broker and 7,195 ms for Insider. Both returned matching Room,
+Membership and Role data. This establishes a transport budget mismatch; it
+does not reconstruct the original process's unrecorded error.
+
+The repair candidate separates assignment operations from short health probes
+with a bounded 30-second budget. A delayed valid synchronization regression
+fails with `Disconnected` under the old budget and passes with the new one.
+A separate integration test connects the actual assignment Action gateway to
+the actual SQLite Runtime and verifies accepted submission without a provider.
+
+Another regression reproduces process exit 1 when the helper reports that a
+model-selected Action is no longer offered. The model host now closes that
+turn as failed and continues looking for new Activations, without repeating
+the old provider call or replacing its Action. Other protocol failures remain
+closed. The Lobby reconciler also remembers already-confirmed launch success
+within its process, avoiding repeated background inspection of launched Rooms.
+This cache is bounded by the binding inventory, is shared across clones, and
+starts empty after restart. It changes no Room state or explicit read path.
+
+These are local repairs, **not yet deployed acceptance**. House fill stays
+closed. No additional paid model call, allowance reset, resource expansion or
+purchase was made during diagnosis. Live timing and a bounded real House match
+must be checked after deployment before claiming this issue is resolved.
+
 ### September 8, 10:54 UTC — live human flow and results work; House Actions fail
 
 Fly now runs `2e4c51da6d58c0e56c72876a6536bf0343062596`, image manifest

@@ -9,6 +9,7 @@ use worldstream_studio_supervisor::{
     activity_packs::HttpDaemonActivityPackSource,
     agent_profiles::AgentProfileStoreV1,
     assignment_mcp::{AssignmentMcpLaunchRegistryV1, assignment_mcp_launch_router},
+    assignment_mcp_actions::ASSIGNMENT_OPERATION_TIMEOUT,
     attention_inbox::{
         AttentionInboxV1, FileAttentionHistoryV1, LiveAttentionInboxSourceV1,
         attention_inbox_router,
@@ -414,7 +415,7 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
         &args.state_dir.join("assignment-mcp-progress"),
         assignment_launch_source,
         args.daemon,
-        daemon_timeout,
+        ASSIGNMENT_OPERATION_TIMEOUT,
     )
     .context("assignment MCP launch registry is unavailable")?
     .with_activity_packs(activity_packs.clone());

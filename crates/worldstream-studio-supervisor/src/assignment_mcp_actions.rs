@@ -37,6 +37,8 @@ const MAX_OFFERS: usize = 256;
 const MAX_TEXT_BYTES: usize = 256;
 const MAX_SCHEMA_DEPTH: usize = 64;
 const MAX_SESSION_MESSAGES: usize = 64;
+/// Multi-step assignment operations have a separate budget from health probes.
+pub const ASSIGNMENT_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 const SUPPORTED_SCHEMA_KEYWORDS: [&str; 14] = [
     "type",
     "const",

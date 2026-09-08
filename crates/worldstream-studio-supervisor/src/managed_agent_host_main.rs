@@ -114,6 +114,7 @@ enum ManagedTurnPreparationV1 {
 enum ManagedTurnActionSubmissionV1 {
     Completed(Value),
     RetryAfterTerminalLease,
+    OfferUnavailable,
 }
 
 fn read_credential(input: &mut impl BufRead) -> Result<Zeroizing<Vec<u8>>> {
@@ -265,6 +266,10 @@ fn run_one_reference_turn(
         ManagedTurnActionSubmissionV1::RetryAfterTerminalLease => {
             return recover_terminal_submission(client);
         }
+        ManagedTurnActionSubmissionV1::OfferUnavailable => {
+            client.fail_managed_turn()?;
+            return Ok(TurnOutcomeV1::Completed);
+        }
     };
     if action_result
         .get("action")
@@ -338,6 +343,12 @@ where
         ManagedTurnActionSubmissionV1::Completed(result) => result,
         ManagedTurnActionSubmissionV1::RetryAfterTerminalLease => {
             return recover_terminal_submission(client);
+        }
+        ManagedTurnActionSubmissionV1::OfferUnavailable => {
+            // Another participant or timer may advance the Room during model
+            // execution. Close this turn; never repeat its paid provider call.
+            client.fail_managed_turn()?;
+            return Ok(TurnOutcomeV1::Completed);
         }
     };
     if action_result
@@ -543,6 +554,11 @@ impl<'a, R: BufRead, W: Write> McpClient<'a, R, W> {
             .context("assignment MCP response is invalid")?;
         if terminal_lease_retry(content) {
             return Ok(ManagedTurnActionSubmissionV1::RetryAfterTerminalLease);
+        }
+        if content.get("code").and_then(Value::as_str) == Some("assignment_action_unoffered")
+            && content.get("next_action").and_then(Value::as_str) == Some("list_current_offers")
+        {
+            return Ok(ManagedTurnActionSubmissionV1::OfferUnavailable);
         }
         bail!("assignment MCP tool returned a closed failure")
     }

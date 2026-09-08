@@ -109,6 +109,77 @@ async fn fixture_for(principal_kind: &str) -> TestResult<HostedFixture> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn assignment_action_gateway_submits_to_real_runtime() -> TestResult {
+    use worldstream_studio_supervisor::assignment_mcp::AssignedMembershipAuthorityV1;
+    use worldstream_studio_supervisor::assignment_mcp_actions::{
+        AssignmentMcpActionDaemonResultV1, AssignmentMcpActionGatewayV1, AssignmentMcpActionHeadV1,
+        AssignmentMcpExactActionRequestV1, FixedDaemonAssignmentMcpActionGatewayV1,
+    };
+    let fixture = fixture_for("agent").await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let routes = fixture.routes.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            routes.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+    });
+    let result = tokio::task::spawn_blocking(move || -> TestResult {
+        let assignment = "01ARZ3NDEKTSV4RRFFQ69G5FD2";
+        let operation = "01ARZ3NDEKTSV4RRFFQ69G5FD3";
+        let authority = AssignedMembershipAuthorityV1::new(
+            assignment,
+            "counter-agent",
+            "r1",
+            "counter",
+            "01ARZ3NDEKTSV4RRFFQ69G5FC5",
+            &fixture.room,
+            &fixture.member,
+            worldstream_protocol::SealedCapabilityBearerV1::parse(
+                fixture
+                    .member_header
+                    .strip_prefix("Bearer ")
+                    .ok_or("missing fixture bearer")?
+                    .to_owned(),
+            )?,
+        )?;
+        let gateway =
+            FixedDaemonAssignmentMcpActionGatewayV1::new(address, Duration::from_secs(5))?;
+        let response = gateway.submit_exact(
+            &authority,
+            &AssignmentMcpExactActionRequestV1 {
+                assignment_id: assignment.to_owned(),
+                operation_id: operation.to_owned(),
+                request_id: operation.to_owned(),
+                action_id: operation.to_owned(),
+                based_on: AssignmentMcpActionHeadV1 {
+                    room_seq: 0,
+                    head_hash: format!("blake3:{}", "a".repeat(64)),
+                },
+                offer_id: "fixture".to_owned(),
+                action_type: "increment".to_owned(),
+                payload_schema_digest: format!("blake3:{}", "b".repeat(64)),
+                eligibility_window: None,
+                payload: json!({}),
+            },
+        );
+        assert!(
+            matches!(
+                response,
+                Ok(AssignmentMcpActionDaemonResultV1::Accepted { .. })
+            ),
+            "the real Runtime must accept the agent Action: {response:?}"
+        );
+        Ok(())
+    })
+    .await?;
+    server.abort();
+    result
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn membership_status_is_authorized_without_attaching_or_moving_an_agent_cursor() -> TestResult
 {
     let fixture = fixture_for("agent").await?;
