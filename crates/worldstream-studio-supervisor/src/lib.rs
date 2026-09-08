@@ -17,6 +17,7 @@ pub mod configuration_resolution;
 mod configuration_safety;
 pub mod control_access;
 pub mod control_admission;
+pub mod hosted_artifacts;
 pub mod hosted_browser_sessions;
 pub mod hosted_house_runners;
 pub mod hosted_launch;

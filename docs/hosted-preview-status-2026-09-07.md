@@ -6,6 +6,51 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8, 01:30 UTC — recovery verified; launch defect reproduced
+
+The source-`8705db7`, schema-15 prelaunch checkpoint passed the canonical
+isolated restore and Controller/Runtime/platform correspondence checks:
+
+- Checkpoint: `0dd11d12-9321-4fd5-9d73-7c9c8c5c33b2`.
+- Manifest: `sha256:132249a03179b7d03463ff669106bb1d7bbd91048a3614bcd4d317adbc434cb8`.
+- Deployment: `sha256:228476805fbaa661fcfd5e74312d003a6b1e290d755eed785c03c92c45c0101f`.
+- Verification scope: empty prelaunch installation only, 15 matching migrations,
+  exact Linux image, closed admission, no Auth restore and no provider calls.
+
+Private archives, the database dump and the verification receipt remain outside
+Git. The PostgreSQL 17.11 verifier used a temporary local TCP forward to the
+verified direct Supabase endpoint because Docker could not route its IPv6
+address. TLS passed through unchanged. The forward was stopped after the drill;
+no cloud networking resource or database access policy was changed.
+
+CI `34170497094` passed the application-boundary, database-boundary, and
+appliance/same-volume restart tests. The subsequent canonical local candidate
+failed at a Gateway launch request with `409 operation_rejected`.
+An independent isolated test reproduced that exact failure against the deployed
+Linux image with no network, synthetic credentials, one CPU and 512 MB. The
+Controller returned `hosted_launch_invalid` before retaining any launch binding
+or Room creation. Its compiled reviewed catalog omitted Listing `0.6.0` and the
+new Cooperative Planner revision, although the frontend and Gateway selected
+them. The catalog correction and regression test are in progress; startup
+readiness alone does not prove this launch path works.
+
+Fly remains in maintenance: Gateway liveness is `200`, readiness is `503`, and
+Runtime/Controller ports are closed after capture. Public launch and House-fill
+gates remain closed. Linear ticket `IMO-184` could not be updated because the
+connection returned `oauth_token_invalid_grant`; retain this evidence for the
+ticket update after reauthentication. No live LLM acceptance is claimed.
+
+The source correction moves the existing reviewed-artifact loader into a small
+testable module used by Controller startup, adds Listing `0.6.0` and Cooperative
+Planner revision `2`, and retains every previous artifact. Its regression test
+compares that actual loader with the checked-in Fly allowlist and verifies that
+each allowed House revision resolves. JavaScript development/runtime/diagnostic
+checks passed (21 passed, two image-specific checks skipped in this invocation).
+The macOS Rust test compile was interrupted after it ceased producing output
+and consuming CPU; it is not passing evidence. Linux regression verification
+is running offline with two CPUs and 4 GB. The deployed image still contains
+the old catalog until a new image is built and verified.
+
 ### 23:34 UTC recovery update
 
 The Fly Gateway and Runtime now return `200` from their readiness endpoints.

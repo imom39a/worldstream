@@ -1,0 +1,92 @@
+//! Reviewed hosted artifacts shared by Controller startup and its conformance tests.
+
+use anyhow::Result;
+use worldstream_core::CanonicalJsonV1;
+use worldstream_hosted_contract::{HouseAgentRevision, ListingRevision};
+
+/// Loads immutable reviewed artifacts without granting any Host approval.
+///
+/// # Errors
+/// Fails if an embedded artifact is not a valid canonical contract document.
+pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAgentRevision>)> {
+    const LISTINGS: &[&[u8]] = &[
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.4.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.5.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.6.0.json"),
+    ];
+    const HOUSE_AGENTS: &[&[u8]] = &[
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json"),
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-2.json"),
+        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-1.json"),
+    ];
+    let listings = LISTINGS
+        .iter()
+        .map(|source| {
+            let bytes = CanonicalJsonV1::parse(source)?.to_bytes()?;
+            ListingRevision::from_canonical_bytes(&bytes)
+                .map_err(|_| anyhow::anyhow!("reviewed hosted Listing is invalid"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let house_agents = HOUSE_AGENTS
+        .iter()
+        .map(|source| {
+            let bytes = CanonicalJsonV1::parse(source)?.to_bytes()?;
+            HouseAgentRevision::from_canonical_bytes(&bytes)
+                .map_err(|_| anyhow::anyhow!("reviewed House Agent is invalid"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok((listings, house_agents))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reviewed_hosted_artifacts;
+    use anyhow::Context as _;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn controller_catalog_covers_every_gateway_listing_and_its_house_revisions()
+    -> anyhow::Result<()> {
+        let (listings, house_agents) = reviewed_hosted_artifacts()?;
+        let fly = include_str!("../../../packaging/hosted/fly.toml");
+        let declaration = fly
+            .lines()
+            .find(|line| line.trim().starts_with("WORLDSTREAM_LISTING_ALLOWLIST = "))
+            .context("Fly allowlist declaration missing")?;
+        let value: String = serde_json::from_str(
+            declaration
+                .split_once('=')
+                .context("allowlist value missing")?
+                .1
+                .trim(),
+        )?;
+        let allowed: BTreeSet<_> = value.split(',').collect();
+        let embedded: BTreeSet<_> = listings.iter().map(|listing| listing.digest()).collect();
+        assert_eq!(
+            embedded, allowed,
+            "Controller and Gateway must resolve the same reviewed Listings"
+        );
+        let house: BTreeSet<_> = house_agents.iter().map(|agent| agent.digest()).collect();
+        for listing in listings {
+            let document: serde_json::Value = serde_json::from_slice(listing.canonical_bytes())?;
+            for seat in document["seats"]
+                .as_array()
+                .context("Listing seats missing")?
+            {
+                for digest in seat["allowed_house_agent_revisions"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    assert!(
+                        house.contains(digest.as_str().context("House digest must be a string")?),
+                        "every allowed House revision must resolve in the Controller"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}

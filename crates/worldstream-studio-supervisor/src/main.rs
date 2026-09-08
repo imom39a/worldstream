@@ -2,9 +2,8 @@ use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
-use worldstream_core::CanonicalJsonV1;
-use worldstream_hosted_contract::{HouseAgentRevision, ListingRevision};
 use worldstream_runtime::{CliOverrides, ConfigLoader};
+use worldstream_studio_supervisor::hosted_artifacts::reviewed_hosted_artifacts;
 use worldstream_studio_supervisor::{
     HttpDaemonStatusSource,
     activity_packs::HttpDaemonActivityPackSource,
@@ -786,34 +785,4 @@ fn development_house_provider_address() -> Result<Option<SocketAddr>> {
         anyhow::bail!("development House provider must be a nonzero loopback address");
     }
     Ok(Some(address))
-}
-
-fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAgentRevision>)> {
-    const LISTINGS: &[&[u8]] = &[
-        include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json"),
-        include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json"),
-        include_bytes!("../../../config/hosted/listings/agent-heist-0.4.0.json"),
-        include_bytes!("../../../config/hosted/listings/agent-heist-0.5.0.json"),
-    ];
-    const HOUSE_AGENTS: &[&[u8]] = &[
-        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json"),
-        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-1.json"),
-    ];
-    let listings = LISTINGS
-        .iter()
-        .map(|source| {
-            let bytes = CanonicalJsonV1::parse(source)?.to_bytes()?;
-            ListingRevision::from_canonical_bytes(&bytes)
-                .map_err(|_| anyhow::anyhow!("reviewed hosted Listing is invalid"))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let house_agents = HOUSE_AGENTS
-        .iter()
-        .map(|source| {
-            let bytes = CanonicalJsonV1::parse(source)?.to_bytes()?;
-            HouseAgentRevision::from_canonical_bytes(&bytes)
-                .map_err(|_| anyhow::anyhow!("reviewed House Agent is invalid"))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok((listings, house_agents))
 }
