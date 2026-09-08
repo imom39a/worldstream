@@ -333,7 +333,13 @@ export class HostedFormationCoordinator {
       if (!(error instanceof HostedFormationNotFoundError)) throw error;
       status = { state: "provisioning", roomSetupComplete: false };
     }
-    if (!status.roomSetupComplete) status = await this.gateway.launch(documents.gatewayLaunchRequest);
+    // Genesis and Membership creation do not imply that every House process
+    // has started. Resume the same frozen launch while its Lobby is waiting;
+    // the Host retains process identities, allowances and the launch input.
+    // Human entry remains available so synchronization can satisfy readiness.
+    if (!status.roomSetupComplete || status.state === "waiting_for_readiness") {
+      status = await this.gateway.launch(documents.gatewayLaunchRequest);
+    }
     if (!status.roomSetupComplete) return observed;
     return this.recordObservedGenesis(material.launchRequestId, documents, status);
   }

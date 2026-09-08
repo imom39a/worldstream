@@ -6,6 +6,32 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8 — live WebSocket restored; House startup recovery corrected
+
+Fly now runs source `c07a7d58338d16db6336ee74920907451a48e506`, image
+`sha256:5ff225831681e58efbe2114e20a6277f84659b152fb9dc425e42ad2438d4ea6d`.
+The normal entrypoint is active on the original one-CPU/512 MiB Machine and
+1 GiB volume. Public `/readyz` returns 200. A real public WebSocket upgrade
+returns 101; signed-in Chrome displays the authorized Navigator Projection,
+Live connection, three crew members and Lobby state. The four ignored Fly
+transport metadata headers are not trusted as identity or forwarded upstream.
+All 24 gateway boundary tests pass. The exact release image also passed the
+isolated two-participant launch probe with no OOM or provider access.
+
+The populated Room was captured before this deployment in Host checkpoint
+`5f43c1eb-ef56-4f0e-813a-6bfee6a05c03`. This is a volume capture, not a
+paired Supabase restore proof. No Room or allowance was reset.
+
+The first live Room exposed a separate coordination bug: `room_setup_complete`
+was treated as the end of startup, even while the Host reported
+`waiting_for_readiness`. Only one House runtime binding had been created.
+Recovery now resubmits the exact frozen launch in that waiting state, while
+still allowing human entry (needed for synchronization). It does not re-freeze
+the roster, authorize new work, or retry completed/needs-attention launches.
+The regression fails before the correction; all 95 platform tests pass with
+one explicit skip, and platform type checks pass. Deployment and full gameplay
+verification of this additional platform correction remain pending.
+
 ### September 8 — public formation works; Fly WebSocket headers block entry
 
 Source `1a911340b57f3fdcd7a886776a70f2e683c714d2` is deployed to Vercel as

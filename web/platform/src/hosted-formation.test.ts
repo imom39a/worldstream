@@ -207,6 +207,7 @@ class RecordingGateway implements HostedFormationGateway {
   launches: CanonicalObject[] = [];
   publicBindings: CanonicalObject[] = [];
   roomSetupComplete = true;
+  observedState = "launched";
 
   async reserveHouseRunner(_request: CanonicalObject): Promise<CanonicalObject> {
     throw new Error("unused");
@@ -218,7 +219,7 @@ class RecordingGateway implements HostedFormationGateway {
   }
 
   async readStatus(_request: CanonicalObject) {
-    return { state: "launched", roomSetupComplete: this.roomSetupComplete };
+    return { state: this.observedState, roomSetupComplete: this.roomSetupComplete };
   }
 
   async readGenesisEvidence(request: CanonicalObject): Promise<CanonicalObject> {
@@ -295,6 +296,26 @@ test("post-Genesis provisioning retries the same setup before offering Run entry
   assert.equal(data.authorizeCalls, 1);
   assert.equal(await coordinator.entryReady(LAUNCH_ID), true);
   assert.equal(data.runId, RUN_ID);
+});
+
+test("a created Lobby still resumes its original startup while waiting for readiness", async () => {
+  const data = new HumanFormationData();
+  const gateway = new RecordingGateway();
+  const coordinator = new HostedFormationCoordinator(data, gateway, "hosted-preview-1");
+  await coordinator.advance(ACCOUNT_ID, LAUNCH_ID);
+  gateway.observedState = "waiting_for_readiness";
+  assert.equal((await coordinator.recover(LAUNCH_ID))?.state, "run_created");
+  assert.equal(gateway.launches.length, 2);
+  assert.deepEqual(gateway.launches[1], gateway.launches[0]);
+  assert.equal(data.freezeCalls, 1);
+  assert.equal(data.authorizeCalls, 1);
+  // Do not block the human entry needed to make the Lobby ready.
+  assert.equal(await coordinator.entryReady(LAUNCH_ID), true);
+  for (const state of ["launched", "needs_attention"]) {
+    gateway.observedState = state;
+    await coordinator.recover(LAUNCH_ID);
+    assert.equal(gateway.launches.length, 2);
+  }
 });
 
 test("recovery never authorizes an unstarted launch or changes its Host", async () => {
