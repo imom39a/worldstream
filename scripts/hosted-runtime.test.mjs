@@ -84,6 +84,16 @@ test("runtime configuration fixes internal listeners and persistent children", (
   assert.doesNotMatch(config, /0\.0\.0\.0|OPENROUTER|VERCEL_SERVICE/u);
 });
 
+test("the hosted image packages the same current client as hosted bindings", async () => {
+  const dockerfile = await readFile(new URL("../packaging/hosted/Dockerfile", import.meta.url), "utf8");
+  const name = dockerfile.match(/COPY config\/activity-clients\/releases\/(agent-heist-web-v\d+\.json) \/opt\/worldstream\/hosted\/agent-heist-web\.json/u)?.[1];
+  assert.ok(name, "image must copy an exact reviewed client release");
+  const release = JSON.parse(await readFile(new URL(`../config/activity-clients/releases/${name}`, import.meta.url), "utf8"));
+  const bindings = JSON.parse(await readFile(new URL("../config/activity-clients/hosted-local-bindings.json", import.meta.url), "utf8"));
+  const deployment = bindings.deployments.find(value => value.client_id === release.client_id);
+  assert.equal(deployment.release_digest, release.release_digest);
+});
+
 test("House Runner import is exact and has no secret environment", () => {
   const manifest = renderHouseRunnerTemplate(
     "/usr/local/bin/worldstream-managed-agent-host",
