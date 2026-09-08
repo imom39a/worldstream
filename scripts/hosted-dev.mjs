@@ -28,6 +28,12 @@ const RETAINED_LISTING_DIGESTS = [
 export function hostedDevelopmentListingAllowlist() {
   return [LISTING_DIGEST, ...RETAINED_LISTING_DIGESTS].join(",");
 }
+
+export function hostedDevelopmentLaunchHttpAccepted(status) {
+  // The Gateway returns 200 after lobby launch, or 202 for retained setup work.
+  // Neither status substitutes for the identity/evidence checks below.
+  return status === 200 || status === 202;
+}
 const DEVELOPMENT_USER_ID = "00000000-0000-4000-8000-00000000d001";
 const DEVELOPMENT_PROVIDER_SUBJECT = "worldstream-development";
 const DEVELOPMENT_LOGIN = "worldstream-local-developer";
@@ -980,7 +986,7 @@ async function verifyDevelopmentFlow(ports) {
     },
     body: encodeCanonical(launchRequest),
   });
-  if (gateway.status !== 202) {
+  if (!hostedDevelopmentLaunchHttpAccepted(gateway.status)) {
     const diagnostic = (await gateway.text()).slice(0, 512).replaceAll(/[\r\n]/gu, " ");
     throw new Error(
       `development Hosted Gateway contract check failed (${gateway.status}: ${diagnostic})`,

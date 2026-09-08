@@ -51,6 +51,22 @@ and consuming CPU; it is not passing evidence. Linux regression verification
 is running offline with two CPUs and 4 GB. The deployed image still contains
 the old catalog until a new image is built and verified.
 
+The offline Linux regression did fail against the previous catalog as expected:
+the actual loader returned four Listing digests while Fly allowlisted five,
+with only Listing `0.6.0` missing. The corrected-source run is pending. This
+establishes a regression reproducer, not yet a passing corrected-image result.
+The local acceptance probe also incorrectly required HTTP `202` even though
+the Gateway returns `200` when lobby launch has already committed. Its status
+check now accepts those two documented responses and retains the subsequent
+identity/evidence checks. The new status regression failed before correction;
+all 15 focused development/diagnostic tests pass after correction. No server
+authorization, deadline, retry, or Room behavior was relaxed.
+
+Linear reauthentication subsequently succeeded. Update comment
+`9869027a-4436-444a-b58b-977a59b43491` was posted to `IMO-184`, which remains
+In Progress. Commit `484d636` is pushed and its Linux image is building from a
+clean Git archive with the same pinned Rust and Node base images.
+
 ### 23:34 UTC recovery update
 
 The Fly Gateway and Runtime now return `200` from their readiness endpoints.

@@ -6,10 +6,19 @@ import {
   assertHostedDevelopmentAllowed,
   hostedDevelopmentPorts,
   hostedDevelopmentListingAllowlist,
+  hostedDevelopmentLaunchHttpAccepted,
   hostedDevelopmentArguments,
   hostedNativeBuildPlan,
   renderHostedDevelopmentConfig,
 } from "./hosted-dev.mjs";
+
+test("the local launch probe accepts both committed and pending Gateway responses", () => {
+  assert.equal(hostedDevelopmentLaunchHttpAccepted(200), true);
+  assert.equal(hostedDevelopmentLaunchHttpAccepted(202), true);
+  for (const status of [201, 204, 400, 401, 403, 409, 429, 500, 503, "200", null]) {
+    assert.equal(hostedDevelopmentLaunchHttpAccepted(status), false);
+  }
+});
 
 test("canonical acceptance selects one release build while ordinary development stays debug", () => {
   const development = hostedNativeBuildPlan(false);
