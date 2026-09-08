@@ -6,6 +6,35 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8 — first live result; OpenRouter TLS half-close isolated
+
+Vercel `eebb0a577b91d606e6c036f20ca4d3872e26a65a` is deployed as
+`dpl_Gz7K9eZY55WmvVaeEmbSGPrp1T4T`; Fly remains on `c07a7d5` below.
+Reopening the same waiting room resumed the missing House startup. Both
+House processes became ready, and the human browser advanced from Lobby to
+Briefing and Negotiation. Through the actual UI, Navigator inspected `route`
+and published `route_service`. The Room reached Complete at sequence 9 with
+`failure / no_strict_majority / 0`. Its Replay-verified summary appeared in
+`/api/results/agent-heist/recent`, public ID
+`bb93289cdaeb3f47865c9597254e7231`. This proves human action, live state,
+timers and result publication, **not successful LLM participation**.
+
+Each House ledger recorded one ambiguous provider attempt and no validated
+response. A zero-cost TLS diagnostic against OpenRouter's public model index
+isolated the failure: the production-style raw TCP write-half-close returned
+zero bytes and unexpected EOF; keeping both directions open returned HTTP
+200 and 705648 bytes. The correction removes that premature shutdown while
+retaining certificate checks, fixed origin, request/response limits and caps.
+An explicit network regression uses only an invalid fixture key and expects
+an authentication rejection, never a paid completion.
+
+The pending executable change has append-only successor metadata: Runner
+Template 3, Planner 4, Auditor 3 and Listing 0.8. Existing Listing 0.7 and its
+House definitions remain available for the completed Room and its results.
+The Pack and v4 client are unchanged. Old executable approvals must not be
+silently rebound to new bytes; prepare exact new approvals after installation.
+No new listing is enabled until the corrected image and approvals are verified.
+
 ### September 8 — live WebSocket restored; House startup recovery corrected
 
 Fly now runs source `c07a7d58338d16db6336ee74920907451a48e506`, image

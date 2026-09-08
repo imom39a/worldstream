@@ -938,7 +938,7 @@ async function verifyDevelopmentFlow(ports) {
     [
       "fixtures/hosted-contract/valid/agent-heist-launch-request.json",
       "fixtures/hosted-contract/valid/agent-heist-frozen-roster.json",
-      "config/hosted/listings/agent-heist-0.7.0.json",
+      "config/hosted/listings/agent-heist-0.8.0.json",
     ].map(async (path) => JSON.parse(await readFile(join(REPOSITORY_ROOT, path), "utf8"))),
   );
   const frozenLaunchRequest = {

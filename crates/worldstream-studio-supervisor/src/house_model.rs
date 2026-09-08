@@ -1189,10 +1189,9 @@ impl HouseProviderPortV1 for OpenRouterProviderPortV1 {
         let mut stream = StreamOwned::new(connection, tcp);
         write_openrouter_request(&mut stream, request, credential)?;
         stream.flush().map_err(map_write_error)?;
-        stream
-            .get_mut()
-            .shutdown(Shutdown::Write)
-            .map_err(map_write_error)?;
+        // Content-Length frames the request. A raw TCP half-close here
+        // truncates the TLS conversation: OpenRouter closes without a reply.
+        // Keep both directions open until the HTTP response has been read.
         let mut response = Vec::new();
         stream
             .take(u64::try_from(MAX_PROVIDER_RESPONSE_BYTES + 8_192).unwrap_or(u64::MAX))
@@ -2141,6 +2140,27 @@ mod tests {
         Ok(HouseProviderCredentialV1::new(Zeroizing::new(
             b"sk-test-01234567890123456789012345678901".to_vec(),
         ))?)
+    }
+
+    /// No real credential or model execution: exercises production TLS against
+    /// the fixed service and expects its authentication rejection, not EOF.
+    #[test]
+    #[ignore = "explicit network diagnostic; invalid fixture key, no paid model call"]
+    fn production_tls_reads_authentication_rejection_without_half_close()
+    -> Result<(), Box<dyn Error>> {
+        let request = HouseProviderRequestV1 {
+            body: Zeroizing::new(b"{}".to_vec()),
+            timeout: std::time::Duration::from_secs(10),
+            model_slug: "unused".to_owned(),
+            provider_slug: "unused".to_owned(),
+        };
+        assert_eq!(
+            super::OpenRouterProviderPortV1::new()
+                .dispatch(&request, &credential()?)
+                .err(),
+            Some(HouseProviderPortErrorV1::Rejected)
+        );
+        Ok(())
     }
 
     fn offers() -> Value {

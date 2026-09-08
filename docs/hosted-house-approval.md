@@ -116,8 +116,8 @@ node scripts/hosted-house-approval.mjs \
   --credential-id hosted-openrouter \
   --source-revision '<actual deployed Git commit>' \
   --image-digest 'sha256:<actual deployed image digest>' \
-  --house-revision config/hosted/house-agents/cooperative-planner-3.json \
-  --house-revision config/hosted/house-agents/skeptical-auditor-2.json \
+  --house-revision config/hosted/house-agents/cooperative-planner-4.json \
+  --house-revision config/hosted/house-agents/skeptical-auditor-3.json \
   --output-dir /private/tmp/worldstream-approval-capture/approval
 ```
 

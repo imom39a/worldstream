@@ -143,6 +143,22 @@ test("approval preparation rejects changed executable bytes and cross-credential
   await assert.rejects(prepareHouseApprovals(f.options), /approval_profile_credential_mismatch/u);
 });
 
+test("TLS successor appends exact metadata without changing approvals or prior history", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260908065533_house_tls_transport_successor.sql", import.meta.url), "utf8");
+  const houses = [...migration.matchAll(/\$house\$([\s\S]*?)\$house\$/gu)].map((match) => Buffer.from(match[1]));
+  assert.equal(houses.length, 2);
+  for (const [index, file] of ["cooperative-planner-4", "skeptical-auditor-3"].entries()) {
+    const value = JSON.parse(await readFile(new URL(`../config/hosted/house-agents/${file}.json`, import.meta.url), "utf8"));
+    assert.deepEqual(houses[index], canonicalBytes(value));
+    assert.ok(migration.includes(`blake3:${hash(houses[index])}`));
+    assert.equal(value.runner_template.revision, "3");
+  }
+  const listing = JSON.parse(await readFile(new URL("../config/hosted/listings/agent-heist-0.8.0.json", import.meta.url), "utf8"));
+  assert.deepEqual(Buffer.from(migration.match(/\$listing\$([\s\S]*?)\$listing\$/u)[1]), canonicalBytes(listing));
+  assert.ok(migration.includes(`blake3:${hash(canonicalBytes(listing))}`));
+  assert.doesNotMatch(migration, /house_agent_host_approvals|hosted_operating_state|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
+});
+
 test("approval preparation rejects unreviewed templates, duplicate JSON, symlinks and SQL-shaped identifiers", async (t) => {
   const f = await fixture(t);
   await assert.rejects(prepareHouseApprovals({ ...f.options, installationId: "x';delete" }), /approval_options_invalid/u);
