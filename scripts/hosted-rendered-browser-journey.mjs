@@ -20,6 +20,8 @@ const runIdentityByReceipt = new WeakMap();
 const LOCAL_PRODUCT_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const DEFAULT_ACTION_TIMEOUT_MS = 60_000;
 const DEFAULT_FORMATION_TIMEOUT_MS = 150_000;
+const MAX_BROWSER_FAILURES = 8;
+const MAX_BROWSER_DIAGNOSTIC_TEXT = 240;
 
 /**
  * Runs one browser-visible, House-filled local activity.  The local fake
@@ -100,7 +102,7 @@ export async function runHostedRenderedBrowserJourney({
     const publicId = runIdentity.publicId;
 
     await participant.getByRole("button", { name: /^Enter Navigator$/ }).click();
-    await waitForIndependentActivityClient(participant, timeouts.action, "Navigator participant");
+    await waitForIndependentActivityClient(participant, timeouts.action, "Navigator participant", failures);
     const routeClaim = await submitRenderedNavigatorAction(participant, timeouts.action);
     await submitRenderedAction(participant, "Publish clue", {
       clue_id: "route",
@@ -124,7 +126,7 @@ export async function runHostedRenderedBrowserJourney({
     await participant.getByRole("button", { name: "Return to game" }).click();
     await participant.waitForURL(new RegExp(`/launches/${launchId}/?$`, "u"), { timeout: timeouts.action });
     await participant.getByRole("button", { name: /^Enter Navigator$/ }).click();
-    await waitForIndependentActivityClient(participant, timeouts.action, "Navigator participant");
+    await waitForIndependentActivityClient(participant, timeouts.action, "Navigator participant", failures);
 
     // A fresh context is the anonymous browser.  It has neither the platform
     // sign-in cookie nor a Browser Activity Session from the participant.
@@ -136,7 +138,7 @@ export async function runHostedRenderedBrowserJourney({
       name: "Open the reviewed Activity Client",
     }).waitFor({ timeout: timeouts.action });
     await spectator.getByRole("link", { name: "Watch live Run" }).click();
-    await waitForIndependentActivityClient(spectator, timeouts.action, "Spectator view");
+    await waitForIndependentActivityClient(spectator, timeouts.action, "Spectator view", failures);
     const participantActionForms = await spectator.locator("form.live-action-form").count();
     if (participantActionForms !== 0) {
       throw new Error("anonymous spectator client rendered participant Action controls");
@@ -298,9 +300,17 @@ async function defaultLaunchBrowser(browserBinary) {
 }
 
 function collectBrowserFailures(page, failures, label) {
-  page.on("pageerror", (error) => failures.push(`${label} page error: ${safeBrowserError(error)}`));
+  const record = (value) => {
+    if (failures.length < MAX_BROWSER_FAILURES) failures.push(safeBrowserDiagnosticText(value));
+  };
+  page.on("pageerror", (error) => record(`${label} page error: ${safeBrowserError(error)}`));
   page.on("console", (message) => {
-    if (message.type() === "error") failures.push(`${label} console error: ${message.text()}`);
+    if (message.type() === "error") record(`${label} console error: ${message.text()}`);
+  });
+  page.on("requestfailed", (request) => record(`${label} request failed: ${safeBrowserUrl(request.url())}`));
+  page.on("response", (response) => {
+    const failure = sameOriginBrowserResponseFailure(page.url(), response.url(), response.status());
+    if (failure !== null) record(`${label} ${failure}`);
   });
 }
 
@@ -352,10 +362,72 @@ function capturePublicRunId(page, origin, launchId) {
   };
 }
 
-async function waitForIndependentActivityClient(page, timeoutMs, expectedRole) {
-  await page.waitForURL(/\/agent-heist-v[0-9]+\/hosted\//u, { timeout: timeoutMs });
-  await page.getByRole("heading", { name: "Agent Heist" }).waitFor({ timeout: timeoutMs });
-  await page.getByText(expectedRole, { exact: true }).waitFor({ timeout: timeoutMs });
+async function waitForIndependentActivityClient(page, timeoutMs, expectedRole, failures) {
+  try {
+    await page.waitForURL(/\/agent-heist-v[0-9]+\/hosted\//u, { timeout: timeoutMs });
+    await page.getByRole("heading", { name: "Agent Heist" }).waitFor({ timeout: timeoutMs });
+    await page.getByText(expectedRole, { exact: true }).waitFor({ timeout: timeoutMs });
+  } catch (error) {
+    const heading = await page.locator("main h1").first().textContent().catch(() => null);
+    throw new Error(activityClientBootstrapDiagnostic({
+      expectedRole,
+      url: page.url(),
+      heading,
+      failures,
+      cause: safeBrowserError(error),
+    }));
+  }
+}
+
+/**
+ * Keeps a failed rendered-client bootstrap debuggable without retaining a
+ * handoff fragment, query capability, response body, or unbounded browser log.
+ */
+export function activityClientBootstrapDiagnostic({ expectedRole, url, heading, failures, cause }) {
+  const observedFailures = Array.isArray(failures)
+    ? failures.slice(0, MAX_BROWSER_FAILURES).map(safeBrowserDiagnosticText)
+    : [];
+  return [
+    "independent Activity Client bootstrap did not become ready",
+    `expected_role=${safeBrowserDiagnosticText(expectedRole)}`,
+    `url=${safeBrowserUrl(url)}`,
+    `heading=${safeBrowserDiagnosticText(heading ?? "<none>")}`,
+    `cause=${safeBrowserDiagnosticText(cause)}`,
+    `browser_failures=${observedFailures.length === 0 ? "<none>" : observedFailures.join(" | ")}`,
+  ].join("; ");
+}
+
+/**
+ * Browser diagnostics may identify only a failed same-origin endpoint. A
+ * status is useful for cookie/session diagnosis; its response body is not.
+ */
+export function sameOriginBrowserResponseFailure(pageUrl, responseUrl, status) {
+  if (!Number.isInteger(status) || status < 400 || status > 599) return null;
+  try {
+    const page = new URL(pageUrl);
+    const response = new URL(responseUrl);
+    if (page.origin !== response.origin) return null;
+    return `response ${status}: ${safeBrowserUrl(responseUrl)}`;
+  } catch {
+    return null;
+  }
+}
+
+function safeBrowserUrl(value) {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return "<invalid-url>";
+  }
+}
+
+function safeBrowserDiagnosticText(value) {
+  return String(value)
+    .replace(/(wsh1|wst1|wsb1):[0-9a-f]+/giu, "$1:[redacted]")
+    .replace(/Bearer\s+[^\s]+/giu, "Bearer [redacted]")
+    .replace(/[\r\n\t]+/gu, " ")
+    .slice(0, MAX_BROWSER_DIAGNOSTIC_TEXT);
 }
 
 async function submitRenderedNavigatorAction(page, timeoutMs) {

@@ -3,11 +3,13 @@ import test from "node:test";
 
 import {
   HOSTED_RENDERED_BROWSER_JOURNEY_SCHEMA,
+  activityClientBootstrapDiagnostic,
   launchIdFromUrl,
   localProductOrigin,
   navigatorPlanForRouteClaim,
   publicRunPath,
   runHostedRenderedBrowserJourney,
+  sameOriginBrowserResponseFailure,
   validateTimeouts,
 } from "./hosted-rendered-browser-journey.mjs";
 
@@ -55,6 +57,35 @@ test("rendered-browser journey keeps the public Run page on its exact URL", () =
   for (const invalid of ["", "not-a-public-id", "A".repeat(32), "a".repeat(31)]) {
     assert.throws(() => publicRunPath("http://127.0.0.1:5180", invalid), /public Run identity/u);
   }
+});
+
+test("rendered-client bootstrap failures retain only bounded, capability-safe browser diagnostics", () => {
+  const diagnostic = activityClientBootstrapDiagnostic({
+    expectedRole: "Navigator participant",
+    url: `http://127.0.0.1:5180/agent-heist-v6/hosted/?ignored=value#handoff=wsh1:${"a".repeat(64)}`,
+    heading: "Waiting for authorized Projection",
+    cause: `network rejected Bearer ${"b".repeat(64)}`,
+    failures: [
+      `participant console error: wst1:${"c".repeat(64)}`,
+      ...Array.from({ length: 10 }, (_, index) => `request-${index}`),
+    ],
+  });
+  assert.match(diagnostic, /url=http:\/\/127\.0\.0\.1:5180\/agent-heist-v6\/hosted\//u);
+  assert.match(diagnostic, /heading=Waiting for authorized Projection/u);
+  assert.match(diagnostic, /wst1:\[redacted\]/u);
+  assert.match(diagnostic, /Bearer \[redacted\]/u);
+  assert.doesNotMatch(diagnostic, /handoff=|\?ignored=|wsh1:[0-9a-f]{64}|wst1:[0-9a-f]{64}/u);
+  assert.doesNotMatch(diagnostic, /request-7/u);
+});
+
+test("rendered-client bootstrap diagnostics retain only same-origin failed response status and path", () => {
+  const page = `http://127.0.0.1:5180/agent-heist-v6/hosted/#handoff=wsh1:${"a".repeat(64)}`;
+  assert.equal(
+    sameOriginBrowserResponseFailure(page, "http://127.0.0.1:5180/api/v1/participant-console/session:stream-ticket?ignored=true", 401),
+    "response 401: http://127.0.0.1:5180/api/v1/participant-console/session:stream-ticket",
+  );
+  assert.equal(sameOriginBrowserResponseFailure(page, "http://127.0.0.1:8080/v1/hosted/browser-stream", 403), null);
+  assert.equal(sameOriginBrowserResponseFailure(page, "http://127.0.0.1:5180/api/auth/session", 200), null);
 });
 
 test("rendered-browser qualification does not fall back when a browser is unavailable", async () => {
