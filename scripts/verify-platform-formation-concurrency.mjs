@@ -1,6 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { fixtureAdmissionExpectation } from "./formation-capacity-window.mjs";
+import {
+  fixtureAdmissionExpectation,
+  fixtureHouseFillSelectionExpectation,
+} from "./formation-capacity-window.mjs";
 
 class RpcError extends Error {
   constructor(status, code, message) {
@@ -133,22 +136,57 @@ try {
     where launch_request_id = '${houseLaunchId}';
     set session_replication_role = origin;
   `);
+  // The House Runner gate is globally retained by design. This fixture must
+  // not assume it is empty, change it, or consume any capacity beyond the two
+  // exact reservations selected for its own Launch Request.
+  const houseCapacityBaseline = readHouseRunnerCapacity();
+  const houseSelectionExpectation = fixtureHouseFillSelectionExpectation({
+    hardLimit: houseCapacityBaseline.hardLimit,
+    baselineActiveReservations: houseCapacityBaseline.activeReservations,
+    selectedAssignments: 2,
+  });
   const selections = await Promise.all(
     Array.from({ length: 16 }, () => rpc("retain_house_fill_selection_v1", {
       p_launch_request_id: houseLaunchId,
       p_host_installation_id: houseHost,
     })),
   );
-  const reservationSets = new Set(selections.map((value) => {
+  const selectionOutcomes = new Set(selections.map((value) => {
     const operation = expectRecord(value);
-    assert(operation.state === "reserving", "concurrent House selection did not retain reserving state");
+    assert(
+      stringField(operation, "launch_request_id") === houseLaunchId,
+      "concurrent House selection returned another Launch Request's operation",
+    );
+    assert(
+      stringField(operation, "house_fill_operation_id") === [...fillOperationIds][0],
+      "concurrent House selection returned another House fill operation",
+    );
+    assert(
+      operation.state === houseSelectionExpectation.state,
+      `concurrent House selection did not retain the expected ${houseSelectionExpectation.state} state`,
+    );
     const reservations = operation.reservations;
-    assert(Array.isArray(reservations) && reservations.length === 2, "House selection did not retain two reservations");
-    return JSON.stringify(reservations.map((reservation) =>
-      stringField(expectRecord(reservation), "reservation_operation_id")
-    ).sort());
+    assert(Array.isArray(reservations), "House selection omitted its reservations");
+    if (houseSelectionExpectation.state === "reserving") {
+      assert(
+        reservations.length === houseSelectionExpectation.reservationCount,
+        "House selection did not retain its exact Runner reservations",
+      );
+      return JSON.stringify({
+        state: operation.state,
+        reservations: reservations.map((reservation) =>
+          stringField(expectRecord(reservation), "reservation_operation_id")
+        ).sort(),
+      });
+    }
+    assert(
+      operation.failure_code === houseSelectionExpectation.failureCode,
+      "House selection did not retain the expected global Runner-capacity failure",
+    );
+    assert(reservations.length === 0, "failed House selection retained a Runner reservation");
+    return JSON.stringify({ state: operation.state, failureCode: operation.failure_code });
   }));
-  assert(reservationSets.size === 1, "concurrent House selection rerolled reservation identities");
+  assert(selectionOutcomes.size === 1, "concurrent House selection did not retain one exact outcome");
 
   const capacityLaunches = [];
   for (let index = 0; index < 11; index += 1) {
@@ -303,6 +341,34 @@ function readActiveRunCapacity() {
   const parsedActiveRuns = Number.parseInt(activeRuns, 10);
   assert(Number.isInteger(parsedHardLimit) && Number.isInteger(parsedActiveRuns), "the global active-Run capacity baseline was invalid");
   return { hardLimit: parsedHardLimit, activeRuns: parsedActiveRuns };
+}
+
+function readHouseRunnerCapacity() {
+  const output = execFileSync("psql", ["-X", "-At", "-v", "ON_ERROR_STOP=1", databaseUrl, "-c", `
+    select gates.hard_limit, count(reservations.reservation_operation_id)::integer
+    from platform_store.house_runner_capacity_gates gates
+    left join platform_store.house_runner_reservations reservations
+      on reservations.state in ('pending', 'ambiguous', 'succeeded')
+     and reservations.released_at is null
+    where gates.gate_kind = 'runner_unit'
+    group by gates.hard_limit;
+  `], {
+    cwd: repository,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+  }).trim();
+  const [hardLimit, activeReservations, ...extra] = output.split("|");
+  assert(
+    extra.length === 0 && hardLimit !== undefined && activeReservations !== undefined,
+    "could not read the House Runner capacity baseline",
+  );
+  const parsedHardLimit = Number.parseInt(hardLimit, 10);
+  const parsedActiveReservations = Number.parseInt(activeReservations, 10);
+  assert(
+    Number.isInteger(parsedHardLimit) && Number.isInteger(parsedActiveReservations),
+    "the House Runner capacity baseline was invalid",
+  );
+  return { hardLimit: parsedHardLimit, activeReservations: parsedActiveReservations };
 }
 
 function expectSingleRow(value) {
