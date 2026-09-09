@@ -5,12 +5,12 @@ a migration, or an automatic startup action. Use it after the approved
 spending-limited OpenRouter credential and the exact Fly image are installed.
 Keep launches and House calls closed until the final checks pass.
 
-The current candidate Listing is Agent Heist `0.21.0`. Its two House strategies are
-Cooperative Planner `14` and Skeptical Auditor `13`. Both use the exact Granite
+The current candidate Listing is Agent Heist `0.22.0`. Its two House strategies are
+Cooperative Planner `15` and Skeptical Auditor `14`. Both use the exact Granite
 model and DeepInfra provider route declared in their immutable files. Their
 instructions differ; this is a two-strategy exhibition, not a comparison of two
 models. This candidate pins the clock-safe Pack `0.3.0`, v6 Activity Client,
-result projector `0.3.0`, and Runner Template `13`. The provider route and hard
+result projector `0.3.0`, and Runner Template `14`. The provider route and hard
 allowances are unchanged. Check the deployment record before treating the
 candidate as installed or approved.
 
@@ -45,9 +45,9 @@ actual executable before approving it. Candidate metadata is not evidence of
 live gameplay. The draft 0.11.0 metadata was corrected before its first hosted
 publication; the unqualified image from commit `2419456` must not be deployed.
 
-The current `0.21.0` successor uses Planner `14`, Auditor `13`, and Runner
-Template `13` at `hosted-house-r13-01` on port `9603`. It is a new immutable
-candidate, not a replacement for the retained r12 bytes or their approvals.
+The current `0.22.0` successor uses Planner `15`, Auditor `14`, and Runner
+Template `14` at `hosted-house-r14-01` on port `9604`. It is a new immutable
+candidate, not a replacement for the retained r13 bytes or their approvals.
 
 ## What this evidence means
 

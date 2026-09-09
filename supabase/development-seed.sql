@@ -191,6 +191,26 @@ insert into platform_store.house_agent_host_approvals (
   'openrouter-house',
   extensions.digest(convert_to('hosted-dev:skeptical-auditor:13', 'utf8'), 'sha256'),
   true
+),
+(
+  'hosted-dev',
+  'blake3:9be618dd8e1d572dcdaa773c7f955aa6d6c365c6d8c4cfce2301a9073443e8fa',
+  'blake3:2020202020202020202020202020202020202020202020202020202020202020',
+  'blake3:2222222222222222222222222222222222222222222222222222222222222222',
+  'blake3:a0e28c02e7b08a1f8621e04869a5806a46490b1d93ca1e74395dd8990cc12a64',
+  'openrouter-house',
+  extensions.digest(convert_to('hosted-dev:cooperative-planner:15', 'utf8'), 'sha256'),
+  true
+),
+(
+  'hosted-dev',
+  'blake3:8b28e6cd56f75d23cee5576154e78994667cc8b075bdbc8ab4d65feda637f85a',
+  'blake3:2121212121212121212121212121212121212121212121212121212121212121',
+  'blake3:2222222222222222222222222222222222222222222222222222222222222222',
+  'blake3:a0e28c02e7b08a1f8621e04869a5806a46490b1d93ca1e74395dd8990cc12a64',
+  'openrouter-house',
+  extensions.digest(convert_to('hosted-dev:skeptical-auditor:14', 'utf8'), 'sha256'),
+  true
 )
 on conflict (host_installation_id, house_agent_revision_digest) do nothing;
 
@@ -200,8 +220,8 @@ update platform_store.house_agent_host_approvals
 set available_for_new_assignments = false, availability_checked_at = clock_timestamp()
 where host_installation_id = 'hosted-dev'
   and house_agent_revision_digest not in (
-    'blake3:bb9c56ffe925a130fe64c61386ca9f3d0638967719cc3dfed98d6ba06eead7fe',
-    'blake3:5f718a17c4de50e72c67e441dec37c628582b2bf6d6bad2a6e10b6ef356a4a4d'
+    'blake3:9be618dd8e1d572dcdaa773c7f955aa6d6c365c6d8c4cfce2301a9073443e8fa',
+    'blake3:8b28e6cd56f75d23cee5576154e78994667cc8b075bdbc8ab4d65feda637f85a'
   )
   and available_for_new_assignments;
 

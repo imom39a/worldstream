@@ -152,8 +152,8 @@ test("the readiness probe identity is stable and scoped to its Listing", () => {
   );
   assert.deepEqual(first, second);
   assert.deepEqual(first, {
-    roomSetupOperationId: "hosted-local-readiness-3cdaaa7b",
-    reservationReference: "3cdaaa7b-2402-4816-8ed0-b36d5419f405",
+    roomSetupOperationId: "hosted-local-readiness-0cd11b3a",
+    reservationReference: "0cd11b3a-ee75-46f0-84c2-ff5640247c29",
   });
   assert.notDeepEqual(first, earlierListing);
 });
@@ -294,8 +294,8 @@ test("local and Fly gateways retain all retained Listings as well as current dis
   const deployed = JSON.parse(value.slice(value.indexOf("=") + 1).trim());
   assert.equal(deployed, hostedDevelopmentListingAllowlist());
   const admitted = new Set(deployed.split(","));
-  assert.equal(admitted.size, 20);
-  assert.ok(admitted.has("blake3:3cdaaa7b2402b816ded0b36d5419f405b1be1428b37c89155a805d39bf826069"));
+  assert.equal(admitted.size, 21);
+  assert.ok(admitted.has("blake3:0cd11b3aee7596f0f4c2ff5640247c29038f903914d0206a784f7adde8a84c46"));
   assert.ok(admitted.has("blake3:1cf75abcb30d77fdbe0abc5e39813a315bea6900c61e9b49c51b84d995335d74"));
   assert.ok(admitted.has("blake3:21d7d5439208df0b1dbb18f7f42f3a3687d248a523b03fb5b4184b2dd0dcb626"));
   assert.ok(admitted.has("blake3:5b0993de4c858771cce34b16cb25e03b2bf509cbe16cd1ce7249a789ea8c426f"));

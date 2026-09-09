@@ -2162,6 +2162,11 @@ pub fn validate_hosted_house_runner_reservation_receipt(
 /// The receiving Host independently verifies that the supplied identifiers
 /// match one retained successful reservation and, when applicable, its exact
 /// Assignment and runtime binding.
+///
+/// # Errors
+///
+/// Returns [`ContractError`] when the schema or any retained identifier or
+/// evidence digest is invalid.
 pub fn validate_hosted_house_runner_retirement_request(
     request: &HostedHouseRunnerRetirementRequestV1,
 ) -> Result<(), ContractError> {
@@ -2182,6 +2187,11 @@ pub fn validate_hosted_house_runner_retirement_request(
 ///
 /// The platform may retain a hash of this response, while authentication is
 /// verified only by the issuing Host.
+///
+/// # Errors
+///
+/// Returns [`ContractError`] when the schema, identifiers, evidence fields, or
+/// authentication tag is invalid.
 pub fn validate_hosted_house_runner_retirement_receipt(
     receipt: &HostedHouseRunnerRetirementReceiptV1,
 ) -> Result<(), ContractError> {

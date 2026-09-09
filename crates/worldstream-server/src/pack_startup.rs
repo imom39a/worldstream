@@ -362,6 +362,7 @@ mod tests {
     use worldstream_core::builtin_worldstream_registry;
     use worldstream_pack_bundle::MAX_INSTALLED_BUNDLE_COUNT;
     use worldstream_runtime::StorageProfile;
+    use worldstream_transfer::DeploymentIdentityV1;
 
     use super::{
         StartupPackRegistryErrorV1, assemble_startup_pack_registry, pack_deployment_binding,
@@ -386,7 +387,30 @@ mod tests {
             startup.base_distribution_identity().packs().len(),
             expected.len()
         );
+        // These exact values are the immutable eight-pack identity and pack
+        // set persisted by the initial hosted SQLite deployment. Adding a new
+        // executor must use a distribution successor, not rewrite them.
+        assert_eq!(
+            startup.base_distribution_identity().digest().to_string(),
+            "c8482cf53886fb1824de96fb735057d271e03ff76afef6ae0c3469b7d3f0281d"
+        );
+        assert_eq!(
+            hosted_sqlite_pack_set_digest(startup.base_distribution_identity()),
+            "e4d2d4a0f6d6e223c663ec6f52e1ecf01ea0defe82ecb0cce1e1ec8d98a704d3"
+        );
         assert!(directory.path().join("activity-packs/inventory").is_dir());
+    }
+
+    fn hosted_sqlite_pack_set_digest(identity: &DeploymentIdentityV1) -> String {
+        let mut bytes = b"worldstream/deployment-pack-set/v1".to_vec();
+        for pack in identity.packs() {
+            bytes.extend_from_slice(pack.pack_id().as_bytes());
+            bytes.push(0);
+            bytes.extend_from_slice(pack.revision().as_bytes());
+            bytes.push(0);
+            bytes.extend_from_slice(&pack.digest().as_bytes());
+        }
+        blake3::hash(&bytes).to_hex().to_string()
     }
 
     #[test]

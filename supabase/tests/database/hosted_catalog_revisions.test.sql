@@ -1,21 +1,38 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
-select plan(23);
+select plan(25);
 
 select is(
   (select encode(extensions.digest(canonical_document, 'sha256'), 'hex')
    from platform_store.activity_listing_revisions
-   where listing_revision_digest = 'blake3:3cdaaa7b2402b816ded0b36d5419f405b1be1428b37c89155a805d39bf826069'),
-  '25994354df316bf56b85a57da9ad6b4ee96510bab3fd16945a8616fbaced7c00',
-  'the r13 successor Listing stores the checked canonical artifact bytes'
+   where listing_revision_digest = 'blake3:0cd11b3aee7596f0f4c2ff5640247c29038f903914d0206a784f7adde8a84c46'),
+  '5171498f806432663beb50308deb597987c2f34a1ff3dc58995d5362a41909fc',
+  'the r14 successor Listing stores the checked canonical artifact bytes'
+);
+select is(
+  (select convert_from(canonical_document, 'utf8')::jsonb ->> 'version'
+   from platform_store.activity_listing_revisions
+   where listing_revision_digest = 'blake3:0cd11b3aee7596f0f4c2ff5640247c29038f903914d0206a784f7adde8a84c46'),
+  '0.22.0',
+  'the r14 successor Listing is the current immutable revision'
 );
 select is(
   (select convert_from(canonical_document, 'utf8')::jsonb ->> 'version'
    from platform_store.activity_listing_revisions
    where listing_revision_digest = 'blake3:3cdaaa7b2402b816ded0b36d5419f405b1be1428b37c89155a805d39bf826069'),
   '0.21.0',
-  'the r13 successor Listing is the current immutable revision'
+  'the Runner r13 Listing remains retained after approval profiles advance'
+);
+select is(
+  (select string_agg(agent_profile_revision || ':' || runner_template_revision, ',' order by house_agent_key)
+   from platform_store.house_agent_revisions
+   where house_agent_revision_digest in (
+     'blake3:9be618dd8e1d572dcdaa773c7f955aa6d6c365c6d8c4cfce2301a9073443e8fa',
+     'blake3:8b28e6cd56f75d23cee5576154e78994667cc8b075bdbc8ab4d65feda637f85a'
+   )),
+  '15:14,14:14',
+  'current House profiles bind new immutable profile revisions to Runner r14'
 );
 select is(
   (select convert_from(canonical_document, 'utf8')::jsonb ->> 'version'

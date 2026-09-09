@@ -38,7 +38,14 @@ const CORPUS_DIGEST: &str =
 const LEGACY_CORPUS_DIGEST: &str =
     "blake3:046e533959dce4a9da3e51f4459fd5cec158df7cef9b9d641451f96ed005141e";
 
-/// Builds the selectable, retained-runnable Agent Heist registry.
+/// Builds the complete selectable, retained-runnable Agent Heist registry.
+///
+/// This catalog intentionally includes the newer 0.4.0 executor so its
+/// immutable revision and golden corpus remain independently testable. The
+/// daemon's base Runtime Distribution is deliberately narrower: deployments
+/// that were initialized before 0.4.0 retain the four-revision registry via
+/// [`builtin_embedded_agent_heist_registry`]. A newer executor therefore does
+/// not silently rewrite an existing deployment identity.
 ///
 /// # Errors
 ///
@@ -46,21 +53,24 @@ const LEGACY_CORPUS_DIGEST: &str =
 /// executor provenance, or golden corpus does not verify.
 #[allow(clippy::too_many_lines)] // Keep each immutable revision's complete artifact row together.
 pub fn builtin_agent_heist_registry() -> Result<PackRegistryV1, PackRegistryErrorV1> {
-    let (ready_descriptor, ready_lock, ready_schemas, ready_codecs, ready_artifact) =
-        crate::agent_heist_lobby_v4::agent_heist_agent_ready_revision();
-    let ready_corpus = lobby_golden_corpus(
-        ready_descriptor.revision_digest.clone(),
-        AGENT_READY_TRANSCRIPT_DIGEST,
-    );
-    let ready_artifacts = PackRegistryArtifactsV1 {
-        expected_revision_digest: ready_descriptor.revision_digest.clone(),
-        schemas: Some(ready_schemas.clone()),
-        codecs: Some(ready_codecs.clone()),
-        codec_implementation: Some(CanonicalPackCodecV1::canonical_v1()),
-        executor_artifact_digest: ready_artifact.clone(),
-        golden_corpus_digest: ready_corpus.digest()?,
-        golden_corpus: Some(ready_corpus),
-    };
+    build_agent_heist_registry(true)
+}
+
+/// Builds the Agent Heist rows frozen into the daemon's base Runtime
+/// Distribution.
+///
+/// Keep this separate from the complete catalog above. Existing durable
+/// installations compare this exact set at boot, so appending an executor is
+/// a distribution successor operation rather than a normal code update.
+pub(crate) fn builtin_embedded_agent_heist_registry() -> Result<PackRegistryV1, PackRegistryErrorV1>
+{
+    build_agent_heist_registry(false)
+}
+
+#[allow(clippy::too_many_lines)] // Keep each immutable revision's complete artifact row together.
+fn build_agent_heist_registry(
+    include_agent_ready_revision: bool,
+) -> Result<PackRegistryV1, PackRegistryErrorV1> {
     let (clock_descriptor, clock_lock, clock_schemas, clock_codecs, clock_artifact) =
         crate::agent_heist_lobby_v3::agent_heist_lobby_revision();
     let clock_corpus = lobby_golden_corpus(
@@ -129,16 +139,7 @@ pub fn builtin_agent_heist_registry() -> Result<PackRegistryV1, PackRegistryErro
         selectable_for_new_rooms: false,
         runnable_for_retained_rooms: true,
     };
-    PackRegistryV1::try_new([
-        PackRegistryEntryV1::agent_heist_lobby_v4(
-            ready_lock.clone(),
-            ready_descriptor,
-            ready_artifacts,
-            PackRegistryStatusV1 {
-                selectable_for_new_rooms: true,
-                runnable_for_retained_rooms: true,
-            },
-        ),
+    let mut entries = vec![
         PackRegistryEntryV1::agent_heist_lobby_v3(
             clock_lock.clone(),
             clock_descriptor,
@@ -161,7 +162,34 @@ pub fn builtin_agent_heist_registry() -> Result<PackRegistryV1, PackRegistryErro
             legacy_artifacts,
             legacy_status,
         ),
-    ])
+    ];
+    if include_agent_ready_revision {
+        let (ready_descriptor, ready_lock, ready_schemas, ready_codecs, ready_artifact) =
+            crate::agent_heist_lobby_v4::agent_heist_agent_ready_revision();
+        let ready_corpus = lobby_golden_corpus(
+            ready_descriptor.revision_digest.clone(),
+            AGENT_READY_TRANSCRIPT_DIGEST,
+        );
+        let ready_artifacts = PackRegistryArtifactsV1 {
+            expected_revision_digest: ready_descriptor.revision_digest.clone(),
+            schemas: Some(ready_schemas.clone()),
+            codecs: Some(ready_codecs.clone()),
+            codec_implementation: Some(CanonicalPackCodecV1::canonical_v1()),
+            executor_artifact_digest: ready_artifact.clone(),
+            golden_corpus_digest: ready_corpus.digest()?,
+            golden_corpus: Some(ready_corpus),
+        };
+        entries.push(PackRegistryEntryV1::agent_heist_lobby_v4(
+            ready_lock.clone(),
+            ready_descriptor,
+            ready_artifacts,
+            PackRegistryStatusV1 {
+                selectable_for_new_rooms: true,
+                runnable_for_retained_rooms: true,
+            },
+        ));
+    }
+    PackRegistryV1::try_new(entries)
 }
 
 /// Exact semantic digest selected for new and retained Heist Rooms.

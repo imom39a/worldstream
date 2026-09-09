@@ -2,8 +2,11 @@
 //!
 //! Each source registry is independently validated before composition. The
 //! composition step is deliberately narrow: it retains the exact Counter
-//! revisions used by local conformance stories and the exact Agent Heist
-//! revision used by the live story, while preserving digest-only selection.
+//! revisions used by local conformance stories and the pre-existing Agent
+//! Heist revisions used by the live story, while preserving digest-only
+//! selection. Newer Heist executors remain available to their own test
+//! catalog until they are introduced through a reviewed distribution
+//! successor.
 
 use crate::{PackRegistryErrorV1, PackRegistryV1, agent_heist_registry, counter_registry};
 
@@ -21,7 +24,7 @@ use crate::{PackRegistryErrorV1, PackRegistryV1, agent_heist_registry, counter_r
 pub fn builtin_worldstream_registry() -> Result<PackRegistryV1, PackRegistryErrorV1> {
     PackRegistryV1::combine([
         counter_registry::builtin_counter_registry()?,
-        agent_heist_registry::builtin_agent_heist_registry()?,
+        agent_heist_registry::builtin_embedded_agent_heist_registry()?,
     ])
 }
 
@@ -38,11 +41,11 @@ mod tests {
     fn daemon_registry_retains_counter_and_exact_heist_revisions() {
         let registry = builtin_worldstream_registry()
             .unwrap_or_else(|error| unreachable!("WorldStream registry: {error}"));
-        assert_eq!(registry.len(), 9);
+        assert_eq!(registry.len(), 8);
         assert!(
             registry
-                .select_for_new_room(&crate::agent_heist_agent_ready_digest())
-                .is_ok()
+                .load_retained(&crate::agent_heist_agent_ready_digest())
+                .is_err()
         );
         let revision_locks = registry.retained_revision_locks().collect::<Vec<_>>();
         assert_eq!(revision_locks.len(), registry.len());
