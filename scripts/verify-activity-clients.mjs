@@ -12,16 +12,19 @@ const printIdentities = process.argv.includes("--print-identities");
 const buildRoots = new Map([
   ["worldstream.agent-heist.web", "clients/agent-heist-web/dist"],
   ["worldstream.negotiate.web", "clients/negotiate-web/dist"],
+  ["worldstream.midnight-archive.web", "clients/midnight-archive-web/dist"],
   ["worldstream.inspector.web", "web/console/dist"],
 ]);
 const currentReleaseFiles = new Map([
   ["worldstream.agent-heist.web", "agent-heist-web-v6.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
+  ["worldstream.midnight-archive.web", "midnight-archive-web-v1.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const currentEvidenceFiles = new Map([
   ["worldstream.agent-heist.web", "agent-heist-web-v6.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
+  ["worldstream.midnight-archive.web", "midnight-archive-web-v1.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const expectedChecks = new Map([
@@ -46,6 +49,16 @@ const expectedChecks = new Map([
     "projection-reset-replaces-authorized-state",
     "participant-and-spectator-access-mode-gating",
     "prepared-action-queue-and-replay-validation-boundaries",
+  ]],
+  ["worldstream.midnight-archive.web", [
+    "release-and-host-binding-exact-references",
+    "live-adapter-starts-empty",
+    "briefing-reset-and-activity-start-gating",
+    "projection-reset-replaces-authorized-state",
+    "participant-access-and-private-truth-gating",
+    "staged-action-and-explicit-commit-boundaries",
+    "responsive-map-and-contextual-action-controls",
+    "solo-ten-turn-component-host-browser-and-replay-witness",
   ]],
 ]);
 const hostMounts = new Map(activityClientMounts.map((mount) => [mount.prefix, mount.root]));
@@ -268,15 +281,15 @@ async function verifySourceBoundaries() {
     "crates/worldstream-studio-supervisor/src/participant_handoff.rs",
   ]) {
     const source = await readFile(resolve(workspace, relativePath), "utf8");
-    check(!/worldstream\.(?:agent-heist|negotiate)|\/(?:agent-heist|negotiate|inspector)\//i.test(source), `Supervisor contains a Pack/client route branch in ${relativePath}`);
+    check(!/worldstream\.(?:agent-heist|negotiate|midnight-archive)|\/(?:agent-heist|negotiate|midnight-archive|inspector)\//i.test(source), `Supervisor contains a Pack/client route branch in ${relativePath}`);
   }
   const inspector = await readFile(resolve(workspace, "web/console/src/HandedOffParticipant.tsx"), "utf8");
-  check(!/Negotiate|worldstream\.negotiate|agent-heist/i.test(inspector), "generic Inspector imports a Pack-specific renderer");
+  check(!/Negotiate|Midnight Archive|worldstream\.(?:negotiate|midnight-archive)|agent-heist/i.test(inspector), "generic Inspector imports a Pack-specific renderer");
   const gallery = await readFile(resolve(workspace, "web/console/src/App.tsx"), "utf8");
   check(!/useLiveSession|liveSession|liveTransport|liveReplayClient/.test(gallery), "recorded gallery can still overlay live authorized state");
   const clientHostMain = await readFile(resolve(workspace, "web/console/src/main.tsx"), "utf8");
   check(
-    !/@worldstream\/(?:agent-heist|negotiate)-client|clientSurface === "(?:agent-heist|negotiate)"|NegotiateLiveApp|consumeNegotiateConsoleBootstrap|consumeLiveSessionBootstrap/.test(clientHostMain),
+    !/@worldstream\/(?:agent-heist|negotiate|midnight-archive)-client|clientSurface === "(?:agent-heist|negotiate|midnight-archive)"|NegotiateLiveApp|MidnightArchiveLiveApp|consumeNegotiateConsoleBootstrap|consumeLiveSessionBootstrap/.test(clientHostMain),
     "Inspector/recorded-gallery artifact still embeds a Pack-specific live client",
   );
   const heistWebMcp = await readFile(resolve(workspace, "clients/agent-heist-web/src/webmcp.ts"), "utf8");
@@ -296,6 +309,7 @@ async function verifySourceBoundaries() {
     ["/negotiate-v3/", "clients/negotiate-web/dist"],
     ["/negotiate-v2/", "config/activity-clients/artifacts/negotiate-web-v2"],
     ["/negotiate/", "config/activity-clients/artifacts/negotiate-web-v1"],
+    ["/midnight-archive-v1/", "clients/midnight-archive-web/dist"],
     ["/inspector-v2/", "web/console/dist"],
     ["/inspector/", "config/activity-clients/artifacts/inspector-web-v1"],
     ["/", "config/activity-clients/artifacts/inspector-web-v1"],
@@ -306,6 +320,7 @@ async function verifySourceBoundaries() {
   for (const path of [
     "clients/agent-heist-web/src/liveAdapter.ts",
     "clients/negotiate-web/src/liveAdapter.ts",
+    "clients/midnight-archive-web/src/liveAdapter.ts",
   ]) {
     const source = await readFile(resolve(workspace, path), "utf8");
     check(/return \{ kind: "awaiting" \};/.test(source), `${path} does not start from empty authorized state`);

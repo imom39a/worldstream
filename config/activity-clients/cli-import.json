@@ -11,7 +11,8 @@
     "./releases/agent-heist-web-v5.json",
     "./releases/agent-heist-web-v6.json",
     "./releases/negotiate-web-v3.json",
-    "./releases/inspector-web-v2.json"
+    "./releases/inspector-web-v2.json",
+    "./releases/midnight-archive-web-v1.json"
   ],
   "bindings_file": "./local-bindings.json"
 }

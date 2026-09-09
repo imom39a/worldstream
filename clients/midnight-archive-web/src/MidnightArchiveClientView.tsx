@@ -1,0 +1,501 @@
+import { useState, type ReactNode } from "react";
+
+import type { MidnightArchiveActionType } from "./actionContract";
+import type {
+  MidnightArchiveLiveState,
+  MidnightArchiveReadyState,
+} from "./liveAdapter";
+import {
+  candidateById,
+  candidateConfidence,
+  type ArchiveStagedAction,
+  type MidnightArchiveActionIntent,
+} from "./model";
+import {
+  ArchiveMap,
+  ArchiveOutcomePanel,
+  CarriedLedgerCard,
+  CostPills,
+  ResourceStrip,
+  SectionHeading,
+} from "./presentation";
+import type { MidnightArchiveReplayState } from "./replay";
+
+export type MidnightArchiveConnection =
+  | "connecting"
+  | "live"
+  | "disconnected"
+  | "setup_required";
+
+export interface MidnightArchiveClientViewProps {
+  readonly state: MidnightArchiveLiveState;
+  readonly connection: MidnightArchiveConnection;
+  readonly actionsEnabled: boolean;
+  readonly submitting?: boolean;
+  readonly message?: string | null;
+  readonly onAction: (intent: MidnightArchiveActionIntent) => Promise<void>;
+  readonly onReconnect?: () => Promise<void>;
+  readonly replay?: MidnightArchiveReplayState;
+  readonly onOpenReplay?: () => Promise<void>;
+}
+
+export function MidnightArchiveClientView({
+  state,
+  connection,
+  actionsEnabled,
+  submitting = false,
+  message = null,
+  onAction,
+  onReconnect,
+  replay = { kind: "unavailable" },
+  onOpenReplay,
+}: MidnightArchiveClientViewProps) {
+  if (state.kind === "awaiting") {
+    return <BoundarySurface
+      eyebrow="Midnight Archive"
+      title="Waiting for authorized Projection"
+      detail={message ?? "The archive remains hidden until the retained participant session installs a current Projection."}
+      action={connection === "disconnected" && onReconnect !== undefined ? (
+        <button type="button" onClick={() => void onReconnect()}>Reconnect securely</button>
+      ) : null}
+    />;
+  }
+  if (state.kind === "incompatible") {
+    return <BoundarySurface
+      eyebrow="Client boundary"
+      title="This archive cannot be opened"
+      detail={state.reason}
+    />;
+  }
+  return (
+    <ReadyArchive
+      state={state}
+      connection={connection}
+      actionsEnabled={actionsEnabled}
+      submitting={submitting}
+      message={message}
+      onAction={onAction}
+      onReconnect={onReconnect}
+      replay={replay}
+      onOpenReplay={onOpenReplay}
+    />
+  );
+}
+
+function ReadyArchive({
+  state,
+  connection,
+  actionsEnabled,
+  submitting,
+  message,
+  onAction,
+  onReconnect,
+  replay,
+  onOpenReplay,
+}: {
+  readonly state: MidnightArchiveReadyState;
+  readonly connection: MidnightArchiveConnection;
+  readonly actionsEnabled: boolean;
+  readonly submitting: boolean;
+  readonly message: string | null;
+  readonly onAction: (intent: MidnightArchiveActionIntent) => Promise<void>;
+  readonly onReconnect?: () => Promise<void>;
+  readonly replay: MidnightArchiveReplayState;
+  readonly onOpenReplay?: () => Promise<void>;
+}) {
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const projection = state.projection;
+  const active = projection.phase === "active";
+  const canAct = active && actionsEnabled && !submitting;
+  const offerTypes = new Set(state.offers.map((offer) => offer.actionType));
+  const act = (intent: MidnightArchiveActionIntent) => {
+    if (!canAct || !offerTypes.has(intent.action)) return;
+    setActionNotice(intent.action === "commit_turn"
+      ? "Committing the staged turn to the Room…"
+      : "Recording your staged Action with the Room…");
+    void onAction(intent).then(
+      () => setActionNotice(intent.action === "commit_turn"
+        ? "Turn submitted. Waiting for the authoritative result…"
+        : "Stage submitted. Waiting for the authoritative board…"),
+      (error: unknown) => setActionNotice(error instanceof Error ? error.message : "The Action could not be submitted."),
+    );
+  };
+
+  return (
+    <main className="archive-shell">
+      <a className="skip-link" href="#archive-actions">Skip to turn controls</a>
+      <header className="archive-hero">
+        <div className="hero-copy">
+          <p className="archive-kicker">WorldStream expedition 01</p>
+          <h1>Midnight <em>Archive</em></h1>
+          <p className="objective"><span>Your objective</span>{projection.objective}</p>
+        </div>
+        <div className="hero-seal" aria-hidden="true"><span>MA</span><i /></div>
+        <div className="session-pill">
+          <i className={connection === "live" && actionsEnabled ? "is-live" : ""} />
+          {sessionLabel(connection, actionsEnabled, projection.phase)}
+        </div>
+      </header>
+
+      {connection !== "live" ? (
+        <section className="archive-notice connection-notice" role="status">
+          <span aria-hidden="true">↻</span>
+          <div><strong>Actions are locked</strong><p>{message ?? "Reconnect and wait for the current authorized Projection to be acknowledged."}</p></div>
+          {connection === "disconnected" && onReconnect !== undefined ? (
+            <button type="button" onClick={() => void onReconnect()}>Reconnect securely</button>
+          ) : null}
+        </section>
+      ) : projection.phase === "briefing" ? (
+        <section className="archive-notice briefing-notice" role="status">
+          <span aria-hidden="true">⌛</span>
+          <div><strong>Preparing the archive</strong><p>The Room is synchronized for readiness. Gameplay begins only after the Host records Activity Start.</p></div>
+        </section>
+      ) : !actionsEnabled && projection.phase !== "complete" ? (
+        <section className="archive-notice connection-notice" role="status">
+          <span aria-hidden="true">↻</span>
+          <div><strong>Actions are locked</strong><p>{message ?? "Wait for the current authorized Projection to be acknowledged."}</p></div>
+        </section>
+      ) : null}
+
+      <ResourceStrip projection={projection} />
+      <ArchiveOutcomePanel projection={projection} />
+      {projection.phase === "complete" ? (
+        <ReplayPanel replay={replay} onOpenReplay={onOpenReplay} />
+      ) : null}
+
+      <div className="archive-workspace">
+        <div className="archive-main-column">
+          <ArchiveMap
+            projection={projection}
+            enabled={canAct}
+            moveOffered={offerTypes.has("stage_move")}
+            onAction={act}
+          />
+          <CandidateBoard
+            state={state}
+            enabled={canAct}
+            recoveryOffered={offerTypes.has("stage_recover_candidate")}
+            onAction={act}
+          />
+        </div>
+
+        <aside className="archive-turn-column" id="archive-actions" aria-label="Turn controls">
+          <CarriedLedgerCard projection={projection} />
+          {projection.verifierResult === null ? null : (
+            <section className="verifier-result" role="status">
+              <span aria-hidden="true">✓</span>
+              <div>
+                <small>Catalog verifier</small>
+                <strong>{candidateById(projection, projection.verifierResult.candidateId)?.label ?? "Known candidate"}</strong>
+                <p>Instrument confidence: verified</p>
+              </div>
+            </section>
+          )}
+          <ContextActions
+            state={state}
+            enabled={canAct}
+            offerTypes={offerTypes}
+            onAction={act}
+          />
+          <TurnCommitPanel
+            state={state}
+            enabled={canAct && offerTypes.has("commit_turn")}
+            submitting={submitting}
+            onCommit={() => act({ action: "commit_turn" })}
+          />
+          {actionNotice === null ? null : <p className="action-notice" role="status">{actionNotice}</p>}
+        </aside>
+      </div>
+
+      <footer className="archive-footer">
+        <span>Authorized lead Projection</span>
+        <span>Room sequence {state.roomSequence}</span>
+        <details>
+          <summary>Session integrity</summary>
+          <p>This client cannot switch Memberships or reveal the archive's hidden ledger truth.</p>
+          <code>{state.pack.digest}</code>
+        </details>
+      </footer>
+    </main>
+  );
+}
+
+function ReplayPanel({
+  replay,
+  onOpenReplay,
+}: {
+  readonly replay: MidnightArchiveReplayState;
+  readonly onOpenReplay?: () => Promise<void>;
+}) {
+  const available = replay.kind === "available" || replay.kind === "error";
+  return (
+    <section className="replay-panel" aria-labelledby="archive-replay-title">
+      <div>
+        <p className="archive-kicker">Verified history</p>
+        <h2 id="archive-replay-title">Replay this expedition</h2>
+        <p>Replay is read-only and must match this exact terminal Room Head.</p>
+      </div>
+      <button
+        disabled={!available || onOpenReplay === undefined}
+        onClick={() => { void onOpenReplay?.(); }}
+        type="button"
+      >
+        {replay.kind === "loading" ? "Verifying…" : replay.kind === "verified" ? "Replay verified" : "Verify Replay"}
+      </button>
+      {replay.kind === "verified" ? (
+        <div className="replay-status" role="status">
+          <strong>✓ Verified at Room sequence {replay.summary.roomSequence}</strong>
+          <span>Projection {shortDigest(replay.summary.projectionHash)}</span>
+          <span>Pack {shortDigest(replay.summary.packDigest)}</span>
+        </div>
+      ) : replay.kind === "error" ? (
+        <p className="replay-error" role="alert">{replay.message}</p>
+      ) : replay.kind === "unavailable" ? (
+        <p className="replay-unavailable">Replay is available on the local retained-session surface.</p>
+      ) : null}
+    </section>
+  );
+}
+
+function CandidateBoard({
+  state,
+  enabled,
+  recoveryOffered,
+  onAction,
+}: {
+  readonly state: MidnightArchiveReadyState;
+  readonly enabled: boolean;
+  readonly recoveryOffered: boolean;
+  readonly onAction: (intent: MidnightArchiveActionIntent) => void;
+}) {
+  const projection = state.projection;
+  const atVault = projection.location === "vault";
+  return (
+    <section className="candidate-board" aria-labelledby="candidate-board-title">
+      <SectionHeading
+        eyebrow="Vault catalog"
+        title="Candidate ledgers"
+        aside={<span className="uncertainty-note">Visible marks only · hidden truth withheld</span>}
+      />
+      <div className="candidate-grid">
+        {projection.candidates.map((candidate) => {
+          const confidence = candidateConfidence(projection, candidate.candidateId);
+          const carried = projection.carriedCandidate === candidate.candidateId;
+          return (
+            <article className={`candidate-card${carried ? " is-carried" : ""}`} key={candidate.candidateId}>
+              <header>
+                <span className="ledger-icon" aria-hidden="true">▥</span>
+                <div><small>Archive candidate</small><h3>{candidate.label}</h3></div>
+                {carried ? <b>Carried</b> : null}
+              </header>
+              <dl>
+                {candidate.visibleAttributes.map((attribute) => (
+                  <div key={`${attribute.label}:${attribute.value}`}><dt>{attribute.label}</dt><dd>{attribute.value}</dd></div>
+                ))}
+              </dl>
+              <div className={`candidate-confidence confidence-${confidence}`}>
+                {confidence === "verified" ? "✓ Verified by the catalog instrument" : "? Authenticity remains uncertain"}
+              </div>
+              <button
+                disabled={!enabled || !recoveryOffered || !atVault || carried}
+                onClick={() => onAction({ action: "stage_recover_candidate", candidate_id: candidate.candidateId })}
+                type="button"
+                aria-label={`Stage recovery of ${candidate.label}; costs 1 turn and 0 power`}
+              >
+                {carried ? "Currently carried" : atVault ? "Stage this ledger" : "Recover at the Vault"}
+              </button>
+              <CostPills turns={1} power={0} />
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function ContextActions({
+  state,
+  enabled,
+  offerTypes,
+  onAction,
+}: {
+  readonly state: MidnightArchiveReadyState;
+  readonly enabled: boolean;
+  readonly offerTypes: ReadonlySet<MidnightArchiveActionType>;
+  readonly onAction: (intent: MidnightArchiveActionIntent) => void;
+}) {
+  const projection = state.projection;
+  const actions: Array<{
+    intent: MidnightArchiveActionIntent;
+    eyebrow: string;
+    title: string;
+    description: string;
+    turns: number;
+    power: number;
+    available: boolean;
+  }> = [];
+  if (projection.location === "records") actions.push({
+    intent: { action: "stage_use_verifier" },
+    eyebrow: "Records instrument",
+    title: projection.verifierResult === null ? "Run the catalog verifier" : "Verifier result recorded",
+    description: "Spend one charge to identify one candidate with instrument confidence.",
+    turns: 1,
+    power: 1,
+    available: projection.verifierResult === null && projection.power >= 1,
+  });
+  if (projection.location === "plant") actions.push({
+    intent: { action: "stage_open_service_hatch" },
+    eyebrow: "Service controls",
+    title: projection.gates.service_hatch === "open" ? "Service hatch is open" : "Open the service hatch",
+    description: "Route emergency power to the Plant–Vault passage. Traversal starts next turn.",
+    turns: 1,
+    power: 2,
+    available: projection.gates.service_hatch === "closed" && projection.power >= 2,
+  });
+  if (projection.location === "atrium") actions.push({
+    intent: { action: "stage_extract" },
+    eyebrow: "Atrium exit",
+    title: "Extract from the archive",
+    description: projection.carriedCandidate === null
+      ? "Leave now without a ledger. The debrief will record an empty-handed extraction."
+      : "Leave now with the carried ledger. Hidden authenticity resolves only in the outcome.",
+    turns: 1,
+    power: 0,
+    available: true,
+  });
+  actions.push({
+    intent: { action: "stage_wait" },
+    eyebrow: "Hold position",
+    title: "Wait for one turn",
+    description: "Advance time without moving or spending power.",
+    turns: 1,
+    power: 0,
+    available: true,
+  });
+
+  return (
+    <section className="context-actions">
+      <SectionHeading eyebrow="At this location" title="Available moves" />
+      <div className="action-card-list">
+        {actions.map((item) => {
+          const offered = offerTypes.has(item.intent.action);
+          return (
+            <article className="action-card" key={item.intent.action}>
+              <div>
+                <small>{item.eyebrow}</small>
+                <h3>{item.title}</h3>
+                <p>{item.description}</p>
+              </div>
+              <CostPills turns={item.turns} power={item.power} />
+              <button
+                disabled={!enabled || !offered || !item.available}
+                onClick={() => onAction(item.intent)}
+                type="button"
+                aria-label={`Stage ${item.title}; costs ${item.turns} turn and ${item.power} power`}
+              >
+                {item.available ? "Stage action" : "Unavailable"}
+              </button>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function TurnCommitPanel({
+  state,
+  enabled,
+  submitting,
+  onCommit,
+}: {
+  readonly state: MidnightArchiveReadyState;
+  readonly enabled: boolean;
+  readonly submitting: boolean;
+  readonly onCommit: () => void;
+}) {
+  const staged = state.projection.stagedAction;
+  return (
+    <section className={`commit-panel${staged === null ? " is-empty" : ""}`}>
+      <p className="archive-kicker">Staged turn</p>
+      {staged === null ? (
+        <div className="empty-stage">
+          <span aria-hidden="true">＋</span>
+          <strong>No Action staged</strong>
+          <p>Choose a location or Action above. Staging does not spend turns or power.</p>
+        </div>
+      ) : (
+        <div className="staged-summary">
+          <span aria-hidden="true">◎</span>
+          <div><strong>{stagedActionTitle(state, staged)}</strong><p>{stagedActionDetail(staged)}</p></div>
+          <CostPills turns={staged.turnCost} power={staged.powerCost} />
+        </div>
+      )}
+      <button
+        className="commit-button"
+        disabled={!enabled || staged === null || submitting}
+        onClick={onCommit}
+        type="button"
+      >
+        <span>{submitting ? "Submitting…" : "Commit Turn"}</span>
+        <small>{staged === null ? "Stage an Action first" : `Apply ${staged.turnCost} turn · ${staged.powerCost} power`}</small>
+      </button>
+      <p className="commit-explainer">Only Commit Turn advances danger. The Room validates the action and returns the next authoritative state.</p>
+    </section>
+  );
+}
+
+function stagedActionTitle(state: MidnightArchiveReadyState, staged: ArchiveStagedAction): string {
+  switch (staged.actionType) {
+    case "stage_move": return `Move to ${locationLabel(state, staged.destination)}`;
+    case "stage_use_verifier": return "Run the catalog verifier";
+    case "stage_open_service_hatch": return "Open the service hatch";
+    case "stage_recover_candidate": return `Recover ${candidateById(state.projection, staged.candidateId)?.label ?? "candidate ledger"}`;
+    case "stage_extract": return "Extract through the Atrium";
+    case "stage_wait": return "Wait in place";
+  }
+}
+
+function stagedActionDetail(staged: ArchiveStagedAction): string {
+  return staged.actionType === "stage_open_service_hatch"
+    ? "The gate opens this turn; movement through it begins on a later turn."
+    : staged.actionType === "stage_recover_candidate"
+      ? "Recovery changes what you carry without revealing hidden authenticity."
+      : "Review the known cost, then commit when ready.";
+}
+
+function locationLabel(state: MidnightArchiveReadyState, location: string): string {
+  return state.projection.map.locations.find((candidate) => candidate.id === location)?.name ?? location;
+}
+
+function sessionLabel(
+  connection: MidnightArchiveConnection,
+  current: boolean,
+  phase: MidnightArchiveReadyState["projection"]["phase"],
+): string {
+  if (connection !== "live") return "Reconnect required";
+  if (phase === "briefing") return "Preparing archive";
+  if (phase === "complete") return "Expedition complete";
+  return current ? "Projection current" : "Catching up";
+}
+
+function shortDigest(value: string): string {
+  return `${value.slice(0, 15)}…${value.slice(-8)}`;
+}
+
+function BoundarySurface({ eyebrow, title, detail, action = null }: {
+  readonly eyebrow: string;
+  readonly title: string;
+  readonly detail: string;
+  readonly action?: ReactNode;
+}) {
+  return (
+    <main className="archive-boundary">
+      <div className="boundary-seal" aria-hidden="true">MA</div>
+      <p className="archive-kicker">{eyebrow}</p>
+      <h1>{title}</h1>
+      <p>{detail}</p>
+      {action}
+    </main>
+  );
+}

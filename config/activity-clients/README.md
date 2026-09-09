@@ -1,14 +1,16 @@
 # First-party client design release
 
-Current source builds are Agent Heist v6, Negotiate v3, and Inspector v2. Each
-release has an exact build-tree digest and linked evidence under `releases/`
-and `conformance/`. The shared CSS in `web/design/` is bundled independently;
-it does not create a runtime dependency between clients.
+Current source builds are Agent Heist v6, Negotiate v3, Midnight Archive v1,
+and Inspector v2. Each release has an exact build-tree digest and linked
+evidence under `releases/` and `conformance/`. The shared CSS in `web/design/`
+is bundled independently; it does not create a runtime dependency between
+clients.
 
 | Current path | Source |
 | --- | --- |
 | `/agent-heist-v6/` and `/agent-heist-v6/hosted/` | `clients/agent-heist-web` |
 | `/negotiate-v3/` | `clients/negotiate-web` |
+| `/midnight-archive-v1/` and `/midnight-archive-v1/hosted/` | `clients/midnight-archive-web` |
 | `/inspector-v2/` | `web/console` |
 
 The prior Heist v2, Negotiate v2, and Inspector v1 build trees under `artifacts/`

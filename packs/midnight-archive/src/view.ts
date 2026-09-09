@@ -1,0 +1,180 @@
+import type {
+  CanonicalJson,
+  CanonicalObject,
+  PackActionOffer,
+} from "@worldstream/pack-sdk";
+
+import type { ArchiveState, Role, StagedAction } from "./model.js";
+import { record, stringValue } from "./model.js";
+import { legalDestinations } from "./rules.js";
+
+export type AudienceSchema =
+  | "public"
+  | "participant"
+  | "operator"
+  | "historical_public"
+  | "historical_participant"
+  | "historical_operator"
+  | "final_reveal";
+
+export interface AuthorizedArchiveView {
+  readonly schema: AudienceSchema;
+  readonly projection: CanonicalObject;
+  readonly actionOffers: readonly PackActionOffer[];
+}
+
+function archiveMap(): CanonicalJson {
+  return {
+    locations: [
+      { id: "atrium", name: "Atrium", description: "Arrival hall and the only extraction point." },
+      { id: "records", name: "Records", description: "Intake shelves and a powered catalog verifier." },
+      { id: "conservation", name: "Conservation", description: "Restoration benches beside the sealed archive gate." },
+      { id: "plant", name: "Plant", description: "Building controls for the service hatch." },
+      { id: "vault", name: "Vault", description: "Three ledger candidates await recovery." },
+    ],
+    connections: [
+      { from: "atrium", to: "records", gate: null },
+      { from: "atrium", to: "conservation", gate: null },
+      { from: "records", to: "conservation", gate: null },
+      { from: "records", to: "plant", gate: null },
+      { from: "conservation", to: "vault", gate: "archive_gate" },
+      { from: "plant", to: "vault", gate: "service_hatch" },
+    ],
+  };
+}
+
+export function authorizedView(
+  state: ArchiveState,
+  core: CanonicalObject,
+  viewer: CanonicalObject,
+): AuthorizedArchiveView {
+  const role = viewerRole(core, viewer);
+  const viewerType = stringValue(viewer.viewer_type, "viewer_type");
+  const participant = role !== null && (viewerType === "participant" || viewerType === "historical");
+  const schema = audienceSchema(core, viewer, participant);
+  if (!participant) {
+    return {
+      schema,
+      projection: {
+        phase: state.phase,
+        location: state.location,
+        turns_used: state.turns_used,
+        outcome: state.outcome.kind === "pending" ? null : { kind: state.outcome.kind },
+      },
+      actionOffers: [],
+    };
+  }
+  return {
+    schema,
+    projection: participantProjection(state, role),
+    actionOffers: viewerType === "participant" && role === "lead"
+      ? leadActionOffers(state)
+      : [],
+  };
+}
+
+export function participantProjection(state: ArchiveState, role: Role): CanonicalObject {
+  return {
+    phase: state.phase,
+    objective: `${state.objective} ${state.role_notes[role]}`,
+    location: state.location,
+    turns_used: state.turns_used,
+    turns_remaining: state.turn_limit - state.turns_used,
+    power: state.power_remaining,
+    gates: {
+      archive_gate: state.gates.conservation_vault_open ? "open" : "closed",
+      service_hatch: state.gates.plant_vault_open ? "open" : "closed",
+    },
+    map: archiveMap(),
+    candidates: state.candidates.map((candidate) => ({
+      candidate_id: candidate.candidate_id,
+      label: candidateLabel(candidate.candidate_id),
+      visible_attributes: [
+        { label: "Binding", value: candidate.binding },
+        { label: "Marking", value: candidate.marking },
+        { label: "Year", value: String(candidate.year) },
+      ],
+    })),
+    staged_action: stagedProjection(state.staged_action),
+    carried_candidate: state.carried_candidate_id === "none"
+      ? null
+      : state.carried_candidate_id,
+    verifier_result: state.verifier_result === "none"
+      ? null
+      : { candidate_id: state.verifier_result, confidence: "verified" },
+    outcome: state.outcome.kind === "pending" ? null : { kind: state.outcome.kind },
+  };
+}
+
+function stagedProjection(staged: StagedAction): CanonicalJson {
+  if (staged.kind === "none") return null;
+  const common = {
+    action_type: `stage_${staged.kind}`,
+    turn_cost: staged.turn_cost,
+    power_cost: staged.power_cost,
+  };
+  if (staged.kind === "move") return { ...common, destination: staged.destination };
+  if (staged.kind === "recover_candidate") {
+    return { ...common, candidate_id: staged.candidate_id };
+  }
+  return common;
+}
+
+function leadActionOffers(state: ArchiveState): PackActionOffer[] {
+  if (state.phase !== "active") return [];
+  const offers: PackActionOffer[] = [];
+  if (legalDestinations(state).length > 0) offers.push(offer("stage_move"));
+  if (state.location === "records" && state.power_remaining >= 1) {
+    offers.push(offer("stage_use_verifier"));
+  }
+  if (
+    state.location === "plant" &&
+    !state.gates.plant_vault_open &&
+    state.power_remaining >= 2
+  ) {
+    offers.push(offer("stage_open_service_hatch"));
+  }
+  if (state.location === "vault") offers.push(offer("stage_recover_candidate"));
+  if (state.location === "atrium") offers.push(offer("stage_extract"));
+  offers.push(offer("stage_wait"));
+  if (state.staged_action.kind !== "none") offers.push(offer("commit_turn"));
+  return offers;
+}
+
+function offer(actionType: string): PackActionOffer {
+  return { actionType, eligibilityWindow: null };
+}
+
+function candidateLabel(candidateId: string): string {
+  if (candidateId === "ledger-amber") return "Amber Ledger";
+  if (candidateId === "ledger-cobalt") return "Cobalt Ledger";
+  return "Violet Ledger";
+}
+
+function viewerRole(core: CanonicalObject, viewer: CanonicalObject): Role | null {
+  if (
+    viewer.viewer_type !== "participant" &&
+    viewer.viewer_type !== "historical"
+  ) return null;
+  if (typeof viewer.member_id !== "string") return null;
+  const memberships = record(core.memberships, "core.memberships");
+  const membership = record(memberships[viewer.member_id], "viewer membership");
+  return membership.role === "lead" || membership.role === "mira" || membership.role === "jonah"
+    ? membership.role
+    : null;
+}
+
+function audienceSchema(
+  core: CanonicalObject,
+  viewer: CanonicalObject,
+  participant: boolean,
+): AudienceSchema {
+  if (viewer.viewer_type === "participant") return "participant";
+  if (viewer.viewer_type === "operator") return "operator";
+  if (viewer.viewer_type === "final_reveal") return "final_reveal";
+  if (viewer.viewer_type !== "historical") return "public";
+  const memberships = record(core.memberships, "core.memberships");
+  const membership = record(memberships[String(viewer.member_id)], "viewer membership");
+  if (membership.access_mode === "operator") return "historical_operator";
+  return participant ? "historical_participant" : "historical_public";
+}

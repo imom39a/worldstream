@@ -1,0 +1,34 @@
+{
+  "name": "@worldstream/midnight-archive-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.18.1"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./live-adapter": "./src/liveAdapter.ts",
+    "./model": "./src/model.ts",
+    "./replay": "./src/replay.ts",
+    "./styles.css": "./src/styles.css"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5177",
+    "build": "tsc --noEmit && vite build",
+    "lint": "tsc --noEmit",
+    "test": "vitest run --environment node"
+  },
+  "dependencies": {
+    "@worldstream/client": "workspace:*",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "typescript": "7.0.2",
+    "vite": "8.2.1",
+    "vitest": "4.1.10"
+  }
+}
