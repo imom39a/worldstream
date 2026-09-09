@@ -198,6 +198,10 @@ _Avoid_: Seat Claim, Membership, public participant profile, replaceable seat, R
 A random, opaque, non-secret reference that distinguishes one account-controlled Run Membership Correspondence within one Activity Run. It authorizes nothing without the matching Platform Account and never exposes or replaces the Principal, Membership, or Host-issued client handoff.
 _Avoid_: Membership credential, Seat Claim, Principal ID, Membership ID, reusable client handoff
 
+**Run Re-entry**:
+Renewed scoped access to an existing Activity Run through its original Run Membership Correspondence, without creating a new Room or replacing its Membership. It restores access, not a prior Activity Phase or a paused clock.
+_Avoid_: Rematch, new Seat Claim, Replay, pause, game restart
+
 **Run Terminal Evidence**:
 An immutable, non-authoritative Hosted Activity Platform record that one Activity Run's pinned Result Projector Revision classified its authorized Public Projection at one Complete Head as terminal. It justifies platform capacity release but does not copy or replace Activity Phase, Outcome, or Room Status.
 _Avoid_: Terminal Phase, Outcome, Indexed Activity Result, archived Room
@@ -409,6 +413,24 @@ _Avoid_: Authoritative room state, invocation context, persistent WorldStream me
 **Logical Agent Persistence**:
 Continuity of an Agent Participant's Principal, Membership, observations, and Room facts across Invocations.
 _Avoid_: Continuous computation, sleeping agent, persistent mind, restored hidden state
+
+## Companion activities
+
+**AI Companion**:
+An Agent Participant that assists a Human Participant in a game's crew through its own Role and Actions. Companion describes the gameplay relationship; House Agent describes platform supply.
+_Avoid_: Runner, model, House Agent when the gameplay relationship is meant
+
+**Companion Task**:
+An activity-level objective with explicit execution limits delegated to an AI Companion. It does not change the Participants' underlying Roles or Action permissions.
+_Avoid_: Invocation, Activation Intent, House Agent Assignment
+
+**Activity Turn**:
+An Activity Pack-defined unit of gameplay progression. It is distinct from a canonical Transition and may encompass several accepted Actions.
+_Avoid_: Transition, Invocation, wall-clock interval
+
+**Location**:
+A place within an Activity Pack's fictional setting, described by its Activity State. It is not an independently authoritative Room.
+_Avoid_: Room, Activity Run, world instance
 
 ## Referenced material
 
