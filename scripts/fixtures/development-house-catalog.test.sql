@@ -9,7 +9,7 @@ select is((
   select count(distinct approvals.house_agent_revision_digest)::integer
   from platform_store.house_agent_host_approvals approvals
   join platform_store.activity_listing_revisions listings
-    on listings.listing_revision_digest = 'blake3:0cd11b3aee7596f0f4c2ff5640247c29038f903914d0206a784f7adde8a84c46'
+    on listings.listing_revision_digest = 'blake3:945664f9fea18ace9991c44d43febc142a58244d69352d98514a69b4f7b22030'
   cross join lateral jsonb_array_elements(listings.seat_templates) seats(value)
   where approvals.host_installation_id = 'hosted-dev'
     and approvals.available_for_new_assignments and approvals.revoked_at is null
@@ -26,7 +26,7 @@ select ok(exists(select 1 from platform_store.house_agent_host_approvals
     and not available_for_new_assignments), 'retained obsolete approval is preserved but not selectable');
 select ok(exists(select 1 from platform_store.house_agent_host_approvals
   where host_installation_id = 'hosted-dev'
-    and house_agent_revision_digest = 'blake3:bb9c56ffe925a130fe64c61386ca9f3d0638967719cc3dfed98d6ba06eead7fe'
-    and not available_for_new_assignments), 'the retained profile 14 Planner approval is not selected by the profile 15 successor');
+    and house_agent_revision_digest = 'blake3:9be618dd8e1d572dcdaa773c7f955aa6d6c365c6d8c4cfce2301a9073443e8fa'
+    and not available_for_new_assignments), 'the retained profile 15 Planner approval is not selected by the profile 16 successor');
 select * from finish();
 rollback;

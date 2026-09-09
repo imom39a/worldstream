@@ -298,13 +298,14 @@ fn import_batch(
 }
 
 #[test]
-fn real_cli_imports_r14_successor_while_retaining_populated_r12_and_r13_installation()
+fn real_cli_imports_r15_successor_while_retaining_populated_r12_r13_and_r14_installation()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
     fs::write(root.join("managed-house-r12.bin"), [0_u8])?;
     fs::write(root.join("managed-house-r13.bin"), [1_u8])?;
     fs::write(root.join("managed-house-r14.bin"), [2_u8])?;
+    fs::write(root.join("managed-house-r15.bin"), [3_u8])?;
     let private = root.join("private");
     worldstream_runtime::prepare_data_directory(&private)?;
     let mut token = worldstream_runtime::create_owner_only_file(&private.join("model-token"))?;
@@ -412,6 +413,39 @@ fn real_cli_imports_r14_successor_while_retaining_populated_r12_and_r13_installa
         Some(1)
     );
 
+    runner_declaration(
+        &root.join("r15-runner.json"),
+        "15",
+        "managed-house-r15.bin",
+        "e1e0e81d6ea39b0cf8b86ffd440921011f57400cbc3f76a8a171906a9b8d7505",
+        "hosted-house-r15-01",
+        "127.0.0.1:9605",
+    );
+    profile_declaration(
+        &root.join("profile16-planner.json"),
+        "house-cooperative-planner",
+        "16",
+        "15",
+    );
+    profile_declaration(
+        &root.join("profile15-skeptic.json"),
+        "house-skeptical-auditor",
+        "15",
+        "15",
+    );
+    let r15_result = import_batch(
+        root,
+        "r15-runner.json",
+        None,
+        &["profile16-planner.json", "profile15-skeptic.json"],
+    );
+    assert_eq!(
+        r15_result["import_apply"]["created_runner_templates"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+
     let state = root.join(".worldstream/studio");
     assert!(
         state
@@ -428,9 +462,14 @@ fn real_cli_imports_r14_successor_while_retaining_populated_r12_and_r13_installa
             .join("runner-templates/installed/openrouter-house--14.json")
             .is_file()
     );
+    assert!(
+        state
+            .join("runner-templates/installed/openrouter-house--15.json")
+            .is_file()
+    );
     for (profile, revisions) in [
-        ("house-cooperative-planner", ["13", "14", "15"]),
-        ("house-skeptical-auditor", ["12", "13", "14"]),
+        ("house-cooperative-planner", ["13", "14", "15", "16"]),
+        ("house-skeptical-auditor", ["12", "13", "14", "15"]),
     ] {
         for revision in revisions {
             assert!(

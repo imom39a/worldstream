@@ -235,6 +235,9 @@ equivalent of all of these routing constraints:
 {
   "model": "<exact-canonical-model>",
   "max_completion_tokens": 1000,
+  "reasoning": {
+    "effort": "none"
+  },
   "provider": {
     "order": ["<exact-full-provider-slug>"],
     "only": ["<exact-full-provider-slug>"],
@@ -249,6 +252,14 @@ equivalent of all of these routing constraints:
   }
 }
 ```
+
+The House action contract requires one short JSON object, not a reasoning
+transcript. The reviewed Granite route enables high-effort reasoning by
+default, and OpenRouter counts those reasoning tokens against the completion
+allowance. The Runner therefore disables reasoning explicitly. Endpoint
+preflight must confirm that the exact selected provider supports the
+`reasoning` control and the `none` effort before the revision is made
+available for new assignments.
 
 The request also sends `X-OpenRouter-Metadata: enabled` so the model host can
 audit the router's reported selection. Its decoder ignores unknown additive

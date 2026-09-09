@@ -136,7 +136,7 @@ export function renderHouseRunnerTemplate(executable, digest) {
   return {
     schema: "worldstream/runner-template/v1",
     template_id: "openrouter-house",
-    revision: "14",
+    revision: "15",
     display_name: "Hosted OpenRouter House Agent",
     executable: { path: executable, blake3: digest },
     compatibility: [{
@@ -148,7 +148,7 @@ export function renderHouseRunnerTemplate(executable, digest) {
     non_secret_environment: { WORLDSTREAM_RUNNER_MODE: "hosted-house" },
     secret_environment: [],
     // Instance IDs are unique across retained immutable template revisions.
-    instances: [{ instance_id: "hosted-house-r14-01", health_address: "127.0.0.1:9604" }],
+    instances: [{ instance_id: "hosted-house-r15-01", health_address: "127.0.0.1:9605" }],
   };
 }
 
@@ -403,12 +403,12 @@ export function renderHouseAgentProfiles() {
   const hostContract = {
     kind: "managed_house_openrouter",
     host_contract_revision: "1",
-    runner_template: { template_id: "openrouter-house", revision: "14" },
+    runner_template: { template_id: "openrouter-house", revision: "15" },
   };
   const cooperative = {
     schema: "worldstream/studio-agent-profile-publish/v2",
     profile_id: "house-cooperative-planner",
-    revision: "15",
+    revision: "16",
     display_name: "Cooperative Planner",
     non_secret_configuration: {},
     host_contract: hostContract,
@@ -417,7 +417,7 @@ export function renderHouseAgentProfiles() {
   const skeptical = {
     schema: "worldstream/studio-agent-profile-publish/v2",
     profile_id: "house-skeptical-auditor",
-    revision: "14",
+    revision: "15",
     display_name: "Skeptical Auditor",
     non_secret_configuration: {},
     host_contract: hostContract,

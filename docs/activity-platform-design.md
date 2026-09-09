@@ -305,7 +305,7 @@ artwork and gameplay presentation remain owned by each Activity Client.
 Agent Heist v6, Negotiate v3, and Inspector v2 are the current immutable client
 releases. The local Host serves their current paths and preserves Agent Heist
 v5, v4, v3, and v2 bytes at their retained paths. Current discovery Listing
-0.22.0 selects the Heist v6 hosted client; 0.21.0 and older Listings retain their exact
+0.23.0 selects the Heist v6 hosted client; 0.22.0 and older Listings retain their exact
 client release and route. Pack revisions and game rules are unchanged.
 The catalog migration, Runtime admission list, generated catalog, and client
 installer travel with that release change. Hosted publication needs the normal

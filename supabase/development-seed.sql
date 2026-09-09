@@ -194,7 +194,7 @@ insert into platform_store.house_agent_host_approvals (
 ),
 (
   'hosted-dev',
-  'blake3:9be618dd8e1d572dcdaa773c7f955aa6d6c365c6d8c4cfce2301a9073443e8fa',
+  'blake3:57c1e72a4147df339b35b557b35b1f2fa8239a66850c3d269df20ae111e2ea82',
   'blake3:2020202020202020202020202020202020202020202020202020202020202020',
   'blake3:2222222222222222222222222222222222222222222222222222222222222222',
   'blake3:a0e28c02e7b08a1f8621e04869a5806a46490b1d93ca1e74395dd8990cc12a64',
@@ -204,7 +204,7 @@ insert into platform_store.house_agent_host_approvals (
 ),
 (
   'hosted-dev',
-  'blake3:8b28e6cd56f75d23cee5576154e78994667cc8b075bdbc8ab4d65feda637f85a',
+  'blake3:8ffb7a9247cc647565c7b7a0f3ed29301b15b450e8110f4c96b521fdc3883c7c',
   'blake3:2121212121212121212121212121212121212121212121212121212121212121',
   'blake3:2222222222222222222222222222222222222222222222222222222222222222',
   'blake3:a0e28c02e7b08a1f8621e04869a5806a46490b1d93ca1e74395dd8990cc12a64',
@@ -220,8 +220,8 @@ update platform_store.house_agent_host_approvals
 set available_for_new_assignments = false, availability_checked_at = clock_timestamp()
 where host_installation_id = 'hosted-dev'
   and house_agent_revision_digest not in (
-    'blake3:9be618dd8e1d572dcdaa773c7f955aa6d6c365c6d8c4cfce2301a9073443e8fa',
-    'blake3:8b28e6cd56f75d23cee5576154e78994667cc8b075bdbc8ab4d65feda637f85a'
+    'blake3:57c1e72a4147df339b35b557b35b1f2fa8239a66850c3d269df20ae111e2ea82',
+    'blake3:8ffb7a9247cc647565c7b7a0f3ed29301b15b450e8110f4c96b521fdc3883c7c'
   )
   and available_for_new_assignments;
 

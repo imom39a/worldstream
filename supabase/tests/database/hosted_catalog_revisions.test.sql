@@ -6,16 +6,16 @@ select plan(25);
 select is(
   (select encode(extensions.digest(canonical_document, 'sha256'), 'hex')
    from platform_store.activity_listing_revisions
-   where listing_revision_digest = 'blake3:0cd11b3aee7596f0f4c2ff5640247c29038f903914d0206a784f7adde8a84c46'),
-  '5171498f806432663beb50308deb597987c2f34a1ff3dc58995d5362a41909fc',
-  'the r14 successor Listing stores the checked canonical artifact bytes'
+   where listing_revision_digest = 'blake3:945664f9fea18ace9991c44d43febc142a58244d69352d98514a69b4f7b22030'),
+  'aa55a1587e22dcb4a7eef6b102c28777bf44c9440b28fb3412baf53f2859343c',
+  'the r15 successor Listing stores the checked canonical artifact bytes'
 );
 select is(
   (select convert_from(canonical_document, 'utf8')::jsonb ->> 'version'
    from platform_store.activity_listing_revisions
-   where listing_revision_digest = 'blake3:0cd11b3aee7596f0f4c2ff5640247c29038f903914d0206a784f7adde8a84c46'),
-  '0.22.0',
-  'the r14 successor Listing is the current immutable revision'
+   where listing_revision_digest = 'blake3:945664f9fea18ace9991c44d43febc142a58244d69352d98514a69b4f7b22030'),
+  '0.23.0',
+  'the r15 successor Listing is the current immutable revision'
 );
 select is(
   (select convert_from(canonical_document, 'utf8')::jsonb ->> 'version'
@@ -28,11 +28,11 @@ select is(
   (select string_agg(agent_profile_revision || ':' || runner_template_revision, ',' order by house_agent_key)
    from platform_store.house_agent_revisions
    where house_agent_revision_digest in (
-     'blake3:9be618dd8e1d572dcdaa773c7f955aa6d6c365c6d8c4cfce2301a9073443e8fa',
-     'blake3:8b28e6cd56f75d23cee5576154e78994667cc8b075bdbc8ab4d65feda637f85a'
+     'blake3:57c1e72a4147df339b35b557b35b1f2fa8239a66850c3d269df20ae111e2ea82',
+     'blake3:8ffb7a9247cc647565c7b7a0f3ed29301b15b450e8110f4c96b521fdc3883c7c'
    )),
-  '15:14,14:14',
-  'current House profiles bind new immutable profile revisions to Runner r14'
+  '16:15,15:15',
+  'current House profiles bind new immutable profile revisions to Runner r15'
 );
 select is(
   (select convert_from(canonical_document, 'utf8')::jsonb ->> 'version'

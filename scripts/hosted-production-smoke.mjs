@@ -7,7 +7,6 @@ import { hostedDevelopmentListingAllowlist } from "./hosted-dev.mjs";
 import { hostedGatewayConfiguration } from "./hosted-runtime.mjs";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const LISTING_DIGEST = "blake3:21d7d5439208df0b1dbb18f7f42f3a3687d248a523b03fb5b4184b2dd0dcb626";
 const CONTROLLER_AUTHORITY = "hosted-smoke-controller-authority-000000000000";
 const SERVICE_AUTHORITY = "hosted-smoke-service-authority-000000000000000";
 

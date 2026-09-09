@@ -227,6 +227,23 @@ test("r14 successor advances the executable chain without rebinding r13", async 
   assert.doesNotMatch(migration, /house_agent_host_approvals|hosted_operating_state|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
 });
 
+test("r15 successor advances the executable chain without rebinding r14", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260909230532_retained_runner_r15_successor.sql", import.meta.url), "utf8");
+  const houses = [...migration.matchAll(/\$house\$([\s\S]*?)\$house\$/gu)].map((match) => Buffer.from(match[1]));
+  const planner = JSON.parse(await readFile(new URL("../config/hosted/house-agents/cooperative-planner-16.json", import.meta.url), "utf8"));
+  const skeptic = JSON.parse(await readFile(new URL("../config/hosted/house-agents/skeptical-auditor-15.json", import.meta.url), "utf8"));
+  const listing = JSON.parse(await readFile(new URL("../config/hosted/listings/agent-heist-0.23.0.json", import.meta.url), "utf8"));
+  const artifact = Buffer.from(migration.match(/\$artifact\$([\s\S]*?)\$artifact\$/u)?.[1] ?? "");
+  assert.deepEqual(houses, [canonicalBytes(planner), canonicalBytes(skeptic)]);
+  assert.deepEqual(artifact, canonicalBytes(listing));
+  assert.equal(`blake3:${hash(houses[0])}`, "blake3:57c1e72a4147df339b35b557b35b1f2fa8239a66850c3d269df20ae111e2ea82");
+  assert.equal(`blake3:${hash(houses[1])}`, "blake3:8ffb7a9247cc647565c7b7a0f3ed29301b15b450e8110f4c96b521fdc3883c7c");
+  assert.equal(`blake3:${hash(artifact)}`, "blake3:945664f9fea18ace9991c44d43febc142a58244d69352d98514a69b4f7b22030");
+  assert.equal(planner.runner_template.revision, "15");
+  assert.equal(skeptic.runner_template.revision, "15");
+  assert.doesNotMatch(migration, /house_agent_host_approvals|hosted_operating_state|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
+});
+
 test("clock-safe migration retains exact metadata and grants no operating authority", async () => {
   const migration = await readFile(new URL("../supabase/migrations/20260908040223_hosted_clock_safe_heist_revision.sql", import.meta.url), "utf8");
   const houseDocuments = [...migration.matchAll(/\$house\$([\s\S]*?)\$house\$/gu)].map((match) => Buffer.from(match[1]));
