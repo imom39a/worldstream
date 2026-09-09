@@ -15,6 +15,7 @@ import {
   submitRenderedForm,
   validateLaunchId,
   validateTimeouts,
+  verifiedMyGamesLaunch,
   waitForRenderedResultAcknowledgementOpportunity,
 } from "./hosted-rendered-browser-journey.mjs";
 
@@ -66,6 +67,39 @@ test("rendered-browser journey keeps the public Run page on its exact URL", () =
   for (const invalid of ["", "not-a-public-id", "A".repeat(32), "a".repeat(31)]) {
     assert.throws(() => publicRunPath("http://127.0.0.1:5180", invalid), /public Run identity/u);
   }
+});
+
+test("retained recovery binds verified My Games evidence to the exact Launch", () => {
+  const launchId = "a0000000-0000-4000-8000-000000000001";
+  const publicId = "b".repeat(32);
+  assert.equal(
+    verifiedMyGamesLaunch({
+      version: "platform_my_games.v1",
+      items: [{ launch_id: launchId, state: "verified_result", action: "view_result", result_public_id: publicId }],
+    }, launchId),
+    publicId,
+  );
+  assert.throws(
+    () => verifiedMyGamesLaunch({
+      version: "platform_my_games.v0",
+      items: [{ launch_id: launchId, state: "verified_result", action: "view_result", result_public_id: publicId }],
+    }, launchId),
+    /My Games response is invalid/u,
+  );
+  assert.throws(
+    () => verifiedMyGamesLaunch({
+      version: "platform_my_games.v1",
+      items: [{ launch_id: "c0000000-0000-4000-8000-000000000003", state: "verified_result", action: "view_result", result_public_id: publicId }],
+    }, launchId),
+    /exactly one retained Launch/u,
+  );
+  assert.throws(
+    () => verifiedMyGamesLaunch({
+      version: "platform_my_games.v1",
+      items: [{ launch_id: launchId, state: "publication_pending", action: "history", result_public_id: publicId }],
+    }, launchId),
+    /no verified result/u,
+  );
 });
 
 test("rendered-client bootstrap failures retain only bounded, capability-safe browser diagnostics", () => {

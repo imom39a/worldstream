@@ -2043,13 +2043,14 @@ async function completeRetainedRenderedRun(
   assert.equal(retainedLaunch.state, "run_created");
   const retainedRun = recordField(retainedLaunch, "run");
   assert.equal(retainedRun.can_enter, true);
-  const recovered = await renderedBrowserJourney.runHostedRenderedBrowserJourney({
+  const recovered = await renderedBrowserJourney.runHostedRenderedRetainedRecovery({
     productOrigin,
     existingLaunchId: launchId,
     formationTimeoutMs: 240_000,
   });
   assert.equal(recovered.outcome, "passed");
   assert.equal(recovered.completed, true);
+  assert.equal(recovered.recovery, "retained_terminal_only");
   const recoveredHistory = await creator.read("/api/my-games");
   const recoveredItem = arrayField(recoveredHistory, "items")
     .map((item) => record(item))

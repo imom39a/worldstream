@@ -226,6 +226,95 @@ export async function runHostedRenderedBrowserJourney({
 }
 
 /**
+ * Recovers one retained local Run without replaying a fresh game's Action
+ * script. A retained Run may have advanced past the offers that the fresh
+ * qualification follows, so this path only observes the authorized terminal
+ * Activity Client Projection and then verifies the exact owner's My Games
+ * entry. It is deliberately not a full rendered-journey receipt.
+ */
+export async function runHostedRenderedRetainedRecovery({
+  productOrigin,
+  existingLaunchId,
+  browserBinary = process.env.WORLDSTREAM_BROWSER_BINARY,
+  actionTimeoutMs = DEFAULT_ACTION_TIMEOUT_MS,
+  formationTimeoutMs = DEFAULT_FORMATION_TIMEOUT_MS,
+  launchBrowser = defaultLaunchBrowser,
+} = {}) {
+  const origin = localProductOrigin(productOrigin);
+  const timeouts = validateTimeouts({ actionTimeoutMs, formationTimeoutMs });
+  const launchId = validateLaunchId(existingLaunchId);
+  const browser = await launchBrowser(browserBinary);
+  const failures = [];
+  let participantContext;
+
+  try {
+    participantContext = await browser.newContext();
+    const participant = await participantContext.newPage();
+    collectBrowserFailures(participant, failures, "retained-participant");
+
+    await participant.goto(origin, { waitUntil: "domcontentloaded" });
+    await participant.getByRole("heading", { name: /Pick your world/i }).waitFor({
+      timeout: timeouts.action,
+    });
+    await participant.getByText("Sign in to start", { exact: true }).waitFor({
+      timeout: timeouts.action,
+    });
+    await participant.getByRole("button", { name: /Enter activity/i }).click();
+    await participant.getByRole("dialog").waitFor({ timeout: timeouts.action });
+    await participant.getByRole("button", {
+      name: "Use visible local-development sign-in",
+    }).click();
+    await participant.getByText("Signed in", { exact: true }).waitFor({
+      timeout: timeouts.action,
+    });
+
+    const runCapture = capturePublicRunId(participant, origin, launchId);
+    await participant.goto(`${origin}/launches/${launchId}`, { waitUntil: "domcontentloaded" });
+    await participant.getByRole("heading", { name: "Your activity is ready" }).waitFor({
+      timeout: timeouts.formation,
+    });
+    const runIdentity = await runCapture.wait(timeouts.action);
+
+    await participant.getByRole("button", { name: /^Enter Navigator$/ }).click();
+    await waitForIndependentActivityClient(
+      participant,
+      timeouts.action,
+      "Navigator participant",
+      failures,
+    );
+    await renderedCompletePhase(participant).waitFor({ timeout: timeouts.formation });
+
+    const verifiedHistory = captureVerifiedMyGamesLaunch(participant, origin, launchId);
+    await participant.getByRole("button", { name: "Back to games" }).click();
+    await participant.waitForURL(`${origin}/`, { timeout: timeouts.action });
+    await participant.getByRole("button", { name: "My games" }).click();
+    await participant.getByRole("heading", { name: "My games" }).waitFor({
+      timeout: timeouts.action,
+    });
+    await verifiedHistory.wait(timeouts.formation);
+
+    if (failures.length > 0) throw new Error(failures.join("\n"));
+    const receipt = Object.freeze({
+      schema: HOSTED_RENDERED_BROWSER_JOURNEY_SCHEMA,
+      outcome: "passed",
+      completed: true,
+      recovery: "retained_terminal_only",
+      checks: Object.freeze([
+        "retained_launch_reentry",
+        "authorized_terminal_complete",
+        "exact_launch_verified_result",
+      ]),
+      provider: "local_fake_provider_only",
+    });
+    runIdentityByReceipt.set(receipt, runIdentity);
+    return receipt;
+  } finally {
+    await participantContext?.close();
+    await browser.close();
+  }
+}
+
+/**
  * Returns the exact local Run identity associated with one in-process
  * rendered-journey receipt. It is intentionally not serializable evidence.
  */
@@ -300,6 +389,39 @@ export function publicRunPath(origin, publicId) {
     throw new Error("rendered public Run identity is invalid");
   }
   return `${origin}/runs/${publicId}`;
+}
+
+/**
+ * Validates the exact owner index item for one retained Launch. This prevents
+ * an unrelated verified result from satisfying retained recovery evidence.
+ */
+export function verifiedMyGamesLaunch(value, launchId) {
+  validateLaunchId(launchId);
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    value.version !== "platform_my_games.v1" ||
+    !Array.isArray(value.items)
+  ) {
+    throw new Error("rendered My Games response is invalid");
+  }
+  const matches = value.items.filter((item) =>
+    item !== null && typeof item === "object" && !Array.isArray(item) && item.launch_id === launchId,
+  );
+  if (matches.length !== 1) {
+    throw new Error("rendered My Games did not contain exactly one retained Launch");
+  }
+  const item = matches[0];
+  if (
+    item.state !== "verified_result" ||
+    item.action !== "view_result" ||
+    typeof item.result_public_id !== "string" ||
+    !/^[0-9a-f]{32}$/u.test(item.result_public_id)
+  ) {
+    throw new Error("rendered retained Launch has no verified result");
+  }
+  return item.result_public_id;
 }
 
 export function validateTimeouts({ actionTimeoutMs, formationTimeoutMs }) {
@@ -379,6 +501,39 @@ function capturePublicRunId(page, origin, launchId) {
       }
       page.off("response", listener);
       throw new Error("rendered waiting room did not expose a public Run through its reviewed response");
+    },
+  };
+}
+
+function captureVerifiedMyGamesLaunch(page, origin, launchId) {
+  let resultPublicId = null;
+  const expectedPath = "/api/my-games";
+  const listener = (response) => {
+    void (async () => {
+      const url = new URL(response.url());
+      if (url.origin !== origin || url.pathname !== expectedPath || !response.ok()) return;
+      const body = await response.json().catch(() => null);
+      try {
+        resultPublicId = verifiedMyGamesLaunch(body, launchId);
+      } catch {
+        // The owner index may still be publication_pending. The page polls
+        // again; only the exact verified item satisfies retained recovery.
+      }
+    })();
+  };
+  page.on("response", listener);
+  return {
+    async wait(timeoutMs) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (resultPublicId !== null) {
+          page.off("response", listener);
+          return resultPublicId;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      page.off("response", listener);
+      throw new Error("rendered retained Launch did not reach an exact verified My Games result");
     },
   };
 }
