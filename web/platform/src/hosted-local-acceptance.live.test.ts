@@ -51,6 +51,8 @@ const ACTION_IDS = [
   "01ARZ3NDEKTSV4RRFFQ69G5FNF",
   "01ARZ3NDEKTSV4RRFFQ69G5FNG",
 ] as const;
+const LAUNCH_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const PUBLIC_ID_PATTERN = /^[0-9a-f]{32}$/u;
 const executeFile = promisify(execFile);
 
 type JsonRecord = Record<string, unknown>;
@@ -441,10 +443,18 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
       runId,
       lane: "terminal",
     });
+    const firstHistory = await creator.read("/api/my-games");
+    assertVerifiedMyGamesResult(firstHistory, launchId, publicId);
 
     // Match 2 deliberately uses the rendered Activity Client against the
     // same retained Runtime, database, House allowances, and qualification
     // identities. A new Run is the only new authority.
+    const creatorAccount = await secondaryDependencies.dataClient.resolveGithubAccount({
+      authUserId: required("WORLDSTREAM_DEVELOPMENT_AUTH_USER_ID"),
+      providerSubject: required("WORLDSTREAM_DEVELOPMENT_GITHUB_SUBJECT"),
+    });
+    assert.ok(creatorAccount);
+    const secondHistoryBefore = await creator.read("/api/my-games");
     const secondProviderBefore = await readProviderMetrics(fakeProviderOrigin);
     const rendered = await renderedBrowserJourney.runHostedRenderedBrowserJourney({
       productOrigin,
@@ -454,8 +464,20 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     assert.equal(rendered.completed, true);
     const renderedRunId = renderedBrowserJourney.renderedJourneyRunId(rendered);
     const renderedEntrySelector = renderedBrowserJourney.renderedJourneyEntrySelector(rendered);
+    const renderedOwnedRun = await secondaryDependencies.hostedFormationData.readOwnedRun(
+      creatorAccount.accountId,
+      renderedRunId,
+    );
+    assert.ok(renderedOwnedRun);
+    const renderedPublicId = renderedOwnedRun.publicId;
+    if (typeof renderedPublicId !== "string") throw new Error("rendered Run has no public identity");
+    assert.match(renderedPublicId, PUBLIC_ID_PATTERN);
     const secondHistory = await creator.read("/api/my-games");
-    assert.ok(arrayField(secondHistory, "items").filter((item) => record(item).state === "result").length >= 2);
+    const secondLaunchId = exactNewVerifiedResultLaunchId(
+      secondHistoryBefore,
+      secondHistory,
+      renderedPublicId,
+    );
     const secondProviderMetrics = await readProviderMetrics(fakeProviderOrigin);
     const secondProviderCalls = secondProviderMetrics.house_completion_count;
     const secondProviderBeforeCalls = secondProviderBefore.house_completion_count;
@@ -471,17 +493,16 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     // Match 3 uses the people-only formation. No client submits an Action; the
     // Pack's persisted timers produce its valid failed outcome and the normal
     // result lane retires the Run.
+    const thirdHistoryBefore = await creator.read("/api/my-games");
     const third = await runPeopleOnlyNoActionMatch({
       creator,
       browserAgent,
       productOrigin,
       matchNumber: 3,
     });
-    const creatorAccount = await secondaryDependencies.dataClient.resolveGithubAccount({
-      authUserId: required("WORLDSTREAM_DEVELOPMENT_AUTH_USER_ID"),
-      providerSubject: required("WORLDSTREAM_DEVELOPMENT_GITHUB_SUBJECT"),
-    });
-    assert.ok(creatorAccount);
+    const thirdHistory = await creator.read("/api/my-games");
+    const thirdHistoryMatch = assertVerifiedMyGamesResult(thirdHistory, third.launchId, third.publicId);
+    assert.equal(exactNewLaunchId(thirdHistoryBefore, thirdHistory), third.launchId);
     const readRoomIdentity = async (runId: string, entrySelector: string): Promise<string> => {
       const membership = await secondaryDependencies.dataClient.resolveOwnedRunMembership({
         accountId: creatorAccount.accountId,
@@ -508,10 +529,30 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
       "terminal",
     );
     const finalHistory = await creator.read("/api/my-games");
-    const retainedHistoryCount = arrayField(finalHistory, "items")
-      .map((item) => record(item))
-      .filter((item) => item.state === "result").length;
-    assert.ok(retainedHistoryCount >= 3);
+    const finalFirstHistoryMatch = assertVerifiedMyGamesResult(finalHistory, launchId, publicId);
+    const finalSecondHistoryMatch = assertVerifiedMyGamesResult(
+      finalHistory,
+      secondLaunchId,
+      renderedPublicId,
+    );
+    const finalThirdHistoryMatch = assertVerifiedMyGamesResult(
+      finalHistory,
+      third.launchId,
+      third.publicId,
+    );
+    // Count only the exact qualified results above. This is deliberately not
+    // an aggregate query over My Games: unrelated retained results cannot
+    // inflate the acceptance claim, and verified_result is the API's exact
+    // terminal marker.
+    const retainedHistoryCount = [
+      finalFirstHistoryMatch,
+      finalSecondHistoryMatch,
+      finalThirdHistoryMatch,
+    ].filter((item) => item.state === "verified_result").length;
+    assert.equal(retainedHistoryCount, 3);
+    assert.equal(finalFirstHistoryMatch.launch_id, launchId);
+    assert.equal(finalSecondHistoryMatch.launch_id, secondLaunchId);
+    assert.equal(finalThirdHistoryMatch.launch_id, third.launchId);
 
     // A fourth launch proves active capacity was released after the failed
     // people-only Run. Cancel this probe after proving collection so the
@@ -569,7 +610,8 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
           outcome: "success",
           provider_call_delta: secondProviderCalls - secondProviderBeforeCalls,
           capacity_released: secondHouseCapacityReleased,
-          history_retained: true,
+          history_retained: finalSecondHistoryMatch.launch_id === secondLaunchId &&
+            finalSecondHistoryMatch.result_public_id === renderedPublicId,
           disconnect_and_catch_up: false,
           restart_and_reentry: false,
           no_actions: false,
@@ -581,7 +623,8 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
           provider_call_delta: thirdProviderCalls - secondProviderCalls,
           capacity_released: peopleOnlyHasNoHouseRetirement &&
             thirdProviderCalls === secondProviderCalls,
-          history_retained: true,
+          history_retained: thirdHistoryMatch.launch_id === third.launchId &&
+            thirdHistoryMatch.result_public_id === third.publicId,
           disconnect_and_catch_up: false,
           restart_and_reentry: false,
           no_actions: true,
@@ -590,7 +633,9 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
       retained_history_count: retainedHistoryCount,
       consumed_allowance_observed: consumedAllowanceObserved,
       fresh_setup: fresh.state === "collecting",
-      retained_upgrade: rendered.completed === true && retainedHistoryCount >= 2,
+      retained_upgrade: rendered.completed === true &&
+        finalSecondHistoryMatch.launch_id === secondLaunchId &&
+        finalSecondHistoryMatch.result_public_id === renderedPublicId,
       ordinary_restart: true,
       populated_recovery: "deferred_not_verified",
       rendered_client: rendered,
@@ -1080,7 +1125,7 @@ async function runPeopleOnlyNoActionMatch(options: {
   browserAgent: CookieBrowser;
   productOrigin: string;
   matchNumber: number;
-}): Promise<{ runId: string; publicId: string; entrySelector: string }> {
+}): Promise<{ launchId: string; runId: string; publicId: string; entrySelector: string }> {
   const { creator, browserAgent, productOrigin, matchNumber } = options;
   const launch = await creator.mutate("/api/launches", {
     listing_slug: "agent-heist",
@@ -1109,7 +1154,7 @@ async function runPeopleOnlyNoActionMatch(options: {
   assert.equal(summary.status, "summary");
   assert.equal(recordField(summary, "summary").outcome, "failure");
   assertNoPrivatePublicFields(terminal);
-  return { runId, publicId, entrySelector: firstEntry(run).entrySelector };
+  return { launchId, runId, publicId, entrySelector: firstEntry(run).entrySelector };
 }
 
 /**
@@ -1289,6 +1334,51 @@ test("retained setup preflight selects one setup and rejects ambiguity", () => {
       { launch_id: "20000000-0000-4000-8000-000000000002", state: "setup_pending", action: "continue_setup" },
     ],
   }), /multiple retained setups/u);
+});
+
+test("acceptance history correspondence ignores unrelated retained results", () => {
+  const unrelatedLaunchId = "20000000-0000-4000-8000-000000000002";
+  const qualifiedLaunchId = "30000000-0000-4000-8000-000000000003";
+  const unrelatedPublicId = "b".repeat(32);
+  const qualifiedPublicId = "c".repeat(32);
+  const before = {
+    version: "platform_my_games.v1",
+    items: [{
+      launch_id: unrelatedLaunchId,
+      title: "Agent Heist",
+      state: "verified_result",
+      action: "view_result",
+      result_public_id: unrelatedPublicId,
+    }],
+  };
+  const after = {
+    version: "platform_my_games.v1",
+    items: [
+      before.items[0],
+      {
+        launch_id: qualifiedLaunchId,
+        title: "Agent Heist",
+        state: "verified_result",
+        action: "view_result",
+        result_public_id: qualifiedPublicId,
+      },
+    ],
+  };
+  assert.equal(
+    exactNewVerifiedResultLaunchId(before, after, qualifiedPublicId),
+    qualifiedLaunchId,
+  );
+  assert.throws(
+    () => assertVerifiedMyGamesResult(after, qualifiedLaunchId, unrelatedPublicId),
+    /Expected values to be strictly equal/u,
+  );
+  assert.throws(
+    () => exactNewVerifiedResultLaunchId(before, {
+      version: "platform_my_games.v1",
+      items: [...before.items],
+    }, qualifiedPublicId),
+    /exactly one newly qualified Launch/u,
+  );
 });
 
 test("allowance evidence advances only from completed retained ledger attempts", () => {
@@ -1792,6 +1882,66 @@ async function pollPublicResult(
 function firstEntry(run: JsonRecord): { entrySelector: string } {
   const entry = record(arrayField(run, "entries")[0]);
   return { entrySelector: stringField(entry, "entry_selector") };
+}
+
+/**
+ * My Games is an owner index, not a counter. Acceptance claims must bind to
+ * the exact Launch that produced the Run under test; an unrelated retained
+ * result must never satisfy a history or upgrade assertion.
+ */
+function assertVerifiedMyGamesResult(
+  value: unknown,
+  launchId: string,
+  publicId: string,
+): JsonRecord {
+  const item = myGamesItemForLaunch(value, launchId);
+  assert.equal(item.state, "verified_result");
+  assert.equal(item.action, "view_result");
+  assert.equal(item.result_public_id, publicId);
+  return item;
+}
+
+function myGamesItemForLaunch(value: unknown, launchId: string): JsonRecord {
+  if (!LAUNCH_ID_PATTERN.test(launchId)) throw new Error("invalid expected My Games Launch identity");
+  if (!isRecord(value) || value.version !== "platform_my_games.v1" || !Array.isArray(value.items)) {
+    throw new Error("hosted acceptance My Games response is invalid");
+  }
+  const matches = value.items.filter((item): item is JsonRecord =>
+    isRecord(item) && item.launch_id === launchId,
+  );
+  assert.equal(matches.length, 1, `My Games must contain exactly one item for Launch ${launchId}`);
+  const item = matches[0];
+  assert.ok(item);
+  return item;
+}
+
+function exactNewLaunchId(before: unknown, after: unknown): string {
+  const beforeItems = myGamesItems(before);
+  const afterItems = myGamesItems(after);
+  const priorIds = new Set(beforeItems.map((item) => stringField(item, "launch_id")));
+  const fresh = afterItems.filter((item) => !priorIds.has(stringField(item, "launch_id")));
+  assert.equal(fresh.length, 1, "acceptance must identify exactly one newly qualified Launch");
+  const launchId = stringField(fresh[0] as JsonRecord, "launch_id");
+  assert.match(launchId, LAUNCH_ID_PATTERN);
+  return launchId;
+}
+
+function exactNewVerifiedResultLaunchId(
+  before: unknown,
+  after: unknown,
+  publicId: string,
+): string {
+  assert.match(publicId, PUBLIC_ID_PATTERN);
+  const launchId = exactNewLaunchId(before, after);
+  assertVerifiedMyGamesResult(after, launchId, publicId);
+  return launchId;
+}
+
+function myGamesItems(value: unknown): JsonRecord[] {
+  if (!isRecord(value) || value.version !== "platform_my_games.v1" || !Array.isArray(value.items)) {
+    throw new Error("hosted acceptance My Games response is invalid");
+  }
+  return value.items.map((item) => record(item));
 }
 
 /**
