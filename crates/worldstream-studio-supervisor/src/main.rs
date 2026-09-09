@@ -41,6 +41,7 @@ use worldstream_studio_supervisor::{
     },
     task_templates::{InstalledTaskTemplateDependenciesV1, TaskTemplateStoreV1},
 };
+
 use worldstream_studio_supervisor::{
     control_access::ControlAccess,
     control_admission::protect_operator_routes,
@@ -62,6 +63,9 @@ use worldstream_studio_supervisor::{
     startup_authority::validate_existing_host_authority,
     task_setup::ClientNeutralReadinessSourceV1,
 };
+
+/// Multi-step participant operations have a separate budget from health probes.
+const PARTICIPANT_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -124,6 +128,13 @@ struct Args {
     /// Exact loopback Participant Console origin placed in one-use URLs.
     #[arg(long, default_value = "http://127.0.0.1:5173")]
     participant_console_origin: String,
+}
+
+fn daemon_timeouts(probe_timeout_ms: u64) -> (Duration, Duration) {
+    (
+        Duration::from_millis(probe_timeout_ms),
+        PARTICIPANT_OPERATION_TIMEOUT,
+    )
 }
 
 fn main() -> Result<()> {
@@ -203,7 +214,7 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
             "the Controller and worldstreamd must use one identical canonical backup root: {error:?}"
         )
     })?;
-    let daemon_timeout = Duration::from_millis(args.probe_timeout_ms);
+    let (daemon_timeout, participant_operation_timeout) = daemon_timeouts(args.probe_timeout_ms);
     let listener = tokio::net::TcpListener::bind(args.bind)
         .await
         .with_context(|| format!("Controller listener bind failed at {}", args.bind))?;
@@ -393,7 +404,7 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
     let client_bindings = client_bindings
         .map_err(|error| anyhow::anyhow!("Activity Client bindings are unavailable: {error}"))?;
     let participant_gateway =
-        FixedDaemonParticipantConsoleGatewayV1::new(args.daemon, daemon_timeout);
+        FixedDaemonParticipantConsoleGatewayV1::new(args.daemon, participant_operation_timeout);
     let participant_handoff = ParticipantHandoffBrokerV1::new(
         &args.studio_origin,
         &args.participant_console_origin,
@@ -612,7 +623,10 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
                 &args.state_dir.join("hosted-public-relays"),
                 operations.clone(),
                 vault.clone(),
-                FixedDaemonParticipantConsoleGatewayV1::new(args.daemon, daemon_timeout),
+                FixedDaemonParticipantConsoleGatewayV1::new(
+                    args.daemon,
+                    participant_operation_timeout,
+                ),
                 &client_origin,
             )
             .map_err(|_| anyhow::anyhow!("hosted Public Projection relay is unavailable"))?;
@@ -756,6 +770,21 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
 fn parse_secret_reference(value: &str) -> Result<SecretReferenceV1, &'static str> {
     SecretReferenceV1::parse(value.to_owned())
         .map_err(|_| "reference must be exactly 64 lowercase hexadecimal characters")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PARTICIPANT_OPERATION_TIMEOUT, daemon_timeouts};
+    use std::time::Duration;
+
+    #[test]
+    fn participant_operations_have_their_own_bounded_budget() {
+        let (probe, participant) = daemon_timeouts(750);
+
+        assert_eq!(probe, Duration::from_millis(750));
+        assert_eq!(participant, PARTICIPANT_OPERATION_TIMEOUT);
+        assert_ne!(probe, participant);
+    }
 }
 
 fn parse_backup_profile(value: &str) -> Result<BackupStorageProfileV1, &'static str> {
