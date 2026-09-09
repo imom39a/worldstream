@@ -50,7 +50,7 @@ const LAUNCH_START = /^\/api\/launches\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}
 // This is deliberately process-local: the preview has one Fly machine and no
 // worker queue. It prevents a browser poll fan-out from starting equivalent
 // global maintenance passes while preserving two five-second poll intervals.
-const MY_GAMES_RECONCILIATION_COOLDOWN_MS = 10_000;
+const READ_RECONCILIATION_COOLDOWN_MS = 10_000;
 
 export function createHostedResultReconciler(input: {
   readonly supabaseUrl: string;
@@ -107,24 +107,24 @@ export function withHostedResultReconciliation(
   if (recovery !== undefined && !/^[\x21-\x7e]{32,256}$/u.test(recovery.cronSecret)) {
     throw new Error("invalid_reconciliation_cron_secret");
   }
-  let myGamesReconciliation: Promise<void> | undefined;
-  let myGamesReconciliationAvailableAt = 0;
+  let readReconciliation: Promise<void> | undefined;
+  let readReconciliationAvailableAt = 0;
 
-  async function reconcileForMyGamesRead(): Promise<void> {
-    if (Date.now() < myGamesReconciliationAvailableAt) return;
-    if (myGamesReconciliation !== undefined) {
-      return myGamesReconciliation;
+  async function reconcileForRead(): Promise<void> {
+    if (Date.now() < readReconciliationAvailableAt) return;
+    if (readReconciliation !== undefined) {
+      return readReconciliation;
     }
 
     const pass = reconcileActivityResultCandidates(dependencies, 10).then(() => {
-      myGamesReconciliationAvailableAt = Date.now() + MY_GAMES_RECONCILIATION_COOLDOWN_MS;
+      readReconciliationAvailableAt = Date.now() + READ_RECONCILIATION_COOLDOWN_MS;
     });
-    myGamesReconciliation = pass;
+    readReconciliation = pass;
     try {
       await pass;
     } finally {
-      if (myGamesReconciliation === pass) {
-        myGamesReconciliation = undefined;
+      if (readReconciliation === pass) {
+        readReconciliation = undefined;
       }
     }
   }
@@ -197,7 +197,7 @@ export function withHostedResultReconciliation(
         const initial = await platform.fetch(request);
         if (initial.status !== 200) return initial;
         try {
-          await reconcileForMyGamesRead();
+          await reconcileForRead();
         } catch {
           return new Response('{"error":{"code":"temporarily_unavailable"}}', {
             status: 503,
@@ -215,16 +215,12 @@ export function withHostedResultReconciliation(
         (PUBLIC_RUN.test(url.pathname) || url.pathname === RECENT_RESULTS)
       ) {
         try {
-          await reconcileActivityResultCandidates(dependencies, 10);
+          await reconcileForRead();
         } catch {
-          return new Response('{"error":{"code":"temporarily_unavailable"}}', {
-            status: 503,
-            headers: {
-              "cache-control": "public, no-store, max-age=0",
-              "content-type": "application/json; charset=utf-8",
-              "x-content-type-options": "nosniff",
-            },
-          });
+          // Reconciliation is an opportunistic write repair, not authority for
+          // the anonymous read. The underlying BFF can still serve only its
+          // durable, already privacy-reviewed Supabase projection. A genuine
+          // durable-read outage keeps the BFF's existing 503 boundary.
         }
       }
       const retryStart = request.method === "POST" && LAUNCH_START.test(url.pathname)

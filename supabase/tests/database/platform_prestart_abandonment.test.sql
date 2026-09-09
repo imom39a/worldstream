@@ -151,6 +151,13 @@ select ok(
      and reservations.kind = 'active_run'),
   'abandonment retains Run history without a result and releases only active capacity'
 );
+select is(
+  (select count(*)::integer
+   from platform_api.list_reconciliation_candidates_v1(100) candidates
+   where candidates.launch_request_id = '93000000-0000-4000-8000-000000000101'),
+  0,
+  'an abandoned pre-start Run is not polled forever as a result source'
+);
 select ok(
   platform_api.record_prestart_abandonment_v1(
     '93000000-0000-4000-8000-000000000101',

@@ -55,7 +55,7 @@ function dependencies(list: () => Promise<readonly ResultReconciliationCandidate
   };
 }
 
-test("result reads and the first authenticated My Games read trigger one bounded reconciliation pass", async () => {
+test("result reads and the first authenticated My Games read share one bounded reconciliation pass", async () => {
   let calls = 0;
   const bff = withHostedResultReconciliation(
     platform(),
@@ -73,11 +73,11 @@ test("result reads and the first authenticated My Games read trigger one bounded
   assert.equal((await bff.fetch(new Request(
     "https://arena.example/api/results/agent-heist/recent",
   ))).status, 200);
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
   assert.equal((await bff.fetch(new Request(
     "https://arena.example/api/my-games",
   ))).status, 200);
-  assert.equal(calls, 3);
+  assert.equal(calls, 1);
 });
 
 test("rapid authenticated My Games polling reuses a successful bounded maintenance pass", async () => {
@@ -307,18 +307,29 @@ test("the cron invokes exact Host abandonment only for the DB-selected pre-start
   assert.deepEqual(abandoned, ["deadline-selected-launch"]);
 });
 
-test("a reconciliation outage fails the public result read closed", async () => {
+test("public result reads serve durable state when opportunistic reconciliation is unavailable", async () => {
+  const delegated: string[] = [];
   const bff = withHostedResultReconciliation(
-    platform(),
+    {
+      fetch: async (request) => {
+        delegated.push(new URL(request.url).pathname);
+        return Response.json({ version: "durable_fixture.v1" });
+      },
+    },
     dependencies(async () => {
       throw new Error("fixture outage");
     }),
   );
-  const response = await bff.fetch(new Request(
-    `https://arena.example/api/runs/${"a".repeat(32)}`,
-  ));
-  assert.equal(response.status, 503);
-  assert.deepEqual(await response.json(), { error: { code: "temporarily_unavailable" } });
+  const paths = [
+    `/api/runs/${"a".repeat(32)}`,
+    "/api/results/agent-heist/recent",
+  ];
+  for (const path of paths) {
+    const response = await bff.fetch(new Request(`https://arena.example${path}`));
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { version: "durable_fixture.v1" });
+  }
+  assert.deepEqual(delegated, paths);
 });
 
 test("a My Games reconciliation outage fails closed with private cache policy", async () => {
