@@ -118,8 +118,13 @@ generated SDK build.
    - `model-provider-credentials/installed/hosted-openrouter.json`.
 
    Profile path components are the lowercase hexadecimal encoding of UTF-8;
-   `3133` encodes revision `13`; `3132` encodes revision `12`. Capture the actual
-   `/usr/local/bin/worldstream-managed-agent-host` binary separately.
+   `3133` encodes revision `13`; `3132` encodes revision `12`. Capture the binary
+   from the installed Runner Template's exact `executable.path` separately.
+   Current installations use the persistent content-addressed path
+   `/var/lib/worldstream/retained-runner-executables/blake3-<exact digest>/worldstream-managed-agent-host`;
+   older retained installations can use `/usr/local/bin/worldstream-managed-agent-host`.
+   The approval tool accepts only those two path forms and requires the path's
+   digest, template digest, and captured binary bytes to agree.
    Do not capture or open vault secret files, the OpenRouter API key, controller
    credentials, or process environment. The named credential record contains
    only metadata and an opaque reference, not the API-key value.

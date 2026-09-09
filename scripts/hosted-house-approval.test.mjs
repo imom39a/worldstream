@@ -92,6 +92,25 @@ test("approval recipe pins canonical installed metadata and actual binary withou
   assert.deepEqual((await prepareHouseApprovals(f.options)).evidence, prepared.evidence);
 });
 
+test("approval recipe accepts only the exact digest-addressed retained runner path", async (t) => {
+  const f = await fixture(t);
+  f.runner.executable.path =
+    `/var/lib/worldstream/retained-runner-executables/blake3-${f.runner.executable.blake3}/worldstream-managed-agent-host`;
+  f.report.import_apply.reused_runner_templates = [f.runner];
+  await f.write(f.runnerPath, f.runner);
+  await f.write(f.options.importReceipt, f.report);
+  const prepared = await prepareHouseApprovals(f.options);
+  assert.equal(prepared.evidence[0].receipt.runner_executable_digest,
+    `blake3:${f.runner.executable.blake3}`);
+
+  f.runner.executable.path =
+    `/var/lib/worldstream/retained-runner-executables/blake3-${"f".repeat(64)}/worldstream-managed-agent-host`;
+  f.report.import_apply.reused_runner_templates = [f.runner];
+  await f.write(f.runnerPath, f.runner);
+  await f.write(f.options.importReceipt, f.report);
+  await assert.rejects(prepareHouseApprovals(f.options), /approval_runner_binding_invalid/u);
+});
+
 test("the Granite successor approval binds profile revision 2 without reusing the retained Qwen identity", async (t) => {
   const f = await fixture(t, "2");
   const prepared = await prepareHouseApprovals(f.options);
