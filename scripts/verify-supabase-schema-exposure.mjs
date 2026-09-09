@@ -58,6 +58,7 @@ const expectedServicePaths = [
   "/rpc/read_result_reconciliation_v1",
   "/rpc/read_terminal_house_runner_retirements_v1",
   "/rpc/read_terminal_reconciliation_v1",
+  "/rpc/reconcile_terminal_activity_capacity_v1",
   "/rpc/record_genesis_v1",
   "/rpc/record_hosted_deployment_revision_v1",
   "/rpc/record_hosted_recovery_checkpoint_v1",

@@ -125,6 +125,7 @@ select is(
     'read_result_reconciliation_v1(uuid)',
     'read_terminal_house_runner_retirements_v1(uuid)',
     'read_terminal_reconciliation_v1(uuid)',
+    'reconcile_terminal_activity_capacity_v1(integer)',
     'record_genesis_v1(uuid, bytea, bytea)',
     'record_hosted_deployment_revision_v1(bytea, bytea, text, text, text, jsonb)',
     'record_hosted_recovery_checkpoint_v1(uuid, text, bytea, bytea, bytea, bytea, bytea)',
