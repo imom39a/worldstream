@@ -76,9 +76,11 @@ existing Run.
 Listing `0.22.0` is the current discovery profile. It keeps the frozen Heist
 `0.3.0` Pack, Client v6 release, result projector, public policy, and limits
 unchanged. It advances only the House Agent references to the Runner template
-`14` compatibility chain after the managed Host executable changed. Listings
-`0.21.0` and earlier remain retained for existing Rooms and Assignments; no
-existing Runner executable path or House approval is rebound.
+`14` recovery chain. This gives the new source/image release separate approval
+evidence and an isolated Runner instance while reusing the content-addressed
+managed Host executable when its bytes are unchanged. Listings `0.21.0` and
+earlier remain retained for existing Rooms and Assignments; no existing Runner
+executable path or House approval is rebound.
 
 The launch request is intentionally small:
 

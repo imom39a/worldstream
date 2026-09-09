@@ -110,15 +110,15 @@ generated SDK build.
 3. Capture these records from that same installation into a private local
    directory. Preserve their relative layout beneath a `studio` directory:
 
-   - `agent-profiles/revisions/<hex profile ID>/3133.json` for
-     `house-cooperative-planner` revision `13`;
-   - `agent-profiles/revisions/<hex profile ID>/3132.json` for
-     `house-skeptical-auditor` revision `12`;
-   - `runner-templates/installed/openrouter-house--12.json`;
+   - `agent-profiles/revisions/<hex profile ID>/3135.json` for
+     `house-cooperative-planner` revision `15`;
+   - `agent-profiles/revisions/<hex profile ID>/3134.json` for
+     `house-skeptical-auditor` revision `14`;
+   - `runner-templates/installed/openrouter-house--14.json`;
    - `model-provider-credentials/installed/hosted-openrouter.json`.
 
    Profile path components are the lowercase hexadecimal encoding of UTF-8;
-   `3133` encodes revision `13`; `3132` encodes revision `12`. Capture the binary
+   `3135` encodes revision `15`; `3134` encodes revision `14`. Capture the binary
    from the installed Runner Template's exact `executable.path` separately.
    Current installations use the persistent content-addressed path
    `/var/lib/worldstream/retained-runner-executables/blake3-<exact digest>/worldstream-managed-agent-host`;
@@ -147,8 +147,8 @@ node scripts/hosted-house-approval.mjs \
   --credential-id hosted-openrouter \
   --source-revision '<actual deployed Git commit>' \
   --image-digest 'sha256:<actual deployed image digest>' \
-  --house-revision config/hosted/house-agents/cooperative-planner-13.json \
-  --house-revision config/hosted/house-agents/skeptical-auditor-12.json \
+  --house-revision config/hosted/house-agents/cooperative-planner-15.json \
+  --house-revision config/hosted/house-agents/skeptical-auditor-14.json \
   --output-dir /private/tmp/worldstream-approval-capture/approval
 ```
 
