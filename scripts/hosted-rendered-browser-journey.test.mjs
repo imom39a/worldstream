@@ -7,11 +7,13 @@ import {
   browserConsoleFailure,
   browserRequestFailure,
   ensureRenderedNavigatorRouteClaim,
+  hasExplicitRenderedStaleRoom,
   launchIdFromUrl,
   localProductOrigin,
   navigatorPlanForRouteClaim,
   publicRunPath,
   renderedNavigatorPlan,
+  retryRenderedStaleAction,
   runHostedRenderedBrowserJourney,
   sameOriginBrowserResponseFailure,
   submitRenderedForm,
@@ -305,4 +307,52 @@ test("rendered Navigator plan postcondition requires the Navigator proposer", ()
   };
   assert.equal(renderedNavigatorPlan(page, navigatorPlanForRouteClaim("route_canal")), locator);
   assert.deepEqual(expectedTexts, ["navigator", "canal · late", "disguise → van"]);
+});
+
+test("rendered commitment retries only after the explicit stale Room reconnect boundary", async () => {
+  const attempts = [];
+  let reconnects = 0;
+  await retryRenderedStaleAction(
+    async () => {
+      attempts.push(attempts.length);
+      return attempts.length === 1 ? "stale" : "committed";
+    },
+    async () => { reconnects += 1; },
+  );
+  assert.deepEqual(attempts, [0, 1]);
+  assert.equal(reconnects, 1);
+});
+
+test("rendered stale Room boundary requires both the exact message and Reconnect control", async () => {
+  const fixture = (messageCount, reconnectCount) => ({
+    locator(selector) {
+      assert.equal(selector, ".live-client-notice");
+      return { filter() { return { async count() { return messageCount; } }; } };
+    },
+    getByText(value, options) {
+      assert.equal(value, "The Room advanced. Reconnect to synchronize before acting.");
+      assert.deepEqual(options, { exact: true });
+      return {};
+    },
+    getByRole(role, options) {
+      assert.equal(role, "button");
+      assert.deepEqual(options, { name: "Reconnect", exact: true });
+      return { async count() { return reconnectCount; } };
+    },
+  });
+  assert.equal(await hasExplicitRenderedStaleRoom(fixture(1, 1)), true);
+  assert.equal(await hasExplicitRenderedStaleRoom(fixture(1, 0)), false);
+  assert.equal(await hasExplicitRenderedStaleRoom(fixture(0, 1)), false);
+});
+
+test("rendered commitment never retries a non-stale failure", async () => {
+  let reconnects = 0;
+  await assert.rejects(
+    () => retryRenderedStaleAction(
+      async () => { throw new Error("policy rejected"); },
+      async () => { reconnects += 1; },
+    ),
+    /policy rejected/u,
+  );
+  assert.equal(reconnects, 0);
 });

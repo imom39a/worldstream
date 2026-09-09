@@ -22,6 +22,8 @@ const DEFAULT_ACTION_TIMEOUT_MS = 60_000;
 const DEFAULT_FORMATION_TIMEOUT_MS = 150_000;
 const MAX_BROWSER_FAILURES = 8;
 const MAX_BROWSER_DIAGNOSTIC_TEXT = 240;
+const MAX_RENDERED_STALE_ACTION_ATTEMPTS = 5;
+const RENDERED_STALE_ROOM_MESSAGE = "The Room advanced. Reconnect to synchronize before acting.";
 
 /**
  * Runs one browser-visible, House-filled local activity.  The local fake
@@ -700,6 +702,13 @@ async function submitRenderedAction(page, actionLabel, fields, timeoutMs, postco
 
 async function ensureRenderedCurrentPlanCommitment(page, timeoutMs) {
   if (await hasRenderedOwnCommitment(page)) return;
+  await retryRenderedStaleAction(
+    () => submitRenderedCurrentPlanCommitmentAttempt(page, timeoutMs),
+    async () => reconnectRenderedCommitment(page, timeoutMs),
+  );
+}
+
+async function submitRenderedCurrentPlanCommitmentAttempt(page, timeoutMs) {
   const form = page.locator("form.live-action-form").filter({ hasText: "Commit move" });
   await form.waitFor({ timeout: timeoutMs });
   const plan = form.locator('select[name="selected_plan_id"]');
@@ -710,9 +719,61 @@ async function ensureRenderedCurrentPlanCommitment(page, timeoutMs) {
   const selectedPlanId = await plan.inputValue();
   const resource = form.locator('input[name="contribute_required_resource"]');
   if (await resource.isChecked()) await resource.uncheck();
-  await submitRenderedForm(form, "Commit move", timeoutMs, async () => {
-    await waitForRenderedOwnCommitment(page, selectedPlanId, timeoutMs);
+  return submitRenderedForm(form, "Commit move", timeoutMs, async () => {
+    return waitForRenderedCommitmentOutcome(page, selectedPlanId, timeoutMs);
   });
+}
+
+/**
+ * A stale-room rejection is the sole reviewed browser retry signal. The
+ * runtime consumes the original Action ID, so each subsequent form submit
+ * creates a new client Action ID only after a visible reconnect.
+ */
+export async function retryRenderedStaleAction(attempt, reconnect) {
+  for (let index = 0; index < MAX_RENDERED_STALE_ACTION_ATTEMPTS; index += 1) {
+    const outcome = await attempt();
+    if (outcome === "committed") return;
+    if (outcome !== "stale") {
+      throw new Error("rendered Action returned an unreviewed retry outcome");
+    }
+    if (index === MAX_RENDERED_STALE_ACTION_ATTEMPTS - 1) break;
+    await reconnect();
+  }
+  throw new Error("rendered Action remained stale after five visible reconnect attempts");
+}
+
+async function waitForRenderedCommitmentOutcome(page, selectedPlanId, timeoutMs) {
+  const commitment = renderedOwnCommitment(page, selectedPlanId);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await commitment.count() > 0) return "committed";
+    if (await hasExplicitRenderedStaleRoom(page)) return "stale";
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("rendered Commit move Action did not produce an authorized commitment");
+}
+
+export async function hasExplicitRenderedStaleRoom(page) {
+  const staleMessage = page.locator(".live-client-notice").filter({
+    has: page.getByText(RENDERED_STALE_ROOM_MESSAGE, { exact: true }),
+  });
+  const reconnect = page.getByRole("button", { name: "Reconnect", exact: true });
+  return (await staleMessage.count()) > 0 && (await reconnect.count()) > 0;
+}
+
+async function reconnectRenderedCommitment(page, timeoutMs) {
+  const reconnect = page.getByRole("button", { name: "Reconnect", exact: true });
+  await reconnect.waitFor({ timeout: timeoutMs });
+  await reconnect.click();
+  const form = page.locator("form.live-action-form").filter({ hasText: "Commit move" });
+  const live = page.locator(".play-state").filter({ has: page.getByText("Live", { exact: true }) });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const action = form.locator('button[type="submit"]');
+    if (await live.count() > 0 && await form.count() > 0 && await action.isEnabled()) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("rendered reconnect did not restore a current live Commit move Action");
 }
 
 async function ensureRenderedResultAcknowledgement(page, timeoutMs) {
@@ -760,7 +821,7 @@ export async function submitRenderedForm(form, actionLabel, timeoutMs, postcondi
   if (!(await action.isEnabled())) throw new Error(`rendered ${actionLabel} Action was not enabled after live admission`);
   await action.click();
   try {
-    await postcondition();
+    return await postcondition();
   } catch {
     // Do not trust an ephemeral form-local receipt, or leak a locator's DOM
     // snapshot into retained acceptance output. The browser failure collector
@@ -825,15 +886,14 @@ async function hasRenderedOwnCommitment(page) {
   return (await page.locator(".own-commitment").count()) > 0;
 }
 
-async function waitForRenderedOwnCommitment(page, selectedPlanId, timeoutMs) {
-  const commitment = page.locator(".own-commitment").filter({
+function renderedOwnCommitment(page, selectedPlanId) {
+  return page.locator(".own-commitment").filter({
     has: page.getByText("Your sealed commitment", { exact: true }),
   }).filter({
     has: page.getByText(humanizeRenderedValue(selectedPlanId), { exact: true }),
   }).filter({
     has: page.getByText("No resource committed", { exact: true }),
   });
-  await commitment.waitFor({ timeout: timeoutMs });
 }
 
 function humanizeRenderedValue(value) {
