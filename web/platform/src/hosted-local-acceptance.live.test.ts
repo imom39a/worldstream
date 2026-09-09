@@ -1176,8 +1176,11 @@ async function runPeopleOnlyNoActionMatch(options: {
   const terminal = await pollPublicResult(productOrigin, publicId, 240_000);
   assert.equal(terminal.state, "result");
   const summary = recordField(terminal, "result");
-  assert.equal(summary.status, "summary");
-  assert.equal(recordField(summary, "summary").outcome, "failure");
+  assert.equal(summary.schema, "worldstream/result-summary/v1");
+  assert.equal(summary.outcome, "failure");
+  assert.equal(summary.selected_plan_id, null);
+  assert.equal(summary.score, 0);
+  assert.equal(summary.reason, "no_strict_majority");
   assertNoPrivatePublicFields(terminal);
   return { launchId, runId, publicId, entrySelector };
 }

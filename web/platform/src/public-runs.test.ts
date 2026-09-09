@@ -47,14 +47,11 @@ function resultRun(overrides: Record<string, unknown> = {}) {
       },
     ],
     result: {
-      status: "summary",
-      summary: {
-        schema: "worldstream/result-summary/v1",
-        outcome: "success",
-        selected_plan_id: "plan-alpha",
-        score: 5,
-        reason: "scored_selected_plan",
-      },
+      schema: "worldstream/result-summary/v1",
+      outcome: "success",
+      selected_plan_id: "plan-alpha",
+      score: 5,
+      reason: "scored_selected_plan",
     },
     ...overrides,
   };
@@ -66,7 +63,7 @@ test("accepts only the reviewed public Run envelope", () => {
   if (parsed.state !== "result") return;
   assert.equal(parsed.public_id, "1".repeat(32));
   assert.equal(parsed.participants[1]?.kind, "external_agent");
-  assert.equal(parsed.result.status, "summary");
+  assert.equal(parsed.result.outcome, "success");
 });
 
 test("an unavailable Run cannot carry a stale summary or attribution", () => {

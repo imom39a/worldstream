@@ -464,7 +464,7 @@ insert into platform_store.indexed_activity_result_payloads (
 ) values (
   '85000000-0000-4000-8000-000000000001',
   'worldstream/result-summary/v1',
-  convert_to('{"status":"summary","summary":{"schema":"worldstream/result-summary/v1","outcome":"success","selected_plan_id":"plan-alpha","score":5,"reason":"scored_selected_plan"}}', 'utf8'),
+  convert_to('{"schema":"worldstream/result-summary/v1","outcome":"failure","selected_plan_id":null,"score":0,"reason":"no_strict_majority"}', 'utf8'),
   decode(repeat('a', 64), 'hex')
 );
 
@@ -516,6 +516,13 @@ select is(
     #>> '{participants,0,notice}',
   'External agent — unverified',
   'an external agent publishes no claimed model identity'
+);
+select ok(
+  (platform_api.read_public_run_v1(repeat('a', 32)) -> 'result')
+      ? 'selected_plan_id'
+    and platform_api.read_public_run_v1(repeat('a', 32))
+      #> '{result,selected_plan_id}' = 'null'::jsonb,
+  'the public result preserves a meaningful nullable Pack field'
 );
 select ok(
   platform_api.read_public_run_v1(repeat('a', 32))::text
