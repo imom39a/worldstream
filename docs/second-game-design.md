@@ -1,6 +1,6 @@
 # Second game design interview
 
-Status: Design interview in progress, 2026-09-08. The direction below is
+Status: Design interview in progress; updated 2026-09-09. The direction below is
 accepted; the proposed game and unanswered decisions are not an implementation
 specification or an approved release plan.
 
@@ -34,6 +34,18 @@ The user accepted the round 2 recommendations on 2026-09-08:
   trade-offs outside those limits to the human. Permission already included in
   a task need not be requested again for each routine step.
 
+The user accepted all round 3 recommendations on 2026-09-09:
+
+- The first archive has five Locations and three interacting systems:
+  evidence authenticity, access, and limited power.
+- The crew cooperates on the main objective. Known professional priorities
+  create disagreements and optional trade-offs; hidden betrayal and arbitrary
+  sabotage are outside the first experiment.
+- An ordinary Activity Turn combines one meaningful personal move with a
+  bounded step from each AI Companion's standing task, followed by the human's
+  explicit commitment. Task directions persist until changed, completed or
+  blocked, and results are shown before the next commitment.
+
 Agent Heist is currently unsatisfactory to the user. This interview must
 identify lessons that can improve it, without assuming that its present rules
 are the template for the second game. The existing platform stabilization scope
@@ -48,13 +60,23 @@ out. A security purge remains a proposed explanation for the turn budget; its
 exact consequences and the detailed victory conditions are not yet settled.
 
 The accepted experience centers on personal exploration and problem-solving
-with useful companion participation. The proposed loop adds assigned work,
-comparing discoveries, negotiating a useful agreement, and committing to a
-route with visible consequences. The core hypothesis is that another
+with useful companion participation. The loop combines a personal move with
+companion work, then a player-committed Activity Turn and visible results. The
+proposed mission adds comparing discoveries and negotiating a useful agreement
+to open routes. The core hypothesis is that another
 participant's discoveries and preferences can make the human's decisions more
 interesting while leaving the human active in the world.
 
-Candidate scope, subject to the interview:
+Accepted core scope:
+
+- Five Locations with evidence authenticity, access, and limited power as the
+  three interacting systems.
+- A cooperative crew with known priorities and persistent, bounded task
+  directions. Hidden betrayal and arbitrary sabotage are excluded.
+- One meaningful personal move and companion task steps per player-committed
+  Activity Turn. Exact costs, readiness and conflict handling are not settled.
+
+Remaining candidate details, subject to the interview:
 
 - Five connected locations presented through a small map and illustrated
   scenes, with evidence, inventory, an objective and contextual Actions.
@@ -63,8 +85,8 @@ Candidate scope, subject to the interview:
 - One non-crew character, an archivist whose preservation priority can affect
   cooperation. Whether this character needs a Runner or bounded authored
   behavior is an open design decision.
-- A small number of interacting systems: access, power, evidence and
-  agreements. Movement and resources matter only when they create decisions.
+- Agreements can change access and resource choices within the accepted
+  systems; the conditions and costs still need definition.
 - Several achievable approaches through combinations of those rules. A
   technical route and negotiated access are examples, not three hard-coded
   scripts to implement.
@@ -182,17 +204,19 @@ below are a working map and will change with the user's answers.
 | B. First party | Accepted second-game experiment | One human with zero, one or two AI companions; true solo baseline | Q2 accepted |
 | C. Session budget | Accepted audience and second-game direction | 15–20-minute ordinary first playthrough | Q3 accepted |
 | D1. World premise | A, C | Midnight Archive; recover the authentic ledger and escape with the crew | Q4 accepted |
-| D2. Core obstacles | D1, E1, F1 | Initial Location scope and the small set of interacting systems | Q7 open |
-| D3. Mission structure | D2, E2, F2 | Explicit objective checks, resources, route trade-offs and extraction | Later round |
+| D2. Core obstacles | D1, E1, F1 | Five Locations; evidence authenticity, access and limited power | Q7 accepted |
+| D3. Mission structure | D2, E2, F2 | Combine authentication and access approaches before extraction | Q10 open |
 | E1. Pressure | A, B, C | Player-committed Activity Turns and a visible budget | Q5 accepted |
-| E2. Ordinary turn | D1, E1, F1 and turn feasibility check | The player's move and companion work within one Activity Turn | Q9 open; contract check complete |
-| E3. Costs and recovery | D3, E2, F3 | Action costs, solo balance, incomplete turns, interruption and departure behavior | Later round |
+| E2. Ordinary turn | D1, E1, F1 and turn feasibility check | One meaningful personal move plus companion task steps; human commits | Q9 accepted |
+| E3. Costs and recovery | D3, E2, F3, G1 | Exact action costs, solo budget, incomplete turns, interruption and departure behavior | Later round |
 | F1. Companion autonomy | A, B | Execute within Companion Task limits; escalate trade-offs outside them | Q6 accepted |
-| F2. Social posture | D1, E1, F1 | Cooperative priorities or concealed conflicting goals | Q8 open |
-| F3. Character mechanics | D2, E2, F2 | Specialist contributions, private knowledge, dialogue, agreements and disagreements | Later round |
-| G. Variation and fairness | D3, E3, F3 | Initial solvability, discoverability, mistakes, repeat play and dominant strategies | Later round |
-| H. Runner service | E2, E3, F3 | Activation, authorized dialogue context, bounded work, cost and provider-failure behavior | Later round |
-| I. Sharing with Heist | D3, E3, F3 and source audit | Concrete transferable components and the separate scope of Heist gameplay changes | Later round; source audit complete |
+| F2. Social posture | D1, E1, F1 | Cooperative crew with known professional priorities; no hidden betrayal | Q8 accepted |
+| F3. Companion advantage | A, B, D2, E2, F2 | Parallel specialist work, costs and accessible solo alternatives | Q11 open |
+| F4. Character interaction | D3, F3 | Exact abilities, private knowledge, dialogue, agreements and disagreements | Later round |
+| G1. Mistakes and stakes | A, C, D1, E1, E2, F2 | Recovery, risk disclosure and partial outcomes | Q12 open |
+| G2. Variation and fairness | D3, E3, F4, G1 | Initial solvability, discoverability, repeat play and dominant strategies | Later round |
+| H. Runner service | E2, E3, F4 | Activation, authorized dialogue context, bounded work, cost and provider-failure behavior | Later round |
+| I. Sharing with Heist | D3, E3, F4 and source audit | Concrete transferable components and the separate scope of Heist gameplay changes | Later round; source audit complete |
 | J. Delivery and validation | D3–I | Client scope, listings, content revisions, idle/resume policy, playtest evidence and smallest buildable slice | Later round |
 | K. Shared understanding | All active branches resolved | Confirm the complete design before implementation | Pending |
 
@@ -240,41 +264,72 @@ These are gameplay decisions. They do not amend the existing House Agent
 service contract or authorize implementation before the shared-understanding
 checkpoint.
 
-### Round 3: open questions
+### Round 3: accepted
 
-The current frontier is the obstacle mix (D2), social posture (F2), and ordinary
-turn experience (E2). The turn-contract fact check is complete. Exact puzzle
-dependencies, character abilities, solo balance and failure handling depend on
-these choices and remain downstream.
+The user answered "accept all" on 2026-09-09.
 
-**Q7 — Core obstacles.** Recommendation: one authored five-Location archive
-with three interacting systems: evidence authenticity, access, and limited
-power. For example, a reader can help verify a ledger while power allocation
-also affects a route. An agreement can change access. Alternative: replace
-power allocation with moving guard patrols for a stronger stealth emphasis.
-The recommendation favors clear causal choices and a small simulation that
-can be inspected and balanced. It does not guarantee that the proposed routes
-are already solvable or interesting.
+**Q7 — Core obstacles.** Accepted: one authored five-Location archive with
+evidence authenticity, access, and limited power. Moving guard patrols are
+outside this first obstacle mix. This settles the systems to test, not their
+exact costs, map connections or proof of solvability.
 
-**Q8 — Social posture.** Recommendation: the crew shares the main objective;
-known professional priorities shape advice and optional agreements. Mira can
-recommend verification, Jonah can protect a former colleague's identity, and
-the archivist can bargain over preserving a collection. Companions can
-disagree without hidden betrayal or arbitrary sabotage. Alternative: concealed
-secondary goals and possible betrayal, which would require different player
-expectations and balancing. This choice does not yet assign final abilities,
-private clues, or dialogue implementation.
+**Q8 — Social posture.** Accepted: the crew shares the main objective; known
+professional priorities shape advice and optional trade-offs. Companions can
+disagree without hidden betrayal or arbitrary sabotage. Exact abilities,
+private clues and dialogue implementation remain open.
 
-**Q9 — Ordinary turn.** Recommendation: the player chooses one meaningful
-personal move, companions prepare a bounded step under their existing tasks,
-and the player commits the Activity Turn to advance the world. Task directions
-persist until changed, completed or blocked; the player need not issue fresh
-micro-orders to every companion each turn. Results are shown clearly before
-the next commitment. Alternative: each crew member takes a separate turn with
-its own time cost. Exact order, resource conflicts, missing intentions and
-whether a move has a multi-turn cost remain downstream decisions.
+**Q9 — Ordinary turn.** Accepted: the player chooses one meaningful personal
+move, companions prepare bounded steps under their standing tasks, and the
+player commits the Activity Turn. Task directions persist until changed,
+completed or blocked, and results are shown clearly before the next
+commitment. Exact order, resource conflicts, missing intentions and whether a
+move has a multi-turn cost remain downstream decisions.
 
-Round 3 answers are pending. Recommendations do not count as accepted
+### Round 4: open questions
+
+The current frontier is mission structure (D3), the form of companion advantage
+(F3), and the treatment of mistakes (G1). These can be decided from the
+accepted world, primary objective, turn model and cooperative social posture.
+Exact costs, clue content, dialogue and recovery procedures depend on these
+decisions.
+
+**Q10 — Mission structure.** Recommendation: make authentication and access
+independent problems, each with more than one method, then require recovery of
+the actual ledger and crew extraction. Authentication can use connected
+evidence or a powered analysis tool. Access can follow a negotiated agreement
+or a powered service route. Methods may be combined and tackled in a legal
+order chosen by the player; the Pack checks resulting facts rather than a
+scripted itinerary. A candidate map has an entry/exit, records room,
+conservation hall with the archivist, plant room, and vault. The intended
+trade-off is that negotiation costs time or a favor while a technical route
+spends scarce power. Exact topology, costs and clue prerequisites require
+validation; the four method combinations are a design target, not a proven
+balanced solution set. Alternative: a linear escape-room sequence of puzzles.
+
+**Q11 — Companion advantage.** Recommendation: essential jobs remain
+achievable solo; specialists contribute parallel work and efficient methods
+with explicit costs or conditions. Mira examines and correlates evidence;
+Jonah investigates access and prepares route options. They receive their
+authorized observations and can make recommendations from them, including a
+possible solution when they have enough evidence. Their usefulness must not
+depend on access to the hidden answer or deliberately withholding a solution.
+More help may make the main mission easier; useful optional objectives can
+reward spare capacity. Keep core rules consistent while qualifying suitable
+turn budgets for each party size. Alternative: equal per-job abilities, with
+companion differences mainly in decision style and parallel execution. Exact
+skill effects, budgets and social dialogue are later details.
+
+**Q12 — Mistakes and stakes.** Recommendation: ordinary mistakes consume
+visible time/resources and usually permit another approach or retreat. Clearly
+signal known irreversible risks, while preserving uncertainty about facts the
+party has not learned. Escape without the authentic ledger is a distinct
+partial result; loss of the primary objective or failure to extract can end
+the mission with an explanation. Do not silently restore spent resources or
+reroll outcomes. Alternative: a strict challenge where any important mistake
+requires a restart. Provider failures and unavailable companion steps are
+operational cases to handle separately, not fictional player mistakes.
+
+Round 4 answers are pending. Recommendations do not count as accepted
 decisions.
 
 ## Candidate reuse to test
