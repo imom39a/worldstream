@@ -1205,9 +1205,11 @@ where
                 .offers(&self.authority, prepared.offer_operation_id())
                 .map_err(map_gateway_error)?;
             let Some(offer) = offers.into_iter().next() else {
-                self.ledger
-                    .retain_no_offer(&prepared)
-                    .map_err(map_ledger_error)?;
+                // An offer operation is replay-safe and always reads the
+                // current pending set. Retain this acquisition so idle polls
+                // reuse one durable operation identity until work arrives.
+                // Advancing here would create an unbounded receipt stream for
+                // a healthy long-running Agent with no pending Activation.
                 return Err(ActivationToolErrorV1::NoActivation);
             };
             validate_offer_scope(&offer, &self.authority)?;

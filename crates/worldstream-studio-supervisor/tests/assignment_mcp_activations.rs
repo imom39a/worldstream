@@ -194,6 +194,7 @@ impl ActivationOperationLedgerV1 for FakeLedger {
 #[derive(Clone)]
 struct FakeGateway {
     offer: ActivationOffer,
+    offer_available: Arc<Mutex<bool>>,
     context_override: Arc<Mutex<Option<ActivationInvocationContext>>>,
     calls: Arc<Mutex<Vec<Value>>>,
     fail_completion_once: Arc<Mutex<bool>>,
@@ -206,6 +207,7 @@ impl FakeGateway {
         let offer = activation_offer();
         Self {
             offer,
+            offer_available: Arc::new(Mutex::new(true)),
             context_override: Arc::new(Mutex::new(None)),
             calls: Arc::new(Mutex::new(Vec::new())),
             fail_completion_once: Arc::new(Mutex::new(false)),
@@ -229,7 +231,13 @@ impl RunnerActivationGatewayV1 for FakeGateway {
             "member_id": authority.member_id(),
             "operation_id": operation_id,
         }));
-        Ok(vec![self.offer.clone()])
+        Ok(
+            if *self.offer_available.lock().expect("offer availability") {
+                vec![self.offer.clone()]
+            } else {
+                Vec::new()
+            },
+        )
     }
 
     fn claim(
@@ -339,6 +347,95 @@ fn next_activation_is_empty_input_and_exact_assignment_scoped() {
         .next_activation(&json!({"room_id": "attacker-selected"}))
         .expect_err("arbitrary scope must be rejected");
     assert_eq!(rejected.code(), ActivationToolErrorCodeV1::InvalidArguments);
+}
+
+#[test]
+fn empty_offer_polls_reuse_one_durable_operation_until_work_arrives() {
+    let ledger = FakeLedger::new();
+    let gateway = FakeGateway::new();
+    *gateway.offer_available.lock().expect("offer availability") = false;
+    let tools = AssignmentActivationToolsV1::new(
+        authority(),
+        gateway.clone(),
+        ledger.clone(),
+        FixedClock(false),
+    );
+
+    for _ in 0..2 {
+        assert_eq!(
+            tools
+                .next_activation(&json!({}))
+                .expect_err("empty poll")
+                .code(),
+            ActivationToolErrorCodeV1::NoActivation
+        );
+    }
+    assert!(matches!(
+        ledger.load(ASSIGNMENT_ID).expect("retained poll"),
+        ActivationLedgerSnapshotV1::Acquiring(_)
+    ));
+    let empty_operation_ids = gateway
+        .calls
+        .lock()
+        .expect("calls")
+        .iter()
+        .filter(|call| call["method"] == "offers")
+        .map(|call| call["operation_id"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        empty_operation_ids,
+        [json!(OFFER_OPERATION_ID), json!(OFFER_OPERATION_ID)]
+    );
+
+    *gateway.offer_available.lock().expect("offer availability") = true;
+    let acquired = tools.next_activation(&json!({})).expect("work arrives");
+    assert_eq!(acquired.activation_cursor, 1);
+    assert_eq!(acquired.activation.activation_id(), ACTIVATION_ID);
+    assert_eq!(
+        gateway
+            .calls
+            .lock()
+            .expect("calls")
+            .iter()
+            .filter(|call| call["method"] == "offers")
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn lost_offer_claim_advances_instead_of_replaying_the_stale_selection() {
+    let ledger = FakeLedger::new();
+    let gateway = FakeGateway::new();
+    *gateway.claim_code.lock().expect("claim code") =
+        Some(RunnerActivationGatewayErrorV1::NotAvailable);
+    let tools = AssignmentActivationToolsV1::new(
+        authority(),
+        gateway.clone(),
+        ledger.clone(),
+        FixedClock(false),
+    );
+
+    assert_eq!(
+        tools
+            .next_activation(&json!({}))
+            .expect_err("claim race")
+            .code(),
+        ActivationToolErrorCodeV1::NoActivation
+    );
+    assert!(matches!(
+        ledger.load(ASSIGNMENT_ID).expect("advanced poll"),
+        ActivationLedgerSnapshotV1::Idle { last_cursor: 1 }
+    ));
+
+    *gateway.claim_code.lock().expect("claim code") = None;
+    assert_eq!(
+        tools
+            .next_activation(&json!({}))
+            .expect("new acquisition")
+            .activation_cursor,
+        2
+    );
 }
 
 #[test]
