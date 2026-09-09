@@ -1180,6 +1180,13 @@ async fn browser_readiness_requires_acknowledgement_of_delivered_frame() -> Test
 }
 
 impl ParticipantConsoleGatewayV1 for MembershipGateway {
+    fn membership_status(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        self.current_membership(authority, None)
+    }
+
     fn current_membership(
         &self,
         authority: &HumanSeatAuthorityV1,

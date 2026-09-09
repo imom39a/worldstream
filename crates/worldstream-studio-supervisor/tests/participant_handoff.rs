@@ -268,6 +268,13 @@ impl FakeGateway {
 }
 
 impl ParticipantConsoleGatewayV1 for FakeGateway {
+    fn membership_status(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        self.current_membership(authority, None)
+    }
+
     fn current_membership(
         &self,
         authority: &HumanSeatAuthorityV1,
@@ -358,9 +365,93 @@ impl ParticipantConsoleGatewayV1 for FakeGateway {
 }
 
 #[derive(Clone)]
+struct SingleAttachGateway {
+    current: CurrentMembershipSnapshotV1,
+    membership_status_calls: Arc<Mutex<usize>>,
+    current_membership_calls: Arc<Mutex<usize>>,
+}
+
+impl SingleAttachGateway {
+    fn new(current: CurrentMembershipSnapshotV1) -> Self {
+        Self {
+            current,
+            membership_status_calls: Arc::new(Mutex::new(0)),
+            current_membership_calls: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    fn call_counts(&self) -> (usize, usize) {
+        (
+            *self
+                .membership_status_calls
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            *self
+                .current_membership_calls
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    }
+}
+
+impl ParticipantConsoleGatewayV1 for SingleAttachGateway {
+    fn membership_status(
+        &self,
+        _: &HumanSeatAuthorityV1,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        *self
+            .membership_status_calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) += 1;
+        Ok(self.current.clone())
+    }
+
+    fn current_membership(
+        &self,
+        _: &HumanSeatAuthorityV1,
+        _: Option<u64>,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        let mut calls = self
+            .current_membership_calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *calls += 1;
+        if *calls == 1 {
+            Ok(self.current.clone())
+        } else {
+            Err(ParticipantConsoleGatewayErrorV1::Unavailable)
+        }
+    }
+
+    fn observe(
+        &self,
+        _: &HumanSeatAuthorityV1,
+        _: Option<u64>,
+    ) -> Result<ParticipantConsoleObservationV1, ParticipantConsoleGatewayErrorV1> {
+        Err(ParticipantConsoleGatewayErrorV1::Unavailable)
+    }
+
+    fn act(
+        &self,
+        _: &HumanSeatAuthorityV1,
+        _: Option<u64>,
+        _: &participant_handoff::ParticipantActionRequestV1,
+    ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
+        Err(ParticipantConsoleGatewayErrorV1::Unavailable)
+    }
+}
+
+#[derive(Clone)]
 struct LeakingGateway;
 
 impl ParticipantConsoleGatewayV1 for LeakingGateway {
+    fn membership_status(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        self.current_membership(authority, None)
+    }
+
     fn current_membership(
         &self,
         authority: &HumanSeatAuthorityV1,
@@ -700,6 +791,32 @@ async fn redemption_is_origin_bound_one_use_and_rotates_a_scoped_http_only_cooki
         json_response(replay).await["code"],
         "participant_handoff_invalid"
     );
+}
+
+#[tokio::test]
+async fn issuance_does_not_consume_the_only_membership_attach_needed_by_redemption() {
+    let gateway = SingleAttachGateway::new(CurrentMembershipSnapshotV1 {
+        pack: agent_heist_pack("0.2.0", AGENT_HEIST_0_2_DIGEST),
+        access_mode: AccessMode::Participant,
+        role: Some("navigator".to_owned()),
+    });
+    let broker = ParticipantHandoffBrokerV1::new(
+        STUDIO_ORIGIN,
+        CONSOLE_ORIGIN,
+        Duration::from_secs(30),
+        16,
+        FakeAuthoritySource::usable(),
+        gateway.clone(),
+        FakeClientSelectionSource::selected("/agent-heist/"),
+    )
+    .unwrap_or_else(|error| panic!("test broker must be valid: {error:?}"));
+    let router = participant_handoff_router(broker);
+
+    let (_, handoff) = issue_handoff(&router).await;
+    let redeemed = redeem_handoff(&router, &handoff, None).await;
+
+    assert_eq!(redeemed.status(), StatusCode::OK);
+    assert_eq!(gateway.call_counts(), (1, 1));
 }
 
 #[tokio::test]
@@ -1310,7 +1427,8 @@ async fn protected_console_returns_a_sanitized_rejected_action_receipt() {
         .local_addr()
         .unwrap_or_else(|error| panic!("rejected receipt fixture address: {error}"));
     let server = thread::spawn(move || {
-        for action_receipt in [None, None, None, Some("action.rejected")] {
+        serve_membership_status_fixture_connection(&listener);
+        for action_receipt in [None, None, Some("action.rejected")] {
             serve_cursor_enforcing_connection(&listener, action_receipt);
         }
     });
@@ -1362,8 +1480,8 @@ fn spawn_daemon_fixture(listener: TcpListener) -> thread::JoinHandle<()> {
 
 fn spawn_cursor_enforcing_daemon_fixture(listener: TcpListener) -> thread::JoinHandle<()> {
     thread::spawn(move || {
+        serve_membership_status_fixture_connection(&listener);
         for action_receipt in [
-            None,
             None,
             None,
             None,
@@ -1377,6 +1495,52 @@ fn spawn_cursor_enforcing_daemon_fixture(listener: TcpListener) -> thread::JoinH
             serve_cursor_enforcing_connection(&listener, action_receipt);
         }
     })
+}
+
+fn serve_membership_status_fixture_connection(listener: &TcpListener) {
+    use std::io::{Read as _, Write as _};
+
+    let (mut stream, _) = listener
+        .accept()
+        .unwrap_or_else(|error| panic!("accept membership-status fixture: {error}"));
+    let mut request = Vec::new();
+    while !request.ends_with(b"\r\n\r\n") {
+        assert!(request.len() < 4096, "membership-status request is bounded");
+        let mut byte = [0_u8];
+        stream
+            .read_exact(&mut byte)
+            .unwrap_or_else(|error| panic!("read membership-status request: {error}"));
+        request.push(byte[0]);
+    }
+    assert!(request.starts_with(
+        format!("GET /v1/rooms/{ROOM_ID}/members/{MEMBER_ID}/status HTTP/1.1\r\n").as_bytes()
+    ));
+    assert!(
+        request
+            .windows(BEARER.len())
+            .any(|bytes| bytes == BEARER.as_bytes()),
+        "membership-status request authenticates the exact Membership bearer"
+    );
+    let body = serde_json::to_vec(&json!({
+        "version": "membership_status.v1",
+        "room_id": ROOM_ID,
+        "member_id": MEMBER_ID,
+        "principal_kind": "human",
+        "access_mode": "participant",
+        "role": "navigator",
+        "membership_status": "enabled",
+        "pack": agent_heist_pack("0.2.0", AGENT_HEIST_0_2_DIGEST),
+    }))
+    .unwrap_or_else(|error| panic!("encode membership-status response: {error}"));
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .unwrap_or_else(|error| panic!("write membership-status response head: {error}"));
+    stream
+        .write_all(&body)
+        .unwrap_or_else(|error| panic!("write membership-status response body: {error}"));
 }
 
 #[expect(

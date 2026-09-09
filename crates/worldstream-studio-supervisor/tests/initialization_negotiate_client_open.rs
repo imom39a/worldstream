@@ -66,6 +66,13 @@ impl ParticipantHandoffAuthoritySourceV1 for NegotiateHumanSeat {
 struct NegotiateGateway;
 
 impl ParticipantConsoleGatewayV1 for NegotiateGateway {
+    fn membership_status(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        self.current_membership(authority, None)
+    }
+
     fn current_membership(
         &self,
         _: &HumanSeatAuthorityV1,

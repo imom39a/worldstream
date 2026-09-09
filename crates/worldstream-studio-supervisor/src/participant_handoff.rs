@@ -1211,7 +1211,7 @@ impl ParticipantHandoffBrokerV1 {
             .authority
             .resolve_provisioned_human_seat(&request.draft, &request.seat)
             .map_err(ParticipantHandoffErrorV1::from_authority)?;
-        let current = self.current_membership(&authority, None)?;
+        let current = self.membership_status(&authority)?;
         let selection = self.select_client(&current, request.candidate.as_deref())?;
         let (launch_base, retained_selection) = match selection {
             ClientSelectionV1::SelectionRequired { candidates } => {
@@ -1290,6 +1290,16 @@ impl ParticipantHandoffBrokerV1 {
         self.inner
             .gateway
             .current_membership(authority, durable_cursor)
+            .map_err(ParticipantHandoffErrorV1::from_gateway)
+    }
+
+    fn membership_status(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantHandoffErrorV1> {
+        self.inner
+            .gateway
+            .membership_status(authority)
             .map_err(ParticipantHandoffErrorV1::from_gateway)
     }
 
