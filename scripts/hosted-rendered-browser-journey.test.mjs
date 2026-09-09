@@ -10,6 +10,7 @@ import {
   publicRunPath,
   runHostedRenderedBrowserJourney,
   sameOriginBrowserResponseFailure,
+  validateLaunchId,
   validateTimeouts,
 } from "./hosted-rendered-browser-journey.mjs";
 
@@ -42,9 +43,13 @@ test("rendered-browser journey keeps formation and Action waits bounded", () => 
 });
 
 test("rendered-browser journey recognizes only one waiting-room route", () => {
-  const id = "10000000-0000-4000-8000-000000000001";
+  const id = "a0000000-0000-4000-8000-000000000001";
   assert.equal(launchIdFromUrl(`http://127.0.0.1:5180/launches/${id}`), id);
+  assert.equal(validateLaunchId(id), id);
   assert.throws(() => launchIdFromUrl("http://127.0.0.1:5180/launches/not-an-id"));
+  for (const invalid of ["", "not-an-id", "10000000-0000-0000-8000-000000000001", id.toUpperCase()]) {
+    assert.throws(() => validateLaunchId(invalid), /retained Launch identity/u);
+  }
   assert.equal(HOSTED_RENDERED_BROWSER_JOURNEY_SCHEMA, "worldstream/hosted-rendered-browser-journey/v1");
 });
 

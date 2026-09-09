@@ -36,6 +36,7 @@ import {
   PinnedResultProjectorRegistry,
   reconcileActivityResultCandidates,
   reconcileActivityResult,
+  reconcileTerminalActivityCapacity,
   reconcilePrestartHouseRunnerRetirementCandidates,
   reconcileTerminalHouseRunnerRetirementCandidates,
   type ResultReconcilerDependencies,
@@ -45,6 +46,7 @@ import { createSupabaseResultReconciliationData } from "./supabase.js";
 
 const PUBLIC_RUN = /^\/api\/runs\/[0-9a-f]{32}$/u;
 const RECENT_RESULTS = "/api/results/agent-heist/recent";
+const LAUNCH_START = /^\/api\/launches\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/start$/u;
 // This is deliberately process-local: the preview has one Fly machine and no
 // worker queue. It prevents a browser poll fan-out from starting equivalent
 // global maintenance passes while preserving two five-second poll intervals.
@@ -160,6 +162,9 @@ export function withHostedResultReconciliation(
             failed += 1;
           }
         }
+        try {
+          await reconcileTerminalActivityCapacity(dependencies, 10);
+        } catch { failed += 1; }
         // This is a distinct setup-reconciliation lane. The database applies
         // the reviewed pre-start deadline; the coordinator still asks the
         // Host whether its retained Lobby task has actually launched.
@@ -222,9 +227,34 @@ export function withHostedResultReconciliation(
           });
         }
       }
-      return platform.fetch(request);
+      const retryStart = request.method === "POST" && LAUNCH_START.test(url.pathname)
+        ? request.clone()
+        : null;
+      const response = await platform.fetch(request);
+      if (retryStart === null || !(await isActivityCapacityUnavailable(response))) {
+        return response;
+      }
+      try {
+        // The first request has already passed the underlying BFF's
+        // authentication and CSRF checks. One bounded repair may clear only
+        // terminal-evidence-backed legacy capacity before the same
+        // idempotent start is attempted once more.
+        await reconcileTerminalActivityCapacity(dependencies, 10);
+      } catch {
+        return response;
+      }
+      return platform.fetch(retryStart);
     },
   };
+}
+
+async function isActivityCapacityUnavailable(response: Response): Promise<boolean> {
+  if (response.status !== 409) return false;
+  const payload = await response.clone().json().catch(() => null);
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return false;
+  const error = (payload as Record<string, unknown>).error;
+  return typeof error === "object" && error !== null && !Array.isArray(error) &&
+    (error as Record<string, unknown>).code === "activity_capacity_unavailable";
 }
 
 function decode(value: string): Uint8Array {

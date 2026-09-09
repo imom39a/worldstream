@@ -192,6 +192,9 @@ test("result reconciliation uses only typed server RPCs and exact bytea inputs",
       const request = input instanceof Request ? input : new Request(input, init);
       const body = JSON.parse(await request.clone().text()) as Record<string, unknown>;
       calls.push({ url: request.url, body });
+      if (request.url.endsWith("/reconcile_terminal_activity_capacity_v1")) {
+        return Response.json(1);
+      }
       if (request.url.endsWith("/list_reconciliation_candidates_v1")) {
         return Response.json([{
           candidate_kind: "result_source",
@@ -258,6 +261,7 @@ test("result reconciliation uses only typed server RPCs and exact bytea inputs",
       return Response.json({ disposition: "applied", safe_code: "result_recorded" });
     };
     const data = createSupabaseResultReconciliationData(URL, SECRET);
+    assert.equal(await data.reconcileTerminalActivityCapacity(10), 1);
     const candidates = await data.listCandidates(10);
     assert.equal(candidates[0]?.candidateKind, "result_source");
     assert.deepEqual(await data.listTerminalHouseRunnerRetirementRuns(10), [
@@ -299,7 +303,9 @@ test("result reconciliation uses only typed server RPCs and exact bytea inputs",
       bytes,
       bytes,
     );
-    assert.match(calls[0]?.url ?? "", /\/rpc\/list_reconciliation_candidates_v1$/u);
+    assert.match(calls[0]?.url ?? "", /\/rpc\/reconcile_terminal_activity_capacity_v1$/u);
+    assert.deepEqual(calls[0]?.body, { p_limit: 10 });
+    assert.match(calls[1]?.url ?? "", /\/rpc\/list_reconciliation_candidates_v1$/u);
     assert.deepEqual(calls.at(-1)?.body, {
       p_activity_run_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       p_canonical_result_evidence: "\\x010203",

@@ -33,6 +33,7 @@ function dependencies(list: () => Promise<readonly ResultReconciliationCandidate
   return {
     data: {
       listCandidates: list,
+      reconcileTerminalActivityCapacity: async () => 0,
       listTerminalHouseRunnerRetirementRuns: async () => [],
       listPrestartHouseRunnerRetirementRuns: async () => [],
       listPrestartAbandonmentLaunches: async () => [],
@@ -163,17 +164,78 @@ test("anonymous My Games reads do not trigger reconciliation", async () => {
   assert.equal(calls, 0);
 });
 
+test("an authenticated start retries once after terminal-evidence capacity repair", async () => {
+  let starts = 0;
+  let repairs = 0;
+  let resultSourceCandidateReads = 0;
+  const deps = dependencies(async () => {
+    resultSourceCandidateReads += 1;
+    return [];
+  });
+  deps.data.reconcileTerminalActivityCapacity = async (limit) => {
+    repairs += 1;
+    assert.equal(limit, 10);
+    return 1;
+  };
+  const bff = withHostedResultReconciliation({
+    fetch: async () => {
+      starts += 1;
+      return starts === 1
+        ? Response.json({ error: { code: "activity_capacity_unavailable" } }, { status: 409 })
+        : Response.json({ state: "run_created" });
+    },
+  }, deps);
+  const response = await bff.fetch(new Request(
+    `https://arena.example/api/launches/${"a".repeat(8)}-${"a".repeat(4)}-4aaa-8aaa-${"a".repeat(12)}/start`,
+    { method: "POST", body: "{}" },
+  ));
+  assert.equal(response.status, 200);
+  assert.equal(starts, 2);
+  assert.equal(repairs, 1);
+  assert.equal(resultSourceCandidateReads, 0);
+});
+
+test("only an exact lowercase UUID start capacity response triggers terminal capacity repair", async () => {
+  let calls = 0;
+  const deps = dependencies(async () => []);
+  deps.data.reconcileTerminalActivityCapacity = async () => {
+    calls += 1;
+    return 0;
+  };
+  const bff = withHostedResultReconciliation(
+    { fetch: async () => Response.json({ error: { code: "activity_capacity_unavailable" } }, { status: 409 }) },
+    deps,
+  );
+  const response = await bff.fetch(new Request("https://arena.example/api/launches", {
+    method: "POST", body: "{}",
+  }));
+  assert.equal(response.status, 409);
+  const uppercase = await bff.fetch(new Request(
+    "https://arena.example/api/launches/AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA/start",
+    { method: "POST", body: "{}" },
+  ));
+  assert.equal(uppercase.status, 409);
+  assert.equal(calls, 0);
+});
+
 test("daily recovery requires exact authority and resumes Genesis candidates independently", async () => {
   let lists = 0;
+  let repairs = 0;
   const recovered: string[] = [];
-  const bff = withHostedResultReconciliation(platform(), dependencies(async () => {
+  const deps = dependencies(async () => {
     lists += 1;
     return ["first", "second"].map((id) => ({
       candidateKind: "genesis" as const, launchRequestId: id, runId: null,
       listingRevisionDigest: "unused", launchRequestDigest: null,
       hostInstallationId: "fixture", roomSetupOperationId: id,
     }));
-  }), {
+  });
+  deps.data.reconcileTerminalActivityCapacity = async (limit) => {
+    repairs += 1;
+    assert.equal(limit, 10);
+    return 0;
+  };
+  const bff = withHostedResultReconciliation(platform(), deps, {
     canonicalOrigin: "https://arena.example", cronSecret: "c".repeat(40),
     recover: async (id) => { recovered.push(id); if (id === "first") throw new Error("private failure details"); },
     abandonPrestart: async () => {},
@@ -193,6 +255,7 @@ test("daily recovery requires exact authority and resumes Genesis candidates ind
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { attempted: 2, failed: 1 });
   assert.deepEqual(recovered, ["first", "second"]);
+  assert.equal(repairs, 1);
 });
 
 test("stale provisioning candidates with no live Host authority remain recoverable", async () => {

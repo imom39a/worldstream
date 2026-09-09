@@ -37,10 +37,14 @@ export async function runHostedRenderedBrowserJourney({
   browserBinary = process.env.WORLDSTREAM_BROWSER_BINARY,
   actionTimeoutMs = DEFAULT_ACTION_TIMEOUT_MS,
   formationTimeoutMs = DEFAULT_FORMATION_TIMEOUT_MS,
+  existingLaunchId,
   launchBrowser = defaultLaunchBrowser,
 } = {}) {
   const origin = localProductOrigin(productOrigin);
   const timeouts = validateTimeouts({ actionTimeoutMs, formationTimeoutMs });
+  const retainedLaunchId = existingLaunchId === undefined
+    ? null
+    : validateLaunchId(existingLaunchId);
   const browser = await launchBrowser(browserBinary);
   const failures = [];
   let participantContext;
@@ -71,33 +75,47 @@ export async function runHostedRenderedBrowserJourney({
       timeout: timeouts.action,
     });
 
-    const launchDialog = participant.getByRole("dialog");
-    await assertChecked(launchDialog.locator('input[name="seat"][value="seat-1"]'), "Navigator seat");
-    await assertChecked(launchDialog.locator('input[name="fill"]:checked'), "House Agent fill mode");
-    await launchDialog.getByRole("button", { name: "Create waiting room" }).click();
-    await participant.waitForURL(/\/launches\/[0-9a-f-]{36}\/?$/u, { timeout: timeouts.action });
-    const launchId = launchIdFromUrl(participant.url());
-    const runCapture = capturePublicRunId(participant, origin, launchId);
+    let launchId;
+    let runCapture;
+    if (retainedLaunchId === null) {
+      const launchDialog = participant.getByRole("dialog");
+      await assertChecked(launchDialog.locator('input[name="seat"][value="seat-1"]'), "Navigator seat");
+      await assertChecked(launchDialog.locator('input[name="fill"]:checked'), "House Agent fill mode");
+      await launchDialog.getByRole("button", { name: "Create waiting room" }).click();
+      await participant.waitForURL(/\/launches\/[0-9a-f-]{36}\/?$/u, { timeout: timeouts.action });
+      launchId = launchIdFromUrl(participant.url());
+      runCapture = capturePublicRunId(participant, origin, launchId);
 
-    await participant.getByRole("heading", { name: "Gather your crew" }).waitFor({
-      timeout: timeouts.action,
-    });
-    // Issuing an invite proves the invite/roster surface without leaking its
-    // opaque capability into evidence or attempting an unsupported local
-    // multi-account impersonation.
-    await participant.getByRole("button", { name: "Copy invite" }).first().click();
-    const invitation = participant.locator('input[aria-label$="invitation URL"]');
-    await invitation.first().waitFor({ timeout: timeouts.action });
-    const invitationUrl = await invitation.first().inputValue();
-    if (!/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):[0-9]{1,5}\/join#invite=[0-9a-f]{64}$/u.test(invitationUrl)) {
-      throw new Error("rendered waiting-room invitation did not have the reviewed local shape");
+      await participant.getByRole("heading", { name: "Gather your crew" }).waitFor({
+        timeout: timeouts.action,
+      });
+      // Issuing an invite proves the invite/roster surface without leaking its
+      // opaque capability into evidence or attempting an unsupported local
+      // multi-account impersonation.
+      await participant.getByRole("button", { name: "Copy invite" }).first().click();
+      const invitation = participant.locator('input[aria-label$="invitation URL"]');
+      await invitation.first().waitFor({ timeout: timeouts.action });
+      const invitationUrl = await invitation.first().inputValue();
+      if (!/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):[0-9]{1,5}\/join#invite=[0-9a-f]{64}$/u.test(invitationUrl)) {
+        throw new Error("rendered waiting-room invitation did not have the reviewed local shape");
+      }
+      await participant.getByRole("heading", { name: "Room roster" }).waitFor({ timeout: timeouts.action });
+
+      await participant.getByRole("button", { name: "Start activity" }).click();
+      await participant.getByRole("heading", { name: "Your activity is ready" }).waitFor({
+        timeout: timeouts.formation,
+      });
+    } else {
+      // A prior local acceptance can be interrupted after Genesis. Re-enter
+      // that exact owner-authorized Launch instead of creating another live
+      // Run or releasing the retained one without terminal evidence.
+      launchId = retainedLaunchId;
+      runCapture = capturePublicRunId(participant, origin, launchId);
+      await participant.goto(`${origin}/launches/${launchId}`, { waitUntil: "domcontentloaded" });
+      await participant.getByRole("heading", { name: "Your activity is ready" }).waitFor({
+        timeout: timeouts.formation,
+      });
     }
-    await participant.getByRole("heading", { name: "Room roster" }).waitFor({ timeout: timeouts.action });
-
-    await participant.getByRole("button", { name: "Start activity" }).click();
-    await participant.getByRole("heading", { name: "Your activity is ready" }).waitFor({
-      timeout: timeouts.formation,
-    });
     const runIdentity = await runCapture.wait(timeouts.action);
     const publicId = runIdentity.publicId;
 
@@ -269,6 +287,16 @@ export function launchIdFromUrl(value) {
   const match = parsed.pathname.match(/^\/launches\/([0-9a-f-]{36})\/?$/u);
   if (match?.[1] === undefined) throw new Error("rendered launch did not navigate to one exact waiting room");
   return match[1];
+}
+
+export function validateLaunchId(value) {
+  if (
+    typeof value !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value)
+  ) {
+    throw new Error("rendered retained Launch identity is invalid");
+  }
+  return value;
 }
 
 export function publicRunPath(origin, publicId) {

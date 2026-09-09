@@ -904,6 +904,21 @@ class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationD
 class SupabaseResultReconciliationDataClient implements ResultReconciliationData {
   constructor(private readonly rpc: RpcClient) {}
 
+  async reconcileTerminalActivityCapacity(limit: number): Promise<number> {
+    const released = await requiredRpc(this.rpc, "reconcile_terminal_activity_capacity_v1", {
+      p_limit: limit,
+    });
+    if (
+      typeof released !== "number" ||
+      !Number.isSafeInteger(released) ||
+      released < 0 ||
+      released > limit
+    ) {
+      throw new PlatformDependencyUnavailableError();
+    }
+    return released;
+  }
+
   async markAttempt(launchRequestId: string): Promise<void> {
     await requiredRpc(this.rpc, "mark_reconciliation_attempt_v1", { p_launch_request_id: launchRequestId });
   }

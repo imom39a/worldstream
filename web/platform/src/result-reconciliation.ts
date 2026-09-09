@@ -147,6 +147,12 @@ export interface HostedHouseRunnerRetirementRequest {
 export interface ResultReconciliationData {
   listCandidates(limit: number): Promise<readonly ResultReconciliationCandidate[]>;
   /**
+   * Releases only active-Run reservations whose exact Run already has
+   * immutable terminal evidence. This repairs retained coordination state;
+   * it neither observes a Room nor classifies an Outcome.
+   */
+  reconcileTerminalActivityCapacity(limit: number): Promise<number>;
+  /**
    * Returns terminal Runs whose exact House retirement receipts are still
    * absent. This is intentionally separate from result indexing: a Host
    * outage must not make a published result disappear from automatic retry.
@@ -794,6 +800,7 @@ export async function reconcileActivityResultCandidates(
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
     throw new ResultReconciliationRejectedError("invalid_candidate_limit");
   }
+  await reconcileTerminalActivityCapacity(dependencies, limit);
   const candidates = await dependencies.data.listCandidates(limit);
   if (candidates.length > limit || candidates.length > 100) {
     throw new ResultReconciliationRejectedError("candidate_limit_exceeded");
@@ -808,6 +815,26 @@ export async function reconcileActivityResultCandidates(
   await reconcileTerminalHouseRunnerRetirementCandidates(dependencies, limit);
   await reconcilePrestartHouseRunnerRetirementCandidates(dependencies, limit);
   return reports;
+}
+
+/**
+ * Repairs only retained active-Run capacity for Runs with immutable terminal
+ * evidence. It is intentionally independent of source polling: a completed
+ * result may no longer be a result-source candidate, yet must never retain
+ * admission capacity because of an older recovery transition.
+ */
+export async function reconcileTerminalActivityCapacity(
+  dependencies: ResultReconcilerDependencies,
+  limit = 100,
+): Promise<number> {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new ResultReconciliationRejectedError("invalid_candidate_limit");
+  }
+  const released = await dependencies.data.reconcileTerminalActivityCapacity(limit);
+  if (!Number.isSafeInteger(released) || released < 0 || released > limit) {
+    throw new ResultReconciliationRejectedError("invalid_terminal_capacity_reconciliation_result");
+  }
+  return released;
 }
 
 /** A bounded retry lane for exact House cleanup after result-free abandonment. */

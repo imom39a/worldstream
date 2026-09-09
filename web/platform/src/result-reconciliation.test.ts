@@ -304,6 +304,14 @@ class MutableSource implements HostedResultSourceClient {
 }
 
 class MemoryData implements ResultReconciliationData {
+  terminalCapacityReconciliationCalls = 0;
+  terminalCapacityReleased = 0;
+
+  async reconcileTerminalActivityCapacity(): Promise<number> {
+    this.terminalCapacityReconciliationCalls += 1;
+    return this.terminalCapacityReleased;
+  }
+
   async markAttempt(_launchRequestId: string): Promise<void> {}
   terminal: TerminalReconciliationState = {
     terminalRecorded: false,
@@ -848,8 +856,19 @@ test("candidate passes are hard-bounded and ignore the separate Genesis lane", a
     await reconcileActivityResultCandidates(dependencies(source, data), 1),
     [],
   );
+  assert.equal(data.terminalCapacityReconciliationCalls, 1);
   await assert.rejects(
     reconcileActivityResultCandidates(dependencies(source, data), 101),
+    ResultReconciliationRejectedError,
+  );
+});
+
+test("candidate reconciliation rejects an unbounded terminal-capacity repair result", async () => {
+  const source = new MutableSource(sourceEvidence("agent-heist-nonterminal-input.json"));
+  const data = new MemoryData();
+  data.terminalCapacityReleased = 2;
+  await assert.rejects(
+    reconcileActivityResultCandidates(dependencies(source, data), 1),
     ResultReconciliationRejectedError,
   );
 });

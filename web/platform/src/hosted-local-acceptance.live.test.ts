@@ -125,6 +125,34 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     );
     await browserAgent.signIn();
 
+    // A local run may be interrupted after Genesis (for example, while the
+    // rendered browser is booting). Recover that exact owner-authorized Run
+    // before starting the canonical matrix. We never cancel, reset, or create
+    // a replacement for an existing live Run without first proving terminal
+    // result evidence.
+    const retainedLaunchId = retainedHostedLiveLaunchId(await creator.read("/api/my-games"));
+    if (retainedLaunchId !== null) {
+      const retainedLaunch = await creator.read(`/api/launches/${retainedLaunchId}`);
+      assert.equal(retainedLaunch.state, "run_created");
+      const retainedRun = recordField(retainedLaunch, "run");
+      assert.equal(retainedRun.can_enter, true);
+      const recovered = await renderedBrowserJourney.runHostedRenderedBrowserJourney({
+        productOrigin,
+        existingLaunchId: retainedLaunchId,
+        formationTimeoutMs: 240_000,
+      });
+      assert.equal(recovered.outcome, "passed");
+      assert.equal(recovered.completed, true);
+      const recoveredHistory = await creator.read("/api/my-games");
+      const recoveredItem = arrayField(recoveredHistory, "items")
+        .map((item) => record(item))
+        .find((item) => item.launch_id === retainedLaunchId);
+      assert.equal(recoveredItem?.state, "verified_result");
+      assert.equal(recoveredItem?.action, "view_result");
+      assert.equal(typeof recoveredItem?.result_public_id, "string");
+      console.info("Hosted acceptance: resumed the exact retained rendered Run to a verified result.");
+    }
+
     const providerBefore = await readProviderMetrics(fakeProviderOrigin);
     const acceptanceStateDirectory = required("WORLDSTREAM_ACCEPTANCE_STATE_DIR");
     const allowanceBefore = await readHouseAllowanceObservation(acceptanceStateDirectory);
@@ -1215,6 +1243,36 @@ test("direct push evidence measures delivered state on one connection, not setup
   assert.equal(measurement.seconds, 4);
 });
 
+test("retained live acceptance recovery selects one exact Agent Heist Launch", () => {
+  const launchId = "10000000-0000-4000-8000-000000000001";
+  assert.equal(retainedHostedLiveLaunchId({
+    version: "platform_my_games.v1",
+    items: [{
+      launch_id: launchId,
+      title: "Agent Heist",
+      state: "live",
+      action: "return_to_game",
+    }],
+  }), launchId);
+  assert.equal(retainedHostedLiveLaunchId({
+    version: "platform_my_games.v1",
+    items: [{
+      launch_id: launchId,
+      title: "Agent Heist",
+      state: "verified_result",
+      action: "view_result",
+      result_public_id: "a".repeat(32),
+    }],
+  }), null);
+  assert.throws(() => retainedHostedLiveLaunchId({
+    version: "platform_my_games.v1",
+    items: [
+      { launch_id: launchId, title: "Agent Heist", state: "live", action: "return_to_game" },
+      { launch_id: "20000000-0000-4000-8000-000000000002", title: "Agent Heist", state: "live", action: "return_to_game" },
+    ],
+  }), /multiple retained live Agent Heist Runs/u);
+});
+
 test("allowance evidence advances only from completed retained ledger attempts", () => {
   const before = observeHouseAllowanceLedger({
     schema: HOUSE_ALLOWANCE_LEDGER_SCHEMA,
@@ -1718,6 +1776,31 @@ function firstEntry(run: JsonRecord): { entrySelector: string } {
   return { entrySelector: stringField(entry, "entry_selector") };
 }
 
+/**
+ * Select only one interrupted Agent Heist Run owned by the qualification
+ * identity. Multiple candidates are unsafe: choosing one could mutate a
+ * different retained Room, while ignoring them would leave an abandoned
+ * live setup for every acceptance retry.
+ */
+export function retainedHostedLiveLaunchId(value: unknown): string | null {
+  if (!isRecord(value) || value.version !== "platform_my_games.v1" || !Array.isArray(value.items)) {
+    throw new Error("hosted acceptance My Games response is invalid");
+  }
+  const candidates = value.items.filter((item): item is JsonRecord =>
+    isRecord(item) &&
+    item.title === "Agent Heist" &&
+    item.state === "live" &&
+    item.action === "return_to_game" &&
+    item.result_public_id === undefined &&
+    typeof item.launch_id === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(item.launch_id),
+  );
+  if (candidates.length > 1) {
+    throw new Error("hosted acceptance found multiple retained live Agent Heist Runs");
+  }
+  return candidates[0] === undefined ? null : stringField(candidates[0], "launch_id");
+}
+
 function fixturePlanForRoute(routeClaim: string): JsonObject {
   const route = routeClaim.replace(/^route_/u, "");
   // This is a reviewed deterministic test strategy, not a model-quality score.
@@ -1789,6 +1872,10 @@ function record(value: unknown): JsonRecord {
     throw new Error("expected JSON object");
   }
   return value as JsonRecord;
+}
+
+function isRecord(value: unknown): value is JsonRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function recordField(value: JsonRecord, field: string): JsonRecord {

@@ -66,6 +66,11 @@ select has_function(
   array['uuid', 'bytea', 'bytea']
 );
 select has_function('platform_api', 'list_reconciliation_candidates_v1', array['integer']);
+select has_function(
+  'platform_api',
+  'reconcile_terminal_activity_capacity_v1',
+  array['integer']
+);
 select ok(
   has_function_privilege(
     'service_role', 'platform_api.record_result_v1(uuid,bytea,bytea,bytea,bytea)',
@@ -80,6 +85,24 @@ select ok(
     'execute'
   ),
   'only the service role can record a result'
+);
+select ok(
+  has_function_privilege(
+    'service_role',
+    'platform_api.reconcile_terminal_activity_capacity_v1(integer)',
+    'execute'
+  )
+  and not has_function_privilege(
+    'anon',
+    'platform_api.reconcile_terminal_activity_capacity_v1(integer)',
+    'execute'
+  )
+  and not has_function_privilege(
+    'authenticated',
+    'platform_api.reconcile_terminal_activity_capacity_v1(integer)',
+    'execute'
+  ),
+  'only the service role can reconcile terminal activity capacity'
 );
 
 insert into platform_store.platform_accounts(account_id)
@@ -349,6 +372,68 @@ select is(
    where activity_run_id = '72000000-0000-4000-8000-000000000001'),
   'projector_terminal',
   'terminal capacity release has the closed projector reason'
+);
+insert into platform_store.capacity_reservations (
+  launch_request_id,
+  kind,
+  reservation_class,
+  controlling_account_id,
+  activity_run_id
+) values (
+  '71000000-0000-4000-8000-000000000001',
+  'active_run',
+  'authorized',
+  '70000000-0000-4000-8000-000000000001',
+  '72000000-0000-4000-8000-000000000001'
+);
+select is(
+  (select count(*)::integer
+   from platform_store.capacity_reservations
+   where activity_run_id = '72000000-0000-4000-8000-000000000001'
+     and released_at is null),
+  0,
+  'Genesis recovery cannot reacquire active capacity after terminal evidence'
+);
+-- Simulate an already-retained legacy row written before the insert fence.
+-- The test runs ordinary product assertions as service_role, so temporarily
+-- return to the migration owner only to bypass the new test fixture fence.
+reset role;
+set local session_replication_role = replica;
+insert into platform_store.capacity_reservations (
+  launch_request_id,
+  kind,
+  reservation_class,
+  controlling_account_id,
+  activity_run_id
+) values (
+  '71000000-0000-4000-8000-000000000001',
+  'active_run',
+  'quarantined_recovery',
+  '70000000-0000-4000-8000-000000000001',
+  '72000000-0000-4000-8000-000000000001'
+);
+set local session_replication_role = origin;
+set local role service_role;
+select ok(
+  platform_api.reconcile_terminal_activity_capacity_v1(100) >= 1,
+  'bounded reconciliation releases the fixture legacy terminal capacity reservation'
+);
+select is(
+  (select count(*)::integer
+   from platform_store.capacity_reservations
+   where activity_run_id = '72000000-0000-4000-8000-000000000001'
+     and reservation_class = 'quarantined_recovery'
+     and released_at is null),
+  0,
+  'legacy terminal capacity repair keeps no active reservation'
+);
+select is(
+  (select release_reason
+   from platform_store.capacity_reservations
+   where activity_run_id = '72000000-0000-4000-8000-000000000001'
+     and reservation_class = 'quarantined_recovery'),
+  'projector_terminal',
+  'legacy terminal capacity repair records the closed terminal reason'
 );
 select is(
   (platform_api.record_run_terminal_v1(
