@@ -245,20 +245,52 @@ fn archive_contract_bundle_rejects_invalid_payload_and_offer_boundaries_before_c
         PackRegistryStatusV1 {
             selectable_for_new_rooms: true,
             runnable_for_retained_rooms: true,
+            approved_for_activity_start: true,
         },
     ));
     let registry = must(must(builtin_counter_registry()).admit_portable([admission]));
     assert_eq!(corpus.genesis.pack_digest, revision_digest);
+    let worldstream_core::ActivityStartCompatibilityV1::Supported(start) =
+        must(registry.activity_start_compatibility(&revision_digest))
+    else {
+        panic!("Archive fixture must expose a supported Activity Start contract");
+    };
+    assert_eq!(start.contract, worldstream_core::ACTIVITY_START_CONTRACT_ID);
+    assert_eq!(start.pre_start_phase, "briefing");
+    assert_eq!(start.input_type, "archive.fixture/briefing-opened/v1");
+    assert_eq!(
+        start.canonical_payload,
+        canonical(br#"{"opened_by":"host"}"#)
+    );
     let active_trace = || {
         let genesis = must(registry.prepare_genesis_for_new_room(&corpus.genesis));
         let mut trace = must(CoreTraceV1::create_from_retained_for_conformance(genesis));
+        assert_eq!(
+            serde_json::to_value(trace.activity_state())
+                .ok()
+                .and_then(|state| state.get("phase").cloned()),
+            Some(serde_json::Value::String("briefing".to_owned()))
+        );
         let external = corpus
             .external_inputs
             .first()
             .unwrap_or_else(|| panic!("archive fixture must declare one ExternalInput"));
+        assert_eq!(
+            external.input.source_id.as_str(),
+            worldstream_core::ACTIVITY_START_SOURCE_ID
+        );
+        assert_eq!(external.input.input_type, start.input_type);
+        assert_eq!(external.input.canonical_payload, start.canonical_payload);
+        assert!(external.input.immutable_resource_references.is_empty());
         let prepared =
             must(trace.prepare(RecordedStimulusV1::ExternalInput(external.input.clone())));
         must(trace.install_prepared_for_conformance(prepared));
+        assert_eq!(
+            serde_json::to_value(trace.activity_state())
+                .ok()
+                .and_then(|state| state.get("phase").cloned()),
+            Some(serde_json::Value::String("active".to_owned()))
+        );
         trace
     };
 

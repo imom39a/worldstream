@@ -7,6 +7,13 @@ export const ACTIVITY_PACK_OPERATION_CODEC_ID =
 export const CANONICAL_JSON_CODEC_ID = "worldstream/canonical-json/v1" as const;
 export const COMPONENT_EXECUTION_PROFILE_ID =
   "worldstream/component-deterministic/v1" as const;
+/**
+ * The sole v1 hosted-start declaration.  The Host supplies the source ID;
+ * Pack authors can only bind one exact pre-start transition.
+ */
+export const ACTIVITY_START_CONTRACT_ID = "worldstream/activity-start/v1" as const;
+/** Fixed Host-owned source for every v1 Activity Start Contract. */
+export const ACTIVITY_START_SOURCE_ID = "01ARZ3NDEKTSV4RRFFQ69G5FH1" as const;
 
 export type CanonicalJson =
   | null
@@ -72,6 +79,22 @@ export interface ActivityPackDescriptorDraft {
   readonly observationSchemas?: Readonly<Partial<Record<ActivityPackViewerClass, ActivityPackSchema>>>;
   /** Exact schemas for predefined ExternalInput kinds. */
   readonly externalInputSchemas?: Readonly<Record<string, ActivityPackSchema>>;
+  /**
+   * Optional bounded Host start transition. Omission preserves the legacy
+   * descriptor form and grants no start compatibility.
+   */
+  readonly activityStartContract?: ActivityPackStartContractDraft;
+}
+
+/** One exact metadata-derived ExternalInput that may leave a pre-start phase. */
+export interface ActivityPackStartContractDraft {
+  readonly contract: typeof ACTIVITY_START_CONTRACT_ID;
+  /** The root `Activity State.phase` value required before the transition. */
+  readonly preStartPhase: string;
+  /** A key declared in `externalInputSchemas`. */
+  readonly inputType: string;
+  /** Canonical immutable payload matched against that input type's schema. */
+  readonly canonicalPayload: CanonicalJson;
 }
 
 /** The supported canonical JSON Schema document shape. */

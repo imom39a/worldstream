@@ -6,6 +6,20 @@ export const CANONICAL_CODEC_ID = "worldstream/canonical-json/v1" as const;
 export const EXECUTION_PROFILE_ID = "worldstream/component-deterministic/v1" as const;
 export const REVISION_LOCK_ID = "worldstream/pack-revision-lock/v1" as const;
 
+export const GENERATED_REJECTION_SCHEMA = { type: "object" } as const;
+
+export const GENERATED_PACK_LIMITS = {
+  maximumAttentionSignals: 16,
+  maximumCollectionItems: 256,
+  maximumEvents: 32,
+  maximumNesting: 32,
+  maximumObservationBytes: 65_536,
+  maximumProjectionBytes: 65_536,
+  maximumStateBytes: 262_144,
+  maximumTextBytes: 16_384,
+  maximumTimerRequests: 16,
+} as const;
+
 export const REQUIRED_COMPONENT_EXPORTS = [
   "descriptor",
   "initialize",

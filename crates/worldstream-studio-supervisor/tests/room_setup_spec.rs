@@ -1,8 +1,15 @@
 use serde_json::{Value, json};
+use std::{env, fs, sync::Arc};
 use worldstream_core::{agent_heist_lobby_digest, builtin_agent_heist_registry};
-use worldstream_protocol::ActivityPackCatalogRevisionResponse;
-use worldstream_studio_supervisor::room_setup_spec::{
-    generate_setup_example, resolve_setup_specification,
+use worldstream_pack_bundle::PackBundleVerifierV1;
+use worldstream_protocol::{ActivityPackCatalogRevisionResponse, PackReference};
+use worldstream_studio_supervisor::{
+    activity_packs::{ActivityPackProxyErrorV1, DaemonActivityPackSource},
+    room_setup_spec::{generate_setup_example, resolve_setup_specification},
+    task_setup::{
+        CatalogTaskLaunchApplicabilitySourceV1, TaskLaunchApplicabilitySourceV1,
+        TaskLaunchApplicabilityV1,
+    },
 };
 
 fn heist_catalog() -> Result<ActivityPackCatalogRevisionResponse, Box<dyn std::error::Error>> {
@@ -67,6 +74,77 @@ fn negotiate_catalog() -> Result<ActivityPackCatalogRevisionResponse, Box<dyn st
             "actions": []
         }}),
     )?)
+}
+
+#[derive(Clone)]
+struct ArchiveCatalog(ActivityPackCatalogRevisionResponse);
+
+impl DaemonActivityPackSource for ArchiveCatalog {
+    fn catalog(
+        &self,
+    ) -> Result<worldstream_protocol::ActivityPackCatalogResponse, ActivityPackProxyErrorV1> {
+        Err(ActivityPackProxyErrorV1::InvalidResponse)
+    }
+
+    fn revision(
+        &self,
+        digest: &str,
+    ) -> Result<ActivityPackCatalogRevisionResponse, ActivityPackProxyErrorV1> {
+        if self.0.revision.summary.pack.digest == digest {
+            Ok(self.0.clone())
+        } else {
+            Err(ActivityPackProxyErrorV1::RevisionUnavailable)
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires the built Archive contract bundle selected by WORLDSTREAM_ARCHIVE_CONTRACT_BUNDLE"]
+fn archive_catalog_classifies_exact_revision_as_activity_start()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(path) = env::var_os("WORLDSTREAM_ARCHIVE_CONTRACT_BUNDLE") else {
+        return Ok(());
+    };
+    let bundle = PackBundleVerifierV1.inspect(Arc::<[u8]>::from(fs::read(path)?))?;
+    let digest = bundle.revision_digest().clone();
+    let descriptor = bundle.descriptor().clone();
+    let configuration_schema = &descriptor.configuration_schema;
+    let configuration_schema_value = json!({"type": "object"});
+    let start = descriptor
+        .activity_start_contract
+        .clone()
+        .ok_or("Archive Activity Start contract missing")?;
+    let input_schema = descriptor
+        .stimulus_schemas
+        .get(&start.input_type)
+        .ok_or("Archive Activity Start input schema missing")?;
+    let input_schema_value = json!({"type": "object"});
+    let catalog = ArchiveCatalog(serde_json::from_value(json!({
+        "version": "activity_pack_catalog.v1",
+        "revision": {
+            "summary": {"pack": {"id": descriptor.pack_id, "version": descriptor.explanatory_version,
+                "digest": digest.to_string()}, "name": descriptor.name,
+                "selectable_for_new_rooms": true, "runnable_for_retained_rooms": true},
+            "roles": descriptor.roles.iter().map(|role| json!({"role": role.role,
+                "minimum": role.minimum, "maximum": role.maximum})).collect::<Vec<_>>(),
+            "configuration_schema": {"schema_id": configuration_schema.schema_id,
+                "schema_digest": configuration_schema.schema_digest.to_string(), "schema": configuration_schema_value},
+            "actions": [],
+            "activity_start_compatibility": {"contract": start.contract,
+                "pre_start_phase": start.pre_start_phase, "input_type": start.input_type,
+                "canonical_payload": start.canonical_payload,
+                "input_schema": {"schema_id": input_schema.schema_id,
+                    "schema_digest": input_schema.schema_digest.to_string(), "schema": input_schema_value}}
+        }
+    }))?);
+    let applicability =
+        CatalogTaskLaunchApplicabilitySourceV1::new(catalog).applicability(&PackReference {
+            id: descriptor.pack_id,
+            version: descriptor.explanatory_version,
+            digest: digest.to_string(),
+        })?;
+    assert_eq!(applicability, TaskLaunchApplicabilityV1::ActivityStart);
+    Ok(())
 }
 
 fn setup_input(catalog: &ActivityPackCatalogRevisionResponse) -> Value {

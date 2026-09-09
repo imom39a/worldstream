@@ -109,8 +109,20 @@ test("archive fixture rejects unsupported schemas and undeclared ExternalInput k
   const parent = await mkdtemp(join(scratch, "archive-contract-"));
   const unsupportedSchema = join(parent, "unsupported-schema");
   const undeclaredInput = join(parent, "undeclared-input");
+  const unsupportedStart = join(parent, "unsupported-start");
+  const invalidStartPayload = join(parent, "invalid-start-payload");
+  const oversizedStart = join(parent, "oversized-start");
+  const malformedStartRejection = join(parent, "malformed-start-rejection");
+  const invalidStartRejectionDetails = join(parent, "invalid-start-rejection-details");
+  const oversizedStartRejectionDetails = join(parent, "oversized-start-rejection-details");
   await cp(fixture, unsupportedSchema, { recursive: true });
   await cp(fixture, undeclaredInput, { recursive: true });
+  await cp(fixture, unsupportedStart, { recursive: true });
+  await cp(fixture, invalidStartPayload, { recursive: true });
+  await cp(fixture, oversizedStart, { recursive: true });
+  await cp(fixture, malformedStartRejection, { recursive: true });
+  await cp(fixture, invalidStartRejectionDetails, { recursive: true });
+  await cp(fixture, oversizedStartRejectionDetails, { recursive: true });
   const toolchain = new WorldStreamPackToolchain();
 
   const schemaPath = join(unsupportedSchema, "src", "pack.ts");
@@ -132,6 +144,57 @@ test("archive fixture rejects unsupported schemas and undeclared ExternalInput k
     ),
   );
   await assert.rejects(() => toolchain.test(undeclaredInput), PackCliError);
+
+  await replaceStartContract(
+    unsupportedStart,
+    'contract: "worldstream/activity-start/v1"',
+    'contract: "worldstream/activity-start/v2"',
+  );
+  await assert.rejects(() => toolchain.test(unsupportedStart), PackCliError);
+
+  await replaceStartContract(
+    invalidStartPayload,
+    'canonicalPayload: { opened_by: "host" }',
+    'canonicalPayload: { opened_by: "agent" }',
+  );
+  await assert.rejects(() => toolchain.test(invalidStartPayload), PackCliError);
+
+  await replaceStartContract(
+    oversizedStart,
+    'preStartPhase: "briefing"',
+    `preStartPhase: "${"x".repeat(257)}"`,
+  );
+  await assert.rejects(() => toolchain.test(oversizedStart), PackCliError);
+
+  const malformedStartSource = join(malformedStartRejection, "src", "pack.ts");
+  await writeFile(
+    malformedStartSource,
+    (await readFile(malformedStartSource, "utf8")).replace(
+      'return { activity_disposition_type: "reject", bounded_safe_details: {}, declared_code: "inactive" };',
+      'return { activity_disposition_type: "attention", bounded_safe_details: {}, declared_code: "inactive" };',
+    ),
+  );
+  await assert.rejects(() => toolchain.test(malformedStartRejection), PackCliError);
+
+  const invalidDetailsSource = join(invalidStartRejectionDetails, "src", "pack.ts");
+  await writeFile(
+    invalidDetailsSource,
+    (await readFile(invalidDetailsSource, "utf8")).replace(
+      'return { activity_disposition_type: "reject", bounded_safe_details: {}, declared_code: "inactive" };',
+      'return { activity_disposition_type: "reject", bounded_safe_details: [], declared_code: "inactive" };',
+    ),
+  );
+  await assert.rejects(() => toolchain.test(invalidStartRejectionDetails), PackCliError);
+
+  const oversizedDetailsSource = join(oversizedStartRejectionDetails, "src", "pack.ts");
+  await writeFile(
+    oversizedDetailsSource,
+    (await readFile(oversizedDetailsSource, "utf8")).replace(
+      'return { activity_disposition_type: "reject", bounded_safe_details: {}, declared_code: "inactive" };',
+      `return { activity_disposition_type: "reject", bounded_safe_details: { reason: "${"x".repeat(16_385)}" }, declared_code: "inactive" };`,
+    ),
+  );
+  await assert.rejects(() => toolchain.test(oversizedStartRejectionDetails), PackCliError);
 });
 
 test("archive fixture exercises solo and optional-role rosters through conformance", async () => {
@@ -249,6 +312,7 @@ test("legacy audience aliases use the retained public and participant schema ref
   const descriptor = artifacts.descriptorContent as Record<string, Record<string, Record<string, string>>>;
   const projections = descriptor.projection_schemas!;
   const observations = descriptor.observation_schemas!;
+  assert.equal("activity_start_contract" in descriptor, false);
 
   assert.equal(projections.operator!.schema_id, projections.public!.schema_id);
   assert.equal(projections.historical_public!.schema_id, projections.public!.schema_id);
@@ -352,6 +416,10 @@ test("conformance assigns production room sequences after successful commits onl
     (await readFile(source, "utf8"))
       .replace('phase: "briefing",', 'phase: "active",')
       .replace(
+        /    activityStartContract: \{[\s\S]*?\n    \},\n/u,
+        "",
+      )
+      .replace(
         'if (current.phase !== "active") {',
         'if (current.phase !== "active" || stimulus.member_id === "01ARZ3NDEKTSV4RRFFQ69G5FC8") {',
       ),
@@ -377,6 +445,16 @@ async function replaceConfigurationSchema(root: string, schema: string): Promise
       /configurationSchema: \{[\s\S]*?\n    \},\n    events:/u,
       `configurationSchema: ${schema},\n    events:`,
     ),
+  );
+}
+
+async function replaceStartContract(root: string, expected: string, replacement: string): Promise<void> {
+  const source = join(root, "src", "pack.ts");
+  const contents = await readFile(source, "utf8");
+  assert.equal(contents.includes(expected), true, `fixture is missing ${expected}`);
+  await writeFile(
+    source,
+    contents.replace(expected, replacement),
   );
 }
 

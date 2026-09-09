@@ -89,8 +89,18 @@ pub enum TaskLaunchApplicabilityV1 {
     Unknown,
     /// Genesis is already the active Room; there is no host launch transition.
     ActiveAtGenesis,
+    /// A declared generic Activity Start Contract advances the pre-start phase.
+    ActivityStart,
     /// A reviewed host Lobby launch must advance Genesis into the active Room.
     LobbyLaunch,
+}
+
+impl TaskLaunchApplicabilityV1 {
+    /// Whether this exact Pack requires one Host start after Genesis.
+    #[must_use]
+    pub const fn requires_start(self) -> bool {
+        matches!(self, Self::ActivityStart | Self::LobbyLaunch)
+    }
 }
 
 #[allow(
@@ -149,11 +159,27 @@ impl TaskLaunchApplicabilitySourceV1 for CatalogTaskLaunchApplicabilitySourceV1 
         if detail.revision.summary.pack != *pack {
             return Err(TaskSetupErrorV1::InvalidCreation);
         }
-        Ok(if detail.revision.lobby_compatibility.is_some() {
-            TaskLaunchApplicabilityV1::LobbyLaunch
-        } else {
-            TaskLaunchApplicabilityV1::ActiveAtGenesis
-        })
+        if detail.revision.lobby_compatibility.is_some()
+            && detail.revision.activity_start_compatibility.is_some()
+        {
+            return Err(TaskSetupErrorV1::InvalidCreation);
+        }
+        Ok(
+            if detail
+                .revision
+                .activity_start_compatibility
+                .as_ref()
+                .is_some_and(|start| start.contract == "worldstream/activity-start/v1")
+            {
+                TaskLaunchApplicabilityV1::ActivityStart
+            } else if detail.revision.activity_start_compatibility.is_some() {
+                return Err(TaskSetupErrorV1::InvalidCreation);
+            } else if detail.revision.lobby_compatibility.is_some() {
+                TaskLaunchApplicabilityV1::LobbyLaunch
+            } else {
+                TaskLaunchApplicabilityV1::ActiveAtGenesis
+            },
+        )
     }
 }
 
@@ -618,9 +644,22 @@ pub enum TaskLaunchAttemptErrorV1 {
     Rejected,
 }
 
-/// Authenticated daemon boundary for Lobby launch and committed-head observation.
+/// Authenticated daemon boundary for Activity Start and committed-head observation.
 pub trait DaemonTaskLaunchSourceV1: Send + Sync + 'static {
-    /// Records or resolves one exact Lobby launch.
+    /// Resolves one exact Activity Start without dispatching a new input.
+    ///
+    /// `None` is a guarded absence. Callers must apply the current readiness
+    /// gate before invoking [`Self::launch`] in that case.
+    fn resolve(
+        &self,
+        room_id: &str,
+        request: &LobbyLaunchRequest,
+    ) -> Result<Option<LobbyLaunchResponse>, TaskLaunchAttemptErrorV1> {
+        let _ = (room_id, request);
+        Ok(None)
+    }
+
+    /// Records or resolves one exact metadata-derived Activity Start.
     ///
     /// # Errors
     ///
@@ -639,7 +678,7 @@ pub trait DaemonTaskLaunchSourceV1: Send + Sync + 'static {
     fn room_head(&self, room_id: &str) -> Result<RoomHead, TaskLaunchAttemptErrorV1>;
 }
 
-/// Fixed-address authenticated daemon client for live Runner evidence and Lobby launch.
+/// Fixed-address authenticated daemon client for live Runner evidence and Activity Start.
 #[derive(Clone)]
 pub struct HttpDaemonTaskRuntimeV1 {
     address: SocketAddr,
@@ -870,6 +909,27 @@ impl ParticipantConsoleReadinessSourceV1 for ClientNeutralReadinessSourceV1 {
 }
 
 impl DaemonTaskLaunchSourceV1 for HttpDaemonTaskRuntimeV1 {
+    fn resolve(
+        &self,
+        room_id: &str,
+        request: &LobbyLaunchRequest,
+    ) -> Result<Option<LobbyLaunchResponse>, TaskLaunchAttemptErrorV1> {
+        if !is_ulid(room_id) {
+            return Err(TaskLaunchAttemptErrorV1::Rejected);
+        }
+        let (status, response) = self.request::<Option<LobbyLaunchResponse>>(
+            "POST",
+            &format!("/v1/operator/rooms/{room_id}/lobby/launch/resolve"),
+            Some(request),
+        )?;
+        match (status, response) {
+            (200, Some(response)) => Ok(response),
+            (401 | 403, _) => Err(TaskLaunchAttemptErrorV1::OperatorFixRequired),
+            (400 | 404 | 409 | 422, _) => Err(TaskLaunchAttemptErrorV1::Rejected),
+            _ => Err(TaskLaunchAttemptErrorV1::Ambiguous),
+        }
+    }
+
     fn launch(
         &self,
         room_id: &str,
@@ -1515,7 +1575,7 @@ impl TaskSetupSupervisorV1 {
             .collect()
     }
 
-    /// Launches or reconciles only the original stable Lobby input.
+    /// Launches or reconciles only the original stable exact-Pack start input.
     ///
     /// # Errors
     ///
@@ -1524,7 +1584,7 @@ impl TaskSetupSupervisorV1 {
         let _guard = self.lock();
         let mut operation = self.load_unlocked(draft_id)?;
         self.resolve_launch_applicability(&mut operation)?;
-        if operation.launch_applicability != TaskLaunchApplicabilityV1::LobbyLaunch {
+        if !operation.launch_applicability.requires_start() {
             return Err(TaskSetupErrorV1::NotReady);
         }
         let launcher = self
@@ -1579,8 +1639,7 @@ impl TaskSetupSupervisorV1 {
             .ok_or(TaskSetupErrorV1::Unavailable)?;
         let applicability = source.applicability(&operation.pack)?;
         if applicability == TaskLaunchApplicabilityV1::Unknown
-            || (operation.launch.is_some()
-                && applicability != TaskLaunchApplicabilityV1::LobbyLaunch)
+            || (operation.launch.is_some() && !applicability.requires_start())
         {
             return Err(TaskSetupErrorV1::Unavailable);
         }
@@ -1757,6 +1816,65 @@ impl TaskSetupSupervisorV1 {
             .as_ref()
             .is_some_and(|launch| launch.response.is_none())
         {
+            let request = operation.launch.as_ref().map_or_else(
+                || Err(TaskSetupErrorV1::Unavailable),
+                |launch| {
+                    Ok(LobbyLaunchRequest {
+                        input_id: launch.input_id.clone(),
+                        based_on_room_seq: launch.based_on_room_seq,
+                        pack_digest: (operation.launch_applicability
+                            == TaskLaunchApplicabilityV1::ActivityStart)
+                            .then(|| operation.pack.digest.clone()),
+                    })
+                },
+            )?;
+
+            // Receipt resolution is deliberately before the mutable readiness
+            // gate. A committed start remains recoverable after a Runner or
+            // console disappears; a guarded absence must pass the current gate
+            // before the mutation endpoint is called.
+            match launcher.resolve(&operation.room_id, &request) {
+                Ok(Some(response))
+                    if launch_response_is_exact(operation, &request, &response, true) =>
+                {
+                    let launch = operation
+                        .launch
+                        .as_mut()
+                        .ok_or(TaskSetupErrorV1::Unavailable)?;
+                    launch.response = Some(response);
+                    launch.state = TaskLaunchStateV1::Launched;
+                    launch.attention = None;
+                    return self.persist(operation).map(|()| ());
+                }
+                Ok(Some(_)) => {
+                    let launch = operation
+                        .launch
+                        .as_mut()
+                        .ok_or(TaskSetupErrorV1::Unavailable)?;
+                    launch.state = TaskLaunchStateV1::NeedsAttention;
+                    launch.attention =
+                        Some(launch_attention(TaskLaunchAttemptErrorV1::Rejected, false));
+                    self.persist(operation)?;
+                    return Ok(());
+                }
+                Ok(None) => {
+                    let readiness = self.readiness_for(operation);
+                    if operation.state != TaskSetupStateV1::Ready || !readiness.ready_to_launch {
+                        return Ok(());
+                    }
+                }
+                Err(error) => {
+                    let launch = operation
+                        .launch
+                        .as_mut()
+                        .ok_or(TaskSetupErrorV1::Unavailable)?;
+                    launch.state = TaskLaunchStateV1::NeedsAttention;
+                    launch.attention = Some(launch_attention(error, true));
+                    self.persist(operation)?;
+                    return Ok(());
+                }
+            }
+
             {
                 let launch = operation
                     .launch
@@ -1767,22 +1885,8 @@ impl TaskSetupSupervisorV1 {
                 launch.attention = None;
             }
             self.persist(operation)?;
-            let request = operation.launch.as_ref().map_or_else(
-                || Err(TaskSetupErrorV1::Unavailable),
-                |launch| {
-                    Ok(LobbyLaunchRequest {
-                        input_id: launch.input_id.clone(),
-                        based_on_room_seq: launch.based_on_room_seq,
-                    })
-                },
-            )?;
             match launcher.launch(&operation.room_id, &request) {
-                Ok(response)
-                    if response.room_id == operation.room_id
-                        && response.input_id == request.input_id
-                        && response.room_head.room_id == operation.room_id
-                        && response.room_head.room_seq > request.based_on_room_seq =>
-                {
+                Ok(response) if launch_response_is_exact(operation, &request, &response, false) => {
                     let launch = operation
                         .launch
                         .as_mut()
@@ -3374,13 +3478,42 @@ fn launch_is_coherent(operation: &TaskSetupOperationV1) -> bool {
         TaskLaunchStateV1::Reconciling | TaskLaunchStateV1::Launched => {
             launch.attempts > 0 && launch.response.is_some() && launch.attention.is_none()
         }
-        TaskLaunchStateV1::NeedsAttention => launch.attempts > 0 && launch.attention.is_some(),
+        // Receipt resolution can fail before the first launch dispatch. That
+        // is durable attention with zero launch attempts, not evidence that a
+        // mutation endpoint was called.
+        TaskLaunchStateV1::NeedsAttention => launch.attention.is_some(),
     }) && launch.response.as_ref().is_none_or(|response| {
-        response.room_id == operation.room_id
-            && response.input_id == launch.input_id
-            && response.room_head.room_id == operation.room_id
-            && response.room_head.room_seq > launch.based_on_room_seq
+        launch_response_is_exact(
+            operation,
+            &LobbyLaunchRequest {
+                input_id: launch.input_id.clone(),
+                based_on_room_seq: launch.based_on_room_seq,
+                pack_digest: (operation.launch_applicability
+                    == TaskLaunchApplicabilityV1::ActivityStart)
+                    .then(|| operation.pack.digest.clone()),
+            },
+            response,
+            false,
+        )
     })
+}
+
+fn launch_response_is_exact(
+    operation: &TaskSetupOperationV1,
+    request: &LobbyLaunchRequest,
+    response: &LobbyLaunchResponse,
+    require_duplicate: bool,
+) -> bool {
+    request
+        .based_on_room_seq
+        .checked_add(1)
+        .is_some_and(|successor| response.room_head.room_seq == successor)
+        && response.room_id == operation.room_id
+        && response.input_id == request.input_id
+        && is_ulid(&response.transition_id)
+        && response.room_head.room_id == operation.room_id
+        && response.room_head.pack_digest == operation.pack.digest
+        && (!require_duplicate || response.duplicate)
 }
 
 fn state_is_coherent(operation: &TaskSetupOperationV1) -> bool {

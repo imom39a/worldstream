@@ -2,6 +2,7 @@
 //! behind [`GatewayBackend`]; the default backend fails closed until a
 //! supervisor wires the verified storage seams into this process.
 
+mod activity_start;
 mod args;
 pub mod managed_control;
 pub mod operator_packs;
@@ -53,8 +54,9 @@ use worldstream_protocol::{
     ActivityPackCatalogResponse, ActivityPackCatalogRevisionDetail,
     ActivityPackCatalogRevisionResponse, ActivityPackCatalogRevisionSummary,
     ActivityPackCatalogRole, ActivityPackCatalogSchema, ActivityPackLobbyCompatibility,
-    BROWSER_WS_TICKET_VERSION, BearerWireV1, BrowserWebSocketTicketIssueResponse, ClientHello,
-    ClientMode, CreateRoomRequest, CreateRoomResponse, ErrorBody, ErrorCode, ErrorEnvelope,
+    ActivityPackStartCompatibility, BROWSER_WS_TICKET_VERSION, BearerWireV1,
+    BrowserWebSocketTicketIssueResponse, ClientHello, ClientMode, CreateRoomRequest,
+    CreateRoomResponse, ErrorBody, ErrorCode, ErrorEnvelope,
     HOSTED_BROWSER_WS_SESSION_REVOKE_VERSION, HOSTED_BROWSER_WS_TICKET_VERSION,
     HostedBrowserWebSocketSessionRevokeRequest, HostedBrowserWebSocketTicketIssueRequest,
     HostedRoomCreationRequestV2, HostedRoomCreationResponseV2, LobbyLaunchRequest,
@@ -1018,7 +1020,7 @@ pub trait GatewayBackend: Send + Sync + 'static {
     ) -> Result<HostedRoomCreationResponseV2, BackendError> {
         Err(BackendError::StorageUnavailable)
     }
-    /// Authenticates and records one fixed host Lobby launch `ExternalInput`.
+    /// Authenticates and records one metadata-derived bounded Host Activity Start.
     ///
     /// # Errors
     ///
@@ -1029,6 +1031,16 @@ pub trait GatewayBackend: Send + Sync + 'static {
         _room_id: &str,
         _request: LobbyLaunchRequest,
     ) -> Result<LobbyLaunchResponse, BackendError> {
+        Err(BackendError::StorageUnavailable)
+    }
+    /// Reads one exact metadata-derived Activity Start receipt without
+    /// dispatching a new input. `None` is a guarded absence.
+    fn resolve_lobby_launch(
+        &self,
+        _session: &GatewaySession,
+        _room_id: &str,
+        _request: LobbyLaunchRequest,
+    ) -> Result<Option<LobbyLaunchResponse>, BackendError> {
         Err(BackendError::StorageUnavailable)
     }
     /// Reads the caller-authorized current Projection.
@@ -1446,26 +1458,49 @@ pub(crate) fn activity_pack_revision_from_registry(
         selectable_for_new_rooms: revision.selectable_for_new_rooms,
         runnable_for_retained_rooms: revision.runnable_for_retained_rooms,
     };
-    let lobby_compatibility = descriptor
-        .stimulus_schemas
-        .get(worldstream_core::HOST_LAUNCH_INPUT_TYPE)
-        .map(|reference| {
-            let launch_schema =
-                activity_pack_schema_from_registry(registry, &revision_digest, reference)?;
-            if launch_schema.schema
-                != json!({
-                    "additionalProperties": false,
-                    "type": "object",
-                })
-            {
-                return Err(BackendError::InvalidResult);
-            }
-            Ok(ActivityPackLobbyCompatibility {
+    let lobby_compatibility =
+        if worldstream_core::agent_heist_lobby_contract_declared(registry, &revision_digest) {
+            Some(ActivityPackLobbyCompatibility {
                 contract: worldstream_core::AGENT_HEIST_LOBBY_CONTRACT.to_owned(),
                 configuration_schema: configuration_schema.clone(),
             })
-        })
-        .transpose()?;
+        } else {
+            None
+        };
+    // Retained Heist keeps its original Lobby catalog shape. Its exact-digest
+    // fallback is still resolved by Core at launch, but it is not presented as
+    // a newly authored generic declaration.
+    let activity_start_compatibility = if lobby_compatibility.is_some() {
+        None
+    } else {
+        match registry
+            .activity_start_compatibility(&revision_digest)
+            .map_err(|_| BackendError::InvalidResult)?
+        {
+            worldstream_core::ActivityStartCompatibilityV1::None => None,
+            worldstream_core::ActivityStartCompatibilityV1::Unsupported => {
+                return Err(BackendError::InvalidResult);
+            }
+            worldstream_core::ActivityStartCompatibilityV1::Supported(contract) => {
+                let reference = descriptor
+                    .stimulus_schemas
+                    .get(&contract.input_type)
+                    .ok_or(BackendError::InvalidResult)?;
+                Some(ActivityPackStartCompatibility {
+                    contract: contract.contract,
+                    pre_start_phase: contract.pre_start_phase,
+                    input_type: contract.input_type,
+                    canonical_payload: serde_json::to_value(contract.canonical_payload)
+                        .map_err(|_| BackendError::InvalidResult)?,
+                    input_schema: activity_pack_schema_from_registry(
+                        registry,
+                        &revision_digest,
+                        reference,
+                    )?,
+                })
+            }
+        }
+    };
     Ok(ActivityPackCatalogRevisionResponse {
         version: ACTIVITY_PACK_CATALOG_VERSION.to_owned(),
         revision: ActivityPackCatalogRevisionDetail {
@@ -1482,6 +1517,7 @@ pub(crate) fn activity_pack_revision_from_registry(
             configuration_schema,
             actions,
             lobby_compatibility,
+            activity_start_compatibility,
         },
     })
 }
@@ -2023,6 +2059,10 @@ pub fn operator_router(state: OperatorState) -> Router {
         .route(
             "/v1/operator/rooms/{room_id}/lobby/launch",
             post(launch_lobby),
+        )
+        .route(
+            "/v1/operator/rooms/{room_id}/lobby/launch/resolve",
+            post(resolve_lobby_launch),
         )
         .route("/v1/rooms/{room_id}/projection", get(current_projection))
         .route(
@@ -3062,6 +3102,50 @@ async fn launch_lobby(
     }
 }
 
+async fn resolve_lobby_launch(
+    State(state): State<OperatorState>,
+    Path(room_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ResponseResult<Option<LobbyLaunchResponse>> {
+    let correlation = traceparent_correlation(&headers);
+    let session = Arc::new(authenticated_session(&headers)?);
+    let request = strict_json::<LobbyLaunchRequest>(&body)?;
+    let targets = [AdmissionTarget {
+        room_id: &room_id,
+        member_id: None,
+    }];
+    admit_authenticated_http(
+        &state,
+        &session,
+        &targets,
+        Some(OPERATOR_LOBBY_LAUNCH),
+        correlation,
+    )
+    .await?;
+    let backend = Arc::clone(&state.backend);
+    let backend_room_id = room_id.clone();
+    match backend_call(backend, move |backend| {
+        backend.resolve_lobby_launch(&session, &backend_room_id, request)
+    })
+    .await
+    {
+        Ok(response) => {
+            record_admission_with_correlation(
+                state.telemetry.as_ref(),
+                telemetry::ReasonCodeV1::Accepted,
+                correlation,
+            );
+            Ok(Json(response))
+        }
+        Err(error) => {
+            let reason = reason_for_backend_error(&error);
+            record_admission_with_correlation(state.telemetry.as_ref(), reason, correlation);
+            Err(ResponseError::from(error))
+        }
+    }
+}
+
 async fn current_membership_status(
     State(state): State<OperatorState>,
     Path((room_id, member_id)): Path<(String, String)>,
@@ -3595,7 +3679,7 @@ fn safe_message(code: ErrorCode) -> &'static str {
             "the operation identity conflicts with an existing request"
         }
         ErrorCode::InvalidPayload => "the request payload is invalid",
-        ErrorCode::WrongPhase => "the Activity is not waiting in Lobby",
+        ErrorCode::WrongPhase => "the Activity is not in its declared pre-start phase",
         _ => "the request could not be completed",
     }
 }

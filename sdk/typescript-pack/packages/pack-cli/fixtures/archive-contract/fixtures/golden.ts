@@ -60,7 +60,7 @@ export const goldenFixture = {
     input_id: "01ARZ3NDEKTSV4RRFFQ69G5FC6",
     input_type: "archive.fixture/briefing-opened/v1",
     recorded_at: "2026-08-30T12:00:00Z",
-    source_id: "01ARZ3NDEKTSV4RRFFQ69G5FC7",
+    source_id: "01ARZ3NDEKTSV4RRFFQ69G5FH1",
   }],
   invalidActions: [{
     action_type: "inspect",

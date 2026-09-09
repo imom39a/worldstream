@@ -16,7 +16,7 @@ use crate::{
     CoreRoomStateV1, CoreTraceV1, CreationRecordedAt, ExternalInputV1, GenesisInputV1, MemberId,
     MembershipChangeKindV1, MembershipStandingV1, PackDigestV1, PackFaultV1, ParticipantActionV1,
     PrincipalKindV1, RecordedStimulusV1, RoomId, RoomSeedV1, RoomSequenceV1, ScheduledTimerV1,
-    TimerGenerationV1, TimerRequestV1, TimestampParseError,
+    SourceId, TimerGenerationV1, TimerRequestV1, TimestampParseError,
     canonical::encode,
     lineage::{hash_activity_state, hash_authoritative_state, hash_core_state},
     primitives::compare_timestamp_text,
@@ -39,6 +39,7 @@ const SCHEMA_BUNDLE_DOMAIN: &str = "worldstream/pack-schema-bundle/v1";
 const CODEC_BUNDLE_DOMAIN: &str = "worldstream/pack-codec-bundle/v1";
 const PACK_GOLDEN_CORPUS_DOMAIN: &str = "worldstream/pack-golden-corpus/v1";
 const PACK_GOLDEN_TRANSCRIPT_DOMAIN: &str = "worldstream/pack-golden-transcript/v1";
+const ACTIVITY_START_WRONG_SOURCE_CHALLENGE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FH2";
 const SUPPORTED_SCHEMA_KEYWORDS: [&str; 14] = [
     "type",
     "const",
@@ -1079,6 +1080,48 @@ pub struct PackLimitsV1 {
     pub maximum_text_bytes: u32,
 }
 
+/// Fixed v1 declaration for one Host-owned pre-start `ExternalInput`.
+///
+/// The source is deliberately absent: the Host supplies the one fixed source
+/// for this contract and callers cannot widen the declaration with a path,
+/// script, resource, or caller-selected payload.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivityStartContractV1 {
+    pub contract: String,
+    pub pre_start_phase: String,
+    pub input_type: String,
+    pub canonical_payload: CanonicalJsonV1,
+}
+
+/// Exact start compatibility resolved from one retained Pack revision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ActivityStartCompatibilityV1 {
+    /// The revision makes no start declaration and is not a retained legacy exception.
+    None,
+    /// The revision has a declaration, but it is outside the bounded v1 shape.
+    Unsupported,
+    /// The exact declaration is schema-valid and may be checked against current state.
+    Supported(ActivityStartContractV1),
+}
+
+/// The fixed Host-owned source for the bounded v1 start operation.
+pub const ACTIVITY_START_SOURCE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FH1";
+/// The sole understood generic start declaration identity.
+pub const ACTIVITY_START_CONTRACT_ID: &str = "worldstream/activity-start/v1";
+
+/// Checks the fixed root `Activity State.phase` predicate of a resolved start.
+#[must_use]
+pub fn activity_start_is_applicable(
+    contract: &ActivityStartContractV1,
+    activity_state: &CanonicalJsonV1,
+) -> bool {
+    serde_json::to_value(activity_state).is_ok_and(|state| {
+        state.get("phase").and_then(serde_json::Value::as_str)
+            == Some(contract.pre_start_phase.as_str())
+    })
+}
+
 /// Immutable descriptor for one semantic revision.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1089,6 +1132,8 @@ pub struct PackRevisionDescriptorV1 {
     pub revision_digest: PackDigestV1,
     pub host_contract: String,
     pub canonical_codec: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_start_contract: Option<ActivityStartContractV1>,
     pub configuration_schema: SchemaReferenceV1,
     pub state_schema: SchemaReferenceV1,
     pub roles: Vec<RoleDefinitionV1>,
@@ -1122,6 +1167,8 @@ pub struct PackDescriptorContentV1 {
     pub explanatory_version: String,
     pub host_contract: String,
     pub canonical_codec: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_start_contract: Option<ActivityStartContractV1>,
     pub configuration_schema: SchemaReferenceV1,
     pub state_schema: SchemaReferenceV1,
     pub roles: Vec<RoleDefinitionV1>,
@@ -1147,6 +1194,7 @@ impl PackRevisionDescriptorV1 {
             explanatory_version: self.explanatory_version.clone(),
             host_contract: self.host_contract.clone(),
             canonical_codec: self.canonical_codec.clone(),
+            activity_start_contract: self.activity_start_contract.clone(),
             configuration_schema: self.configuration_schema.clone(),
             state_schema: self.state_schema.clone(),
             roles: self.roles.clone(),
@@ -1169,12 +1217,13 @@ impl PackRevisionDescriptorV1 {
     ///
     /// Returns an error if the closed descriptor cannot be canonically encoded.
     pub fn content_digest(&self) -> Result<Blake3DigestV1, CanonicalJsonError> {
-        Ok(Blake3DigestV1::hash(&encode(&DescriptorContentV1 {
+        let bytes = encode(&DescriptorContentV1 {
             pack_id: &self.pack_id,
             name: &self.name,
             explanatory_version: &self.explanatory_version,
             host_contract: &self.host_contract,
             canonical_codec: &self.canonical_codec,
+            activity_start_contract: self.activity_start_contract.as_ref(),
             configuration_schema: &self.configuration_schema,
             state_schema: &self.state_schema,
             roles: &self.roles,
@@ -1187,7 +1236,8 @@ impl PackRevisionDescriptorV1 {
             projection_schemas: &self.projection_schemas,
             observation_schemas: &self.observation_schemas,
             limits: self.limits,
-        })?))
+        })?;
+        Ok(Blake3DigestV1::hash(&bytes))
     }
 
     fn schema_references(&self) -> impl Iterator<Item = &SchemaReferenceV1> {
@@ -1201,6 +1251,22 @@ impl PackRevisionDescriptorV1 {
             .chain(self.observation_schemas.values())
     }
 
+    fn activity_start_contract_shape_is_valid(&self) -> bool {
+        self.activity_start_contract
+            .as_ref()
+            .is_none_or(|contract| {
+                contract.contract == ACTIVITY_START_CONTRACT_ID
+                    && !contract.pre_start_phase.is_empty()
+                    && contract.pre_start_phase.len() <= 256
+                    && !contract.input_type.is_empty()
+                    && contract.input_type.len() <= 256
+                    && contract
+                        .canonical_payload
+                        .to_bytes()
+                        .is_ok_and(|bytes| bytes.len() <= 16_384)
+            })
+    }
+
     fn validate_shape(&self, digest: &PackDigestV1) -> Result<(), PackRegistryErrorV1> {
         if self.pack_id.is_empty()
             || self.name.is_empty()
@@ -1211,6 +1277,13 @@ impl PackRevisionDescriptorV1 {
             return Err(PackRegistryErrorV1::InvalidDescriptorShape {
                 revision_digest: digest.clone(),
                 detail: "identity, Roles, and Actions must be nonempty",
+            });
+        }
+
+        if !self.activity_start_contract_shape_is_valid() {
+            return Err(PackRegistryErrorV1::InvalidDescriptorShape {
+                revision_digest: digest.clone(),
+                detail: "Activity Start Contract exceeds its bounded declaration shape",
             });
         }
 
@@ -1316,6 +1389,8 @@ struct DescriptorContentV1<'a> {
     explanatory_version: &'a str,
     host_contract: &'a str,
     canonical_codec: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    activity_start_contract: Option<&'a ActivityStartContractV1>,
     configuration_schema: &'a SchemaReferenceV1,
     state_schema: &'a SchemaReferenceV1,
     roles: &'a [RoleDefinitionV1],
@@ -2220,11 +2295,12 @@ pub(crate) struct PackRegistryArtifactsV1 {
     pub(crate) golden_corpus: Option<PackGoldenCorpusV1>,
 }
 
-/// Independent selection and retention statuses.
+/// Independent Host selection, retention, and Activity Start approval statuses.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PackRegistryStatusV1 {
     pub selectable_for_new_rooms: bool,
     pub runnable_for_retained_rooms: bool,
+    pub approved_for_activity_start: bool,
 }
 
 /// Bounded read-only catalog metadata for one exact embedded revision.
@@ -2238,6 +2314,7 @@ pub struct ActivityPackCatalogRevisionV1 {
     pub descriptor: PackRevisionDescriptorV1,
     pub selectable_for_new_rooms: bool,
     pub runnable_for_retained_rooms: bool,
+    pub approved_for_activity_start: bool,
 }
 
 /// One already verified portable revision offered to the retained registry.
@@ -3478,24 +3555,7 @@ impl ActivityPackHostV1 {
                 if !clean_rejection_is_allowed(input.recorded_stimulus) {
                     return Err(PackFaultV1::MandatoryStimulusRejected);
                 }
-                if !descriptor
-                    .rejection_codes
-                    .contains(&rejection.declared_code)
-                {
-                    return Err(PackFaultV1::UndeclaredRejectionCode(
-                        rejection.declared_code.clone(),
-                    ));
-                }
-                let key = format!("rejection:{}", rejection.declared_code);
-                let reference = descriptor.output_schemas.get(&key).ok_or_else(|| {
-                    PackFaultV1::SchemaViolation(format!("undeclared output schema {key}"))
-                })?;
-                self.validate_value(
-                    reference,
-                    &rejection.bounded_safe_details,
-                    descriptor.limits.maximum_observation_bytes,
-                    "rejection details",
-                )
+                self.validate_rejection_output(rejection)
             }
             ActivityDispositionV1::Apply(apply) => {
                 self.validate_value(
@@ -3587,6 +3647,31 @@ impl ActivityPackHostV1 {
                 Ok(())
             }
         }
+    }
+
+    fn validate_rejection_output(
+        &self,
+        rejection: &crate::ActivityRejectionV1,
+    ) -> Result<(), PackFaultV1> {
+        let descriptor = self.retained.descriptor();
+        if !descriptor
+            .rejection_codes
+            .contains(&rejection.declared_code)
+        {
+            return Err(PackFaultV1::UndeclaredRejectionCode(
+                rejection.declared_code.clone(),
+            ));
+        }
+        let key = format!("rejection:{}", rejection.declared_code);
+        let reference = descriptor.output_schemas.get(&key).ok_or_else(|| {
+            PackFaultV1::SchemaViolation(format!("undeclared output schema {key}"))
+        })?;
+        self.validate_value(
+            reference,
+            &rejection.bounded_safe_details,
+            descriptor.limits.maximum_observation_bytes,
+            "rejection details",
+        )
     }
 
     fn validate_timer_requests(
@@ -4080,6 +4165,21 @@ fn execute_golden_corpus(
     {
         return Err(());
     }
+    let start_contract = host.descriptor().activity_start_contract.as_ref();
+    if let Some(contract) = start_contract {
+        let matching = corpus
+            .external_inputs
+            .iter()
+            .filter(|golden| external_input_matches_activity_start(&golden.input, contract))
+            .count();
+        if matching != 1
+            || corpus.external_inputs.first().is_none_or(|golden| {
+                !external_input_matches_activity_start(&golden.input, contract)
+            })
+        {
+            return Err(());
+        }
+    }
     let action_count =
         u32::try_from(corpus.actions.len() + corpus.external_inputs.len()).map_err(|_| ())?;
     if corpus.viewers.iter().any(|viewer| {
@@ -4131,6 +4231,11 @@ fn execute_golden_corpus(
         }
     }
     let genesis = host.initialize(&corpus.genesis).map_err(|_| ())?;
+    if start_contract.is_some_and(|contract| {
+        !activity_start_is_applicable(contract, &genesis.initial_activity_state)
+    }) {
+        return Err(());
+    }
     let dispositions = Arc::new(Mutex::new(BTreeMap::<String, ActivityDispositionV1>::new()));
     let reducer_dispositions = Arc::clone(&dispositions);
     let mut trace = CoreTraceV1::create_for_conformance(
@@ -4157,6 +4262,28 @@ fn execute_golden_corpus(
         },
     )
     .map_err(|_| ())?;
+    if start_contract.is_some() {
+        let mut wrong_source = corpus.external_inputs.first().ok_or(())?.input.clone();
+        wrong_source.source_id =
+            SourceId::from_str(ACTIVITY_START_WRONG_SOURCE_CHALLENGE_ID).map_err(|_| ())?;
+        let stimulus = RecordedStimulusV1::ExternalInput(wrong_source);
+        require_clean_start_rejection(
+            host,
+            &ActivityReduceInputV1 {
+                prior_activity_state: trace.activity_state(),
+                core_before: trace.core_state(),
+                proposed_core_after: trace.core_state(),
+                scheduled_timers: trace.scheduled_timers(),
+                next_room_seq: trace
+                    .head()
+                    .room_seq()
+                    .checked_successor()
+                    .map_err(|_| ())?,
+                recorded_stimulus: &stimulus,
+            },
+            &corpus.genesis.room_seed,
+        )?;
+    }
     let initial_views = execute_golden_views(
         host,
         trace.core_state(),
@@ -4202,6 +4329,27 @@ fn execute_golden_corpus(
             disposition.clone(),
         );
         trace.advance(stimulus.clone()).map_err(|_| ())?;
+        if start_contract.is_some_and(|contract| {
+            external_input_matches_activity_start(&golden_external.input, contract)
+        }) {
+            let contract = start_contract.ok_or(())?;
+            if activity_start_is_applicable(contract, trace.activity_state()) {
+                return Err(());
+            }
+            let repeat_input = ActivityReduceInputV1 {
+                prior_activity_state: trace.activity_state(),
+                core_before: trace.core_state(),
+                proposed_core_after: trace.core_state(),
+                scheduled_timers: trace.scheduled_timers(),
+                next_room_seq: trace
+                    .head()
+                    .room_seq()
+                    .checked_successor()
+                    .map_err(|_| ())?,
+                recorded_stimulus: &stimulus,
+            };
+            require_clean_start_rejection(host, &repeat_input, &corpus.genesis.room_seed)?;
+        }
         let transition = trace.transitions().last().cloned().ok_or(())?;
         let mut observations = Vec::with_capacity(corpus.viewers.len());
         for golden_viewer in &corpus.viewers {
@@ -4388,6 +4536,36 @@ fn execute_golden_corpus(
     .map_err(|_| ())
 }
 
+fn external_input_matches_activity_start(
+    input: &ExternalInputV1,
+    contract: &ActivityStartContractV1,
+) -> bool {
+    input.source_id.as_str() == ACTIVITY_START_SOURCE_ID
+        && input.input_type == contract.input_type
+        && input.immutable_resource_references.is_empty()
+        && input.canonical_payload == contract.canonical_payload
+}
+
+fn require_clean_start_rejection(
+    host: &ActivityPackHostV1,
+    input: &ActivityReduceInputV1<'_>,
+    room_seed: &RoomSeedV1,
+) -> Result<(), ()> {
+    let context = DeterministicContextV1::new(
+        room_seed,
+        &host.descriptor().revision_digest,
+        input.next_room_seq,
+    );
+    let disposition = invoke_pack(ActivityPackOperationV1::Reduce, || {
+        host.retained.0.executor.reduce(input, &context)
+    })
+    .map_err(|_| ())?;
+    let ActivityDispositionV1::Reject(rejection) = disposition else {
+        return Err(());
+    };
+    host.validate_rejection_output(&rejection).map_err(|_| ())
+}
+
 #[cfg(test)]
 pub(crate) fn author_golden_transcript_for_test<E: ActivityPackV1>(
     revision_lock: PackRevisionLockV1,
@@ -4410,6 +4588,7 @@ pub(crate) fn author_golden_transcript_for_test<E: ActivityPackV1>(
         status: PackRegistryStatusV1 {
             selectable_for_new_rooms: false,
             runnable_for_retained_rooms: true,
+            approved_for_activity_start: true,
         },
     });
     execute_golden_corpus(
@@ -4447,6 +4626,25 @@ pub(crate) fn author_golden_transcript_digest_for_test<E: ActivityPackV1>(
 #[allow(clippy::needless_pass_by_value)]
 fn canonical_pack_fault(error: CanonicalJsonError) -> PackFaultV1 {
     PackFaultV1::InvalidOutput(error.to_string())
+}
+
+/// Proves that a live built-in executor still matches its sealed retained
+/// source after applying only the explicitly enumerated compatibility edits.
+/// Each current form must occur exactly once, so an unrelated rule edit or a
+/// broadened/duplicated exception fails registry construction.
+pub(crate) fn retained_executor_source_matches(
+    current: &str,
+    retained: &str,
+    allowed_replacements: &[(&str, &str)],
+) -> bool {
+    let mut normalized = current.replace("\r\n", "\n").replace('\r', "\n");
+    for (current_form, retained_form) in allowed_replacements {
+        if current_form.is_empty() || normalized.matches(current_form).count() != 1 {
+            return false;
+        }
+        normalized = normalized.replacen(current_form, retained_form, 1);
+    }
+    normalized == retained.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 /// Retained executable registry. It has no pack-name dispatch path.
@@ -4832,6 +5030,7 @@ impl PackRegistryV1 {
                 descriptor: entry.descriptor.clone(),
                 selectable_for_new_rooms: entry.status.selectable_for_new_rooms,
                 runnable_for_retained_rooms: entry.status.runnable_for_retained_rooms,
+                approved_for_activity_start: entry.status.approved_for_activity_start,
             })
     }
 
@@ -4854,7 +5053,83 @@ impl PackRegistryV1 {
             descriptor: entry.descriptor.clone(),
             selectable_for_new_rooms: entry.status.selectable_for_new_rooms,
             runnable_for_retained_rooms: entry.status.runnable_for_retained_rooms,
+            approved_for_activity_start: entry.status.approved_for_activity_start,
         })
+    }
+
+    /// Reports the immutable Host approval dimension for bounded Activity
+    /// Start on one exact retained revision. Selection for new Rooms is an
+    /// independent fact and does not affect this result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PackRegistryErrorV1::MissingRevision`] for an unknown digest.
+    pub fn activity_start_is_approved(
+        &self,
+        revision_digest: &PackDigestV1,
+    ) -> Result<bool, PackRegistryErrorV1> {
+        self.revisions
+            .get(revision_digest)
+            .map(|entry| entry.status.approved_for_activity_start)
+            .ok_or_else(|| PackRegistryErrorV1::MissingRevision(revision_digest.clone()))
+    }
+
+    /// Resolves the only Host start transition supported by an exact retained
+    /// revision. This never infers compatibility from a Pack name or the
+    /// presence of an arbitrary `ExternalInput` schema. Compatibility remains
+    /// readable after approval revocation so receipt recovery can reconstruct
+    /// the original bounded input; new launch admission must also require
+    /// [`Self::activity_start_is_approved`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PackRegistryErrorV1::MissingRevision`] for an unknown digest,
+    /// or an invalid-descriptor error if retained compatibility bytes cannot
+    /// be reconstructed.
+    pub fn activity_start_compatibility(
+        &self,
+        revision_digest: &PackDigestV1,
+    ) -> Result<ActivityStartCompatibilityV1, PackRegistryErrorV1> {
+        let entry = self
+            .revisions
+            .get(revision_digest)
+            .ok_or_else(|| PackRegistryErrorV1::MissingRevision(revision_digest.clone()))?;
+        let descriptor = &entry.descriptor;
+        let Some(contract) = descriptor.activity_start_contract.clone() else {
+            // Retained Heist is the one historical exact-digest compatibility
+            // exception. It has the same fixed source and immutable empty
+            // payload but no rewritten descriptor bytes.
+            if crate::agent_heist_lobby_contract_declared(self, revision_digest) {
+                return Ok(ActivityStartCompatibilityV1::Supported(
+                    ActivityStartContractV1 {
+                        contract: ACTIVITY_START_CONTRACT_ID.to_owned(),
+                        pre_start_phase: "lobby".to_owned(),
+                        input_type: crate::HOST_LAUNCH_INPUT_TYPE.to_owned(),
+                        canonical_payload: CanonicalJsonV1::parse(br"{}").map_err(|_| {
+                            PackRegistryErrorV1::InvalidDescriptorShape {
+                                revision_digest: revision_digest.clone(),
+                                detail: "retained Lobby payload is invalid",
+                            }
+                        })?,
+                    },
+                ));
+            }
+            return Ok(ActivityStartCompatibilityV1::None);
+        };
+        if contract.contract != ACTIVITY_START_CONTRACT_ID {
+            return Ok(ActivityStartCompatibilityV1::Unsupported);
+        }
+        let Some(schema) = descriptor.stimulus_schemas.get(&contract.input_type) else {
+            return Ok(ActivityStartCompatibilityV1::Unsupported);
+        };
+        if entry
+            .schemas
+            .validate_value(schema, &contract.canonical_payload)
+            .is_err()
+        {
+            return Ok(ActivityStartCompatibilityV1::Unsupported);
+        }
+        Ok(ActivityStartCompatibilityV1::Supported(contract))
     }
 
     /// Resolves one exact schema reference within one exact embedded revision.
@@ -5730,6 +6005,7 @@ mod tests {
                 revision_digest: placeholder,
                 host_contract: ACTIVITY_PACK_HOST_CONTRACT_ID.to_owned(),
                 canonical_codec: CANONICAL_CODEC_ID.to_owned(),
+                activity_start_contract: None,
                 configuration_schema: reference.clone(),
                 state_schema: reference.clone(),
                 roles: vec![
@@ -5810,6 +6086,165 @@ mod tests {
                 artifact,
             }
         })
+    }
+
+    #[test]
+    fn activity_start_legacy_and_declared_contracts_are_exactly_resolved() {
+        let heist = crate::builtin_agent_heist_registry()
+            .unwrap_or_else(|error| unreachable!("Heist registry: {error}"));
+        let heist_digest = crate::agent_heist_lobby_digest();
+        assert!(matches!(
+            heist.activity_start_compatibility(&heist_digest),
+            Ok(ActivityStartCompatibilityV1::Supported(contract))
+                if contract.contract == ACTIVITY_START_CONTRACT_ID
+                    && contract.pre_start_phase == "lobby"
+                    && contract.input_type == crate::HOST_LAUNCH_INPUT_TYPE
+        ));
+
+        let counter = crate::builtin_counter_registry()
+            .unwrap_or_else(|error| unreachable!("Counter registry: {error}"));
+        assert!(matches!(
+            counter.activity_start_compatibility(&crate::counter_v1_digest()),
+            Ok(ActivityStartCompatibilityV1::None)
+        ));
+    }
+
+    #[test]
+    fn activity_start_approval_remains_independent_of_delisting() {
+        fn with_status(
+            source: &PackRegistryV1,
+            digest: &PackDigestV1,
+            status: PackRegistryStatusV1,
+        ) -> PackRegistryV1 {
+            let source = source
+                .revisions
+                .get(digest)
+                .unwrap_or_else(|| unreachable!("fixture revision"));
+            PackRegistryV1 {
+                revisions: BTreeMap::from([(
+                    digest.clone(),
+                    Arc::new(ValidatedPackEntryV1 {
+                        revision_lock: source.revision_lock.clone(),
+                        descriptor: source.descriptor.clone(),
+                        schemas: source.schemas.clone(),
+                        codecs: source.codecs.clone(),
+                        codec_implementation: source.codec_implementation,
+                        executor_artifact_digest: source.executor_artifact_digest.clone(),
+                        golden_corpus_digest: source.golden_corpus_digest.clone(),
+                        executor: Arc::clone(&source.executor),
+                        status,
+                    }),
+                )]),
+            }
+        }
+
+        let embedded = crate::builtin_agent_heist_registry()
+            .unwrap_or_else(|error| unreachable!("Heist registry: {error}"));
+        let digest = crate::agent_heist_lobby_digest();
+        let approved = with_status(
+            &embedded,
+            &digest,
+            PackRegistryStatusV1 {
+                selectable_for_new_rooms: false,
+                runnable_for_retained_rooms: true,
+                approved_for_activity_start: true,
+            },
+        );
+        assert!(matches!(
+            approved.activity_start_compatibility(&digest),
+            Ok(ActivityStartCompatibilityV1::Supported(_))
+        ));
+        assert_eq!(approved.activity_start_is_approved(&digest), Ok(true));
+        let approved_catalog = approved
+            .catalog_revision(&digest)
+            .unwrap_or_else(|error| unreachable!("approved catalog: {error}"));
+        assert!(!approved_catalog.selectable_for_new_rooms);
+        assert!(approved_catalog.approved_for_activity_start);
+
+        let revoked = with_status(
+            &embedded,
+            &digest,
+            PackRegistryStatusV1 {
+                selectable_for_new_rooms: false,
+                runnable_for_retained_rooms: true,
+                approved_for_activity_start: false,
+            },
+        );
+        assert!(matches!(
+            revoked.activity_start_compatibility(&digest),
+            Ok(ActivityStartCompatibilityV1::Supported(_))
+        ));
+        assert_eq!(revoked.activity_start_is_approved(&digest), Ok(false));
+        let revoked_catalog = revoked
+            .catalog_revision(&digest)
+            .unwrap_or_else(|error| unreachable!("revoked catalog: {error}"));
+        assert!(!revoked_catalog.selectable_for_new_rooms);
+        assert!(!revoked_catalog.approved_for_activity_start);
+    }
+
+    #[test]
+    fn activity_start_catalog_compatibility_is_readable_for_a_disabled_revision() {
+        let registry = PackRegistryV1::try_new([entry(PackRegistryStatusV1 {
+            selectable_for_new_rooms: false,
+            runnable_for_retained_rooms: false,
+            approved_for_activity_start: true,
+        })])
+        .unwrap_or_else(|error| unreachable!("valid disabled registry: {error}"));
+        assert!(matches!(
+            registry.activity_start_compatibility(&fixture().digest),
+            Ok(ActivityStartCompatibilityV1::None)
+        ));
+    }
+
+    #[test]
+    fn registry_rejects_an_unknown_activity_start_contract_at_admission() {
+        let mut candidate = entry(PackRegistryStatusV1 {
+            selectable_for_new_rooms: true,
+            runnable_for_retained_rooms: true,
+            approved_for_activity_start: true,
+        });
+        candidate.descriptor.activity_start_contract = Some(ActivityStartContractV1 {
+            contract: "worldstream/activity-start/v2".to_owned(),
+            pre_start_phase: "briefing".to_owned(),
+            input_type: "fixture/start/v1".to_owned(),
+            canonical_payload: json("{}"),
+        });
+        assert!(matches!(
+            PackRegistryV1::try_new([candidate]),
+            Err(PackRegistryErrorV1::InvalidDescriptorShape { .. })
+        ));
+    }
+
+    #[test]
+    fn activity_start_contract_phase_predicate_is_root_phase_only() {
+        let contract = ActivityStartContractV1 {
+            contract: ACTIVITY_START_CONTRACT_ID.to_owned(),
+            pre_start_phase: "lobby".to_owned(),
+            input_type: crate::HOST_LAUNCH_INPUT_TYPE.to_owned(),
+            canonical_payload: CanonicalJsonV1::parse(br"{}")
+                .unwrap_or_else(|error| unreachable!("fixture payload: {error}")),
+        };
+        let lobby = CanonicalJsonV1::parse(br#"{"phase":"lobby","nested":{"phase":"other"}}"#)
+            .unwrap_or_else(|error| unreachable!("lobby state: {error}"));
+        let active = CanonicalJsonV1::parse(br#"{"phase":"active"}"#)
+            .unwrap_or_else(|error| unreachable!("active state: {error}"));
+        assert!(activity_start_is_applicable(&contract, &lobby));
+        assert!(!activity_start_is_applicable(&contract, &active));
+    }
+
+    #[test]
+    fn absent_start_metadata_keeps_descriptor_content_identity() {
+        let descriptor = fixture().descriptor.clone();
+        let content = descriptor.content();
+        let bytes =
+            encode(&content).unwrap_or_else(|error| unreachable!("descriptor bytes: {error}"));
+        assert!(!String::from_utf8_lossy(&bytes).contains("activity_start_contract"));
+        assert_eq!(
+            descriptor
+                .content_digest()
+                .unwrap_or_else(|error| unreachable!("descriptor digest: {error}")),
+            Blake3DigestV1::hash(&bytes)
+        );
     }
 
     fn fixture_golden() -> &'static PackGoldenCorpusV1 {
@@ -5945,6 +6380,7 @@ mod tests {
             PackRegistryStatusV1 {
                 selectable_for_new_rooms: true,
                 runnable_for_retained_rooms: true,
+                approved_for_activity_start: true,
             },
         )
     }
@@ -5987,6 +6423,7 @@ mod tests {
                 status: PackRegistryStatusV1 {
                     selectable_for_new_rooms: true,
                     runnable_for_retained_rooms: true,
+                    approved_for_activity_start: true,
                 },
             })),
         }
@@ -6019,6 +6456,7 @@ mod tests {
                 status: PackRegistryStatusV1 {
                     selectable_for_new_rooms: true,
                     runnable_for_retained_rooms: true,
+                    approved_for_activity_start: true,
                 },
             })),
         }
@@ -6409,6 +6847,7 @@ mod tests {
         let collision = PackRegistryV1::try_new([entry(PackRegistryStatusV1 {
             selectable_for_new_rooms: true,
             runnable_for_retained_rooms: true,
+            approved_for_activity_start: true,
         })])
         .unwrap_or_else(|error| unreachable!("fixture registry: {error}"))
         .admit_portable([portable_admission(
@@ -6469,6 +6908,7 @@ mod tests {
             PackRegistryStatusV1 {
                 selectable_for_new_rooms: true,
                 runnable_for_retained_rooms: true,
+                approved_for_activity_start: true,
             },
         );
         assert!(matches!(
@@ -6484,6 +6924,7 @@ mod tests {
             PackRegistryStatusV1 {
                 selectable_for_new_rooms: false,
                 runnable_for_retained_rooms: true,
+                approved_for_activity_start: true,
             },
             CountingFixturePack {
                 counts: Arc::clone(&counts),
@@ -6520,6 +6961,7 @@ mod tests {
         let status = PackRegistryStatusV1 {
             selectable_for_new_rooms: true,
             runnable_for_retained_rooms: true,
+            approved_for_activity_start: true,
         };
         for behavior in [
             CorpusImpostorBehavior::PublicView,
@@ -6539,6 +6981,7 @@ mod tests {
         let status = PackRegistryStatusV1 {
             selectable_for_new_rooms: true,
             runnable_for_retained_rooms: true,
+            approved_for_activity_start: true,
         };
         for behavior in [
             CorpusImpostorBehavior::EarlyFinalReveal,
@@ -6559,6 +7002,7 @@ mod tests {
         let status = PackRegistryStatusV1 {
             selectable_for_new_rooms: true,
             runnable_for_retained_rooms: true,
+            approved_for_activity_start: true,
         };
 
         let mut missing_executor = entry(status);
@@ -6630,6 +7074,7 @@ mod tests {
             PackRegistryStatusV1 {
                 selectable_for_new_rooms: true,
                 runnable_for_retained_rooms: true,
+                approved_for_activity_start: true,
             },
             EquivalentFixturePack,
         );
@@ -6658,6 +7103,7 @@ mod tests {
         let status = PackRegistryStatusV1 {
             selectable_for_new_rooms: true,
             runnable_for_retained_rooms: true,
+            approved_for_activity_start: true,
         };
         let mut missing_implementation = entry(status);
         missing_implementation.artifacts.codec_implementation = None;
@@ -6704,6 +7150,7 @@ mod tests {
                 PackRegistryStatusV1 {
                     selectable_for_new_rooms: true,
                     runnable_for_retained_rooms: true,
+                    approved_for_activity_start: true,
                 },
                 descriptor_pack,
             )]),
@@ -7608,6 +8055,7 @@ mod tests {
         let mut mismatched = entry(PackRegistryStatusV1 {
             selectable_for_new_rooms: true,
             runnable_for_retained_rooms: true,
+            approved_for_activity_start: true,
         });
         mismatched.revision_lock = mutations
             .pop()
@@ -7650,6 +8098,7 @@ mod tests {
             PackRegistryStatusV1 {
                 selectable_for_new_rooms: true,
                 runnable_for_retained_rooms: true,
+                approved_for_activity_start: true,
             },
         );
         assert!(matches!(
@@ -7663,6 +8112,7 @@ mod tests {
         let mut candidate = entry(PackRegistryStatusV1 {
             selectable_for_new_rooms: true,
             runnable_for_retained_rooms: true,
+            approved_for_activity_start: true,
         });
         candidate.revision_lock.deterministic_static_data_digests = vec![
             NamedDigestV1 {
@@ -7685,6 +8135,7 @@ mod tests {
         let status = PackRegistryStatusV1 {
             selectable_for_new_rooms: true,
             runnable_for_retained_rooms: true,
+            approved_for_activity_start: true,
         };
         assert!(matches!(
             PackRegistryV1::try_new([entry(status), entry(status)]),
@@ -7697,6 +8148,7 @@ mod tests {
         let retained_only = PackRegistryStatusV1 {
             selectable_for_new_rooms: false,
             runnable_for_retained_rooms: true,
+            approved_for_activity_start: true,
         };
         let registry = PackRegistryV1::try_new([entry(retained_only)])
             .unwrap_or_else(|error| unreachable!("valid registry: {error}"));
@@ -7709,6 +8161,7 @@ mod tests {
         let invalid = PackRegistryStatusV1 {
             selectable_for_new_rooms: true,
             runnable_for_retained_rooms: false,
+            approved_for_activity_start: true,
         };
         assert!(matches!(
             PackRegistryV1::try_new([entry(invalid)]),
@@ -7721,6 +8174,7 @@ mod tests {
         let registry = PackRegistryV1::try_new([entry(PackRegistryStatusV1 {
             selectable_for_new_rooms: true,
             runnable_for_retained_rooms: true,
+            approved_for_activity_start: true,
         })])
         .unwrap_or_else(|error| unreachable!("valid registry: {error}"));
         let missing: PackDigestV1 =
@@ -7768,6 +8222,7 @@ mod tests {
             PackRegistryStatusV1 {
                 selectable_for_new_rooms: true,
                 runnable_for_retained_rooms: true,
+                approved_for_activity_start: true,
             },
         );
         assert!(matches!(

@@ -1,6 +1,8 @@
 import {
   CANONICAL_CODEC_ID,
   EXECUTION_PROFILE_ID,
+  GENERATED_PACK_LIMITS,
+  GENERATED_REJECTION_SCHEMA,
   HOST_CONTRACT_ID,
   OPERATION_CODEC_ID,
   REVISION_LOCK_ID,
@@ -60,7 +62,7 @@ export function generateSemanticArtifacts(evidence: BehavioralEvidence): Generat
     documents.push(document);
     return document;
   };
-  const objectSchema = { type: "object" } satisfies JsonValue;
+  const objectSchema = GENERATED_REJECTION_SCHEMA satisfies JsonValue;
   const configuration = add("configuration", "configuration", evidence.configurationSchema);
   const state = add("state", "state", evidence.stateSchema);
   const legacyPublicProjection = evidence.declaresAudienceSchemas
@@ -153,21 +155,31 @@ export function generateSemanticArtifacts(evidence: BehavioralEvidence): Generat
   const descriptorContent = {
     actions,
     attention_reasons: [...evidence.attentionReasons],
+    ...(evidence.activityStartContract === undefined
+      ? {}
+      : {
+          activity_start_contract: {
+            canonical_payload: evidence.activityStartContract.canonicalPayload,
+            contract: evidence.activityStartContract.contract,
+            input_type: evidence.activityStartContract.inputType,
+            pre_start_phase: evidence.activityStartContract.preStartPhase,
+          },
+        }),
     canonical_codec: CANONICAL_CODEC_ID,
     configuration_schema: reference(configuration),
     event_schemas: eventSchemas,
     explanatory_version: evidence.version,
     host_contract: HOST_CONTRACT_ID,
     limits: {
-      maximum_attention_signals: 16,
-      maximum_collection_items: 256,
-      maximum_events: 32,
-      maximum_nesting: 32,
-      maximum_observation_bytes: 65536,
-      maximum_projection_bytes: 65536,
-      maximum_state_bytes: 262144,
-      maximum_text_bytes: 16384,
-      maximum_timer_requests: 16,
+      maximum_attention_signals: GENERATED_PACK_LIMITS.maximumAttentionSignals,
+      maximum_collection_items: GENERATED_PACK_LIMITS.maximumCollectionItems,
+      maximum_events: GENERATED_PACK_LIMITS.maximumEvents,
+      maximum_nesting: GENERATED_PACK_LIMITS.maximumNesting,
+      maximum_observation_bytes: GENERATED_PACK_LIMITS.maximumObservationBytes,
+      maximum_projection_bytes: GENERATED_PACK_LIMITS.maximumProjectionBytes,
+      maximum_state_bytes: GENERATED_PACK_LIMITS.maximumStateBytes,
+      maximum_text_bytes: GENERATED_PACK_LIMITS.maximumTextBytes,
+      maximum_timer_requests: GENERATED_PACK_LIMITS.maximumTimerRequests,
     },
     name: evidence.name,
     observation_schemas: observationSchemas,

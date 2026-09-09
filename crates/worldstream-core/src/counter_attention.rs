@@ -255,10 +255,12 @@ fn build_revision() -> CounterAttentionRevisionV3 {
 fn artifact_digest() -> Blake3DigestV1 {
     let mut artifact = b"worldstream/counter-attention-executor-source/v3\0".to_vec();
     artifact.extend_from_slice(&canonical_text_artifact(include_bytes!(
-        "counter_attention.rs"
+        "retained_executor_artifacts/counter-attention-v3.rs"
     )));
     artifact.push(0);
-    artifact.extend_from_slice(&canonical_text_artifact(include_bytes!("counter.rs")));
+    artifact.extend_from_slice(&canonical_text_artifact(include_bytes!(
+        "retained_executor_artifacts/counter-v1-v2.rs"
+    )));
     Blake3DigestV1::hash(&artifact)
 }
 

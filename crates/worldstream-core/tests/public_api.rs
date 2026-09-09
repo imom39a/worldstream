@@ -24,7 +24,7 @@ fn activity_pack_catalog_preserves_exact_revision_identity_and_schema_bytes() {
         .unwrap_or_else(|error| unreachable!("built-in registry: {error}"));
 
     let revisions = registry.catalog_revisions().collect::<Vec<_>>();
-    assert_eq!(revisions.len(), 8);
+    assert_eq!(revisions.len(), 9);
     let clock_safe = registry
         .catalog_revision(&agent_heist_clock_safe_digest())
         .unwrap_or_else(|error| unreachable!("clock-safe revision: {error}"));

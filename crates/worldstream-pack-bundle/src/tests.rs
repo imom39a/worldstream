@@ -435,7 +435,9 @@ fn retained_restore_reverifies_exact_bytes_and_never_copies_approval() {
         must(store.load_installed(&installed.bundle_digest)).archive_bytes(),
         fixture.bytes
     );
-    assert_eq!(must(store.load_startup_inventory()).counts().selectable, 0);
+    let inventory = must(store.load_startup_inventory());
+    assert_eq!(inventory.counts().selectable, 0);
+    assert!(!inventory.entries()[0].approved_for_activity_start());
     assert_eq!(
         must(std::fs::read_dir(store_root.join("approvals"))).count(),
         0
@@ -448,6 +450,48 @@ fn retained_restore_reverifies_exact_bytes_and_never_copies_approval() {
             .restore_retained(&tampered, "2026-08-30T12:00:01Z")
             .is_err()
     );
+}
+
+#[test]
+fn retained_only_inventory_preserves_current_approval_separately_from_selectability() {
+    let temporary = must(tempdir());
+    let store = must(PackBundleStoreV1::open(
+        temporary.path().join("activity-packs"),
+    ));
+    let candidate = temporary.path().join("candidate.wspack");
+    write_fixture(&candidate, &fixture("retained-approval"));
+    must(store.approve_path(
+        &candidate,
+        OperatorApprovalV1 {
+            operator_id: "operator-1".to_owned(),
+            decided_at: "2026-09-09T12:00:00Z".to_owned(),
+            decision: ApprovalDecisionV1::Approved,
+        },
+    ));
+    let installed = must(store.install_approved(&candidate, "2026-09-09T12:01:00Z"));
+
+    let approved_retained = must(store.load_startup_inventory());
+    assert_eq!(approved_retained.counts().retained_only, 1);
+    assert!(approved_retained.entries()[0].approved_for_activity_start());
+
+    must(store.set_selectable(&installed.bundle_digest, true));
+    must(store.set_selectable(&installed.bundle_digest, false));
+    let delisted = must(store.load_startup_inventory());
+    assert_eq!(delisted.counts().retained_only, 1);
+    assert!(delisted.entries()[0].approved_for_activity_start());
+
+    let verified = must(store.load_installed(&installed.bundle_digest));
+    must(store.record_approval(
+        &verified,
+        OperatorApprovalV1 {
+            operator_id: "operator-1".to_owned(),
+            decided_at: "2026-09-09T12:02:00Z".to_owned(),
+            decision: ApprovalDecisionV1::Revoked,
+        },
+    ));
+    let revoked = must(store.load_startup_inventory());
+    assert_eq!(revoked.counts().retained_only, 1);
+    assert!(!revoked.entries()[0].approved_for_activity_start());
 }
 
 #[test]

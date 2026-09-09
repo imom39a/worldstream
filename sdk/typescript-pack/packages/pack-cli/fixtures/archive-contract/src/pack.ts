@@ -3,6 +3,7 @@ import type {
   CanonicalJson,
   CanonicalObject,
 } from "@worldstream/pack-sdk";
+import { ACTIVITY_START_SOURCE_ID } from "@worldstream/pack-sdk";
 
 type Role = "lead" | "mira" | "jonah";
 
@@ -139,6 +140,12 @@ export default {
         type: "object",
       },
     },
+    activityStartContract: {
+      canonicalPayload: { opened_by: "host" },
+      contract: "worldstream/activity-start/v1",
+      inputType: "archive.fixture/briefing-opened/v1",
+      preStartPhase: "briefing",
+    },
     name: "Archive Contract Fixture",
     observationSchemas: {
       final_reveal: publicSchema(),
@@ -186,6 +193,17 @@ export default {
     const current = state(input.prior_activity_state);
     const stimulus = record(input.recorded_stimulus, "stimulus");
     if (stimulus.stimulus_type === "external_input") {
+      const external = record(stimulus, "ExternalInput");
+      if (
+        current.phase !== "briefing" ||
+        external.source_id !== ACTIVITY_START_SOURCE_ID ||
+        external.input_type !== "archive.fixture/briefing-opened/v1" ||
+        JSON.stringify(external.canonical_payload) !== JSON.stringify({ opened_by: "host" }) ||
+        !Array.isArray(external.immutable_resource_references) ||
+        external.immutable_resource_references.length !== 0
+      ) {
+        return { activity_disposition_type: "reject", bounded_safe_details: {}, declared_code: "inactive" };
+      }
       return {
         activity_disposition_type: "apply",
         next_activity_state: { ...current, phase: "active" },

@@ -261,6 +261,19 @@ pub struct ActivityPackLobbyCompatibility {
     pub configuration_schema: ActivityPackCatalogSchema,
 }
 
+/// One bounded exact-Pack Activity Start Contract exposed for Host launch.
+/// The Host fixes the source; the catalog never accepts caller-selected
+/// stimulus paths, resources, scripts, or payloads.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivityPackStartCompatibility {
+    pub contract: String,
+    pub pre_start_phase: String,
+    pub input_type: String,
+    pub canonical_payload: Value,
+    pub input_schema: ActivityPackCatalogSchema,
+}
+
 /// Full detail for one exact installed Activity Pack revision.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -271,6 +284,8 @@ pub struct ActivityPackCatalogRevisionDetail {
     pub actions: Vec<ActivityPackCatalogAction>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lobby_compatibility: Option<ActivityPackLobbyCompatibility>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_start_compatibility: Option<ActivityPackStartCompatibility>,
 }
 
 /// Versioned exact-revision detail response.
@@ -642,15 +657,22 @@ pub struct TimerFireResponse {
     pub duplicate: bool,
 }
 
-/// Bounded host request to launch one Activity-defined Lobby.
+/// Stable v1 wire envelope for one bounded Host Activity Start.
+///
+/// The historical `LobbyLaunch` name and route remain a compatibility alias;
+/// the Runtime derives the actual `ExternalInput` only from exact Pack metadata.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LobbyLaunchRequest {
     pub input_id: String,
     pub based_on_room_seq: u64,
+    /// Exact Pack revision used to derive a generic Activity Start. Omission
+    /// retains the historical fixed Agent Heist launch wire form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack_digest: Option<String>,
 }
 
-/// Safe result of one recorded Lobby launch `ExternalInput`.
+/// Safe result of one recorded bounded Host Activity Start `ExternalInput`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LobbyLaunchResponse {
@@ -1043,7 +1065,7 @@ pub struct ActivationFrame {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActionOffer, ActionSubmit, ClientHello, ClientMode};
+    use super::{ActionOffer, ActionSubmit, ClientHello, ClientMode, LobbyLaunchRequest};
     use serde_json::json;
 
     #[test]
@@ -1101,6 +1123,35 @@ mod tests {
         assert_eq!(
             action.validate_bounds(),
             Err("action identity fields must not be empty")
+        );
+    }
+
+    #[test]
+    fn lobby_launch_retains_legacy_wire_form_and_accepts_exact_pack_digest() {
+        let legacy_bytes = br#"{"input_id":"input","based_on_room_seq":7}"#;
+        let legacy = serde_json::from_slice::<LobbyLaunchRequest>(legacy_bytes)
+            .unwrap_or_else(|error| unreachable!("legacy launch request: {error}"));
+        assert_eq!(legacy.pack_digest, None);
+        assert_eq!(
+            serde_json::to_vec(&legacy)
+                .unwrap_or_else(|error| unreachable!("legacy launch JSON: {error}")),
+            legacy_bytes,
+        );
+
+        let digest = format!("blake3:{}", "a".repeat(64));
+        let generic = LobbyLaunchRequest {
+            input_id: "input".to_owned(),
+            based_on_room_seq: 7,
+            pack_digest: Some(digest.clone()),
+        };
+        assert_eq!(
+            serde_json::to_value(generic)
+                .unwrap_or_else(|error| unreachable!("generic launch JSON: {error}")),
+            json!({
+                "input_id": "input",
+                "based_on_room_seq": 7,
+                "pack_digest": digest,
+            }),
         );
     }
 

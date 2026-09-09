@@ -58,9 +58,7 @@ impl Revision {
         let mut artifact = b"worldstream/counter-executor-source/v1\0".to_vec();
         artifact.extend_from_slice(self.version().as_bytes());
         artifact.push(0);
-        artifact.extend_from_slice(&canonical_text_artifact(include_bytes!(
-            "retained_executor_artifacts/counter-v1-v2.rs"
-        )));
+        artifact.extend_from_slice(&canonical_text_artifact(include_bytes!("counter.rs")));
         Blake3DigestV1::hash(&artifact)
     }
 }
@@ -506,7 +504,6 @@ fn build_revision(revision: Revision) -> CounterRevisionV1 {
         revision_digest: placeholder,
         host_contract: ACTIVITY_PACK_HOST_CONTRACT_ID.to_owned(),
         canonical_codec: CANONICAL_CODEC_ID.to_owned(),
-        activity_start_contract: None,
         configuration_schema: config_ref,
         state_schema: state_ref,
         roles: vec![RoleDefinitionV1 {

@@ -1,11 +1,9 @@
-//! Counter v4, the target-qualified attention-bearing Counter revision.
+//! Counter v3, the exact attention-bearing Counter revision.
 //!
 //! This revision delegates the unchanged Counter v2 behavior for genesis and
 //! views, while its own reducer adds deterministic Attention after a human
 //! private acknowledgement. Its artifact locks both source files because the
-//! delegation is part of its executable behavior. Its Attention
-//! deduplication keys additionally bind the target Membership so each durable
-//! Activation decision has a distinct identity.
+//! delegation is part of its executable behavior.
 
 use std::{str::FromStr, sync::OnceLock};
 
@@ -24,9 +22,9 @@ const ATTENTION_REASON: &str = "counter_private_acknowledged";
 const PRIVATE_ACK: &str = "private_ack";
 
 #[derive(Clone, Copy)]
-pub(crate) struct CounterV4;
+pub(crate) struct CounterV3;
 
-struct CounterAttentionRevisionV4 {
+struct CounterAttentionRevisionV3 {
     descriptor: &'static PackRevisionDescriptorV1,
     lock: PackRevisionLockV1,
     schemas: PackSchemaBundleV1,
@@ -44,7 +42,7 @@ struct CounterAttentionSignalV1 {
     target_member_id: String,
 }
 
-impl ActivityPackV1 for CounterV4 {
+impl ActivityPackV1 for CounterV3 {
     fn descriptor(&self) -> &'static PackRevisionDescriptorV1 {
         revision().descriptor
     }
@@ -84,10 +82,7 @@ impl ActivityPackV1 for CounterV4 {
             .map(|(member_id, _)| {
                 canonical(&CounterAttentionSignalV1 {
                     action_types: ["increment", PRIVATE_ACK],
-                    deduplication_key: format!(
-                        "{ATTENTION_REASON}:{}:{member_id}",
-                        action.action_id
-                    ),
+                    deduplication_key: format!("{ATTENTION_REASON}:{}", action.action_id),
                     priority: 1,
                     reason: ATTENTION_REASON,
                     target_member_id: member_id.to_string(),
@@ -128,16 +123,16 @@ fn canonical<T: Serialize>(value: &T) -> Result<CanonicalJsonV1, PackFaultV1> {
         .map_err(|error| PackFaultV1::InvalidOutput(error.to_string()))
 }
 
-fn revision() -> &'static CounterAttentionRevisionV4 {
-    static REVISION: OnceLock<CounterAttentionRevisionV4> = OnceLock::new();
+fn revision() -> &'static CounterAttentionRevisionV3 {
+    static REVISION: OnceLock<CounterAttentionRevisionV3> = OnceLock::new();
     REVISION.get_or_init(build_revision)
 }
 
-pub(crate) fn counter_artifact_digest_v4() -> Blake3DigestV1 {
+pub(crate) fn counter_artifact_digest_v3() -> Blake3DigestV1 {
     revision().artifact_digest.clone()
 }
 
-pub(crate) fn counter_v4_revision() -> (
+pub(crate) fn counter_v3_revision() -> (
     &'static PackRevisionDescriptorV1,
     &'static PackRevisionLockV1,
     &'static PackSchemaBundleV1,
@@ -155,14 +150,14 @@ pub(crate) fn counter_v4_revision() -> (
 }
 
 #[allow(clippy::too_many_lines)]
-fn build_revision() -> CounterAttentionRevisionV4 {
+fn build_revision() -> CounterAttentionRevisionV3 {
     let schema = |schema_id: &str, source: &[u8]| {
         PackSchemaV1::new(
             schema_id,
             CanonicalJsonV1::parse(source)
-                .unwrap_or_else(|error| unreachable!("Counter v4 schema JSON: {error}")),
+                .unwrap_or_else(|error| unreachable!("Counter v3 schema JSON: {error}")),
         )
-        .unwrap_or_else(|error| unreachable!("Counter v4 schema: {error}"))
+        .unwrap_or_else(|error| unreachable!("Counter v3 schema: {error}"))
     };
     let config = schema(
         "counter/configuration/v1",
@@ -207,13 +202,13 @@ fn build_revision() -> CounterAttentionRevisionV4 {
         rejection,
         attention,
     ])
-    .unwrap_or_else(|error| unreachable!("Counter v4 schema bundle: {error}"));
+    .unwrap_or_else(|error| unreachable!("Counter v3 schema bundle: {error}"));
     let mut descriptor = crate::counter::counter_v2_revision().0.clone();
-    descriptor.explanatory_version = "4.0.0".to_owned();
+    descriptor.explanatory_version = "3.0.0".to_owned();
     descriptor.revision_digest = PackDigestV1::from_str(
         "blake3:0000000000000000000000000000000000000000000000000000000000000000",
     )
-    .unwrap_or_else(|error| unreachable!("Counter v4 placeholder digest: {error}"));
+    .unwrap_or_else(|error| unreachable!("Counter v3 placeholder digest: {error}"));
     descriptor.attention_reasons = vec![ATTENTION_REASON.to_owned()];
     descriptor
         .output_schemas
@@ -232,23 +227,23 @@ fn build_revision() -> CounterAttentionRevisionV4 {
         canonical_codec: CANONICAL_CODEC_ID.to_owned(),
         descriptor_digest: descriptor
             .content_digest()
-            .unwrap_or_else(|error| unreachable!("Counter v4 descriptor digest: {error}")),
+            .unwrap_or_else(|error| unreachable!("Counter v3 descriptor digest: {error}")),
         schema_bundle_digest: schemas
             .digest()
-            .unwrap_or_else(|error| unreachable!("Counter v4 schemas digest: {error}")),
+            .unwrap_or_else(|error| unreachable!("Counter v3 schemas digest: {error}")),
         codec_bundle_digest: codecs
             .digest()
-            .unwrap_or_else(|error| unreachable!("Counter v4 codecs digest: {error}")),
+            .unwrap_or_else(|error| unreachable!("Counter v3 codecs digest: {error}")),
         deterministic_static_data_digests: Vec::new(),
         rule_source_digest: artifact_digest.clone(),
         deterministic_dependency_lock_digest: Blake3DigestV1::hash(include_bytes!(
-            "counter-v4-dependency-closure.json"
+            "counter-v3-dependency-closure.json"
         )),
     };
     descriptor.revision_digest = lock
         .revision_digest()
-        .unwrap_or_else(|error| unreachable!("Counter v4 revision digest: {error}"));
-    CounterAttentionRevisionV4 {
+        .unwrap_or_else(|error| unreachable!("Counter v3 revision digest: {error}"));
+    CounterAttentionRevisionV3 {
         descriptor: Box::leak(Box::new(descriptor)),
         lock,
         schemas,
@@ -258,14 +253,12 @@ fn build_revision() -> CounterAttentionRevisionV4 {
 }
 
 fn artifact_digest() -> Blake3DigestV1 {
-    let mut artifact = b"worldstream/counter-attention-executor-source/v4\0".to_vec();
+    let mut artifact = b"worldstream/counter-attention-executor-source/v3\0".to_vec();
     artifact.extend_from_slice(&canonical_text_artifact(include_bytes!(
-        "retained_executor_artifacts/counter-attention-v4.rs"
+        "counter_attention.rs"
     )));
     artifact.push(0);
-    artifact.extend_from_slice(&canonical_text_artifact(include_bytes!(
-        "retained_executor_artifacts/counter-v1-v2.rs"
-    )));
+    artifact.extend_from_slice(&canonical_text_artifact(include_bytes!("counter.rs")));
     Blake3DigestV1::hash(&artifact)
 }
 

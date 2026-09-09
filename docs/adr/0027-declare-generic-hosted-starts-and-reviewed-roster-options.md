@@ -22,6 +22,14 @@ the platform or browser. A declaration alone is not Host approval. Catalog,
 Host, Runtime backends and authoring must agree on the contract; metadata
 without an implemented and qualified start path is insufficient.
 
+This decision partially supersedes ADR 0010's enumeration of two registry
+status dimensions. The registry now records an independent exact-revision
+`approved_for_activity_start` status alongside selection and retained
+execution. Approval authorizes only this bounded operation; it does not make a
+revision selectable or runnable, and the launch path still requires the exact
+retained executor to be available. Revocation blocks a new start while leaving
+the compatibility declaration readable for durable receipt recovery.
+
 A new version of the hosted launch-input contract permits selection from
 reviewed Roster Options pinned by the Activity Listing Revision. Each option
 selects a bounded subset of its predeclared seats and server-owned exact

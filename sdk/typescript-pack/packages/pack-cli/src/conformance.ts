@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 import { canonicalBytes, canonicalJson, taggedBlake3, type JsonValue } from "./canonical.js";
+import { GENERATED_PACK_LIMITS, GENERATED_REJECTION_SCHEMA } from "./constants.js";
 import { PackCliError, diagnostic } from "./diagnostics.js";
 import type { ResolvedPackProject } from "./project.js";
 import { emitForExecution } from "./compiler.js";
@@ -38,6 +39,7 @@ export interface BehavioralEvidence {
   readonly observationSchemas: Readonly<Record<ActivityPackViewerClass, JsonValue>>;
   readonly declaresAudienceSchemas: boolean;
   readonly externalInputSchemas: Readonly<Record<string, JsonValue>>;
+  readonly activityStartContract?: ActivityStartContractEvidence;
   readonly goldenFixture: JsonValue;
   readonly externalInputs: readonly JsonValue[];
   readonly acceptedActions: number;
@@ -48,6 +50,14 @@ export interface BehavioralEvidence {
   readonly transcriptDigest: string;
   readonly retainedTranscriptDigest: string;
   readonly transcript: readonly JsonValue[];
+}
+
+/** Narrow declaration for one Host-owned pre-start ExternalInput. */
+export interface ActivityStartContractEvidence {
+  readonly contract: "worldstream/activity-start/v1";
+  readonly preStartPhase: string;
+  readonly inputType: string;
+  readonly canonicalPayload: JsonValue;
 }
 
 type ActivityPackViewerClass =
@@ -109,6 +119,7 @@ interface ActivityPackDefinition {
       Partial<Record<ActivityPackViewerClass, ActivityPackSchema>>
     >;
     readonly externalInputSchemas?: Readonly<Record<string, ActivityPackSchema>>;
+    readonly activityStartContract?: ActivityStartContractEvidence;
   };
   initialize(input: Record<string, JsonValue>): JsonValue;
   reduce(input: Record<string, JsonValue>): JsonValue;
@@ -130,6 +141,7 @@ interface NormalizedDescriptor {
   readonly projectionSchemas: Readonly<Record<ActivityPackViewerClass, JsonValue>>;
   readonly observationSchemas: Readonly<Record<ActivityPackViewerClass, JsonValue>>;
   readonly externalInputSchemas: Readonly<Record<string, JsonValue>>;
+  readonly activityStartContract?: ActivityStartContractEvidence;
 }
 
 export async function runBehavioralConformance(
@@ -172,6 +184,38 @@ export async function runBehavioralConformance(
   );
   const transcript: JsonValue[] = [firstInit];
   let sequence = 1;
+  const start = descriptor.activityStartContract;
+  if (start !== undefined) {
+    if (asRecord(state, "initial Activity State").phase !== start.preStartPhase) {
+      failTest("activityStartContract preStartPhase does not match the initialized root Activity State.phase");
+    }
+    const matching = externalInputs.filter((value) => {
+      const input = asRecord(value, "Activity Start ExternalInput");
+      return input.source_id === "01ARZ3NDEKTSV4RRFFQ69G5FH1" &&
+        input.input_type === start.inputType &&
+        canonicalJson(input.canonical_payload!) === canonicalJson(start.canonicalPayload) &&
+        Array.isArray(input.immutable_resource_references) && input.immutable_resource_references.length === 0;
+    });
+    if (matching.length !== 1) {
+      failTest("goldenFixture must contain exactly one exact Activity Start Contract ExternalInput");
+    }
+    if (externalInputs[0] !== matching[0]) {
+      failTest("the exact Activity Start Contract ExternalInput must be the first external input");
+    }
+    const wrong = {
+      ...asRecord(matching[0], "Activity Start ExternalInput"),
+      source_id: "01ARZ3NDEKTSV4RRFFQ69G5FC7",
+    } satisfies Record<string, JsonValue>;
+    const rejectedWrongStart = deterministic("reduce wrong Activity Start", () =>
+      pack.reduce(reduceRequest(state, core, scheduledTimers, externalInputStimulus(wrong), sequence)),
+    );
+    assertCleanDeclaredRejection(
+      rejectedWrongStart,
+      pack.descriptor.rejectionCodes,
+      "wrong Activity Start output",
+    );
+    transcript.push(rejectedWrongStart);
+  }
 
   const declaredRejection = deterministic("reduce rejection", () =>
     pack.reduce(reduceRequest(state, core, scheduledTimers, actionStimulus(rejected), sequence)),
@@ -200,6 +244,22 @@ export async function runBehavioralConformance(
     );
     transcript.push(output);
     sequence += 1;
+    if (start !== undefined && input.source_id === "01ARZ3NDEKTSV4RRFFQ69G5FH1" &&
+      input.input_type === start.inputType &&
+      canonicalJson(input.canonical_payload!) === canonicalJson(start.canonicalPayload)) {
+      if (asRecord(state, "started Activity State").phase === start.preStartPhase) {
+        failTest("the declared Activity Start Contract did not leave its preStartPhase");
+      }
+      const repeated = deterministic("reduce repeated Activity Start", () =>
+        pack.reduce(reduceRequest(state, core, scheduledTimers, externalInputStimulus(input), sequence)),
+      );
+      assertCleanDeclaredRejection(
+        repeated,
+        pack.descriptor.rejectionCodes,
+        "repeated Activity Start output",
+      );
+      transcript.push(repeated);
+    }
   }
 
   for (const [index, actionValue] of invalidActions.entries()) {
@@ -356,6 +416,9 @@ export async function runBehavioralConformance(
     declaresAudienceSchemas: pack.descriptor.projectionSchemas !== undefined ||
       pack.descriptor.observationSchemas !== undefined,
     externalInputSchemas: descriptor.externalInputSchemas,
+    ...(descriptor.activityStartContract === undefined
+      ? {}
+      : { activityStartContract: descriptor.activityStartContract }),
     goldenFixture: fixture,
     externalInputs,
     acceptedActions,
@@ -444,6 +507,30 @@ function validateDefinition(pack: ActivityPackDefinition, file: string): Normali
     assertSupportedSchema(schema, `external input ${inputType}`);
     externalInputSchemas[inputType] = schema;
   }
+  const activityStartContract = descriptor.activityStartContract;
+  if (activityStartContract !== undefined) {
+    if (
+      activityStartContract.contract !== "worldstream/activity-start/v1" ||
+      typeof activityStartContract.preStartPhase !== "string" ||
+      activityStartContract.preStartPhase.length === 0 ||
+      typeof activityStartContract.inputType !== "string" ||
+      activityStartContract.inputType.length === 0 ||
+      externalInputSchemas[activityStartContract.inputType] === undefined
+    ) {
+      failTest("activityStartContract must name one declared ExternalInput and a non-empty root phase");
+    }
+    canonicalJson(activityStartContract.canonicalPayload);
+    if (
+      new TextEncoder().encode(activityStartContract.preStartPhase).length > 256 ||
+      new TextEncoder().encode(activityStartContract.inputType).length > 256 ||
+      canonicalBytes(activityStartContract.canonicalPayload).length > 16_384
+    ) {
+      failTest("activityStartContract exceeds its bounded phase, input type, or payload size");
+    }
+    if (!matchesSchema(activityStartContract.canonicalPayload, externalInputSchemas[activityStartContract.inputType]!)) {
+      failTest("activityStartContract.canonicalPayload does not satisfy its declared ExternalInput schema");
+    }
+  }
   return {
     roles,
     actions,
@@ -453,6 +540,7 @@ function validateDefinition(pack: ActivityPackDefinition, file: string): Normali
     projectionSchemas,
     observationSchemas,
     externalInputSchemas,
+    ...(activityStartContract === undefined ? {} : { activityStartContract }),
   };
 }
 
@@ -1023,6 +1111,61 @@ function stringField(record: Record<string, JsonValue>, field: string, label: st
     failTest(`${label}.${field} must be a non-empty string`);
   }
   return record[field] as string;
+}
+function assertCleanDeclaredRejection(
+  value: JsonValue,
+  declaredCodes: readonly string[],
+  label: string,
+): void {
+  const rejection = asRecord(value, label);
+  if (
+    Object.keys(rejection).sort().join(",") !==
+      "activity_disposition_type,bounded_safe_details,declared_code" ||
+    rejection.activity_disposition_type !== "reject" ||
+    typeof rejection.declared_code !== "string" ||
+    !declaredCodes.includes(rejection.declared_code)
+  ) {
+    failTest(`${label} must be one schema-valid declared rejection`);
+  }
+  assertMatchesSchema(
+    rejection.bounded_safe_details,
+    GENERATED_REJECTION_SCHEMA,
+    `${label}.bounded_safe_details`,
+  );
+  if (canonicalBytes(rejection.bounded_safe_details!).length > GENERATED_PACK_LIMITS.maximumObservationBytes) {
+    failTest(`${label}.bounded_safe_details exceeds the generated observation byte limit`);
+  }
+  assertGeneratedValueBounds(rejection.bounded_safe_details!, 1, `${label}.bounded_safe_details`);
+}
+function assertGeneratedValueBounds(value: JsonValue, depth: number, label: string): void {
+  if (depth > GENERATED_PACK_LIMITS.maximumNesting) {
+    failTest(`${label} exceeds the generated nesting limit`);
+  }
+  if (typeof value === "string") {
+    if (new TextEncoder().encode(value).length > GENERATED_PACK_LIMITS.maximumTextBytes) {
+      failTest(`${label} exceeds the generated text byte limit`);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > GENERATED_PACK_LIMITS.maximumCollectionItems) {
+      failTest(`${label} exceeds the generated collection limit`);
+    }
+    for (const item of value) assertGeneratedValueBounds(item, depth + 1, label);
+    return;
+  }
+  if (isRecord(value)) {
+    const entries = Object.entries(value);
+    if (entries.length > GENERATED_PACK_LIMITS.maximumCollectionItems) {
+      failTest(`${label} exceeds the generated collection limit`);
+    }
+    for (const [key, child] of entries) {
+      if (new TextEncoder().encode(key).length > GENERATED_PACK_LIMITS.maximumTextBytes) {
+        failTest(`${label} contains a key that exceeds the generated text byte limit`);
+      }
+      assertGeneratedValueBounds(child, depth + 1, label);
+    }
+  }
 }
 function isRecord(value: JsonValue | undefined): value is Record<string, JsonValue> {
   return value !== null && value !== undefined && !Array.isArray(value) && typeof value === "object";

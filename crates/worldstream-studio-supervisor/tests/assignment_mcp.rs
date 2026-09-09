@@ -89,6 +89,7 @@ impl DaemonActivityPackSource for OversizedPackSource {
                     },
                 }],
                 lobby_compatibility: None,
+                activity_start_compatibility: None,
             },
         })
     }
