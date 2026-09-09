@@ -130,6 +130,7 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
       (input, init) => secondaryBff.fetch(new Request(input, init)),
     );
     await browserAgent.signIn();
+    const directPush = new DirectPushMeasurement();
 
     // A local setup may be interrupted before or after Genesis. Resolve at
     // most one exact owner-authorized setup before starting the canonical
@@ -138,13 +139,21 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     const retainedGames = await creator.read("/api/my-games");
     const retainedSetupId = retainedHostedSetupLaunchId(retainedGames);
     if (retainedSetupId !== null) {
-      await preflightRetainedHostedSetup(creator, productOrigin, retainedSetupId);
+      await preflightRetainedHostedSetup(creator, retainedSetupId);
     }
     const retainedLaunchId = retainedHostedLiveLaunchId(
       retainedSetupId === null ? retainedGames : await creator.read("/api/my-games"),
     );
     if (retainedLaunchId !== null) {
-      await completeRetainedRenderedRun(creator, productOrigin, retainedLaunchId);
+      await completeRetainedRun({
+        creator,
+        browserAgent,
+        productOrigin,
+        browserStreamOrigin,
+        directPush,
+        register,
+        launchId: retainedLaunchId,
+      });
     }
 
     const providerBefore = await readProviderMetrics(fakeProviderOrigin);
@@ -211,7 +220,6 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     );
     const creatorSockets: WebSocket[] = [];
     const agentSockets: WebSocket[] = [];
-    const directPush = new DirectPushMeasurement();
     const creatorController = register(controller(
       browserStreamOrigin,
       productOrigin,
@@ -502,6 +510,9 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
       creator,
       browserAgent,
       productOrigin,
+      browserStreamOrigin,
+      directPush,
+      register,
       matchNumber: 3,
     });
     const thirdHistory = await creator.read("/api/my-games");
@@ -1130,6 +1141,9 @@ async function runPeopleOnlyNoActionMatch(options: {
   creator: CookieBrowser;
   browserAgent: CookieBrowser;
   productOrigin: string;
+  browserStreamOrigin: string;
+  directPush: DirectPushMeasurement;
+  register: <T extends { close(): void }>(controller: T) => T;
   matchNumber: number;
 }): Promise<{ launchId: string; runId: string; publicId: string; entrySelector: string }> {
   const { creator, browserAgent, productOrigin, matchNumber } = options;
@@ -1154,13 +1168,107 @@ async function runPeopleOnlyNoActionMatch(options: {
   const run = recordField(formed, "run");
   const runId = stringField(run, "run_id");
   const publicId = stringField(run, "public_id");
+  const entrySelector = await synchronizePeopleOnlyRun({
+    ...options,
+    launchId,
+    run,
+  });
   const terminal = await pollPublicResult(productOrigin, publicId, 240_000);
   assert.equal(terminal.state, "result");
   const summary = recordField(terminal, "result");
   assert.equal(summary.status, "summary");
   assert.equal(recordField(summary, "summary").outcome, "failure");
   assertNoPrivatePublicFields(terminal);
-  return { launchId, runId, publicId, entrySelector: firstEntry(run).entrySelector };
+  return { launchId, runId, publicId, entrySelector };
+}
+
+async function synchronizePeopleOnlyRun(options: {
+  creator: CookieBrowser;
+  browserAgent: CookieBrowser;
+  productOrigin: string;
+  browserStreamOrigin: string;
+  directPush: DirectPushMeasurement;
+  register: <T extends { close(): void }>(controller: T) => T;
+  launchId: string;
+  run: JsonRecord;
+}): Promise<string> {
+  const {
+    creator,
+    browserAgent,
+    productOrigin,
+    browserStreamOrigin,
+    directPush,
+    register,
+    launchId,
+    run,
+  } = options;
+  const runId = stringField(run, "run_id");
+  const creatorEntry = firstEntry(run);
+  const agentLaunch = await browserAgent.read(`/api/launches/${launchId}`);
+  const agentRun = recordField(agentLaunch, "run");
+  assert.equal(stringField(agentRun, "run_id"), runId);
+  const agentEntry = firstEntry(agentRun);
+  const [creatorHandoff, agentHandoff] = await Promise.all([
+    enter(creator, runId, creatorEntry.entrySelector),
+    enter(browserAgent, runId, agentEntry.entrySelector),
+  ]);
+  const creatorAuthority = new ActivityClientHandoffClient(
+    productOrigin,
+    creator.fetch,
+    { browserOrigin: productOrigin, csrf: creator.csrf },
+  );
+  const agentAuthority = new ActivityClientHandoffClient(
+    productOrigin,
+    browserAgent.fetch,
+    { browserOrigin: productOrigin, csrf: browserAgent.csrf },
+  );
+  const creatorController = register(controller(
+    browserStreamOrigin,
+    productOrigin,
+    creatorAuthority,
+    [],
+    directPush,
+  ));
+  const agentController = register(controller(
+    browserStreamOrigin,
+    productOrigin,
+    agentAuthority,
+    [],
+    directPush,
+  ));
+  const creatorLive = trackHeist(creatorController);
+  const agentLive = trackHeist(agentController);
+  const [creatorSession, agentSession] = await Promise.all([
+    creatorAuthority.redeem(creatorHandoff),
+    agentAuthority.redeem(agentHandoff),
+  ]);
+  assert.equal(creatorSession.state, "usable");
+  assert.equal(agentSession.state, "usable");
+  const [creatorRevalidated, agentRevalidated] = await Promise.all([
+    creatorAuthority.resume(),
+    agentAuthority.resume(),
+  ]);
+  const [creatorStarted, agentStarted] = await Promise.all([
+    creatorController.start({ kind: "retained", status: creatorRevalidated }),
+    agentController.start({ kind: "retained", status: agentRevalidated }),
+  ]);
+  assert.equal(creatorStarted.status, "live");
+  assert.equal(agentStarted.status, "live");
+  await Promise.all([
+    waitForHeist(
+      creatorController,
+      creatorLive,
+      (state) => state.authorization.role === "navigator" && state.projection.phase !== "lobby",
+      60_000,
+    ),
+    waitForHeist(
+      agentController,
+      agentLive,
+      (state) => state.authorization.role === "insider" && state.projection.phase !== "lobby",
+      60_000,
+    ),
+  ]);
+  return creatorEntry.entrySelector;
 }
 
 /**
@@ -2007,7 +2115,6 @@ export function retainedHostedSetupLaunchId(value: unknown): string | null {
 
 async function preflightRetainedHostedSetup(
   creator: CookieBrowser,
-  productOrigin: string,
   launchId: string,
 ): Promise<void> {
   const launch = await creator.read(`/api/launches/${launchId}`);
@@ -2030,7 +2137,37 @@ async function preflightRetainedHostedSetup(
     const formed = await startLaunch(creator, launchId);
     assert.equal(formed.state, "run_created");
   }
-  await completeRetainedRenderedRun(creator, productOrigin, launchId);
+}
+
+async function completeRetainedRun(options: {
+  creator: CookieBrowser;
+  browserAgent: CookieBrowser;
+  productOrigin: string;
+  browserStreamOrigin: string;
+  directPush: DirectPushMeasurement;
+  register: <T extends { close(): void }>(controller: T) => T;
+  launchId: string;
+}): Promise<void> {
+  const retainedLaunch = await options.creator.read(`/api/launches/${options.launchId}`);
+  if (retainedLaunch.fill_mode !== "people_only") {
+    await completeRetainedRenderedRun(
+      options.creator,
+      options.productOrigin,
+      options.launchId,
+    );
+    return;
+  }
+  assert.equal(retainedLaunch.activity_slug, "agent-heist");
+  assert.equal(retainedLaunch.state, "run_created");
+  const retainedRun = recordField(retainedLaunch, "run");
+  assert.equal(retainedRun.can_enter, true);
+  const publicId = stringField(retainedRun, "public_id");
+  await synchronizePeopleOnlyRun({ ...options, run: retainedRun });
+  const terminal = await pollPublicResult(options.productOrigin, publicId, 240_000);
+  assert.equal(terminal.state, "result");
+  const recoveredHistory = await options.creator.read("/api/my-games");
+  assertVerifiedMyGamesResult(recoveredHistory, options.launchId, publicId);
+  console.info("Hosted acceptance: resumed the exact retained people-only Run to a verified result.");
 }
 
 async function completeRetainedRenderedRun(
