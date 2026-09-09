@@ -172,6 +172,22 @@ export function hostedDevelopmentPorts(environment = process.env) {
   return ports;
 }
 
+/**
+ * The browser reaches the public Gateway through a separate loopback host.
+ * Browser cookies are scoped by host rather than port, so reusing the
+ * product's 127.0.0.1 host would send its platform session to the deliberately
+ * credential-free Gateway upgrade.
+ */
+export function hostedDevelopmentGatewayConfiguration(environment = process.env) {
+  const { gateway } = hostedDevelopmentPorts(environment);
+  const browserStreamUrl = `http://localhost:${gateway}`;
+  return Object.freeze({
+    internalUrl: `http://127.0.0.1:${gateway}`,
+    browserStreamUrl,
+    publicAuthority: new URL(browserStreamUrl).host,
+  });
+}
+
 export function assertHostedDevelopmentAllowed(environment = process.env) {
   if (environment.NODE_ENV === "production" || environment.VERCEL_ENV === "production") {
     throw new Error("hosted development substitutes are forbidden in production");
@@ -282,6 +298,7 @@ async function main() {
   assertHostedDevelopmentAllowed();
   const ports = hostedDevelopmentPorts();
   const productOrigin = `http://127.0.0.1:${ports.product}`;
+  const gateway = hostedDevelopmentGatewayConfiguration();
   const heistOrigin = `http://127.0.0.1:${ports.heist}`;
   const stateRoot = join(
     REPOSITORY_ROOT,
@@ -476,7 +493,11 @@ async function main() {
       WORLDSTREAM_DEVELOPMENT_OPENROUTER_KEY: FAKE_OPENROUTER_KEY,
       WORLDSTREAM_LOCAL_PLATFORM_BFF_TARGET: platformOrigin,
       WORLDSTREAM_LOCAL_ACTIVITY_CLIENT_TARGET: heistOrigin,
-      WORLDSTREAM_HOSTED_GATEWAY_URL: `http://127.0.0.1:${ports.gateway}`,
+      // Server-only BFF calls use the IPv4 loopback bind. The browser stream
+      // uses its separate public hostname below so platform cookies cannot
+      // reach the credential-free Gateway upgrade.
+      WORLDSTREAM_HOSTED_GATEWAY_URL: gateway.internalUrl,
+      WORLDSTREAM_LOCAL_BROWSER_STREAM_URL: gateway.browserStreamUrl,
       WORLDSTREAM_VERCEL_SERVICE_AUTHORITY: SERVICE_AUTHORITY,
       WORLDSTREAM_LOCAL_RECONCILIATION_SECRET: HOSTED_LOCAL_RECONCILIATION_SECRET,
       VITE_WORLDSTREAM_SUPERVISOR_URL: `http://127.0.0.1:${ports.controller}`,
@@ -522,7 +543,7 @@ async function main() {
           WORLDSTREAM_RUNTIME_UPSTREAM: `127.0.0.1:${ports.runtime}`,
           WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY: CONTROLLER_AUTHORITY,
           WORLDSTREAM_HOSTED_CLIENT_ORIGIN: productOrigin,
-          WORLDSTREAM_PUBLIC_AUTHORITY: `127.0.0.1:${ports.gateway}`,
+          WORLDSTREAM_PUBLIC_AUTHORITY: gateway.publicAuthority,
           WORLDSTREAM_VERCEL_SERVICE_AUTHORITY: SERVICE_AUTHORITY,
           WORLDSTREAM_LISTING_ALLOWLIST: hostedDevelopmentListingAllowlist(),
           WORLDSTREAM_DEPLOYMENT_VERSION: "hosted-local-development",
@@ -1441,7 +1462,7 @@ function printReady(ports, supabase) {
       "WorldStream hosted development stack is ready.",
       `Product:        http://127.0.0.1:${ports.product}/`,
       `Agent Heist:    http://127.0.0.1:${ports.product}/agent-heist-v6/hosted/`,
-      `Hosted Gateway: http://127.0.0.1:${ports.gateway}/`,
+      `Hosted Gateway: ${hostedDevelopmentGatewayConfiguration().browserStreamUrl}/`,
       `Supabase API:   ${requiredSupabase(supabase, "API_URL")}`,
       `Runtime:        127.0.0.1:${ports.runtime} (loopback only)`,
       `Controller:     127.0.0.1:${ports.controller} (loopback only)`,

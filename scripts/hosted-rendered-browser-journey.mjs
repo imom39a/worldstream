@@ -435,6 +435,13 @@ export function sameOriginBrowserResponseFailure(pageUrl, responseUrl, status) {
     const page = new URL(pageUrl);
     const response = new URL(responseUrl);
     if (page.origin !== response.origin) return null;
+    // The platform session endpoint deliberately uses 401 to represent the
+    // normal anonymous/guest state. The catalog probes it before local sign-in
+    // and may probe it again while a page is mounting. It is not a browser
+    // failure; an authenticated Activity Client still has to pass its own
+    // bootstrap and handoff waits below. Keep all other same-origin failures
+    // visible, including participant admission failures.
+    if (status === 401 && response.pathname === "/api/auth/session") return null;
     return `response ${status}: ${safeBrowserUrl(responseUrl)}`;
   } catch {
     return null;

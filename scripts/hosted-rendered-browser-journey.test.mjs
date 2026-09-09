@@ -89,6 +89,10 @@ test("rendered-client bootstrap diagnostics retain only same-origin failed respo
     sameOriginBrowserResponseFailure(page, "http://127.0.0.1:5180/api/v1/participant-console/session:stream-ticket?ignored=true", 401),
     "response 401: http://127.0.0.1:5180/api/v1/participant-console/session:stream-ticket",
   );
+  assert.equal(
+    sameOriginBrowserResponseFailure(page, "http://127.0.0.1:5180/api/auth/session", 401),
+    null,
+  );
   assert.equal(sameOriginBrowserResponseFailure(page, "http://127.0.0.1:8080/v1/hosted/browser-stream", 403), null);
   assert.equal(sameOriginBrowserResponseFailure(page, "http://127.0.0.1:5180/api/auth/session", 200), null);
 });

@@ -33,6 +33,8 @@ export function createDevelopmentPlatformServer(environment = process.env) {
   });
   const hostedBrowserSessions = hostedBrowserSessionClient(environment, canonicalOrigin);
   const hostedFormation = hostedFormationDependencies(environment, dependencies);
+  const hostedPublicStreamBaseUrl =
+    environment.WORLDSTREAM_LOCAL_BROWSER_STREAM_URL ?? environment.WORLDSTREAM_HOSTED_GATEWAY_URL;
   const platform = createDevelopmentPlatformBff(
     {
       canonicalOrigin,
@@ -51,7 +53,7 @@ export function createDevelopmentPlatformServer(environment = process.env) {
     dependencies.dataClient,
     hostedBrowserSessions,
     hostedFormation,
-    environment.WORLDSTREAM_HOSTED_GATEWAY_URL,
+    hostedPublicStreamBaseUrl,
   );
   const serviceAuthority = environment.WORLDSTREAM_VERCEL_SERVICE_AUTHORITY;
   const hostedGatewayUrl = environment.WORLDSTREAM_HOSTED_GATEWAY_URL;

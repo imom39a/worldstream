@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import {
   assertHostedDevelopmentAllowed,
+  hostedDevelopmentGatewayConfiguration,
   hostedDevelopmentPorts,
   hostedDevelopmentListingAllowlist,
   hostedDevelopmentLaunchHttpAccepted,
@@ -271,6 +272,19 @@ test("review-bound ports cannot drift silently", () => {
   assert.throws(() =>
     hostedDevelopmentPorts({ WORLDSTREAM_HOSTED_PRODUCT_PORT: "8080" }),
   );
+});
+
+test("the local browser stream uses a distinct loopback hostname from the product", () => {
+  const product = new URL("http://127.0.0.1:5180");
+  const gateway = hostedDevelopmentGatewayConfiguration();
+  const browserStream = new URL(gateway.browserStreamUrl);
+  assert.deepEqual(gateway, {
+    internalUrl: "http://127.0.0.1:8080",
+    browserStreamUrl: "http://localhost:8080",
+    publicAuthority: "localhost:8080",
+  });
+  assert.notEqual(browserStream.hostname, product.hostname);
+  assert.equal(browserStream.port, "8080");
 });
 
 test("generated Runtime configuration retains dedicated absolute paths", () => {

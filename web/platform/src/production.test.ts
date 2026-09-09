@@ -60,6 +60,10 @@ test("production construction rejects development substitutes and malformed keys
   }), /production_platform_configuration_required/u);
   assert.throws(() => createProductionPlatformBff({
     ...productionEnvironment(),
+    WORLDSTREAM_LOCAL_BROWSER_STREAM_URL: "http://localhost:8080",
+  }), /production_platform_configuration_required/u);
+  assert.throws(() => createProductionPlatformBff({
+    ...productionEnvironment(),
     WORLDSTREAM_SESSION_KEY_BASE64: "not-a-key",
   }), /invalid_production_encryption_key/u);
   assert.throws(() => createProductionPlatformBff({
