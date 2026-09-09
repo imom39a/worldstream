@@ -334,7 +334,7 @@ test("review-bound ports cannot drift silently", () => {
 
 test("the local browser stream uses a distinct loopback hostname from the product", () => {
   const product = new URL("http://127.0.0.1:5180");
-  const gateway = hostedDevelopmentGatewayConfiguration();
+  const gateway = hostedDevelopmentGatewayConfiguration({});
   const browserStream = new URL(gateway.browserStreamUrl);
   assert.deepEqual(gateway, {
     internalUrl: "http://127.0.0.1:8080",
