@@ -4228,7 +4228,8 @@ mod tests {
         AuthorityBootstrapV1, AuthorityChangeV1, AuthorityCheckedAt, AuthorityV1,
         CapabilityBearerV1, CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1,
         CapabilityScopeV1, NewCapabilityV1, PresentedCapabilityV1, PrincipalKindV1,
-        agent_heist_lobby_digest, builtin_agent_heist_registry, builtin_counter_registry,
+        agent_heist_clock_safe_digest, agent_heist_lobby_digest, builtin_agent_heist_registry,
+        builtin_counter_registry,
         counter_v2_digest, counter_v3_digest, counter_v4_digest,
     };
     use worldstream_protocol::{
@@ -5165,7 +5166,7 @@ mod tests {
         let registry =
             Arc::new(builtin_agent_heist_registry().unwrap_or_else(|_| panic!("Heist registry")));
         let descriptor = registry
-            .load_retained(&agent_heist_lobby_digest())
+            .load_retained(&agent_heist_clock_safe_digest())
             .unwrap_or_else(|_| panic!("Lobby revision"))
             .descriptor()
             .clone();
@@ -5191,7 +5192,7 @@ mod tests {
                     pack: PackReference {
                         id: descriptor.pack_id,
                         version: descriptor.explanatory_version,
-                        digest: agent_heist_lobby_digest().to_string(),
+                        digest: agent_heist_clock_safe_digest().to_string(),
                     },
                     configuration: json!({
                         "pack_id":"worldstream.agent-heist","pack_schema":1,
