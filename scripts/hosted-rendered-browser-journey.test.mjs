@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   HOSTED_RENDERED_BROWSER_JOURNEY_SCHEMA,
   activityClientBootstrapDiagnostic,
+  browserConsoleFailure,
+  browserRequestFailure,
   ensureRenderedNavigatorRouteClaim,
   launchIdFromUrl,
   localProductOrigin,
@@ -133,6 +135,35 @@ test("rendered-client bootstrap diagnostics retain only same-origin failed respo
   );
   assert.equal(sameOriginBrowserResponseFailure(page, "http://127.0.0.1:8080/v1/hosted/browser-stream", 403), null);
   assert.equal(sameOriginBrowserResponseFailure(page, "http://127.0.0.1:5180/api/auth/session", 200), null);
+});
+
+test("rendered-browser diagnostics ignore expected browser aborts and redundant resource console noise", () => {
+  assert.equal(
+    browserRequestFailure(
+      `http://127.0.0.1:5180/api/runs/${"a".repeat(32)}`,
+      "net::ERR_ABORTED",
+    ),
+    null,
+  );
+  assert.equal(
+    browserRequestFailure(
+      `http://127.0.0.1:5180/api/runs/${"a".repeat(32)}?ignored=true`,
+      "net::ERR_CONNECTION_RESET",
+    ),
+    `request failed: http://127.0.0.1:5180/api/runs/${"a".repeat(32)}`,
+  );
+  assert.equal(
+    browserConsoleFailure(
+      "error",
+      "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+    ),
+    null,
+  );
+  assert.equal(
+    browserConsoleFailure("error", "Uncaught Error: participant session rejected"),
+    "console error: Uncaught Error: participant session rejected",
+  );
+  assert.equal(browserConsoleFailure("warning", "not an error"), null);
 });
 
 test("rendered-browser qualification does not fall back when a browser is unavailable", async () => {

@@ -452,13 +452,43 @@ function collectBrowserFailures(page, failures, label) {
   };
   page.on("pageerror", (error) => record(`${label} page error: ${safeBrowserError(error)}`));
   page.on("console", (message) => {
-    if (message.type() === "error") record(`${label} console error: ${message.text()}`);
+    const failure = browserConsoleFailure(message.type(), message.text());
+    if (failure !== null) record(`${label} ${failure}`);
   });
-  page.on("requestfailed", (request) => record(`${label} request failed: ${safeBrowserUrl(request.url())}`));
+  page.on("requestfailed", (request) => {
+    const failure = browserRequestFailure(request.url(), request.failure()?.errorText);
+    if (failure !== null) record(`${label} ${failure}`);
+  });
   page.on("response", (response) => {
     const failure = sameOriginBrowserResponseFailure(page.url(), response.url(), response.status());
     if (failure !== null) record(`${label} ${failure}`);
   });
+}
+
+/**
+ * Chromium emits a generic console error for every failed HTTP resource. The
+ * response listener above retains the actionable same-origin status and path,
+ * so retaining this URL-free duplicate only creates false failures for the
+ * catalog's deliberate anonymous 401 probe.
+ */
+export function browserConsoleFailure(type, value) {
+  if (type !== "error") return null;
+  const message = safeBrowserDiagnosticText(value);
+  if (/^Failed to load resource: the server responded with a status of [45][0-9]{2}(?: \([^)]*\))?$/u.test(message)) {
+    return null;
+  }
+  return `console error: ${message}`;
+}
+
+/**
+ * A navigation or React development StrictMode cleanup intentionally aborts
+ * an in-flight fetch. Playwright exposes that as requestfailed even though no
+ * transport or application request failed. Other network failures stay
+ * visible with their bounded, query-free endpoint.
+ */
+export function browserRequestFailure(url, errorText) {
+  if (errorText === "net::ERR_ABORTED") return null;
+  return `request failed: ${safeBrowserUrl(url)}`;
 }
 
 function safeBrowserError(error) {
