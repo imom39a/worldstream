@@ -355,6 +355,21 @@ fn reviewed_client_declarations_install_exact_targets_and_reuse_selection_policy
                 .as_slice(),
         ),
         (
+            "heist-v4.json",
+            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v4.json")
+                .as_slice(),
+        ),
+        (
+            "heist-v5.json",
+            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v5.json")
+                .as_slice(),
+        ),
+        (
+            "heist-v6.json",
+            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v6.json")
+                .as_slice(),
+        ),
+        (
             "negotiate.json",
             include_bytes!("../../../config/activity-clients/releases/negotiate-web.json")
                 .as_slice(),
@@ -372,7 +387,7 @@ fn reviewed_client_declarations_install_exact_targets_and_reuse_selection_policy
         fs::write(directory.path().join(name), bytes)?;
     }
     let declaration = directory.path().join("clients.json");
-    fs::write(&declaration, br#"{"schema":"worldstream/client-declaration-import/v1","release_files":["inspector.json","heist.json","negotiate.json","negotiate-v3.json"],"bindings_file":"bindings.json"}"#)?;
+    fs::write(&declaration, br#"{"schema":"worldstream/client-declaration-import/v1","release_files":["inspector.json","heist.json","heist-v4.json","heist-v5.json","heist-v6.json","negotiate.json","negotiate-v3.json"],"bindings_file":"bindings.json"}"#)?;
     let mut request = InitializationImportRequest {
         installation,
         runner_templates: Vec::new(),

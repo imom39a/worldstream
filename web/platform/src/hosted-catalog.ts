@@ -7,7 +7,21 @@ import {
 
 import {
   agentHeistListingBase64,
+  retainedAgentHeistListing019Base64,
+  retainedAgentHeistListing018Base64,
+  retainedAgentHeistListing017Base64,
+  retainedAgentHeistListing016Base64,
+  retainedAgentHeistListing015Base64,
+  retainedAgentHeistListing014Base64,
+  retainedAgentHeistListing013Base64,
+  retainedAgentHeistListing012Base64,
   retainedAgentHeistListing011Base64,
+  cooperativePlannerBase64,
+  retainedCooperativePlanner12Base64,
+  retainedCooperativePlanner11Base64,
+  retainedCooperativePlanner10Base64,
+  retainedCooperativePlanner9Base64,
+  retainedCooperativePlanner8Base64,
   retainedCooperativePlanner7Base64,
   retainedSkepticalAuditor6Base64,
   retainedAgentHeistListing010Base64,
@@ -21,7 +35,6 @@ import {
   retainedAgentHeistListing07Base64,
   retainedAgentHeistListing08Base64,
   retainedAgentHeistListing09Base64,
-  cooperativePlannerBase64,
   retainedCooperativePlanner1Base64,
   retainedCooperativePlanner2Base64,
   retainedCooperativePlanner3Base64,
@@ -32,10 +45,15 @@ import {
   retainedSkepticalAuditor4Base64,
   retainedSkepticalAuditor1Base64,
   skepticalAuditorBase64,
+  retainedSkepticalAuditor11Base64,
+  retainedSkepticalAuditor10Base64,
+  retainedSkepticalAuditor9Base64,
+  retainedSkepticalAuditor8Base64,
+  retainedSkepticalAuditor7Base64,
 } from "./hosted-artifacts.generated.js";
 
 export const AGENT_HEIST_LISTING_DIGEST =
-  "blake3:10135b2b12664dec3fc51a23c917d8468474af93b9c20ee5ed068b61e2dee61c";
+  "blake3:1cf75abcb30d77fdbe0abc5e39813a315bea6900c61e9b49c51b84d995335d74";
 
 export interface PublicHostedActivity {
   readonly slug: "agent-heist" | "negotiate";
@@ -51,6 +69,13 @@ export interface PublicHostedActivity {
   readonly resultPublication: string;
   readonly attribution: string;
   readonly clientPath: string | null;
+  /**
+   * An exact retained client release that also understands the public
+   * projection contract. This is deliberately distinct from participant
+   * entry: an older participant client must never be silently upgraded just
+   * because somebody opens a public Run URL.
+   */
+  readonly publicViewerClientPath: string | null;
   readonly houseTerms: {
     readonly exhibition: true;
     readonly maximumAgents: 2;
@@ -62,7 +87,12 @@ export interface PublicHostedActivity {
 }
 
 export interface ReviewedHostedActivity {
-  readonly slug: "agent-heist";
+  /**
+   * The reviewed activity identity is broader than the current discovery
+   * catalog.  Retained and test-only reviewed activities must be able to use
+   * the same formation contract without pretending to be Agent Heist.
+   */
+  readonly slug: PublicHostedActivity["slug"];
   readonly listing: ListingRevision;
   readonly houseAgents: ReadonlyMap<string, HouseAgentRevision>;
   readonly public: PublicHostedActivity;
@@ -77,6 +107,21 @@ const houseAgents = [
   readHouseAgentRevision(decode(skepticalAuditorBase64)),
 ];
 const retainedHouseAgents = new Map([
+  // A retained Listing may have been formed with the then-current House
+  // revision. Keep current immutable revisions available to recovery even
+  // after discovery advances to a newer Listing.
+  readHouseAgentRevision(decode(cooperativePlannerBase64)),
+  readHouseAgentRevision(decode(skepticalAuditorBase64)),
+  readHouseAgentRevision(decode(retainedCooperativePlanner12Base64)),
+  readHouseAgentRevision(decode(retainedSkepticalAuditor11Base64)),
+  readHouseAgentRevision(decode(retainedCooperativePlanner11Base64)),
+  readHouseAgentRevision(decode(retainedSkepticalAuditor10Base64)),
+  readHouseAgentRevision(decode(retainedCooperativePlanner10Base64)),
+  readHouseAgentRevision(decode(retainedSkepticalAuditor9Base64)),
+  readHouseAgentRevision(decode(retainedCooperativePlanner9Base64)),
+  readHouseAgentRevision(decode(retainedSkepticalAuditor8Base64)),
+  readHouseAgentRevision(decode(retainedCooperativePlanner8Base64)),
+  readHouseAgentRevision(decode(retainedSkepticalAuditor7Base64)),
   readHouseAgentRevision(decode(retainedCooperativePlanner7Base64)),
   readHouseAgentRevision(decode(retainedSkepticalAuditor6Base64)),
   readHouseAgentRevision(decode(retainedCooperativePlanner6Base64)),
@@ -109,7 +154,8 @@ const agentHeistPublic = Object.freeze({
   publicViewingAvailable: true,
   resultPublication: "Replay-verified summaries can appear in Recent Results.",
   attribution: "Results use reviewed seat names unless a participant opts in to a public profile.",
-  clientPath: "/agent-heist-v5/hosted/",
+  clientPath: "/agent-heist-v6/hosted/",
+  publicViewerClientPath: "/agent-heist-v6/hosted/",
   houseTerms: {
     exhibition: true,
     maximumAgents: 2,
@@ -129,13 +175,13 @@ const reviewedAgentHeist = Object.freeze({
 
 // Discovery selects only the current revision. Retained formation and results
 // must continue resolving the exact revision accepted before this deployment.
-const retainedAgentHeist = [retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64, retainedAgentHeistListing04Base64, retainedAgentHeistListing05Base64, retainedAgentHeistListing06Base64, retainedAgentHeistListing07Base64, retainedAgentHeistListing08Base64, retainedAgentHeistListing09Base64, retainedAgentHeistListing010Base64, retainedAgentHeistListing011Base64]
+const retainedAgentHeist = [retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64, retainedAgentHeistListing04Base64, retainedAgentHeistListing05Base64, retainedAgentHeistListing06Base64, retainedAgentHeistListing07Base64, retainedAgentHeistListing08Base64, retainedAgentHeistListing09Base64, retainedAgentHeistListing010Base64, retainedAgentHeistListing011Base64, retainedAgentHeistListing012Base64, retainedAgentHeistListing013Base64, retainedAgentHeistListing014Base64, retainedAgentHeistListing015Base64, retainedAgentHeistListing016Base64, retainedAgentHeistListing017Base64, retainedAgentHeistListing018Base64, retainedAgentHeistListing019Base64]
   .map((bytes): ReviewedHostedActivity => {
     const retainedListing = readListingRevision(decode(bytes));
     const houseFillAvailable = retainedListing.value.seats.some(
       (seat) => seat.allowed_house_agent_revisions.length > 0,
     );
-    const retainedClientPath = (bytes === retainedAgentHeistListing07Base64 || bytes === retainedAgentHeistListing08Base64 || bytes === retainedAgentHeistListing09Base64 || bytes === retainedAgentHeistListing010Base64 || bytes === retainedAgentHeistListing011Base64) ? "/agent-heist-v4/hosted/" : bytes === retainedAgentHeistListing05Base64 || bytes === retainedAgentHeistListing06Base64
+    const retainedClientPath = bytes === retainedAgentHeistListing014Base64 || bytes === retainedAgentHeistListing019Base64 ? "/agent-heist-v6/hosted/" : bytes === retainedAgentHeistListing012Base64 || bytes === retainedAgentHeistListing013Base64 ? "/agent-heist-v5/hosted/" : (bytes === retainedAgentHeistListing07Base64 || bytes === retainedAgentHeistListing08Base64 || bytes === retainedAgentHeistListing09Base64 || bytes === retainedAgentHeistListing010Base64 || bytes === retainedAgentHeistListing011Base64) ? "/agent-heist-v4/hosted/" : bytes === retainedAgentHeistListing05Base64 || bytes === retainedAgentHeistListing06Base64
       ? "/agent-heist-v3/hosted/"
       : bytes === retainedAgentHeistListing04Base64 ? "/agent-heist-v2/hosted/" : null;
     return Object.freeze({
@@ -150,6 +196,7 @@ const retainedAgentHeist = [retainedAgentHeistListing02Base64, retainedAgentHeis
           ? "Retained revision with its original client"
           : "This retained revision requires its original client artifact, which is not hosted here.",
         clientPath: retainedClientPath,
+        publicViewerClientPath: null,
         houseFillAvailable,
         houseTerms: houseFillAvailable ? agentHeistPublic.houseTerms : null,
       }),
@@ -173,6 +220,7 @@ const negotiatePublic = Object.freeze({
   resultPublication: "Not available",
   attribution: "Not available",
   clientPath: null,
+  publicViewerClientPath: null,
   houseTerms: null,
 } satisfies PublicHostedActivity);
 
@@ -197,6 +245,17 @@ export function reviewedActivityBySlug(slug: string): ReviewedHostedActivity | n
 
 export function reviewedActivityByDigest(digest: string): ReviewedHostedActivity | null {
   return reviewedByDigest.get(digest) ?? null;
+}
+
+/**
+ * Selects a reviewed public viewer release without inspecting a Pack ID. The
+ * catalog owns this correspondence, so callers cannot choose a different
+ * client or replace a retained release with the current one.
+ */
+export function reviewedPublicViewerClientPath(
+  client: Pick<PublicHostedActivity, "publicViewerClientPath">,
+): string | null {
+  return client.publicViewerClientPath;
 }
 
 export function reviewedSeatId(activity: ReviewedHostedActivity, publicKey: string): string | null {

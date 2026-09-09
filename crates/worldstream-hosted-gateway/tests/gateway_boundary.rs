@@ -33,11 +33,13 @@ use worldstream_hosted_contract::{
     HostedGenesisEvidenceV1, HostedGenesisHeadV1, HostedGenesisMembershipPurposeV1,
     HostedGenesisMembershipV1, HostedGenesisPrincipalKindV1, HostedHouseRunnerReservationOutcomeV1,
     HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerReservationRequestV1,
-    HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HostedLaunchStageV1,
-    HostedLaunchStatusV1, HostedPublicRelayBindReceiptV1, HostedPublicRelayBindRequestV1,
-    HostedPublicStreamTicketRequestV1, HostedResultIntegrityStatusV1, HostedResultReplayEvidenceV1,
-    HostedResultSourceEvidenceV1, HostedResultSourceHeadV1, HostedResultSourceRequestV1,
-    PackReference,
+    HostedHouseRunnerRetirementDispositionV1, HostedHouseRunnerRetirementReceiptV1,
+    HostedHouseRunnerRetirementRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
+    HostedLaunchStageV1, HostedLaunchStatusV1, HostedPrestartAbandonmentEvidenceV1,
+    HostedProvisioningAbandonmentEvidenceV1, HostedPublicRelayBindReceiptV1,
+    HostedPublicRelayBindRequestV1, HostedPublicStreamTicketRequestV1,
+    HostedResultIntegrityStatusV1, HostedResultReplayEvidenceV1, HostedResultSourceEvidenceV1,
+    HostedResultSourceHeadV1, HostedResultSourceRequestV1, PackReference,
 };
 use worldstream_hosted_gateway::{
     FixedHostAdapterBackend, HostedGatewayBackend, HostedGatewayConfig, HostedGatewayError,
@@ -148,10 +150,13 @@ fn native_handoff_trace_probe() {
 struct Backend {
     launches: Arc<Mutex<Vec<HostedLaunchRequestV1>>>,
     evidence_reads: Arc<Mutex<Vec<HostedLaunchEvidenceRequestV1>>>,
+    prestart_abandonments: Arc<Mutex<Vec<HostedLaunchEvidenceRequestV1>>>,
+    provisioning_abandonments: Arc<Mutex<Vec<HostedLaunchEvidenceRequestV1>>>,
     genesis_reads: Arc<Mutex<Vec<HostedLaunchEvidenceRequestV1>>>,
     result_source_reads: Arc<Mutex<Vec<HostedResultSourceRequestV1>>>,
     house_reservations: Arc<Mutex<Vec<HostedHouseRunnerReservationRequestV1>>>,
     house_reads: Arc<Mutex<Vec<HostedHouseRunnerReservationRequestV1>>>,
+    house_retirements: Arc<Mutex<Vec<HostedHouseRunnerRetirementRequestV1>>>,
     browser_handoffs: Arc<Mutex<Vec<HostedBrowserHandoffRequestV1>>>,
     browser_redemptions: Arc<Mutex<Vec<HostedBrowserHandoffRedeemRequestV1>>>,
     browser_status_reads: Arc<Mutex<Vec<HostedBrowserSessionRequestV1>>>,
@@ -159,6 +164,9 @@ struct Backend {
     browser_stream_tickets: Arc<Mutex<Vec<HostedBrowserStreamTicketRequestV1>>>,
     public_relay_binds: Arc<Mutex<Vec<HostedPublicRelayBindRequestV1>>>,
     public_stream_lookups: Arc<Mutex<Vec<HostedPublicStreamTicketRequestV1>>>,
+    missing_evidence: bool,
+    missing_genesis: bool,
+    missing_house_retirement: bool,
     ready: bool,
 }
 
@@ -190,11 +198,36 @@ impl HostedGatewayBackend for Backend {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(request.clone());
+        if self.missing_evidence {
+            return Err(HostedGatewayError::Missing);
+        }
         Ok(status(
             &request.listing_revision_digest,
             &request.launch_request_digest,
             &request.room_setup_operation_id,
         ))
+    }
+
+    fn abandon_prestart(
+        &self,
+        request: &HostedLaunchEvidenceRequestV1,
+    ) -> Result<HostedPrestartAbandonmentEvidenceV1, HostedGatewayError> {
+        self.prestart_abandonments
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request.clone());
+        Ok(prestart_abandonment(request))
+    }
+
+    fn abandon_provisioning(
+        &self,
+        request: &HostedLaunchEvidenceRequestV1,
+    ) -> Result<HostedProvisioningAbandonmentEvidenceV1, HostedGatewayError> {
+        self.provisioning_abandonments
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request.clone());
+        Ok(provisioning_abandonment(request))
     }
 
     fn genesis_evidence(
@@ -205,6 +238,9 @@ impl HostedGatewayBackend for Backend {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(request.clone());
+        if self.missing_genesis {
+            return Err(HostedGatewayError::Missing);
+        }
         Ok(genesis(request))
     }
 
@@ -239,6 +275,20 @@ impl HostedGatewayBackend for Backend {
             .unwrap_or_else(PoisonError::into_inner)
             .push(request.clone());
         Ok(house_receipt(request))
+    }
+
+    fn retire_house_runner(
+        &self,
+        request: &HostedHouseRunnerRetirementRequestV1,
+    ) -> Result<HostedHouseRunnerRetirementReceiptV1, HostedGatewayError> {
+        self.house_retirements
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request.clone());
+        if self.missing_house_retirement {
+            return Err(HostedGatewayError::Missing);
+        }
+        Ok(house_retirement_receipt(request))
     }
 
     fn issue_browser_handoff(
@@ -554,6 +604,39 @@ fn evidence_request(listing: &str) -> HostedLaunchEvidenceRequestV1 {
     }
 }
 
+fn prestart_abandonment(
+    request: &HostedLaunchEvidenceRequestV1,
+) -> HostedPrestartAbandonmentEvidenceV1 {
+    HostedPrestartAbandonmentEvidenceV1 {
+        schema: "worldstream/hosted-prestart-abandonment-evidence/v1".to_owned(),
+        host_installation_id: "hosted-preview-1".to_owned(),
+        launch_request_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned(),
+        listing_revision_digest: request.listing_revision_digest.clone(),
+        launch_request_digest: request.launch_request_digest.clone(),
+        room_setup_operation_id: request.room_setup_operation_id.clone(),
+        room_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+        lobby_launch_committed: false,
+        abandonment_fence_digest: format!("blake3:{}", "a".repeat(64)),
+        authentication_tag: "b".repeat(64),
+    }
+}
+
+fn provisioning_abandonment(
+    request: &HostedLaunchEvidenceRequestV1,
+) -> HostedProvisioningAbandonmentEvidenceV1 {
+    HostedProvisioningAbandonmentEvidenceV1 {
+        schema: "worldstream/hosted-provisioning-abandonment-evidence/v1".to_owned(),
+        host_installation_id: "hosted-test".to_owned(),
+        launch_request_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned(),
+        listing_revision_digest: request.listing_revision_digest.clone(),
+        launch_request_digest: request.launch_request_digest.clone(),
+        room_setup_operation_id: request.room_setup_operation_id.clone(),
+        genesis_committed: false,
+        provisioning_fence_digest: format!("blake3:{}", "b".repeat(64)),
+        authentication_tag: "c".repeat(64),
+    }
+}
+
 fn result_source_request(listing: &str) -> HostedResultSourceRequestV1 {
     let launch = launch_request(listing);
     HostedResultSourceRequestV1 {
@@ -654,6 +737,35 @@ fn house_receipt(
             .to_owned(),
         authentication_tag: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
             .to_owned(),
+    }
+}
+
+fn house_retirement_request() -> HostedHouseRunnerRetirementRequestV1 {
+    HostedHouseRunnerRetirementRequestV1 {
+        schema: "worldstream/house-runner-retirement-request/v1".to_owned(),
+        host_installation_id: "hosted-test".to_owned(),
+        reservation_operation_id: "10000000-0000-4000-8000-000000000001".to_owned(),
+        launch_request_id: "20000000-0000-4000-8000-000000000001".to_owned(),
+        house_agent_assignment_id: Some("30000000-0000-4000-8000-000000000001".to_owned()),
+        disposition: HostedHouseRunnerRetirementDispositionV1::RunTerminal,
+        platform_evidence_digest: format!("sha256:{}", "1".repeat(64)),
+    }
+}
+
+fn house_retirement_receipt(
+    request: &HostedHouseRunnerRetirementRequestV1,
+) -> HostedHouseRunnerRetirementReceiptV1 {
+    HostedHouseRunnerRetirementReceiptV1 {
+        schema: "worldstream/house-runner-retirement-receipt/v1".to_owned(),
+        host_installation_id: request.host_installation_id.clone(),
+        reservation_operation_id: request.reservation_operation_id.clone(),
+        launch_request_id: request.launch_request_id.clone(),
+        house_agent_assignment_id: request.house_agent_assignment_id.clone(),
+        runner_unit_id: "house-runner-01".to_owned(),
+        disposition: request.disposition,
+        platform_evidence_digest: request.platform_evidence_digest.clone(),
+        stop_witness: format!("blake3:{}", "2".repeat(64)),
+        authentication_tag: "d".repeat(64),
     }
 }
 
@@ -1581,6 +1693,35 @@ async fn genesis_correspondence_is_service_only_and_never_uses_a_browser_route()
 }
 
 #[tokio::test]
+async fn missing_read_only_host_operations_preserve_not_found_for_recovery() {
+    let mut backend = Backend::default();
+    backend.missing_evidence = true;
+    backend.missing_genesis = true;
+    let app = hosted_gateway_router(config(8), backend);
+
+    for path in ["/v1/hosted/evidence", "/v1/hosted/genesis-evidence"] {
+        let response = app
+            .clone()
+            .oneshot(service_request(path, TOKEN, &evidence_request(LISTING)))
+            .await
+            .expect("response");
+        assert_eq!(response.status(), 404, "{path}");
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).expect("json"),
+            json!({
+                "error": { "code": "operation_missing", "retryable": false }
+            })
+        );
+    }
+}
+
+#[tokio::test]
 async fn result_source_evidence_is_service_only_typed_and_secret_free() {
     let backend = Backend::default();
     let app = hosted_gateway_router(config(8), backend.clone());
@@ -1687,6 +1828,177 @@ async fn house_reservation_routes_are_service_only_typed_and_allowlisted() {
             "/v1/hosted/house-runners/reserve",
             "wrong-authority-value-long-enough",
             &house_request(LISTING),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(unauthorized.status(), 401);
+}
+
+#[tokio::test]
+async fn house_retirement_route_is_service_only_and_evidence_bound() {
+    let backend = Backend::default();
+    let app = hosted_gateway_router(config(8), backend.clone());
+    let request = house_retirement_request();
+    let response = app
+        .clone()
+        .oneshot(service_request(
+            "/v1/hosted/house-runners/retire",
+            TOKEN,
+            &request,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), 200);
+    let receipt: HostedHouseRunnerRetirementReceiptV1 = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("typed retirement receipt");
+    assert_eq!(
+        receipt.platform_evidence_digest,
+        request.platform_evidence_digest
+    );
+    assert_eq!(
+        backend
+            .house_retirements
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_slice(),
+        &[request.clone()]
+    );
+
+    let unauthorized = app
+        .oneshot(service_request(
+            "/v1/hosted/house-runners/retire",
+            "wrong-authority-value-long-enough",
+            &request,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(unauthorized.status(), 401);
+}
+
+#[tokio::test]
+async fn missing_house_retirement_is_retryable_not_operation_rejected() {
+    let mut backend = Backend::default();
+    backend.missing_house_retirement = true;
+    let app = hosted_gateway_router(config(8), backend);
+    let response = app
+        .oneshot(service_request(
+            "/v1/hosted/house-runners/retire",
+            TOKEN,
+            &house_retirement_request(),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), 404);
+    assert_eq!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+        br#"{"error":{"code":"operation_missing","retryable":false}}"#.as_slice()
+    );
+}
+
+#[tokio::test]
+async fn prestart_abandonment_route_is_service_only_and_returns_exact_host_evidence() {
+    let backend = Backend::default();
+    let app = hosted_gateway_router(config(8), backend.clone());
+    let request = evidence_request(LISTING);
+    let response = app
+        .clone()
+        .oneshot(service_request(
+            "/v1/hosted/abandon-prestart",
+            TOKEN,
+            &request,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), 200);
+    let evidence: HostedPrestartAbandonmentEvidenceV1 = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("typed exact Host evidence");
+    assert_eq!(
+        evidence.room_setup_operation_id,
+        request.room_setup_operation_id
+    );
+    assert!(!evidence.lobby_launch_committed);
+    assert_eq!(
+        backend
+            .prestart_abandonments
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_slice(),
+        &[request.clone()]
+    );
+
+    let unauthorized = app
+        .oneshot(service_request(
+            "/v1/hosted/abandon-prestart",
+            "wrong-authority-value-long-enough",
+            &request,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(unauthorized.status(), 401);
+}
+
+#[tokio::test]
+async fn provisioning_abandonment_route_is_service_only_and_returns_exact_pre_genesis_fence() {
+    let backend = Backend::default();
+    let app = hosted_gateway_router(config(8), backend.clone());
+    let request = evidence_request(LISTING);
+    let response = app
+        .clone()
+        .oneshot(service_request(
+            "/v1/hosted/abandon-provisioning",
+            TOKEN,
+            &request,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), 200);
+    let evidence: HostedProvisioningAbandonmentEvidenceV1 = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("typed exact Host fence evidence");
+    assert_eq!(
+        evidence.room_setup_operation_id,
+        request.room_setup_operation_id
+    );
+    assert!(!evidence.genesis_committed);
+    assert_eq!(
+        backend
+            .provisioning_abandonments
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_slice(),
+        &[request.clone()]
+    );
+
+    let unauthorized = app
+        .oneshot(service_request(
+            "/v1/hosted/abandon-provisioning",
+            "wrong-authority-value-long-enough",
+            &request,
         ))
         .await
         .expect("response");
@@ -1942,7 +2254,7 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
     let address = listener.local_addr().expect("fixture address");
     let (sender, receiver) = mpsc::channel();
     let server = thread::spawn(move || {
-        for index in 0..14 {
+        for index in 0..15 {
             let (stream, _) = listener.accept().expect("fixture connection");
             let (request_line, authorization, body, mut stream) = read_request(stream);
             sender
@@ -1954,13 +2266,15 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
                     "ready": true
                 }))
                 .expect("readiness response"),
-                3 => serde_json::to_vec(&genesis(&evidence_request(LISTING)))
+                3 => serde_json::to_vec(&provisioning_abandonment(&evidence_request(LISTING)))
+                    .expect("provisioning abandonment response"),
+                4 => serde_json::to_vec(&genesis(&evidence_request(LISTING)))
                     .expect("Genesis evidence response"),
-                4 => serde_json::to_vec(&result_source_evidence(&result_source_request(LISTING)))
+                5 => serde_json::to_vec(&result_source_evidence(&result_source_request(LISTING)))
                     .expect("result-source evidence response"),
-                5 | 6 => serde_json::to_vec(&house_receipt(&house_request(LISTING)))
+                6 | 7 => serde_json::to_vec(&house_receipt(&house_request(LISTING)))
                     .expect("House receipt response"),
-                7 => serde_json::to_vec(&HostedBrowserHandoffResponseV1 {
+                8 => serde_json::to_vec(&HostedBrowserHandoffResponseV1 {
                     schema: "worldstream/hosted-browser-handoff-response/v1".to_owned(),
                     client_url: format!(
                         "https://arena.example/clients/heist/#handoff=wsh1:{}",
@@ -1968,28 +2282,28 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
                     ),
                 })
                 .expect("browser handoff response"),
-                8 => serde_json::to_vec(&HostedBrowserHandoffRedeemResponseV1 {
+                9 => serde_json::to_vec(&HostedBrowserHandoffRedeemResponseV1 {
                     schema: "worldstream/hosted-browser-handoff-redeem-response/v1".to_owned(),
                     session: format!("wss1:{}", "b".repeat(64)),
                 })
                 .expect("browser redemption response"),
-                9 => serde_json::to_vec(&HostedBrowserSessionStatusV1 {
+                10 => serde_json::to_vec(&HostedBrowserSessionStatusV1 {
                     schema: "worldstream/hosted-browser-session-status/v1".to_owned(),
                     state: HostedBrowserSessionStateV1::Usable,
                 })
                 .expect("browser status response"),
-                10 => serde_json::to_vec(&HostedBrowserSessionLogoutV1 {
+                11 => serde_json::to_vec(&HostedBrowserSessionLogoutV1 {
                     schema: "worldstream/hosted-browser-session-logout/v1".to_owned(),
                     logged_out: true,
                 })
                 .expect("browser logout response"),
-                11 => serde_json::to_vec(&HostedBrowserStreamTicketResponseV1 {
+                12 => serde_json::to_vec(&HostedBrowserStreamTicketResponseV1 {
                     schema: "worldstream/hosted-browser-stream-ticket-response/v1".to_owned(),
                     ticket: format!("wst1:{}", "c".repeat(64)),
                     expires_in_ms: 15_000,
                 })
                 .expect("browser stream ticket response"),
-                12 => {
+                13 => {
                     let request = public_relay_bind_request();
                     serde_json::to_vec(&HostedPublicRelayBindReceiptV1 {
                         schema: "worldstream/hosted-public-relay-bind-receipt/v1".to_owned(),
@@ -2000,7 +2314,7 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
                     })
                     .expect("public relay receipt")
                 }
-                13 => serde_json::to_vec(&HostedBrowserStreamTicketResponseV1 {
+                14 => serde_json::to_vec(&HostedBrowserStreamTicketResponseV1 {
                     schema: "worldstream/hosted-browser-stream-ticket-response/v1".to_owned(),
                     ticket: format!("wst1:{}", "c".repeat(64)),
                     expires_in_ms: 15_000,
@@ -2015,7 +2329,7 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
             };
             let status_code = if index == 1 {
                 202
-            } else if matches!(index, 7 | 8 | 11 | 12 | 13) {
+            } else if matches!(index, 8 | 9 | 12 | 13 | 14) {
                 201
             } else {
                 200
@@ -2037,6 +2351,11 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
     assert!(backend.ready());
     assert!(backend.launch(&launch_request(LISTING)).is_ok());
     assert!(backend.evidence(&evidence_request(LISTING)).is_ok());
+    assert!(
+        backend
+            .abandon_provisioning(&evidence_request(LISTING))
+            .is_ok()
+    );
     assert!(backend.genesis_evidence(&evidence_request(LISTING)).is_ok());
     assert!(
         backend
@@ -2094,7 +2413,7 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
 }
 
 fn assert_fixed_adapter_observations(observations: &[(String, String, Vec<u8>)]) {
-    assert_eq!(observations.len(), 14);
+    assert_eq!(observations.len(), 15);
     assert_eq!(
         observations[0].0,
         "GET /api/v1/hosted-launches/ready HTTP/1.1"
@@ -2109,46 +2428,50 @@ fn assert_fixed_adapter_observations(observations: &[(String, String, Vec<u8>)])
     );
     assert_eq!(
         observations[3].0,
-        "POST /api/v1/hosted-launches:read-genesis HTTP/1.1"
+        "POST /api/v1/hosted-launches:abandon-provisioning HTTP/1.1"
     );
     assert_eq!(
         observations[4].0,
-        "POST /api/v1/hosted-launches:read-result-source HTTP/1.1"
+        "POST /api/v1/hosted-launches:read-genesis HTTP/1.1"
     );
     assert_eq!(
         observations[5].0,
-        "POST /api/v1/hosted-house-runners:reserve HTTP/1.1"
+        "POST /api/v1/hosted-launches:read-result-source HTTP/1.1"
     );
     assert_eq!(
         observations[6].0,
-        "POST /api/v1/hosted-house-runners:read HTTP/1.1"
+        "POST /api/v1/hosted-house-runners:reserve HTTP/1.1"
     );
     assert_eq!(
         observations[7].0,
-        "POST /api/v1/hosted-browser-handoffs:issue HTTP/1.1"
+        "POST /api/v1/hosted-house-runners:read HTTP/1.1"
     );
     assert_eq!(
         observations[8].0,
-        "POST /api/v1/hosted-browser-handoffs:redeem HTTP/1.1"
+        "POST /api/v1/hosted-browser-handoffs:issue HTTP/1.1"
     );
     assert_eq!(
         observations[9].0,
-        "POST /api/v1/hosted-browser-sessions:status HTTP/1.1"
+        "POST /api/v1/hosted-browser-handoffs:redeem HTTP/1.1"
     );
     assert_eq!(
         observations[10].0,
-        "POST /api/v1/hosted-browser-sessions:logout HTTP/1.1"
+        "POST /api/v1/hosted-browser-sessions:status HTTP/1.1"
     );
     assert_eq!(
         observations[11].0,
-        "POST /api/v1/hosted-browser-sessions:stream-ticket HTTP/1.1"
+        "POST /api/v1/hosted-browser-sessions:logout HTTP/1.1"
     );
     assert_eq!(
         observations[12].0,
-        "POST /api/v1/hosted-public-relays:bind HTTP/1.1"
+        "POST /api/v1/hosted-browser-sessions:stream-ticket HTTP/1.1"
     );
     assert_eq!(
         observations[13].0,
+        "POST /api/v1/hosted-public-relays:bind HTTP/1.1"
+    );
+    assert_eq!(
+        observations[14].0,
         "POST /api/v1/hosted-public-streams:ticket HTTP/1.1"
     );
     assert!(
@@ -2170,6 +2493,7 @@ fn assert_fixed_adapter_observations(observations: &[(String, String, Vec<u8>)])
     assert!(CanonicalJsonV1::from_canonical_bytes(&observations[11].2).is_ok());
     assert!(CanonicalJsonV1::from_canonical_bytes(&observations[12].2).is_ok());
     assert!(CanonicalJsonV1::from_canonical_bytes(&observations[13].2).is_ok());
+    assert!(CanonicalJsonV1::from_canonical_bytes(&observations[14].2).is_ok());
 }
 
 fn read_request(stream: TcpStream) -> (String, String, Vec<u8>, TcpStream) {

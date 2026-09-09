@@ -29,12 +29,14 @@ import {
 import {
   listPublicHostedActivities,
   reviewedActivityByDigest,
+  reviewedPublicViewerClientPath,
   reviewedActivityBySlug,
   reviewedSeatId,
   reviewedSeatKey,
 } from "./hosted-catalog.js";
 import {
   presentPublicRun,
+  presentPublicViewerClient,
   publicProjectionStreamBaseUrl,
   type PublicRunData,
 } from "./public-runs.js";
@@ -71,6 +73,31 @@ export interface OAuthAttempt {
 export interface PlatformAccount {
   readonly accountId: string;
   readonly publicProfileEnabled: boolean;
+}
+
+export interface MyGamesIndex {
+  readonly version: "platform_my_games.v1";
+  readonly items: readonly {
+    readonly launchId: string;
+    readonly title: string;
+    /** A private, derived status from launch and verified result-index evidence. */
+    readonly state:
+      | "setup_pending"
+      | "setup_cancelled"
+      | "setup_abandoned"
+      | "setup_failed"
+      | "live"
+      | "publication_pending"
+      | "terminal_without_outcome"
+      | "result_suppressed"
+      | "dependency_failure"
+      | "verified_result";
+    readonly updatedAt: string;
+    readonly participation: "human" | "external_agent";
+    readonly action: "continue_setup" | "return_to_game" | "view_result" | "none";
+    readonly resultPublicId: string | null;
+  }[];
+  readonly next: { readonly beforeAt: string; readonly beforeLaunchId: string } | null;
 }
 
 export interface SessionRefreshAdmission extends PlatformAccount {
@@ -141,6 +168,13 @@ export interface PlatformDataClient {
   }): Promise<PlatformAccount | null>;
   setPublicProfile(authUserId: string, enabled: boolean): Promise<boolean>;
   beginAccountErasure(authUserId: string): Promise<boolean>;
+  /** Private account-scoped discovery; it never contains Membership authority. */
+  listMyGames?(input: {
+    accountId: string;
+    beforeAt: string | null;
+    beforeLaunchId: string | null;
+    limit: number;
+  }): Promise<MyGamesIndex | null>;
   resolveOwnedRunMembership(input: {
     accountId: string;
     runId: string;
@@ -234,6 +268,16 @@ export class PlatformRateLimitExceededError extends Error {
   }
 }
 
+/** A reviewed platform capacity gate is currently holding a safe reservation. */
+export class PlatformActivityCapacityUnavailableError extends Error {
+  constructor(
+    readonly scope: "account" | "platform",
+  ) {
+    super("platform_activity_capacity_unavailable");
+    this.name = "PlatformActivityCapacityUnavailableError";
+  }
+}
+
 /** Builds the fixed Vercel BFF route graph. */
 export function createPlatformBff(
   config: PlatformBffConfig,
@@ -263,6 +307,7 @@ export function createPlatformBff(
           publicRunId,
           dependencies.publicRunData,
           hostedPublicStreamBaseUrl,
+          origin,
         );
       }
       if (
@@ -294,6 +339,9 @@ export function createPlatformBff(
       }
       if (request.method === "GET" && url.pathname === "/api/auth/session") {
         return readSession(request, origin, sessionKey, dependencies, browserStreamUrl);
+      }
+      if (request.method === "GET" && url.pathname === "/api/my-games") {
+        return readMyGames(request, url, origin, sessionKey, dependencies);
       }
       if (request.method === "POST" && url.pathname === "/api/auth/session/refresh") {
         return refreshSession(request, origin, sessionKey, dependencies);
@@ -369,12 +417,21 @@ async function readPublicRun(
   publicId: string,
   data: PublicRunData | undefined,
   hostedPublicStreamBaseUrl: string | null,
+  origin: string,
 ): Promise<Response> {
   if (data === undefined) return temporarilyUnavailable();
   try {
+    const record = await data.readPublicRun(publicId);
+    const presented = presentPublicRun(record, hostedPublicStreamBaseUrl);
+    const reviewed = record.state === "live"
+      ? reviewedActivityByDigest(record.activity.listing_revision)
+      : null;
+    const viewerClientPath = reviewed === null
+      ? null
+      : reviewedPublicViewerClientPath(reviewed.public);
     return publicNoStoreJson(
       200,
-      presentPublicRun(await data.readPublicRun(publicId), hostedPublicStreamBaseUrl),
+      presentPublicViewerClient(presented, origin, viewerClientPath),
     );
   } catch {
     return temporarilyUnavailable();
@@ -537,7 +594,16 @@ async function readHostedLaunch(
   try {
     const launch = await dependencies.hostedFormationData.readLaunchRequest(admitted.account.accountId, launchId);
     if (launch === null) return privateError(404, "launch_unavailable");
-    if (launch.canManage) await formation.recover(launchId);
+    if (launch.canManage) {
+      try {
+        await formation.recover(launchId);
+      } catch (error) {
+        // A read retains the exact Launch Request when the Host is temporarily
+        // unavailable. The snapshot below presents reconciliation and keeps
+        // entry disabled; it never authorizes a replacement Room.
+        if (!(error instanceof HostedFormationUnavailableError)) throw error;
+      }
+    }
     const snapshot = await launchSnapshot(
       dependencies.hostedFormationData,
       admitted.account.accountId,
@@ -550,6 +616,58 @@ async function readHostedLaunch(
   } catch (error) {
     return formationError(error);
   }
+}
+
+async function readMyGames(
+  request: Request,
+  url: URL,
+  origin: string,
+  sessionKey: Buffer,
+  dependencies: BffDependencies,
+): Promise<Response> {
+  const admitted = await verifiedRead(request, origin, sessionKey, dependencies);
+  if (admitted instanceof Response) return admitted;
+  if (dependencies.dataClient.listMyGames === undefined) return temporarilyUnavailable();
+  const limitValue = url.searchParams.get("limit");
+  const beforeAt = url.searchParams.get("before_at");
+  const beforeLaunchId = url.searchParams.get("before_launch_id");
+  const limit = limitValue === null ? 20 : Number(limitValue);
+  if (
+    !Number.isInteger(limit) || limit < 1 || limit > 50 ||
+    ((beforeAt === null) !== (beforeLaunchId === null)) ||
+    (beforeAt !== null && Number.isNaN(Date.parse(beforeAt))) ||
+    (beforeLaunchId !== null && !UUID_PATTERN.test(beforeLaunchId))
+  ) return privateError(400, "invalid_request");
+  try {
+    const index = await dependencies.dataClient.listMyGames({
+      accountId: admitted.account.accountId,
+      beforeAt,
+      beforeLaunchId,
+      limit,
+    });
+    return index === null ? clearSessionError(401, "session_invalid") : privateJson(200, presentMyGames(index));
+  } catch (error) {
+    return credentialWasRejected(error) ? clearSessionError(401, "session_invalid") : temporarilyUnavailable();
+  }
+}
+
+function presentMyGames(index: MyGamesIndex): Record<string, unknown> {
+  return {
+    version: index.version,
+    items: index.items.map((item) => ({
+      launch_id: item.launchId,
+      title: item.title,
+      state: item.state,
+      updated_at: item.updatedAt,
+      participation: item.participation,
+      action: item.action,
+      ...(item.resultPublicId === null ? {} : { result_public_id: item.resultPublicId }),
+    })),
+    next: index.next === null ? null : {
+      before_at: index.next.beforeAt,
+      before_launch_id: index.next.beforeLaunchId,
+    },
+  };
 }
 
 async function claimHostedInvitation(
@@ -601,11 +719,18 @@ async function mutateHostedLaunch(
   const admitted = await verifiedMutation(request, origin, sessionKey, dependencies);
   if (admitted instanceof Response) return admitted;
   const data = dependencies.hostedFormationData;
-  if (formation === null || data === undefined) return temporarilyUnavailable();
+  if (data === undefined) return temporarilyUnavailable();
   if (!isExactObject(admitted.body, [])) return privateError(400, "invalid_request");
   try {
     if (route.action === "start") {
+      if (formation === null) return temporarilyUnavailable();
       const launch = await data.readLaunchRequest(admitted.account.accountId, route.launchId);
+      // The abandonment receipt is terminal for the generic start flow.  A
+      // retained pre-start Run must remain inspectable, but cannot be resumed
+      // by retrying the start endpoint or by issuing another Host operation.
+      if (launch === null || launch.state === "abandoned_prestart") {
+        return privateError(409, "launch_unavailable");
+      }
       if (launch !== null && reviewedActivityByDigest(launch.listingRevisionDigest)?.public.clientPath === null) {
         return privateError(409, "launch_client_unavailable");
       }
@@ -618,10 +743,42 @@ async function mutateHostedLaunch(
       });
     }
     if (route.action === "cancel") {
-      return (await data.cancelLaunchRequest(admitted.account.accountId, route.launchId))
-        ? privateJson(200, { version: "hosted_launch_cancelled.v1", cancelled: true })
-        : privateError(409, "launch_unavailable");
+      const launch = await data.readLaunchRequest(admitted.account.accountId, route.launchId);
+      if (launch === null || !launch.canManage) return privateError(409, "launch_unavailable");
+      // Before the Host receives a frozen operation, cancellation is a normal
+      // creator-owned platform mutation. Once Genesis exists, the same UI
+      // action becomes a distinct, evidence-bound Host abandonment operation.
+      if (launch.state === "collecting_roster") {
+        return (await data.cancelLaunchRequest(admitted.account.accountId, route.launchId))
+          ? privateJson(200, { version: "hosted_launch_cancelled.v1", cancelled: true })
+          : privateError(409, "launch_unavailable");
+      }
+      if (launch.state === "provisioning") {
+        // The ordinary platform cancellation RPC is valid during provisioning
+        // only while the Host has not started its exact retained mutation.
+        // Once that boundary is crossed, keep the launch closed and require
+        // the Host-authorized abandonment lane instead of racing the RPC.
+        const material = await data.readHostedLaunchMaterial(
+          admitted.account.accountId,
+          route.launchId,
+        );
+        if (material === null || material.hostMutationStarted) {
+          return privateError(409, "launch_unavailable");
+        }
+        return (await data.cancelLaunchRequest(admitted.account.accountId, route.launchId))
+          ? privateJson(200, { version: "hosted_launch_cancelled.v1", cancelled: true })
+          : privateError(409, "launch_unavailable");
+      }
+      if (launch.state !== "run_created" || formation === null) {
+        return privateError(409, "launch_unavailable");
+      }
+      await formation.abandonPrestart(route.launchId);
+      return privateJson(200, {
+        version: "hosted_launch_abandoned_prestart.v1",
+        abandoned: true,
+      });
     }
+    if (formation === null) return temporarilyUnavailable();
     const launch = await data.readLaunchRequest(
       admitted.account.accountId,
       route.launchId,
@@ -677,7 +834,7 @@ async function launchSnapshot(
   if (run !== null && !entryReady) {
     run = { ...run, canEnter: false, memberships: [] };
   }
-  return safeLaunchProjection(launch, house, reconciliation?.needsGenesisPull === true, run);
+  return safeLaunchProjection(launch, house, reconciliation?.needsGenesisPull === true, run, entryReady);
 }
 
 function safeLaunchProjection(
@@ -685,13 +842,14 @@ function safeLaunchProjection(
   house: HouseFillRecord | null,
   reconciling: boolean,
   run: OwnedRunRecord | null,
+  entryReady: boolean,
 ): Record<string, unknown> {
   const reviewed = reviewedActivityByDigest(launch.listingRevisionDigest);
   const state = launch.state === "collecting_roster"
     ? "collecting"
     : launch.state === "run_created"
       ? run?.canEnter ? "run_created" : "reconciling"
-      : ["cancelled", "expired", "failed_pre_genesis"].includes(launch.state)
+      : ["cancelled", "expired", "failed_pre_genesis", "abandoned_prestart"].includes(launch.state)
         ? launch.state
         : reconciling
           ? "reconciling"
@@ -712,6 +870,13 @@ function safeLaunchProjection(
           claim_window_closes_at: house.claimWindowClosesAt,
           failure_code: house.failureCode,
         },
+    recovery_state: ["collecting_roster", "cancelled", "expired", "failed_pre_genesis", "abandoned_prestart"].includes(launch.state)
+      ? "not_started"
+      : run === null
+        ? "genesis_not_proven"
+        : entryReady
+          ? "entry_ready"
+          : "genesis_recorded_repairing",
     seats: launch.seats.map((seat) => {
       const houseAssignment = house?.assignments.find(
         ({ seatId }) => seatId === seat.seatId,
@@ -789,6 +954,9 @@ function formationError(error: unknown, rejectedCode = "formation_unavailable"):
     error instanceof PlatformCredentialRejectedError
   ) {
     return privateError(409, rejectedCode);
+  }
+  if (error instanceof PlatformActivityCapacityUnavailableError) {
+    return privateError(409, "activity_capacity_unavailable");
   }
   if (
     error instanceof HostedFormationUnavailableError ||
@@ -1337,9 +1505,13 @@ async function enterRun(
     const handoff = await hosted.issueHandoff(admitted.account.accountId, binding);
     const client = new URL(handoff.clientUrl);
     if (client.origin !== origin) return temporarilyUnavailable();
+    // The client receives only a fixed platform destination. The one-use
+    // Membership handoff remains fragment-only and is not widened by this UI
+    // convenience context.
+    client.searchParams.set("platform_return", "/");
     return privateJson(201, {
       version: "platform_run_entry.v1",
-      client_url: handoff.clientUrl,
+      client_url: client.toString(),
     });
   } catch (error) {
     return error instanceof HostedBrowserSessionRejectedError

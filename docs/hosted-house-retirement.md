@@ -1,7 +1,39 @@
 # Retire a completed House Runner unit
 
-This is an offline Host Operator procedure for the hobby preview. It is not
-an automatic timeout, an Activity Outcome, or a provider allowance reset.
+The hosted preview automatically retires a House Runner after the Platform has
+stored verified Run Terminal Evidence. This is operational cleanup, not an
+Activity Outcome, timeout, provider allowance reset, or a way to rewrite an
+Assignment or reservation receipt.
+
+The automatic S6 path is deliberately narrow:
+
+1. The independent Result Projector records immutable terminal evidence.
+2. The Platform database returns retirement material only for that terminal
+   Run, its exact successful reservation, and its exact House Assignment.
+3. The Host writes a durable `retiring.json` intent fence before it drains the
+   exact managed helper/model pair. Spawn paths reject the intent, final
+   `retired.json`, and legacy operator fence.
+4. Only after the pair is stopped and reaped does the Host write its signed
+   retirement receipt. The Platform retains that receipt and then changes the
+   matching `succeeded` reservation to `released` in the same transaction.
+
+A crash after intent installation keeps capacity occupied and prevents a late
+spawn; the bounded reconciler retries the same evidence-bound request. Result
+publication is not held behind this cleanup: terminal/result persistence is
+durable first, and a separate terminal-retirement candidate lane continues
+automatic retry until the immutable receipt exists. The Host never accepts a
+browser request or a generic process-control command.
+
+For this MVP, the service-authenticated Gateway is the trust boundary for the
+Host receipt. The database validates its exact Run, Assignment, reservation,
+unit, disposition, digest, and signed shape; it does not receive a second Host
+signing secret. A mismatched or conflicting receipt cannot release capacity.
+
+Pre-Genesis failure and verified pre-start abandonment use the same Host
+operation but are not automatic S6 triggers. They remain reserved for the
+separate S7 recovery/expiry policy.
+
+## Offline repair procedure
 
 1. Close platform launches and House fill. Verify retained Run Terminal Evidence
    for each exact launch and reservation. Do not release pending or ambiguous
@@ -37,4 +69,6 @@ four-unit capacity limit to work around a failed release.
 
 The marker does not stop an already running child. This procedure therefore
 requires a closed maintenance interval; it is not safe as an online cleanup.
-Automatic, cross-store retirement is not implemented by this runbook.
+Use this repair procedure only when the automatic path cannot establish the
+required evidence or durable fence. It must not bypass the automatic receipt
+and reservation rules above.

@@ -3,6 +3,14 @@ import { timingSafeEqual } from "node:crypto";
 
 import {
   agentHeistListingBase64,
+  retainedAgentHeistListing019Base64,
+  retainedAgentHeistListing018Base64,
+  retainedAgentHeistListing017Base64,
+  retainedAgentHeistListing016Base64,
+  retainedAgentHeistListing015Base64,
+  retainedAgentHeistListing014Base64,
+  retainedAgentHeistListing013Base64,
+  retainedAgentHeistListing012Base64,
   retainedAgentHeistListing011Base64,
   retainedAgentHeistResultProjector03Base64,
   retainedAgentHeistListing010Base64,
@@ -16,6 +24,7 @@ import {
   retainedAgentHeistListing09Base64,
   agentHeistPublicProjectionSchemaBase64,
   agentHeistResultProjectorBase64,
+  retainedAgentHeistResultProjector04Base64,
   retainedAgentHeistResultProjector02Base64,
   declarativeResultProjectorRuntimeBase64,
   resultSummarySchemaBase64,
@@ -23,9 +32,12 @@ import {
 import type { PlatformBff } from "./bff.js";
 import {
   HttpHostedResultSourceClient,
+  HttpHostedHouseRetirementClient,
   PinnedResultProjectorRegistry,
   reconcileActivityResultCandidates,
   reconcileActivityResult,
+  reconcilePrestartHouseRunnerRetirementCandidates,
+  reconcileTerminalHouseRunnerRetirementCandidates,
   type ResultReconcilerDependencies,
   type ResultReconciliationCandidate,
 } from "./result-reconciliation.js";
@@ -33,6 +45,10 @@ import { createSupabaseResultReconciliationData } from "./supabase.js";
 
 const PUBLIC_RUN = /^\/api\/runs\/[0-9a-f]{32}$/u;
 const RECENT_RESULTS = "/api/results/agent-heist/recent";
+// This is deliberately process-local: the preview has one Fly machine and no
+// worker queue. It prevents a browser poll fan-out from starting equivalent
+// global maintenance passes while preserving two five-second poll intervals.
+const MY_GAMES_RECONCILIATION_COOLDOWN_MS = 10_000;
 
 export function createHostedResultReconciler(input: {
   readonly supabaseUrl: string;
@@ -49,13 +65,18 @@ export function createHostedResultReconciler(input: {
       baseUrl: input.hostedGatewayUrl,
       serviceAuthority: input.serviceAuthority,
     }),
+    houseRetirement: new HttpHostedHouseRetirementClient({
+      baseUrl: input.hostedGatewayUrl,
+      serviceAuthority: input.serviceAuthority,
+    }),
     projectors: new PinnedResultProjectorRegistry([
-      agentHeistListingBase64, retainedAgentHeistListing011Base64, retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64,
+      agentHeistListingBase64, retainedAgentHeistListing019Base64, retainedAgentHeistListing018Base64, retainedAgentHeistListing017Base64, retainedAgentHeistListing016Base64, retainedAgentHeistListing015Base64, retainedAgentHeistListing014Base64, retainedAgentHeistListing013Base64, retainedAgentHeistListing012Base64, retainedAgentHeistListing011Base64, retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64,
       retainedAgentHeistListing04Base64, retainedAgentHeistListing05Base64, retainedAgentHeistListing06Base64, retainedAgentHeistListing07Base64, retainedAgentHeistListing08Base64, retainedAgentHeistListing09Base64, retainedAgentHeistListing010Base64,
     ].map((listingBytes) => ({
         listingBytes: decode(listingBytes),
         projectorBytes: decode(listingBytes === agentHeistListingBase64 ? agentHeistResultProjectorBase64
-          : listingBytes === retainedAgentHeistListing011Base64 || listingBytes === retainedAgentHeistListing07Base64 || listingBytes === retainedAgentHeistListing08Base64 || listingBytes === retainedAgentHeistListing09Base64 || listingBytes === retainedAgentHeistListing010Base64
+          : listingBytes === retainedAgentHeistListing012Base64 ? retainedAgentHeistResultProjector04Base64
+          : listingBytes === retainedAgentHeistListing019Base64 || listingBytes === retainedAgentHeistListing018Base64 || listingBytes === retainedAgentHeistListing017Base64 || listingBytes === retainedAgentHeistListing016Base64 || listingBytes === retainedAgentHeistListing015Base64 || listingBytes === retainedAgentHeistListing014Base64 || listingBytes === retainedAgentHeistListing013Base64 || listingBytes === retainedAgentHeistListing011Base64 || listingBytes === retainedAgentHeistListing07Base64 || listingBytes === retainedAgentHeistListing08Base64 || listingBytes === retainedAgentHeistListing09Base64 || listingBytes === retainedAgentHeistListing010Base64
             ? retainedAgentHeistResultProjector03Base64 : retainedAgentHeistResultProjector02Base64),
         runtimeBytes: decode(declarativeResultProjectorRuntimeBase64),
         projectionSchemaBytes: decode(agentHeistPublicProjectionSchemaBase64),
@@ -77,11 +98,35 @@ export function withHostedResultReconciliation(
     readonly canonicalOrigin: string;
     readonly cronSecret: string;
     readonly recover: (launchRequestId: string) => Promise<unknown>;
+    /** Uses the Host's current task state; DB time only selects candidates. */
+    readonly abandonPrestart: (launchRequestId: string) => Promise<unknown>;
   },
 ): PlatformBff {
   if (recovery !== undefined && !/^[\x21-\x7e]{32,256}$/u.test(recovery.cronSecret)) {
     throw new Error("invalid_reconciliation_cron_secret");
   }
+  let myGamesReconciliation: Promise<void> | undefined;
+  let myGamesReconciliationAvailableAt = 0;
+
+  async function reconcileForMyGamesRead(): Promise<void> {
+    if (Date.now() < myGamesReconciliationAvailableAt) return;
+    if (myGamesReconciliation !== undefined) {
+      return myGamesReconciliation;
+    }
+
+    const pass = reconcileActivityResultCandidates(dependencies, 10).then(() => {
+      myGamesReconciliationAvailableAt = Date.now() + MY_GAMES_RECONCILIATION_COOLDOWN_MS;
+    });
+    myGamesReconciliation = pass;
+    try {
+      await pass;
+    } finally {
+      if (myGamesReconciliation === pass) {
+        myGamesReconciliation = undefined;
+      }
+    }
+  }
+
   return {
     async fetch(request: Request): Promise<Response> {
       const url = new URL(request.url);
@@ -106,15 +151,59 @@ export function withHostedResultReconciliation(
         for (const candidate of candidates) {
           try {
             await dependencies.data.markAttempt(candidate.launchRequestId);
-            await recovery.recover(candidate.launchRequestId);
-            if (candidate.candidateKind === "result_source") {
+            if (candidate.candidateKind === "genesis") {
+              await recovery.recover(candidate.launchRequestId);
+            } else {
               await reconcileActivityResult(candidate, dependencies);
             }
-          } catch { failed += 1; }
+          } catch (error) {
+            failed += 1;
+          }
         }
-        return Response.json({ attempted: candidates.length, failed }, {
+        // This is a distinct setup-reconciliation lane. The database applies
+        // the reviewed pre-start deadline; the coordinator still asks the
+        // Host whether its retained Lobby task has actually launched.
+        let prestartLaunches: readonly string[] = [];
+        try {
+          prestartLaunches = await dependencies.data.listPrestartAbandonmentLaunches(10);
+          if (prestartLaunches.length > 10) throw new Error("candidate_limit_exceeded");
+          for (const launchRequestId of prestartLaunches) {
+            try { await recovery.abandonPrestart(launchRequestId); } catch { failed += 1; }
+          }
+        } catch { failed += 1; }
+        // Result publication and Host cleanup have distinct completion rules.
+        // A terminal Run remains in this bounded lane until its receipt exists.
+        try {
+          await reconcileTerminalHouseRunnerRetirementCandidates(dependencies, 10);
+          await reconcilePrestartHouseRunnerRetirementCandidates(dependencies, 10);
+        } catch { failed += 1; }
+        return Response.json({ attempted: candidates.length + prestartLaunches.length, failed }, {
           status: failed === 0 ? 200 : 503, headers: { "cache-control": "no-store" },
         });
+      }
+      if (
+        request.method === "GET" &&
+        url.pathname === "/api/my-games"
+      ) {
+        // Authenticate and enforce account scope before doing any global
+        // reconciliation work. Anonymous callers must not be able to trigger
+        // even the bounded maintenance pass. A second private read returns
+        // the refreshed account-scoped index after the pass.
+        const initial = await platform.fetch(request);
+        if (initial.status !== 200) return initial;
+        try {
+          await reconcileForMyGamesRead();
+        } catch {
+          return new Response('{"error":{"code":"temporarily_unavailable"}}', {
+            status: 503,
+            headers: {
+              "cache-control": "private, no-store, max-age=0",
+              "content-type": "application/json; charset=utf-8",
+              "x-content-type-options": "nosniff",
+            },
+          });
+        }
+        return platform.fetch(request);
       }
       if (
         request.method === "GET" &&

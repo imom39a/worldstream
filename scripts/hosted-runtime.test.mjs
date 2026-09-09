@@ -11,6 +11,8 @@ import {
   renderHostedRuntimeConfig,
   renderHouseRunnerTemplate,
   renderHouseAgentProfiles,
+  retainRunnerExecutable,
+  verifyManagedAgentHostDigest,
   validateHostedRuntimeEnvironment,
 } from "./hosted-runtime.mjs";
 
@@ -94,28 +96,45 @@ test("the hosted image packages the same current client as hosted bindings", asy
   assert.equal(deployment.release_digest, release.release_digest);
 });
 
+test("the packaged managed Host digest is raw hex and mismatches fail closed", async () => {
+  const dockerfile = await readFile(new URL("../packaging/hosted/Dockerfile", import.meta.url), "utf8");
+  assert.match(
+    dockerfile,
+    /worldstream-hosted-artifact-digest\s+\\\n?\s*target\/release\/worldstream-managed-agent-host\s+\\\n?\s*> \/out\/managed-agent-host\.blake3/u,
+  );
+  const raw = "a".repeat(64);
+  assert.equal(verifyManagedAgentHostDigest(raw, raw), raw);
+  assert.throws(() => verifyManagedAgentHostDigest(`blake3:${raw}`, raw), /managed_agent_host_digest_invalid/u);
+  assert.throws(() => verifyManagedAgentHostDigest(raw, "b".repeat(64)), /managed_agent_host_digest_mismatch/u);
+});
+
 test("House Runner import is exact and has no secret environment", () => {
   const manifest = renderHouseRunnerTemplate(
-    "/usr/local/bin/worldstream-managed-agent-host",
+    "/var/lib/worldstream/retained-runner-executables/blake3-a/worldstream-managed-agent-host",
     "a".repeat(64),
   );
   assert.equal(manifest.template_id, "openrouter-house");
-  assert.equal(manifest.revision, "7");
+  assert.equal(manifest.revision, "12");
+  assert.deepEqual(manifest.instances, [{
+    instance_id: "hosted-house-r12-01", health_address: "127.0.0.1:9602",
+  }]);
   assert.deepEqual(manifest.compatibility, [{
     activity_pack_id: "worldstream.agent-heist",
-    exact_revisions: ["0.4.0"],
+    exact_revisions: ["0.3.0"],
   }]);
   assert.deepEqual(manifest.secret_environment, []);
   assert.equal(manifest.capacity.maximum_concurrent_invocations, 4);
 });
 
-test("successor House Runner instances coexist with both retained installations", () => {
+test("successor House Runner instances do not collide with retained installations", () => {
   for (const retained of [
     { instance_id: "hosted-house-01", health_address: "127.0.0.1:9591" },
     { instance_id: "hosted-house-r2-01", health_address: "127.0.0.1:9592" },
     { instance_id: "hosted-house-r6-01", health_address: "127.0.0.1:9596" },
+    { instance_id: "hosted-house-r10-01", health_address: "127.0.0.1:9600" },
+    { instance_id: "hosted-house-r11-01", health_address: "127.0.0.1:9601" },
   ]) {
-  const successor = renderHouseRunnerTemplate("/usr/local/bin/worldstream-managed-agent-host", "a".repeat(64));
+  const successor = renderHouseRunnerTemplate("/var/lib/worldstream/retained-runner-executables/blake3-a/worldstream-managed-agent-host", "a".repeat(64));
   for (const instance of successor.instances) {
     assert.notEqual(instance.instance_id, retained.instance_id,
       "the registry rejects duplicate instance IDs across immutable revisions");
@@ -128,8 +147,8 @@ test("successor House Runner instances coexist with both retained installations"
 test("fresh local and Fly imports bind the two Granite strategies to distinct exact profile revisions", () => {
   const profiles = renderHouseAgentProfiles();
   assert.deepEqual(Object.values(profiles).map(({ profile_id, revision }) => ({ profile_id, revision })), [
-    { profile_id: "house-cooperative-planner", revision: "8" },
-    { profile_id: "house-skeptical-auditor", revision: "7" },
+    { profile_id: "house-cooperative-planner", revision: "13" },
+    { profile_id: "house-skeptical-auditor", revision: "12" },
   ]);
   for (const profile of Object.values(profiles)) {
     assert.equal(profile.schema, "worldstream/studio-agent-profile-publish/v2");
@@ -137,9 +156,42 @@ test("fresh local and Fly imports bind the two Granite strategies to distinct ex
     assert.deepEqual(profile.non_secret_configuration, {});
     assert.deepEqual(profile.host_contract, {
       kind: "managed_house_openrouter", host_contract_revision: "1",
-      runner_template: { template_id: "openrouter-house", revision: "7" },
+      runner_template: { template_id: "openrouter-house", revision: "12" },
     });
   }
+});
+
+test("r11 keeps its retained executable bytes after r12 installs", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "worldstream-retained-runner-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = join(root, "mutable-build-output");
+  const retainedRoot = join(root, "retained");
+  await writeFile(source, "r11 executable bytes", { mode: 0o700 });
+  const r11 = await retainRunnerExecutable({
+    source, retainedRoot, digest: "a".repeat(64),
+  });
+  await writeFile(source, "r12 successor executable bytes", { mode: 0o700 });
+  const r12 = await retainRunnerExecutable({
+    source, retainedRoot, digest: "b".repeat(64),
+  });
+  const r11Template = {
+    ...renderHouseRunnerTemplate(r11, "a".repeat(64)), revision: "11",
+    instances: [{ instance_id: "hosted-house-r11-01", health_address: "127.0.0.1:9601" }],
+  };
+  const r12Template = renderHouseRunnerTemplate(r12, "b".repeat(64));
+  assert.notEqual(r11, r12);
+  assert.equal(r11Template.revision, "11");
+  assert.equal(r11Template.executable.path, r11);
+  assert.equal(r12Template.revision, "12");
+  assert.equal(r12Template.executable.path, r12);
+  assert.equal(await readFile(r11, "utf8"), "r11 executable bytes",
+    "an active r11 Assignment still resolves its content-addressed retained bytes");
+  assert.equal(await readFile(r12, "utf8"), "r12 successor executable bytes");
+  await assert.rejects(
+    retainRunnerExecutable({ source, retainedRoot, digest: "a".repeat(64) }),
+    /retained_runner_digest_collision/u,
+    "a retained r11 digest address is never overwritten with successor bytes",
+  );
 });
 
 test("managed status requires the complete ready contract", () => {

@@ -1003,6 +1003,88 @@ fn projector_rejects_private_unknown_or_unreviewed_public_fields() -> Result<(),
     Ok(())
 }
 
+#[test]
+fn generic_projector_program_is_bounded_without_inheriting_heist_fields()
+-> Result<(), Box<dyn Error>> {
+    let pack = json!({
+        "id": "example.social-puzzle",
+        "version": "1.0.0",
+        "digest": format!("blake3:{}", "a".repeat(64)),
+    });
+    let projection_schema =
+        canonical_value(&json!({"schema":"example/social-puzzle-projection/v1"}))?;
+    let output_schema = canonical_value(&json!({"schema":"example/social-puzzle-result/v1"}))?;
+    let projection_digest = format!("blake3:{}", blake3::hash(&projection_schema).to_hex());
+    let output_digest = format!("blake3:{}", blake3::hash(&output_schema).to_hex());
+    let runtime = source_value(PROJECTOR)?["runtime"].clone();
+    let projector_source = json!({
+        "schema": "worldstream/result-projector-revision/v1",
+        "projector_id": "example.social-puzzle.result",
+        "version": "1.0.0",
+        "runtime": runtime,
+        "input": {
+            "pack": pack,
+            "listing_schema": "worldstream/activity-listing-revision/v1",
+            "complete_head_schema": "worldstream/complete-head/v1",
+            "projection": {"schema":"example/social-puzzle-projection/v1","digest":projection_digest},
+        },
+        "program": {
+            "schema": "worldstream/result-projector-program/v1",
+            "terminal": {"field":"state","equals":"done"},
+            "outcome_field": "result",
+            "summary_fields": [
+                {"output":"verdict","source":"verdict","kind":"enum","values":["pass","fail"]},
+                {"output":"points","source":"points","kind":"integer","minimum":0,"maximum":100},
+            ],
+        },
+        "output": {
+            "schema": "example/social-puzzle-result/v1",
+            "schema_digest": output_digest,
+            "canonicalizer": "worldstream/canonical-json/v1",
+            "maximum_bytes": 1024,
+        },
+        "maximum_input_bytes": 4096,
+    });
+    let projector_bytes = canonical_value(&projector_source)?;
+    let projector = ResultProjectorRevision::from_canonical_bytes(&projector_bytes)
+        .map_err(|error| format!("generic projector: {error:?}"))?;
+    let mut listing_source = source_value(LISTING)?;
+    listing_source["pack"] = projector_source["input"]["pack"].clone();
+    listing_source["result"]["projection"] = projector_source["input"]["projection"].clone();
+    listing_source["result"]["projector"] = json!({
+        "id": "example.social-puzzle.result",
+        "version": "1.0.0",
+        "digest": projector.digest(),
+    });
+    let listing = ListingRevision::from_canonical_bytes(&canonical_value(&listing_source)?)
+        .map_err(|error| format!("generic listing: {error:?}"))?;
+    let resolved = projector
+        .resolve_artifacts(&canonical(RUNTIME)?, &projection_schema, &output_schema)
+        .map_err(|error| format!("generic artifacts: {error:?}"))?;
+    let mut source_head = source_value(TERMINAL)?["source_head"].clone();
+    source_head["pack_digest"] = projector_source["input"]["pack"]["digest"].clone();
+    let input = json!({
+        "schema": "worldstream/result-projector-input/v1",
+        "listing_revision_digest": listing.digest(),
+        "projector_revision_digest": projector.digest(),
+        "pack": projector_source["input"]["pack"].clone(),
+        "projection_schema": "example/social-puzzle-projection/v1",
+        "source_head": source_head,
+        "public_projection": {
+            "state": "done",
+            "result": {"verdict":"pass","points":7},
+            "reviewed_public_context": "allowed by this generic projector",
+        },
+    });
+    let result = project_result(&listing, &resolved, &canonical_value(&input)?)
+        .map_err(|error| format!("generic projection: {error:?}"))?;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&result.canonical_bytes()?)?,
+        json!({"status":"summary","summary":{"schema":"example/social-puzzle-result/v1","verdict":"pass","points":7}}),
+    );
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 struct Corpus {
     listing_digest: String,

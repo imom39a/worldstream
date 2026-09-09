@@ -112,6 +112,15 @@ export interface GenesisReconciliation {
   readonly needsGenesisPull: boolean;
 }
 
+/** Server-derived deadline work; never constructed from a browser payload. */
+export interface PrestartAbandonmentCandidate {
+  readonly runId: string;
+  readonly launchRequestId: string;
+  readonly listingRevisionDigest: string;
+  readonly hostInstallationId: string;
+  readonly roomSetupOperationId: string;
+}
+
 export interface OwnedRunRecord {
   readonly runId: string;
   readonly publicId: string | null;
@@ -180,6 +189,17 @@ export interface HostedFormationData {
     readonly runId: string;
     readonly reconciliationState: "ready" | "quarantined";
   } | null>;
+  recordPrestartAbandonment(
+    launchRequestId: string,
+    canonicalEvidence: Uint8Array,
+    evidenceDigest: Uint8Array,
+  ): Promise<boolean>;
+  recordProvisioningAbandonment(
+    launchRequestId: string,
+    canonicalEvidence: Uint8Array,
+    evidenceDigest: Uint8Array,
+  ): Promise<boolean>;
+  listPrestartAbandonmentCandidates(limit: number): Promise<readonly PrestartAbandonmentCandidate[]>;
   readPublicRelayBindingCandidate(runId: string): Promise<CanonicalObject | null>;
   recordPublicRelayBinding(input: {
     runId: string;
@@ -200,6 +220,10 @@ export interface HostedFormationGateway {
   reserveHouseRunner(request: CanonicalObject): Promise<CanonicalObject>;
   launch(request: CanonicalObject): Promise<HostedLaunchStatus>;
   readStatus(request: CanonicalObject): Promise<HostedLaunchStatus>;
+  /** Service-only: Host proves its retained Lobby task has not launched. */
+  abandonPrestart(request: CanonicalObject): Promise<CanonicalObject>;
+  /** Service-only: Host fences one exact setup operation before Genesis. */
+  abandonProvisioning(request: CanonicalObject): Promise<CanonicalObject>;
   readGenesisEvidence(request: CanonicalObject): Promise<CanonicalObject>;
   bindPublicRelay(request: CanonicalObject): Promise<CanonicalObject>;
 }
@@ -219,6 +243,7 @@ export class HostedFormationPendingError extends Error {
 }
 
 class HostedFormationNotFoundError extends HostedFormationRejectedError {}
+class HostedFormationConflictError extends HostedFormationRejectedError {}
 
 export class HostedFormationUnavailableError extends Error {
   constructor(message = "hosted_formation_unavailable", options?: ErrorOptions) {
@@ -239,6 +264,7 @@ export class HostedFormationCoordinator {
     private readonly data: HostedFormationData,
     private readonly gateway: HostedFormationGateway,
     private readonly hostInstallationId: string,
+    private readonly resolveReviewedActivity: (digest: string) => ReviewedHostedActivity | null = reviewedActivityByDigest,
   ) {
     if (!SAFE_REFERENCE_PATTERN.test(hostInstallationId)) {
       throw new HostedFormationRejectedError("invalid_host_installation");
@@ -247,7 +273,14 @@ export class HostedFormationCoordinator {
 
   async advance(accountId: string, launchRequestId: string): Promise<FormationAdvanceResult> {
     let material = await this.requiredMaterial(accountId, launchRequestId);
-    const reviewed = requiredReviewedActivity(material.listingRevisionDigest);
+    const reviewed = requiredReviewedActivity(material.listingRevisionDigest, this.resolveReviewedActivity);
+    // A pre-start abandonment is a terminal, evidence-backed decision.  Do
+    // not let the generic retry path treat its retained host mutation as an
+    // invitation to resume or relaunch the Lobby.  The other terminal
+    // states retain their existing failed-pre-Genesis response semantics.
+    if (material.state === "abandoned_prestart") {
+      throw new HostedFormationRejectedError("launch_unavailable");
+    }
     if (["cancelled", "expired", "failed_pre_genesis"].includes(material.state)) {
       return { state: "failed_pre_genesis", retryAfterSeconds: null, runId: null };
     }
@@ -294,22 +327,102 @@ export class HostedFormationCoordinator {
     return material === null ? null : this.resume(material);
   }
 
+  /**
+   * Fences a Genesis-created Room before its Lobby launch. This is deliberately
+   * separate from creator cancellation: it uses the exact already-frozen Host
+   * operation and the Host's current task state, never a browser timestamp.
+   */
+  async abandonPrestart(launchRequestId: string): Promise<boolean> {
+    const material = await this.data.readHostedRecoveryMaterial(launchRequestId);
+    if (material === null || !["run_created", "abandoned_prestart"].includes(material.state)) {
+      throw new HostedFormationRejectedError("prestart_abandonment_unavailable");
+    }
+    const documents = this.recoveryDocuments(material);
+    const evidence = await this.gateway.abandonPrestart(documents.evidenceRequest);
+    validatePrestartAbandonmentEvidence(evidence, documents.evidenceRequest);
+    const evidenceBytes = encodeCanonical(evidence);
+    if (!(await this.data.recordPrestartAbandonment(
+      launchRequestId,
+      evidenceBytes,
+      sha256(evidenceBytes),
+    ))) {
+      throw new HostedFormationRejectedError("prestart_abandonment_rejected");
+    }
+    return true;
+  }
+
+  /**
+   * The narrow pre-Genesis closure for a retained setup operation that the
+   * Host proves absent. It is reachable only from `resume` after an exact
+   * read 404 and exact replay rejection; this method itself never uses time
+   * or a browser request as proof of absence.
+   */
+  async abandonProvisioning(
+    material: HostedLaunchMaterial,
+    documents: ReturnType<typeof deriveFrozenDocuments>,
+    reconciliation: GenesisReconciliation | null,
+  ): Promise<FormationAdvanceResult> {
+    if (!['provisioning', 'reconciling'].includes(material.state) ||
+        (reconciliation !== null && reconciliation.runId !== null)) {
+      throw new HostedFormationRejectedError("provisioning_abandonment_unavailable");
+    }
+    let evidence: CanonicalObject;
+    try {
+      evidence = await this.gateway.abandonProvisioning(documents.evidenceRequest);
+    } catch (error) {
+      // A conflict can originate at the fixed Gateway boundary or from the
+      // Host after the platform's second read. Either way it supplies no
+      // absence proof, so there is no authority to release capacity. Pull
+      // Genesis again and retain this launch for ordinary reconciliation.
+      if (error instanceof HostedFormationConflictError) {
+        return this.recordObservedGenesis(material.launchRequestId, documents, {
+          state: "reconciling",
+          roomSetupComplete: false,
+        });
+      }
+      throw error;
+    }
+    validateProvisioningAbandonmentEvidence(
+      evidence, documents.evidenceRequest, material.launchRequestId,
+    );
+    const evidenceBytes = encodeCanonical(evidence);
+    if (!(await this.data.recordProvisioningAbandonment(
+      material.launchRequestId,
+      evidenceBytes,
+      sha256(evidenceBytes),
+    ))) {
+      throw new HostedFormationRejectedError("provisioning_abandonment_rejected");
+    }
+    return { state: "failed_pre_genesis", retryAfterSeconds: null, runId: null };
+  }
+
   async entryReady(launchRequestId: string): Promise<boolean> {
     const material = await this.data.readHostedRecoveryMaterial(launchRequestId);
     if (material === null) return false;
     const documents = this.recoveryDocuments(material);
     const reconciliation = await this.data.readGenesisReconciliation(launchRequestId);
     if (reconciliation?.reconciliationState !== "ready" || reconciliation.runId === null) return false;
-    return (await this.gateway.readStatus(documents.evidenceRequest)).roomSetupComplete;
+    try {
+      return (await this.gateway.readStatus(documents.evidenceRequest)).roomSetupComplete;
+    } catch (error) {
+      // Entry is disabled until a fresh authorized status confirms it. A
+      // temporary Host outage is not proof that the frozen Room is absent and
+      // must not make a caller create a replacement Launch Request.
+      if (
+        error instanceof HostedFormationUnavailableError ||
+        error instanceof HostedFormationNotFoundError
+      ) return false;
+      throw error;
+    }
   }
 
   private recoveryDocuments(material: HostedLaunchMaterial) {
     if (!material.hostMutationStarted || !material.rosterFrozen ||
-        !["provisioning", "reconciling", "run_created"].includes(material.state)) {
+        !["provisioning", "reconciling", "run_created", "abandoned_prestart"].includes(material.state)) {
       throw new HostedFormationRejectedError("launch_recovery_not_authorized");
     }
     const documents = deriveFrozenDocuments(
-      requiredReviewedActivity(material.listingRevisionDigest), material, this.hostInstallationId,
+      requiredReviewedActivity(material.listingRevisionDigest, this.resolveReviewedActivity), material, this.hostInstallationId,
     );
     requireFrozenIdentity(material, this.hostInstallationId, documents.roomSetupOperationId);
     return documents;
@@ -327,10 +440,12 @@ export class HostedFormationCoordinator {
       state: "reconciling", roomSetupComplete: false,
     });
     let status: HostedLaunchStatus;
+    let exactStatusWasMissing = false;
     try {
       status = await this.gateway.readStatus(documents.evidenceRequest);
     } catch (error) {
       if (!(error instanceof HostedFormationNotFoundError)) throw error;
+      exactStatusWasMissing = true;
       status = { state: "provisioning", roomSetupComplete: false };
     }
     // Genesis and Membership creation do not imply that every House process
@@ -338,7 +453,36 @@ export class HostedFormationCoordinator {
     // the Host retains process identities, allowances and the launch input.
     // Human entry remains available so synchronization can satisfy readiness.
     if (!status.roomSetupComplete || status.state === "waiting_for_readiness") {
-      status = await this.gateway.launch(documents.gatewayLaunchRequest);
+      try {
+        status = await this.gateway.launch(documents.gatewayLaunchRequest);
+      } catch (error) {
+        // This is deliberately a conjunction. A generic launch rejection,
+        // timeout, or an observed Host operation remains recoverable and must
+        // retain capacity. Only an exact missing read followed by rejection of
+        // the same frozen replay can ask the Host to install its durable fence.
+        if (exactStatusWasMissing &&
+            ['provisioning', 'reconciling'].includes(material.state) &&
+            (reconciliation === null || reconciliation.runId === null) &&
+            error instanceof HostedFormationConflictError) {
+          // A submit conflict does not prove that the Host still has no
+          // operation. A same-identity create/resume may have crossed the
+          // initial read and the replay can observe that retained operation
+          // as a conflict. Re-read the same identity first; any observed
+          // operation remains recoverable and retains capacity.
+          try {
+            status = await this.gateway.readStatus(documents.evidenceRequest);
+          } catch (readError) {
+            if (readError instanceof HostedFormationNotFoundError) {
+              return this.abandonProvisioning(material, documents, reconciliation);
+            }
+            throw readError;
+          }
+          // A second Genesis observation also closes the small interval in
+          // which the exact operation became visible after the first pull.
+          return this.recordObservedGenesis(material.launchRequestId, documents, status);
+        }
+        throw error;
+      }
     }
     if (!status.roomSetupComplete) return observed;
     return this.recordObservedGenesis(material.launchRequestId, documents, status);
@@ -511,6 +655,14 @@ export class HttpHostedFormationGateway implements HostedFormationGateway {
     return this.statusCall("/v1/hosted/evidence", request);
   }
 
+  async abandonPrestart(request: CanonicalObject): Promise<CanonicalObject> {
+    return this.call("/v1/hosted/abandon-prestart", request, false);
+  }
+
+  async abandonProvisioning(request: CanonicalObject): Promise<CanonicalObject> {
+    return this.call("/v1/hosted/abandon-provisioning", request, false);
+  }
+
   private async statusCall(path: string, request: CanonicalObject): Promise<HostedLaunchStatus> {
     const response = await this.call(path, request, false);
     if (
@@ -556,6 +708,7 @@ export class HttpHostedFormationGateway implements HostedFormationGateway {
     if (!response.ok) {
       if (pendingOnConflict && response.status === 409) throw new HostedFormationPendingError();
       if (response.status === 404) throw new HostedFormationNotFoundError();
+      if (response.status === 409) throw new HostedFormationConflictError();
       if ([400, 401, 403, 404, 409, 422].includes(response.status)) {
         throw new HostedFormationRejectedError();
       }
@@ -706,6 +859,51 @@ function validateHouseReceipt(receipt: CanonicalObject, request: CanonicalObject
   }
 }
 
+function validatePrestartAbandonmentEvidence(
+  evidence: CanonicalObject,
+  request: CanonicalObject,
+): void {
+  if (
+    evidence.schema !== "worldstream/hosted-prestart-abandonment-evidence/v1" ||
+    !SAFE_REFERENCE_PATTERN.test(requiredString(evidence.host_installation_id)) ||
+    !UUID_PATTERN.test(requiredString(evidence.launch_request_id)) ||
+    evidence.listing_revision_digest !== request.listing_revision_digest ||
+    evidence.launch_request_digest !== request.launch_request_digest ||
+    evidence.room_setup_operation_id !== request.room_setup_operation_id ||
+    !SAFE_REFERENCE_PATTERN.test(requiredString(evidence.room_id)) ||
+    evidence.lobby_launch_committed !== false ||
+    !BLAKE3_PATTERN.test(requiredString(evidence.abandonment_fence_digest)) ||
+    !/^[0-9a-f]{64}$/u.test(requiredString(evidence.authentication_tag)) ||
+    Object.keys(evidence).sort().join(",") !==
+      "abandonment_fence_digest,authentication_tag,host_installation_id,launch_request_digest,launch_request_id,listing_revision_digest,lobby_launch_committed,room_id,room_setup_operation_id,schema"
+  ) {
+    throw new HostedFormationUnavailableError("invalid_gateway_response");
+  }
+}
+
+function validateProvisioningAbandonmentEvidence(
+  evidence: CanonicalObject,
+  request: CanonicalObject,
+  launchRequestId: string,
+): void {
+  if (
+    evidence.schema !== "worldstream/hosted-provisioning-abandonment-evidence/v1" ||
+    !SAFE_REFERENCE_PATTERN.test(requiredString(evidence.host_installation_id)) ||
+    evidence.launch_request_id !== launchRequestId ||
+    !UUID_PATTERN.test(requiredString(evidence.launch_request_id)) ||
+    evidence.listing_revision_digest !== request.listing_revision_digest ||
+    evidence.launch_request_digest !== request.launch_request_digest ||
+    evidence.room_setup_operation_id !== request.room_setup_operation_id ||
+    evidence.genesis_committed !== false ||
+    !BLAKE3_PATTERN.test(requiredString(evidence.provisioning_fence_digest)) ||
+    !/^[0-9a-f]{64}$/u.test(requiredString(evidence.authentication_tag)) ||
+    Object.keys(evidence).sort().join(",") !==
+      "authentication_tag,genesis_committed,host_installation_id,launch_request_digest,launch_request_id,listing_revision_digest,provisioning_fence_digest,room_setup_operation_id,schema"
+  ) {
+    throw new HostedFormationUnavailableError("invalid_gateway_response");
+  }
+}
+
 function validatePublicRelayReceipt(
   receipt: CanonicalObject,
   request: CanonicalObject,
@@ -737,8 +935,11 @@ function requireFrozenIdentity(
   }
 }
 
-function requiredReviewedActivity(digest: string): ReviewedHostedActivity {
-  const reviewed = reviewedActivityByDigest(digest);
+function requiredReviewedActivity(
+  digest: string,
+  resolve: (digest: string) => ReviewedHostedActivity | null,
+): ReviewedHostedActivity {
+  const reviewed = resolve(digest);
   if (reviewed === null) throw new HostedFormationRejectedError("listing_unavailable");
   return reviewed;
 }

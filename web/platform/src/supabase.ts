@@ -1,6 +1,7 @@
 import { createClient, type User } from "@supabase/supabase-js";
 
 import {
+  PlatformActivityCapacityUnavailableError,
   PlatformCredentialRejectedError,
   PlatformDependencyUnavailableError,
   PlatformRateLimitExceededError,
@@ -14,6 +15,7 @@ import type {
   PlatformAccount,
   PlatformAuthClient,
   PlatformDataClient,
+  MyGamesIndex,
   RefreshedAuthSession,
   SessionRefreshAdmission,
 } from "./bff.js";
@@ -23,6 +25,8 @@ import type {
   ResultReconciliationCandidate,
   ResultReconciliationData,
   ResultReconciliationState,
+  PrestartHouseRunnerRetirementCandidate,
+  TerminalHouseRunnerRetirementCandidate,
   TerminalReconciliationState,
 } from "./result-reconciliation.js";
 import type { OwnedRunMembershipCorrespondence } from "./browser-sessions.js";
@@ -36,6 +40,7 @@ import type {
   HouseFillRecord,
   LaunchCreationResult,
   OwnedRunRecord,
+  PrestartAbandonmentCandidate,
 } from "./hosted-formation.js";
 import {
   readPublicRunDto,
@@ -758,6 +763,45 @@ class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationD
     };
   }
 
+  async recordPrestartAbandonment(
+    launchRequestId: string,
+    canonicalEvidence: Uint8Array,
+    evidenceDigest: Uint8Array,
+  ): Promise<boolean> {
+    return requiredBoolean(await requiredRpc(this.#rpc, "record_prestart_abandonment_v1", {
+      p_launch_request_id: launchRequestId,
+      p_canonical_abandonment_evidence: bytea(canonicalEvidence),
+      p_abandonment_evidence_digest: bytea(evidenceDigest),
+    }));
+  }
+
+  async recordProvisioningAbandonment(
+    launchRequestId: string,
+    canonicalEvidence: Uint8Array,
+    evidenceDigest: Uint8Array,
+  ): Promise<boolean> {
+    return requiredBoolean(await requiredRpc(this.#rpc, "record_provisioning_abandonment_v1", {
+      p_launch_request_id: launchRequestId,
+      p_canonical_abandonment_evidence: bytea(canonicalEvidence),
+      p_abandonment_evidence_digest: bytea(evidenceDigest),
+    }));
+  }
+
+  async listPrestartAbandonmentCandidates(
+    limit: number,
+  ): Promise<readonly PrestartAbandonmentCandidate[]> {
+    const rows = readRows(await requiredRpc(this.#rpc, "list_prestart_abandonment_candidates_v1", {
+      p_limit: limit,
+    }));
+    return rows.map((row) => ({
+      runId: requiredString(row.activity_run_id),
+      launchRequestId: requiredString(row.launch_request_id),
+      listingRevisionDigest: requiredString(row.listing_revision_digest),
+      hostInstallationId: requiredString(row.host_installation_id),
+      roomSetupOperationId: requiredString(row.room_setup_operation_id),
+    }));
+  }
+
   async readPublicRelayBindingCandidate(runId: string) {
     const data = await requiredRpc(
       this.#rpc,
@@ -810,6 +854,51 @@ class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationD
         })),
     };
   }
+
+  async listMyGames(input: {
+    accountId: string;
+    beforeAt: string | null;
+    beforeLaunchId: string | null;
+    limit: number;
+  }): Promise<MyGamesIndex | null> {
+    const data = await requiredRpc(this.#rpc, "list_my_games_v1", {
+      p_requesting_account_id: input.accountId,
+      p_before_at: input.beforeAt,
+      p_before_launch_id: input.beforeLaunchId,
+      p_limit: input.limit,
+    });
+    if (data === null) return null;
+    const value = requiredRecord(data);
+    if (value.version !== "platform_my_games.v1") throw new PlatformDependencyUnavailableError();
+    const next = value.next === null || value.next === undefined ? null : requiredRecord(value.next);
+    return {
+      version: "platform_my_games.v1",
+      items: requiredRecords(value.items).map((item) => ({
+        launchId: requiredString(item.launch_id),
+        title: requiredString(item.title),
+        state: requiredEnum(item.state, [
+          "setup_pending",
+          "setup_cancelled",
+          "setup_abandoned",
+          "setup_failed",
+          "live",
+          "publication_pending",
+          "terminal_without_outcome",
+          "result_suppressed",
+          "dependency_failure",
+          "verified_result",
+        ]) as MyGamesIndex["items"][number]["state"],
+        updatedAt: requiredString(item.updated_at),
+        participation: requiredEnum(item.participation, ["human", "external_agent"]),
+        action: requiredEnum(item.action, ["continue_setup", "return_to_game", "view_result", "none"]),
+        resultPublicId: nullableString(item.result_public_id),
+      })),
+      next: next === null ? null : {
+        beforeAt: requiredString(next.before_at),
+        beforeLaunchId: requiredString(next.before_launch_id),
+      },
+    };
+  }
 }
 
 class SupabaseResultReconciliationDataClient implements ResultReconciliationData {
@@ -832,6 +921,33 @@ class SupabaseResultReconciliationDataClient implements ResultReconciliationData
       hostInstallationId: requiredString(row.host_installation_id),
       roomSetupOperationId: requiredString(row.room_setup_operation_id),
     }));
+  }
+
+  async listTerminalHouseRunnerRetirementRuns(limit: number): Promise<readonly string[]> {
+    const data = await requiredRpc(
+      this.rpc,
+      "list_terminal_house_runner_retirement_candidates_v1",
+      { p_limit: limit },
+    );
+    return readRows(data).map((row) => requiredString(row.activity_run_id));
+  }
+
+  async listPrestartHouseRunnerRetirementRuns(limit: number): Promise<readonly string[]> {
+    const data = await requiredRpc(
+      this.rpc,
+      "list_prestart_house_runner_retirement_candidates_v1",
+      { p_limit: limit },
+    );
+    return readRows(data).map((row) => requiredString(row.activity_run_id));
+  }
+
+  async listPrestartAbandonmentLaunches(limit: number): Promise<readonly string[]> {
+    const data = await requiredRpc(
+      this.rpc,
+      "list_prestart_abandonment_candidates_v1",
+      { p_limit: limit },
+    );
+    return readRows(data).map((row) => requiredString(row.launch_request_id));
   }
 
   async readTerminal(runId: string): Promise<TerminalReconciliationState | null> {
@@ -871,6 +987,72 @@ class SupabaseResultReconciliationDataClient implements ResultReconciliationData
       integrityGeneration: nullableSafeInteger(value.integrity_generation),
       publishable: requiredBoolean(value.publishable),
     };
+  }
+
+  async readTerminalHouseRunnerRetirements(
+    runId: string,
+  ): Promise<readonly TerminalHouseRunnerRetirementCandidate[]> {
+    const data = await requiredRpc(this.rpc, "read_terminal_house_runner_retirements_v1", {
+      p_activity_run_id: runId,
+    });
+    return readRows(data).map((row): TerminalHouseRunnerRetirementCandidate => ({
+      hostInstallationId: requiredString(row.host_installation_id),
+      reservationOperationId: requiredString(row.reservation_operation_id),
+      launchRequestId: requiredString(row.launch_request_id),
+      houseAgentAssignmentId: requiredString(row.house_agent_assignment_id),
+      terminalEvidenceDigest: requiredString(row.terminal_evidence_digest),
+    }));
+  }
+
+  async recordTerminalHouseRunnerRetirement(input: {
+    runId: string;
+    candidate: TerminalHouseRunnerRetirementCandidate;
+    canonicalReceipt: Uint8Array;
+    receiptDigest: Uint8Array;
+  }): Promise<boolean> {
+    return requiredBoolean(await requiredRpc(
+      this.rpc,
+      "record_terminal_house_runner_retirement_v1",
+      {
+        p_activity_run_id: input.runId,
+        p_house_agent_assignment_id: input.candidate.houseAgentAssignmentId,
+        p_canonical_retirement_receipt: bytea(input.canonicalReceipt),
+        p_retirement_receipt_digest: bytea(input.receiptDigest),
+      },
+    ));
+  }
+
+  async readPrestartHouseRunnerRetirements(
+    runId: string,
+  ): Promise<readonly PrestartHouseRunnerRetirementCandidate[]> {
+    const data = await requiredRpc(this.rpc, "read_prestart_house_runner_retirements_v1", {
+      p_activity_run_id: runId,
+    });
+    return readRows(data).map((row): PrestartHouseRunnerRetirementCandidate => ({
+      hostInstallationId: requiredString(row.host_installation_id),
+      reservationOperationId: requiredString(row.reservation_operation_id),
+      launchRequestId: requiredString(row.launch_request_id),
+      houseAgentAssignmentId: requiredString(row.house_agent_assignment_id),
+      abandonmentEvidenceDigest: requiredString(row.abandonment_evidence_digest),
+    }));
+  }
+
+  async recordPrestartHouseRunnerRetirement(input: {
+    runId: string;
+    candidate: PrestartHouseRunnerRetirementCandidate;
+    canonicalReceipt: Uint8Array;
+    receiptDigest: Uint8Array;
+  }): Promise<boolean> {
+    return requiredBoolean(await requiredRpc(
+      this.rpc,
+      "record_prestart_house_runner_retirement_v1",
+      {
+        p_activity_run_id: input.runId,
+        p_house_agent_assignment_id: input.candidate.houseAgentAssignmentId,
+        p_canonical_retirement_receipt: bytea(input.canonicalReceipt),
+        p_retirement_receipt_digest: bytea(input.receiptDigest),
+      },
+    ));
   }
 
   async recordTerminal(
@@ -972,12 +1154,40 @@ async function requiredRpc(
     ) {
       throw new PlatformDependencyUnavailableError();
     }
+    if (capacityGateScope(name, error.code, error.message) !== null) {
+      throwCapacityUnavailable(error.message);
+    }
     if (error.code !== undefined && ["22023", "23505", "55000"].includes(error.code)) {
       throw new PlatformCredentialRejectedError();
     }
     throw new PlatformDependencyUnavailableError();
   }
   return data;
+}
+
+function capacityGateScope(
+  name: string,
+  code: string | undefined,
+  message: string | undefined,
+): "account" | "platform" | null {
+  if (code !== "55000") return null;
+  if (name === "create_launch_request_v1" && message === "pre_genesis_capacity_unavailable") {
+    return "account";
+  }
+  if (name === "authorize_host_mutation_v1") {
+    if (message === "account_active_run_capacity_unavailable") return "account";
+    if (message === "global_active_run_capacity_unavailable") return "platform";
+  }
+  return null;
+}
+
+function throwCapacityUnavailable(message: string): never {
+  // These are exact durable gate decisions. Do not turn similarly shaped
+  // errors into a retryable capacity condition: a caller may infer only that
+  // capacity is held, never another Launch Request or Activity Run identity.
+  throw new PlatformActivityCapacityUnavailableError(
+    message === "global_active_run_capacity_unavailable" ? "platform" : "account",
+  );
 }
 
 function readSession(value: unknown): AuthSession {

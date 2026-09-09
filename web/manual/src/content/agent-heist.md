@@ -43,9 +43,10 @@ evidence.
 For the visual version of the recorded story, run `pnpm demos:dev` and open
 `http://127.0.0.1:5180/demos/agent-heist/`. The demo reuses the Activity
 Client's presentation through a recorded adapter, but it has no Room authority
-or network connection. A live CLI/Controller handoff instead opens the exact approved
-`0.1.0` or `0.2.0` revision at
-`http://127.0.0.1:5173/agent-heist-v3/`.
+or network connection. A live CLI/Controller handoff selects the exact approved
+client binding. The current Heist 0.3 binding opens
+`http://127.0.0.1:5173/agent-heist-v6/`; retained older bindings can still
+select their original route, including `/agent-heist-v3/`.
 
 ## Complete local MVP gate
 

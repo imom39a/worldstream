@@ -5,6 +5,14 @@ date: 2026-09-04
 
 # Operate a single-authority hobby preview
 
+The populated disaster-recovery release prerequisite is narrowly amended for
+the stabilization preview by
+[ADR 0026](0026-defer-populated-disaster-recovery-for-the-hobby-preview.md),
+accepted on 2026-09-08. Ordinary same-volume durability, protected paired
+captures, and the prohibition on serving unverified restores remain in force.
+The original recovery design and earlier evidence requirements below are
+retained for context; ADR 0026 governs that limited preview-release exception.
+
 ## Context
 
 [ADR 0019](0019-separate-hosted-activity-platform-from-worldstream.md)
@@ -246,6 +254,12 @@ and a disclosed catastrophic preview reset. An unavailable Vercel or Supabase
 dependency returns one generic temporarily-unavailable state for dependent
 operations while already-admitted direct streams continue whenever ADR 0020
 permits them.
+
+The accepted 2026-09-08
+[platform-stability scope](../activity-platform-design.md) additionally requires
+safe automatic retirement after ordinary confirmed completion. Conservative
+capacity retention still applies to ambiguous or unverifiable operations; it
+does not qualify routine manual cleanup as a usable repeat-play path.
 
 The MVP has failed if it exposes generic operator authority; creates a
 duplicate Room, Run, or provider call; loses acknowledged Room history during

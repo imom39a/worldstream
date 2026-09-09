@@ -3,6 +3,7 @@ import { test } from "vitest";
 
 import {
   presentPublicRun,
+  presentPublicViewerClient,
   publicProjectionStreamBaseUrl,
   readPublicRunDto,
   readRecentResultsDto,
@@ -116,6 +117,30 @@ test("a committed live DTO receives only a deployment-owned direct stream URL", 
     "https://stream.arena.example?ticket=secret",
   ]) {
     assert.throws(() => publicProjectionStreamBaseUrl(rejected), /public_run_dto_rejected/u);
+  }
+});
+
+test("a reviewed client launch carries only fixed public navigation context", () => {
+  const { completed_at: _completedAt, result: _result, ...source } = resultRun();
+  const record = readPublicRunDto({ ...source, state: "live", live: { available: true } });
+  const live = presentPublicRun(record, "https://stream.arena.example");
+  assert.equal(live.state, "live");
+  const selected = presentPublicViewerClient(
+    live,
+    "https://arena.example",
+    "/clients/negotiate/hosted/",
+  );
+  assert.equal(selected.state, "live");
+  if (selected.state !== "live") return;
+  assert.deepEqual(selected.client, {
+    launch_url: `https://arena.example/clients/negotiate/hosted/?public_run=${"1".repeat(32)}&platform_return=%2F&platform_result=%2Fruns%2F${"1".repeat(32)}`,
+    back_to_games: "/",
+    result_url: `/runs/${"1".repeat(32)}`,
+  });
+  for (const rejected of ["https://attacker.example/client/", "//attacker.example/client/", "/client/?return_to=https://attacker.example"]) {
+    const rejectedLaunch = presentPublicViewerClient(live, "https://arena.example", rejected);
+    assert.equal(rejectedLaunch.state, "live");
+    if (rejectedLaunch.state === "live") assert.equal(rejectedLaunch.client, undefined);
   }
 });
 

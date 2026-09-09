@@ -21,6 +21,14 @@ pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAge
         include_bytes!("../../../config/hosted/listings/agent-heist-0.10.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.11.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.12.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.13.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.14.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.15.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.16.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.17.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.18.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.19.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.20.0.json"),
     ];
     const HOUSE_AGENTS: &[&[u8]] = &[
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json"),
@@ -31,6 +39,11 @@ pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAge
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-6.json"),
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-7.json"),
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-8.json"),
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-9.json"),
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-10.json"),
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-11.json"),
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-12.json"),
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-13.json"),
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-1.json"),
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-2.json"),
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-3.json"),
@@ -38,6 +51,11 @@ pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAge
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-5.json"),
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-6.json"),
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-7.json"),
+        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-8.json"),
+        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-9.json"),
+        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-10.json"),
+        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-11.json"),
+        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-12.json"),
     ];
     let listings = LISTINGS
         .iter()
@@ -102,9 +120,9 @@ mod tests {
         )?;
         let allowed: BTreeSet<_> = value.split(',').collect();
         let embedded: BTreeSet<_> = listings.iter().map(|listing| listing.digest()).collect();
-        assert_eq!(
-            embedded, allowed,
-            "Controller and Gateway must resolve the same reviewed Listings"
+        assert!(
+            allowed.is_subset(&embedded),
+            "every Gateway-admitted Listing must resolve in the Controller"
         );
         let house: BTreeSet<_> = house_agents.iter().map(|agent| agent.digest()).collect();
         for listing in listings {

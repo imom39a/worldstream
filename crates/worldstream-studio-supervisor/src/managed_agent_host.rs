@@ -1485,9 +1485,11 @@ impl ManagedAgentHostProcessLauncherV1 for OsManagedAgentHostProcessLauncherV1 {
             // its children are stopped. Retain this fence across restarts and
             // reject links and inspection errors as well as ordinary files.
             // It is not an Outcome and never refunds provider allowance.
-            match std::fs::symlink_metadata(working_directory.join("operator-retired.json")) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                _ => return Err(ManagedAgentHostErrorV1::Unavailable),
+            for marker in ["retiring.json", "retired.json", "operator-retired.json"] {
+                match std::fs::symlink_metadata(working_directory.join(marker)) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    _ => return Err(ManagedAgentHostErrorV1::Unavailable),
+                }
             }
         }
         let mut helper = Command::new(plan.helper_program())
@@ -2057,8 +2059,34 @@ mod tests {
             "a retained retirement marker must prevent restart"
         );
 
-        // A broken link must not be treated as an absent fence.
+        // The hosted reconciler uses its own signed evidence filename. The
+        // process boundary intentionally treats the marker as a fence, not as
+        // executable instructions or a reason to revive a retired unit.
         std::fs::remove_file(&marker).unwrap();
+        let automatic = root.join("retired.json");
+        std::fs::write(&automatic, b"{}").unwrap();
+        assert!(
+            super::OsManagedAgentHostProcessLauncherV1
+                .launch_bridged(&plan, &Zeroizing::new(vec![0xab; 32]))
+                .is_err(),
+            "an automatic retirement fence must prevent a late provider response from restarting"
+        );
+
+        // The retirement coordinator installs this intent before it asks the
+        // managed host to drain. A crash during drain must be just as unable
+        // to launch a replacement pair.
+        std::fs::remove_file(&automatic).unwrap();
+        let intent = root.join("retiring.json");
+        std::fs::write(&intent, b"{}").unwrap();
+        assert!(
+            super::OsManagedAgentHostProcessLauncherV1
+                .launch_bridged(&plan, &Zeroizing::new(vec![0xab; 32]))
+                .is_err(),
+            "a durable retirement intent must prevent spawn before final receipt"
+        );
+
+        // A broken link must not be treated as an absent fence.
+        std::fs::remove_file(&intent).unwrap();
         std::os::unix::fs::symlink(root.join("missing-receipt"), &marker).unwrap();
         assert!(
             super::OsManagedAgentHostProcessLauncherV1

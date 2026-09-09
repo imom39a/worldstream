@@ -3,10 +3,12 @@ import { constants } from "node:fs";
 import {
   access,
   chmod,
+  link,
   lstat,
   mkdir,
   readFile,
   readdir,
+  rm,
   writeFile,
 } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -38,6 +40,7 @@ export function hostedRuntimeLayout(environment = process.env) {
     maintenanceRoot: join(volumeRoot, "maintenance"),
     maintenanceMarker: join(volumeRoot, "maintenance", "closed"),
     recoveryFence: join(volumeRoot, "maintenance", "recovery-house-calls-fenced"),
+    retainedRunnerRoot: join(volumeRoot, "retained-runner-executables"),
     generatedRoot: join(ephemeralRoot, "generated"),
     runtimeConfig: join(ephemeralRoot, "worldstream.toml"),
     authoritySecret: requiredPath(environment, "WORLDSTREAM_AUTHORITY_BOOTSTRAP_SECRET_FILE"),
@@ -51,6 +54,7 @@ export function hostedRuntimeLayout(environment = process.env) {
     gateway: join(binaryRoot, "worldstream-hosted-gateway"),
     managedAgentHost: join(binaryRoot, "worldstream-managed-agent-host"),
     managedAgentHostDigest: join(assetRoot, "managed-agent-host.blake3"),
+    artifactDigest: join(binaryRoot, "worldstream-hosted-artifact-digest"),
     clientRelease: join(assetRoot, "agent-heist-web.json"),
     inspectorRelease: join(assetRoot, "inspector-web.json"),
     clientBindings: join(assetRoot, "activity-client-bindings.json"),
@@ -114,20 +118,96 @@ export function renderHouseRunnerTemplate(executable, digest) {
   return {
     schema: "worldstream/runner-template/v1",
     template_id: "openrouter-house",
-    revision: "7",
+    revision: "12",
     display_name: "Hosted OpenRouter House Agent",
     executable: { path: executable, blake3: digest },
     compatibility: [{
       activity_pack_id: "worldstream.agent-heist",
-      exact_revisions: ["0.4.0"],
+      exact_revisions: ["0.3.0"],
     }],
     capacity: { maximum_concurrent_invocations: 4 },
     health: { path: "/healthz", timeout_ms: 1_000, stale_after_ms: 60_000 },
     non_secret_environment: { WORLDSTREAM_RUNNER_MODE: "hosted-house" },
     secret_environment: [],
     // Instance IDs are unique across retained immutable template revisions.
-    instances: [{ instance_id: "hosted-house-r7-01", health_address: "127.0.0.1:9597" }],
+    instances: [{ instance_id: "hosted-house-r12-01", health_address: "127.0.0.1:9602" }],
   };
+}
+
+/**
+ * The hosted digest executable and its image asset use a raw 64-character
+ * BLAKE3 hex value. Runner manifests use that same raw value in `blake3`.
+ * Keep the comparison exact: a tagged contract digest is a distinct wire
+ * representation and must not be silently accepted here.
+ */
+export function verifyManagedAgentHostDigest(assetDigest, observedDigest) {
+  if (typeof assetDigest !== "string" || !/^[0-9a-f]{64}$/u.test(assetDigest)) {
+    throw new Error("managed_agent_host_digest_invalid");
+  }
+  if (typeof observedDigest !== "string" || observedDigest !== assetDigest) {
+    throw new Error("managed_agent_host_digest_mismatch");
+  }
+  return assetDigest;
+}
+
+/**
+ * Persist one immutable Runner executable under its verified content digest.
+ * Existing content-addressed targets are reusable only when their bytes are
+ * equal to the source; this function never overwrites a retained executable.
+ */
+export async function retainRunnerExecutable({ source, retainedRoot, digest, sourceBytes = undefined }) {
+  if (!/^[0-9a-f]{64}$/u.test(digest)) throw new Error("invalid_runner_digest");
+  const sourceMetadata = await lstat(source);
+  if (!sourceMetadata.isFile() || sourceMetadata.isSymbolicLink() || sourceMetadata.size < 1) {
+    throw new Error("runner_source_invalid");
+  }
+  await mkdir(retainedRoot, { recursive: true, mode: 0o700 });
+  await chmod(retainedRoot, 0o700);
+  const rootMetadata = await lstat(retainedRoot);
+  if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink() || (rootMetadata.mode & 0o077) !== 0) {
+    throw new Error("retained_runner_root_invalid");
+  }
+  const digestDirectory = join(retainedRoot, `blake3-${digest}`);
+  await mkdir(digestDirectory, { recursive: true, mode: 0o700 });
+  await chmod(digestDirectory, 0o700);
+  const directoryMetadata = await lstat(digestDirectory);
+  if (!directoryMetadata.isDirectory() || directoryMetadata.isSymbolicLink() || (directoryMetadata.mode & 0o077) !== 0) {
+    throw new Error("retained_runner_directory_invalid");
+  }
+  const target = join(digestDirectory, "worldstream-managed-agent-host");
+  const bytes = sourceBytes ?? await readFile(source);
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1) throw new Error("runner_source_invalid");
+  try {
+    const existing = await lstat(target);
+    if (!existing.isFile() || existing.isSymbolicLink() || (existing.mode & 0o077) !== 0) {
+      throw new Error("retained_runner_invalid");
+    }
+    if (!Buffer.from(await readFile(target)).equals(Buffer.from(bytes))) throw new Error("retained_runner_digest_collision");
+    await chmod(target, 0o700);
+    return target;
+  } catch (error) {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+  }
+  const temporary = join(digestDirectory, `.runner-${process.pid}-${Math.random().toString(16).slice(2)}`);
+  try {
+    await writeFile(temporary, bytes, { flag: "wx", mode: 0o700 });
+    // `link` is no-clobber. A concurrent installer may only win with the
+    // same bytes; a distinct byte sequence at this digest fails closed.
+    try {
+      await link(temporary, target);
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
+      const existing = await lstat(target);
+      if (!existing.isFile() || existing.isSymbolicLink() || (existing.mode & 0o077) !== 0
+          || !Buffer.from(await readFile(target)).equals(Buffer.from(bytes))) {
+        throw new Error("retained_runner_digest_collision");
+      }
+    }
+  } finally {
+    await rm(temporary, { force: true });
+  }
+  await chmod(target, 0o700);
+  return target;
 }
 
 export function hostedStatusReady(value) {
@@ -216,6 +296,7 @@ async function prepareLayout(layout) {
     layout.controllerState,
     layout.checkpointStaging,
     layout.maintenanceRoot,
+    layout.retainedRunnerRoot,
     layout.ephemeralRoot,
     layout.generatedRoot,
   ]) {
@@ -229,6 +310,7 @@ async function prepareLayout(layout) {
     layout.gateway,
     layout.managedAgentHost,
     layout.managedAgentHostDigest,
+    layout.artifactDigest,
     layout.clientRelease,
     layout.inspectorRelease,
     layout.clientBindings,
@@ -265,10 +347,22 @@ async function initializeInstallation(layout, controllerAuthority) {
 }
 
 async function writeInitializationImports(layout) {
-  const runnerDigest = (await readFile(layout.managedAgentHostDigest, "utf8")).trim();
+  const assetDigest = (await readFile(layout.managedAgentHostDigest, "utf8")).trim();
+  const observedDigest = (await run(layout.artifactDigest, [layout.managedAgentHost], process.env)).stdout.trim();
+  const runnerDigest = verifyManagedAgentHostDigest(assetDigest, observedDigest);
+  const runnerBytes = await readFile(layout.managedAgentHost);
+  const retainedRunner = await retainRunnerExecutable({
+    source: layout.managedAgentHost,
+    retainedRoot: layout.retainedRunnerRoot,
+    digest: runnerDigest,
+    sourceBytes: runnerBytes,
+  });
+  if ((await run(layout.artifactDigest, [retainedRunner], process.env)).stdout.trim() !== runnerDigest) {
+    throw new Error("retained_managed_agent_host_digest_mismatch");
+  }
   const runner = await writeJson(
     join(layout.generatedRoot, "openrouter-house-runner.json"),
-    renderHouseRunnerTemplate(layout.managedAgentHost, runnerDigest),
+    renderHouseRunnerTemplate(retainedRunner, runnerDigest),
   );
   const provider = await writeJson(join(layout.generatedRoot, "openrouter-provider.json"), {
     schema: "worldstream/model-provider-credential-import/v1",
@@ -290,12 +384,12 @@ export function renderHouseAgentProfiles() {
   const hostContract = {
     kind: "managed_house_openrouter",
     host_contract_revision: "1",
-    runner_template: { template_id: "openrouter-house", revision: "7" },
+    runner_template: { template_id: "openrouter-house", revision: "12" },
   };
   const cooperative = {
     schema: "worldstream/studio-agent-profile-publish/v2",
     profile_id: "house-cooperative-planner",
-    revision: "8",
+    revision: "13",
     display_name: "Cooperative Planner",
     non_secret_configuration: {},
     host_contract: hostContract,
@@ -304,7 +398,7 @@ export function renderHouseAgentProfiles() {
   const skeptical = {
     schema: "worldstream/studio-agent-profile-publish/v2",
     profile_id: "house-skeptical-auditor",
-    revision: "7",
+    revision: "12",
     display_name: "Skeptical Auditor",
     non_secret_configuration: {},
     host_contract: hostContract,
@@ -367,7 +461,7 @@ async function writeClientImport(layout) {
   }));
   heistDeployment.surfaces = heistDeployment.surfaces.map((surface) => ({
     ...surface,
-    launch_url: new URL("/agent-heist-v5/hosted/", clientOrigin).toString(),
+    launch_url: new URL("/agent-heist-v6/hosted/", clientOrigin).toString(),
   }));
   bindings.deployments = [inspectorDeployment, heistDeployment];
   bindings.inspector_fallback = fallback;

@@ -95,6 +95,15 @@ select throws_ok(
   'the row-lock privilege cannot mutate the capacity gate'
 );
 
+-- A retained local installation can already have live Runs. Snapshot that
+-- external occupancy before this test creates any fixture reservation; the
+-- fixture-only capacity window below is rolled back with the whole test.
+create temporary table active_run_capacity_baseline as
+select count(*)::integer as active_count
+from platform_store.capacity_reservations
+where kind = 'active_run' and released_at is null;
+grant select on active_run_capacity_baseline to service_role;
+
 insert into platform_store.activity_listing_revisions (
   listing_revision_digest,
   listing_key,
@@ -738,6 +747,15 @@ select ok(
 );
 
 reset role;
+-- The migration's fixed ten-Run policy was asserted above. Translate the
+-- transaction-local fixture gate by the retained baseline so this test still
+-- proves exactly ten *new* admissions without deleting or changing retained
+-- rows. Rollback restores the canonical gate value and trigger.
+alter table platform_store.capacity_gates disable trigger protect_capacity_gate_v1;
+update platform_store.capacity_gates gates
+set hard_limit = (select active_count + 10 from active_run_capacity_baseline)
+where gates.gate_kind = 'active_run';
+alter table platform_store.capacity_gates enable trigger protect_capacity_gate_v1;
 insert into platform_store.platform_accounts(account_id)
 select ('30000000-0000-4000-8000-' || lpad(series::text, 12, '0'))::uuid
 from generate_series(1, 10) series;
@@ -814,8 +832,8 @@ select is(
   (select count(*)::integer
    from platform_store.capacity_reservations
    where kind = 'active_run' and released_at is null),
-  10,
-  'the fixed lock gate admits exactly ten active Run reservations globally'
+  (select active_count + 10 from active_run_capacity_baseline),
+  'the fixture gate admits exactly ten active Run reservations above retained occupancy'
 );
 select throws_ok(
   format(
@@ -832,8 +850,8 @@ select is(
   (select count(*)::integer
    from platform_store.capacity_reservations
    where kind = 'active_run' and released_at is null),
-  10,
-  'capacity rejection does not create a partial reservation'
+  (select active_count + 10 from active_run_capacity_baseline),
+  'capacity rejection does not create a partial reservation above retained occupancy'
 );
 
 select * from finish();

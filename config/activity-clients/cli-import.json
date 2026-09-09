@@ -7,6 +7,9 @@
     "./releases/negotiate-web-v2.json",
     "./releases/inspector-web.json",
     "./releases/agent-heist-web-v3.json",
+    "./releases/agent-heist-web-v4.json",
+    "./releases/agent-heist-web-v5.json",
+    "./releases/agent-heist-web-v6.json",
     "./releases/negotiate-web-v3.json",
     "./releases/inspector-web-v2.json"
   ],

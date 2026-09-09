@@ -1,6 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
-
-import { PublicProjectionSessionController } from "@worldstream/client";
+import { useEffect, useState } from "react";
 
 import {
   readPublicRun,
@@ -10,25 +8,43 @@ import {
 } from "./hostedApi";
 import { SiteFooter, SiteHeader, type Navigate } from "./siteChrome";
 
-const AgentHeistClient = lazy(async () => {
-  const client = await import("@worldstream/agent-heist-client");
-  return { default: client.AgentHeistClient };
-});
-const PUBLIC_VIEWER_STARTUP = { kind: "direct" } as const;
+const PUBLIC_RUN_RECONCILIATION_INTERVAL_MS = 5_000;
+const PUBLIC_RUN_RECONCILIATION_MAX_POLLS = 12;
 
 export function RunPage({ publicId, onNavigate }: { publicId: string; onNavigate: Navigate }) {
   const [run, setRun] = useState<PublicRun | null>(null);
 
   useEffect(() => {
     let active = true;
-    void readPublicRun(publicId)
-      .then((value) => {
-        if (active) setRun(value);
-      })
-      .catch(() => {
-        if (active) setRun({ version: "public_run.v1", state: "unavailable" });
-      });
-    return () => { active = false; };
+    let polls = 0;
+    let timer: number | null = null;
+    const controller = new AbortController();
+
+    const read = async (): Promise<void> => {
+      try {
+        const value = await readPublicRun(publicId, controller.signal);
+        if (!active) return;
+        setRun(value);
+        if (value.state === "live" && polls < PUBLIC_RUN_RECONCILIATION_MAX_POLLS) {
+          polls += 1;
+          timer = window.setTimeout(() => {
+            timer = null;
+            void read();
+          }, PUBLIC_RUN_RECONCILIATION_INTERVAL_MS);
+        }
+      } catch {
+        if (active && !controller.signal.aborted) {
+          setRun({ version: "public_run.v1", state: "unavailable" });
+        }
+      }
+    };
+
+    void read();
+    return () => {
+      active = false;
+      controller.abort();
+      if (timer !== null) window.clearTimeout(timer);
+    };
   }, [publicId]);
 
   return (
@@ -104,25 +120,7 @@ function AvailableRun({ run }: { run: Exclude<PublicRun, { readonly state: "unav
 }
 
 function LiveRun({ run }: { run: Extract<PublicRun, { readonly state: "live" }> }) {
-  const [controller] = useState(() => new PublicProjectionSessionController({
-    streamUrl: run.live.stream_url,
-  }));
-  const delayedClose = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (delayedClose.current !== null) clearTimeout(delayedClose.current);
-    return () => {
-      delayedClose.current = setTimeout(() => controller.close(), 0);
-    };
-  }, [controller]);
-  if (run.activity.pack.id !== "worldstream.agent-heist") {
-    return (
-      <section className="public-run-unavailable">
-        <span className="run-state-chip state-live">Live Run</span>
-        <h1>{run.activity.title}</h1>
-        <p>The reviewed Activity Client for this Pack is not installed on this site.</p>
-      </section>
-    );
-  }
+  const client = run.client;
   return (
     <>
       <section className="public-live-context" aria-label="Public Run context">
@@ -136,29 +134,18 @@ function LiveRun({ run }: { run: Extract<PublicRun, { readonly state: "live" }> 
           <code>{run.public_id}</code>
         </div>
       </section>
-      <Suspense fallback={<RunStatus message="Loading the Agent Heist viewer…" />}>
-        <AgentHeistClient startup={PUBLIC_VIEWER_STARTUP} controller={controller} />
-      </Suspense>
-      <section className="public-live-details">
-        <div className="run-roster-card" aria-labelledby="public-live-roster-title">
-          <div>
-            <span className="section-label">Reviewed attribution</span>
-            <h2 id="public-live-roster-title">Participants</h2>
-          </div>
-          <div className="public-roster">
-            {run.participants.map((participant) => (
-              <PublicParticipantRow
-                key={`${participant.role}:${participant.seat_label}`}
-                participant={participant}
-              />
-            ))}
-          </div>
-        </div>
-        <div className="run-live-provenance">
-          <span>Started</span><strong>{formatDate(run.started_at)}</strong>
-          <span>Pack</span><strong>{run.activity.pack.id} {run.activity.pack.version}</strong>
-          <span>Access</span><strong>Anonymous spectator projection</strong>
-        </div>
+      <section className="public-run-unavailable" aria-labelledby="public-live-client-title">
+        <span className="run-state-chip state-live">Live · read only</span>
+        <h1 id="public-live-client-title">Open the reviewed Activity Client</h1>
+        <p>
+          This public page does not interpret Pack state. The selected client opens a
+          credential-free spectator projection for this exact reviewed release.
+        </p>
+        {client === undefined ? (
+          <p>The retained client release for this Run does not support public viewing.</p>
+        ) : (
+          <a className="button-link" href={client.launch_url}>Watch live Run</a>
+        )}
       </section>
     </>
   );

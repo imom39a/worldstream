@@ -6,6 +6,46 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8 — stability specification and tickets published; no new qualification
+
+The user approved the testing boundaries and ten implementation/qualification
+slices. The canonical specification is
+[IMO-187](https://linear.app/imom39a/issue/IMO-187/stabilize-the-generic-hosted-activity-platform-mvp);
+the [implementation handoff](activity-platform-design.md#implementation-handoff--published-2026-09-08)
+maps all ten slices. Eight new implementation tickets, IMO-188–IMO-195, join
+the reused client issue IMO-185 and final acceptance issue IMO-184. Native
+blocking links were checked, and IMO-184's original IMO-163 parent is unchanged.
+
+IMO-186 gameplay is preserved in Backlog. Populated disaster recovery is a
+separate deferred tracking item, IMO-196, not an MVP blocker. IMO-184 now states
+the accepted local-first qualification and ADR 0026 recovery limit explicitly.
+
+Only Linear records and documentation changed in this step. No implementation
+test, production mutation, deployment, paid model call, budget change, or
+acceptance pass occurred. The technical failures below still require their
+implementation tickets.
+
+### September 8 — platform-stability scope accepted; no new qualification
+
+The user accepted Q1–Q10 of the
+[platform-stability interview](activity-platform-design.md). The next milestone
+is generic platform usability and repeat play, tested with Heist 0.3 and
+compatible client fixes. Heist 0.4 gameplay improvements and ranked
+leaderboards are deferred.
+
+The earlier pending recovery-scope decision is now resolved by
+[ADR 0026](adr/0026-defer-populated-disaster-recovery-for-the-hobby-preview.md):
+populated disaster-recovery qualification is deferred with an explicit
+catastrophic history-loss/reset disclosure. Normal same-volume restart,
+authorized re-entry, safe capacity retirement, privacy, and provider budgets
+remain mandatory. This is not approval to reset the current installation or
+claim an unverified capture is restorable.
+
+This step changes documentation only. No Runtime test, paid call, production
+mutation, or deployment was performed. The latest technical acceptance failure
+below remains unresolved; no existing receipt or ticket is marked passed by
+this scope decision.
+
 ### September 8, 15:05 UTC — accepted local House Action; restart acceptance fails
 
 The complete run on clean `1939fd8f74e051e9517509924a9864910b0969ae`

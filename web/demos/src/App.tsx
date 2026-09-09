@@ -5,6 +5,7 @@ import { AgentHeistPage } from "./AgentHeistPage";
 import { CatalogPage } from "./CatalogPage";
 import { JoinPage } from "./JoinPage";
 import { LaunchPage } from "./LaunchPage";
+import { MyGamesPage } from "./MyGamesPage";
 import { demos, getDemoById } from "./catalog";
 import { NotFoundPage } from "./NotFoundPage";
 import { usePageMetadata, type PageKind } from "./pageMetadata";
@@ -39,6 +40,8 @@ export function App() {
     ? "catalog"
     : pathname === "/join"
       ? "join"
+      : pathname === "/my-games"
+        ? "catalog"
       : publicRunId !== undefined
         ? "run"
       : launchId !== undefined
@@ -52,6 +55,7 @@ export function App() {
   usePageMetadata(page);
 
   if (pathname === "/join") return <JoinPage onNavigate={navigate} />;
+  if (pathname === "/my-games") return <MyGamesPage onNavigate={navigate} />;
   if (publicRunId !== undefined) return <RunPage publicId={publicRunId} onNavigate={navigate} />;
   if (launchId !== undefined) return <LaunchPage launchId={launchId} onNavigate={navigate} />;
 

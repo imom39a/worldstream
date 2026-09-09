@@ -1,7 +1,46 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
-select plan(17);
+select plan(22);
+
+select is(
+  (select encode(extensions.digest(canonical_document, 'sha256'), 'hex')
+   from platform_store.activity_listing_revisions
+   where listing_revision_digest = 'blake3:1cf75abcb30d77fdbe0abc5e39813a315bea6900c61e9b49c51b84d995335d74'),
+  '817ae13d04f6f3527a3f8bcec8b8d3d01b00721525cacf0cc03c740b270a4370',
+  'the r12 successor Listing stores the checked canonical artifact bytes'
+);
+select is(
+  (select convert_from(canonical_document, 'utf8')::jsonb ->> 'version'
+   from platform_store.activity_listing_revisions
+   where listing_revision_digest = 'blake3:1cf75abcb30d77fdbe0abc5e39813a315bea6900c61e9b49c51b84d995335d74'),
+  '0.20.0',
+  'the r12 successor Listing is the current immutable revision'
+);
+select is(
+  (select convert_from(canonical_document, 'utf8')::jsonb ->> 'version'
+   from platform_store.activity_listing_revisions
+   where listing_revision_digest = 'blake3:5b0993de4c858771cce34b16cb25e03b2bf509cbe16cd1ce7249a789ea8c426f'),
+  '0.18.0',
+  'the r10 Listing remains retained after current discovery advances'
+);
+select is(
+  (select convert_from(canonical_document, 'utf8')::jsonb ->> 'version'
+   from platform_store.activity_listing_revisions
+   where listing_revision_digest = 'blake3:350beff2dbb28d495a5355ac19a7580f8494589bc0d5c6fec1c521be86a7cf38'),
+  '0.17.0',
+  'the r9 Listing remains retained after current discovery advances'
+);
+select is(
+  (select string_agg(runner_template_revision, ',' order by house_agent_key)
+   from platform_store.house_agent_revisions
+   where house_agent_revision_digest in (
+     'blake3:f61c494b644621e55eacf32dafbbf61f9471160eb2b91181e21c03ef5ed82271',
+     'blake3:c794a69db2c617724483aaa86e0b55f1d694936c4735932b75c2ae5cacdcfecd'
+   )),
+  '9,9',
+  'the r9 House revisions remain immutable for retained Assignments'
+);
 
 select is(
   (select count(*)::integer from platform_store.activity_listing_revisions

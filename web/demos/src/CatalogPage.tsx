@@ -301,6 +301,7 @@ export function friendlyError(cause: unknown): string {
   const code = cause instanceof Error ? cause.message : "request_unavailable";
   if (code === "activity_unavailable") return "This activity is not available on the live host.";
   if (code === "formation_unavailable") return "The room could not be created.";
+  if (code === "activity_capacity_unavailable") return "Active activity capacity is currently in use. Try again after an activity finishes.";
   if (code === "temporarily_unavailable") return "The live room service is temporarily unavailable.";
   return "The request did not complete. Your retained setup key makes retry safe.";
 }

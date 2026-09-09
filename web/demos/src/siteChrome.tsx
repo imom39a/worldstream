@@ -13,6 +13,7 @@ export function SiteHeader({ onNavigate }: { onNavigate: Navigate }) {
       </button>
       <nav aria-label="Primary navigation">
         <a href="/#activities-title">Discover</a>
+        <button type="button" onClick={() => onNavigate("/my-games")}>My games</button>
         <a href="/#recent-results-title">Recent results</a>
         <a href={manualUrl}>Developer guide <span aria-hidden="true">↗</span></a>
       </nav>

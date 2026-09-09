@@ -62,6 +62,21 @@ fn exact_client_retry_completes_orphan_status_but_never_recreates_lost_status() 
                 .as_slice(),
         ),
         (
+            "releases/agent-heist-web-v4.json",
+            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v4.json")
+                .as_slice(),
+        ),
+        (
+            "releases/agent-heist-web-v5.json",
+            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v5.json")
+                .as_slice(),
+        ),
+        (
+            "releases/agent-heist-web-v6.json",
+            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v6.json")
+                .as_slice(),
+        ),
+        (
             "releases/negotiate-web.json",
             include_bytes!("../../../config/activity-clients/releases/negotiate-web.json")
                 .as_slice(),

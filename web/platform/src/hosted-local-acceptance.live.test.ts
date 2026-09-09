@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 import {
@@ -27,9 +28,22 @@ import { test } from "vitest";
 import { createDevelopmentPlatformBff, DEVELOPMENT_IDENTITY_MODE } from "./bff.js";
 import { HttpHostedBrowserSessionClient } from "./browser-sessions.js";
 import { HttpHostedFormationGateway } from "./hosted-formation.js";
+import { createHostedResultReconciler } from "./reconciliation-service.js";
+import {
+  reconcilePrestartHouseRunnerRetirementCandidates,
+  reconcileTerminalHouseRunnerRetirementCandidates,
+  type ResultReconciliationData,
+  type ResultReconcilerDependencies,
+} from "./result-reconciliation.js";
 import { createSupabaseBffDependencies } from "./supabase.js";
 
+const renderedBrowserJourney = await import(
+  new URL("../../../scripts/hosted-rendered-browser-journey.mjs", import.meta.url).href
+);
+
 const ACCEPTANCE_MODE = "visible-local-only";
+const HOUSE_ALLOWANCE_LEDGER_SCHEMA = "worldstream/house-allowance-ledger@1";
+const MAX_HOUSE_ALLOWANCE_LEDGER_BYTES = 2 * 1024 * 1024;
 const ACTION_IDS = [
   "01ARZ3NDEKTSV4RRFFQ69G5FNC",
   "01ARZ3NDEKTSV4RRFFQ69G5FND",
@@ -41,6 +55,13 @@ const executeFile = promisify(execFile);
 
 type JsonRecord = Record<string, unknown>;
 
+type HouseAllowanceObservation = Readonly<{
+  completedAttempts: number;
+  consumedAttempts: number;
+  consumedInputUnits: number;
+  consumedOutputUnits: number;
+}>;
+
 test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
   "the hosted local candidate passes the canonical headless HTTP/WebSocket-to-result story",
   () => withSessionCleanup(async (register) => {
@@ -51,6 +72,12 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     const supabaseUrl = required("SUPABASE_URL");
     const publishableKey = required("SUPABASE_PUBLISHABLE_KEY");
     const dataSecretKey = required("SUPABASE_DATA_SECRET_KEY");
+    const houseRetirementReconciler = createHostedResultReconciler({
+      supabaseUrl,
+      dataSecretKey,
+      hostedGatewayUrl: gatewayOrigin,
+      serviceAuthority,
+    });
 
     const creator = new CookieBrowser(productOrigin, globalThis.fetch);
     await creator.signIn();
@@ -98,6 +125,10 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     );
     await browserAgent.signIn();
 
+    const providerBefore = await readProviderMetrics(fakeProviderOrigin);
+    const acceptanceStateDirectory = required("WORLDSTREAM_ACCEPTANCE_STATE_DIR");
+    const allowanceBefore = await readHouseAllowanceObservation(acceptanceStateDirectory);
+
     const launch = await creator.mutate("/api/launches", {
       listing_slug: "agent-heist",
       creator_access: "seat",
@@ -126,6 +157,7 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     const runId = stringField(run, "run_id");
     const publicId = stringField(run, "public_id");
     const creatorEntry = firstEntry(run);
+    const creatorEntrySelector = creatorEntry.entrySelector;
     const agentLaunch = await browserAgent.read(`/api/launches/${launchId}`);
     const agentEntry = firstEntry(recordField(agentLaunch, "run"));
 
@@ -383,25 +415,173 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     assertNoPrivatePublicFields(recent);
     console.info("Hosted acceptance: terminal Replay-verified exhibition is in Recent Results.");
 
-    const providerMetrics = await readJsonResponse(
-      await fetch(`${fakeProviderOrigin}/development/metrics`, {
-        headers: {
-          authorization: `Bearer ${required("WORLDSTREAM_DEVELOPMENT_OPENROUTER_KEY")}`,
-        },
-      }),
+    const firstProviderMetrics = await readProviderMetrics(fakeProviderOrigin);
+    const firstProviderCalls = firstProviderMetrics.house_completion_count;
+    assert.ok(firstProviderCalls > providerBefore.house_completion_count);
+    const allowanceAfterFirst = await readHouseAllowanceObservation(acceptanceStateDirectory);
+    assert.ok(allowanceConsumptionAdvanced(allowanceBefore, allowanceAfterFirst));
+    const firstHouseCapacityReleased = await reconcileAndObserveExactHouseRetirement({
+      reconciler: houseRetirementReconciler,
+      runId,
+      lane: "terminal",
+    });
+
+    // Match 2 deliberately uses the rendered Activity Client against the
+    // same retained Runtime, database, House allowances, and qualification
+    // identities. A new Run is the only new authority.
+    const secondProviderBefore = await readProviderMetrics(fakeProviderOrigin);
+    const rendered = await renderedBrowserJourney.runHostedRenderedBrowserJourney({
+      productOrigin,
+      formationTimeoutMs: 240_000,
+    });
+    assert.equal(rendered.outcome, "passed");
+    assert.equal(rendered.completed, true);
+    const renderedRunId = renderedBrowserJourney.renderedJourneyRunId(rendered);
+    const renderedEntrySelector = renderedBrowserJourney.renderedJourneyEntrySelector(rendered);
+    const secondHistory = await creator.read("/api/my-games");
+    assert.ok(arrayField(secondHistory, "items").filter((item) => record(item).state === "result").length >= 2);
+    const secondProviderMetrics = await readProviderMetrics(fakeProviderOrigin);
+    const secondProviderCalls = secondProviderMetrics.house_completion_count;
+    const secondProviderBeforeCalls = secondProviderBefore.house_completion_count;
+    assert.ok(secondProviderCalls > secondProviderBeforeCalls);
+    const allowanceAfterSecond = await readHouseAllowanceObservation(acceptanceStateDirectory);
+    assert.ok(allowanceConsumptionAdvanced(allowanceAfterFirst, allowanceAfterSecond));
+    const secondHouseCapacityReleased = await reconcileAndObserveExactHouseRetirement({
+      reconciler: houseRetirementReconciler,
+      runId: renderedRunId,
+      lane: "terminal",
+    });
+
+    // Match 3 uses the people-only formation. No client submits an Action; the
+    // Pack's persisted timers produce its valid failed outcome and the normal
+    // result lane retires the Run.
+    const third = await runPeopleOnlyNoActionMatch({
+      creator,
+      browserAgent,
+      productOrigin,
+      matchNumber: 3,
+    });
+    const creatorAccount = await secondaryDependencies.dataClient.resolveGithubAccount({
+      authUserId: required("WORLDSTREAM_DEVELOPMENT_AUTH_USER_ID"),
+      providerSubject: required("WORLDSTREAM_DEVELOPMENT_GITHUB_SUBJECT"),
+    });
+    assert.ok(creatorAccount);
+    const readRoomIdentity = async (runId: string, entrySelector: string): Promise<string> => {
+      const membership = await secondaryDependencies.dataClient.resolveOwnedRunMembership({
+        accountId: creatorAccount.accountId,
+        runId,
+        entrySelector,
+      });
+      assert.ok(membership);
+      return membership.roomId;
+    };
+    const runIdentities = [runId, renderedRunId, third.runId];
+    assert.equal(new Set(runIdentities).size, 3, "three matches must create distinct Runs");
+    const roomIdentities = await Promise.all([
+      readRoomIdentity(runId, creatorEntrySelector),
+      readRoomIdentity(renderedRunId, renderedEntrySelector),
+      readRoomIdentity(third.runId, third.entrySelector),
+    ]);
+    assert.equal(new Set(roomIdentities).size, 3, "three matches must create distinct Rooms");
+    const thirdProviderMetrics = await readProviderMetrics(fakeProviderOrigin);
+    const thirdProviderCalls = thirdProviderMetrics.house_completion_count;
+    assert.equal(thirdProviderCalls, secondProviderCalls);
+    const peopleOnlyHasNoHouseRetirement = await waitForExactHouseRetirementClearance(
+      houseRetirementReconciler.data,
+      third.runId,
+      "terminal",
+    );
+    const finalHistory = await creator.read("/api/my-games");
+    const retainedHistoryCount = arrayField(finalHistory, "items")
+      .map((item) => record(item))
+      .filter((item) => item.state === "result").length;
+    assert.ok(retainedHistoryCount >= 3);
+
+    // A fourth launch proves active capacity was released after the failed
+    // people-only Run. Cancel this probe after proving collection so the
+    // dedicated qualification identity remains reusable on the next run.
+    const fresh = await creator.mutate("/api/launches", {
+      listing_slug: "agent-heist",
+      creator_access: "seat",
+      creator_seat: "seat-1",
+      fill_mode: "people_only",
+      idempotency_key: `hosted_local_fresh_${required("WORLDSTREAM_ACCEPTANCE_NONCE")}`,
+    }, [201, 200]);
+    assert.equal(fresh.state, "collecting");
+    const freshCancellation = await creator.mutate(
+      `/api/launches/${stringField(fresh, "launch_id")}/cancel`,
+      {},
       [200],
     );
-    const providerCalls = integerField(providerMetrics, "house_completion_count");
-    assert.ok(providerCalls >= 1 && providerCalls <= 10);
+    assert.equal(freshCancellation.state, "cancelled");
+    // This is an extra repeat-admission check. Each Match's capacity evidence
+    // below comes from its own exact retirement lane, not this later probe.
+    const finalHouseCapacityProbe = await formAndAbandonHouseCapacityProbe({
+      creator,
+      browserAgent,
+      matchNumber: 4,
+    });
+    const finalHouseProbeCapacityReleased = await reconcileAndObserveExactHouseRetirement({
+      reconciler: houseRetirementReconciler,
+      runId: finalHouseCapacityProbe.runId,
+      lane: "prestart",
+    });
+    assert.equal(finalHouseCapacityProbe.formed, true);
+    assert.equal(finalHouseProbeCapacityReleased, true);
+    const consumedAllowanceObserved = allowanceConsumptionAdvanced(allowanceBefore, allowanceAfterFirst) &&
+      allowanceConsumptionAdvanced(allowanceAfterFirst, allowanceAfterSecond);
     const resultPath = required("WORLDSTREAM_ACCEPTANCE_RESULT_PATH");
     await writeFile(resultPath, `${JSON.stringify({
-      version: "worldstream_hosted_local_acceptance_result.v1",
-      provider_calls: providerCalls,
+      version: "worldstream_hosted_local_acceptance_result.v2",
+      provider_calls: thirdProviderCalls - providerBefore.house_completion_count,
       maximum_direct_push_seconds: directPush.seconds,
+      matches: [
+        {
+          match: 1,
+          mode: "house_backed",
+          outcome: "success",
+          provider_call_delta: firstProviderCalls - providerBefore.house_completion_count,
+          capacity_released: firstHouseCapacityReleased,
+          history_retained: false,
+          disconnect_and_catch_up: true,
+          restart_and_reentry: true,
+          no_actions: false,
+        },
+        {
+          match: 2,
+          mode: "house_backed",
+          outcome: "success",
+          provider_call_delta: secondProviderCalls - secondProviderBeforeCalls,
+          capacity_released: secondHouseCapacityReleased,
+          history_retained: true,
+          disconnect_and_catch_up: false,
+          restart_and_reentry: false,
+          no_actions: false,
+        },
+        {
+          match: 3,
+          mode: "people_only",
+          outcome: "failure",
+          provider_call_delta: thirdProviderCalls - secondProviderCalls,
+          capacity_released: peopleOnlyHasNoHouseRetirement &&
+            thirdProviderCalls === secondProviderCalls,
+          history_retained: true,
+          disconnect_and_catch_up: false,
+          restart_and_reentry: false,
+          no_actions: true,
+        },
+      ],
+      retained_history_count: retainedHistoryCount,
+      consumed_allowance_observed: consumedAllowanceObserved,
+      fresh_setup: fresh.state === "collecting",
+      retained_upgrade: rendered.completed === true && retainedHistoryCount >= 2,
+      ordinary_restart: true,
+      populated_recovery: "deferred_not_verified",
+      rendered_client: rendered,
     })}\n`, { flag: "wx", mode: 0o600 });
 
   }),
-  360_000,
+  900_000,
 );
 
 class CookieBrowser {
@@ -607,6 +787,421 @@ class DirectPushMeasurement {
   }
 }
 
+async function readProviderMetrics(origin: string): Promise<{
+  readonly house_completion_count: number;
+}> {
+  const metrics = await readJsonResponse(
+    await fetch(`${origin}/development/metrics`, {
+      headers: { authorization: `Bearer ${required("WORLDSTREAM_DEVELOPMENT_OPENROUTER_KEY")}` },
+    }),
+    [200],
+  );
+  return Object.freeze({
+    house_completion_count: integerField(metrics, "house_completion_count"),
+  });
+}
+
+function houseAllowanceLedgerPath(stateDirectory: string): string {
+  return join(
+    stateDirectory,
+    "hosted-house-runners",
+    "units",
+    "allowance",
+    "allowances.json",
+  );
+}
+
+async function readHouseAllowanceObservation(
+  stateDirectory: string,
+): Promise<HouseAllowanceObservation> {
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(houseAllowanceLedgerPath(stateDirectory));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyHouseAllowanceObservation();
+    throw error;
+  }
+  if (bytes.byteLength > MAX_HOUSE_ALLOWANCE_LEDGER_BYTES) {
+    throw new Error("House allowance ledger exceeds its retained byte bound");
+  }
+  return observeHouseAllowanceLedger(JSON.parse(bytes.toString("utf8")));
+}
+
+function emptyHouseAllowanceObservation(): HouseAllowanceObservation {
+  return Object.freeze({
+    completedAttempts: 0,
+    consumedAttempts: 0,
+    consumedInputUnits: 0,
+    consumedOutputUnits: 0,
+  });
+}
+
+function observeHouseAllowanceLedger(value: unknown): HouseAllowanceObservation {
+  const ledger = record(value);
+  if (ledger.schema !== HOUSE_ALLOWANCE_LEDGER_SCHEMA) {
+    throw new Error("House allowance ledger schema is invalid");
+  }
+  const assignments = recordField(ledger, "assignments");
+  const assignmentEntries = Object.entries(assignments);
+  if (assignmentEntries.length > 256) throw new Error("House allowance ledger assignments exceed bounds");
+  let completedAttempts = 0;
+  let consumedAttempts = 0;
+  let consumedInputUnits = 0;
+  let consumedOutputUnits = 0;
+  for (const [, assignmentValue] of assignmentEntries) {
+    const assignment = record(assignmentValue);
+    const assignmentInput = nonNegativeIntegerField(assignment, "consumed_input_units");
+    const assignmentOutput = nonNegativeIntegerField(assignment, "consumed_output_units");
+    const attempts = recordField(assignment, "attempts");
+    const attemptEntries = Object.entries(attempts);
+    if (attemptEntries.length > 10) throw new Error("House allowance attempts exceed bounds");
+    for (const [, attemptValue] of attemptEntries) {
+      const attempt = record(attemptValue);
+      const state = stringField(attempt, "state");
+      if (![
+        "reserved",
+        "completed",
+        "ambiguous",
+        "provider_failed",
+      ].includes(state)) {
+        throw new Error("House allowance attempt state is invalid");
+      }
+      if (state === "completed") completedAttempts += 1;
+      if (state !== "reserved") consumedAttempts += 1;
+    }
+    consumedInputUnits += assignmentInput;
+    consumedOutputUnits += assignmentOutput;
+  }
+  return Object.freeze({
+    completedAttempts,
+    consumedAttempts,
+    consumedInputUnits,
+    consumedOutputUnits,
+  });
+}
+
+function allowanceConsumptionAdvanced(
+  before: HouseAllowanceObservation,
+  after: HouseAllowanceObservation,
+): boolean {
+  return after.completedAttempts > before.completedAttempts &&
+    after.consumedAttempts > before.consumedAttempts &&
+    after.consumedInputUnits > before.consumedInputUnits &&
+    after.consumedOutputUnits > before.consumedOutputUnits;
+}
+
+function matchActionId(matchNumber: number, actionNumber: number): string {
+  return `0${createHash("sha256")
+    .update(`worldstream-hosted-acceptance:${matchNumber}:${actionNumber}`)
+    .digest("hex")
+    .slice(0, 25)
+    .toUpperCase()}`;
+}
+
+async function runHouseBackedMatch(options: {
+  creator: CookieBrowser;
+  browserAgent: CookieBrowser;
+  directPush: DirectPushMeasurement;
+  register: <T extends { close(): void }>(controller: T) => T;
+  productOrigin: string;
+  gatewayOrigin: string;
+  serviceAuthority: string;
+  matchNumber: number;
+}): Promise<{ runId: string; publicId: string; entrySelector: string }> {
+  const {
+    creator,
+    browserAgent,
+    directPush,
+    register,
+    productOrigin,
+    gatewayOrigin,
+    serviceAuthority,
+    matchNumber,
+  } = options;
+  const launch = await creator.mutate("/api/launches", {
+    listing_slug: "agent-heist",
+    creator_access: "seat",
+    creator_seat: "seat-1",
+    fill_mode: "house_agents",
+    idempotency_key: `hosted_local_match_${matchNumber}_${required("WORLDSTREAM_ACCEPTANCE_NONCE")}`,
+  }, [200, 201]);
+  const launchId = stringField(launch, "launch_id");
+  const invitation = await creator.mutate(
+    `/api/launches/${launchId}/seats/seat-3/invitation`,
+    {},
+    [201],
+  );
+  await browserAgent.mutate("/api/invitations/claim", {
+    invitation_token: stringField(invitation, "invitation_token"),
+    participation: "external_agent",
+  }, [201]);
+  const formed = await startLaunch(creator, launchId);
+  const run = recordField(formed, "run");
+  const runId = stringField(run, "run_id");
+  const publicId = stringField(run, "public_id");
+  const creatorEntry = firstEntry(run);
+  const agentLaunch = await browserAgent.read(`/api/launches/${launchId}`);
+  const agentEntry = firstEntry(recordField(agentLaunch, "run"));
+  const creatorHandoff = await enter(creator, runId, creatorEntry.entrySelector);
+  const agentHandoff = await enter(browserAgent, runId, agentEntry.entrySelector);
+  const creatorAuthority = new ActivityClientHandoffClient(
+    productOrigin,
+    creator.fetch,
+    { browserOrigin: productOrigin, csrf: creator.csrf },
+  );
+  const agentAuthority = new ActivityClientHandoffClient(
+    productOrigin,
+    browserAgent.fetch,
+    { browserOrigin: productOrigin, csrf: browserAgent.csrf },
+  );
+  const creatorController = register(controller(
+    gatewayOrigin,
+    productOrigin,
+    creatorAuthority,
+    [],
+    directPush,
+  ));
+  const agentController = register(controller(
+    gatewayOrigin,
+    productOrigin,
+    agentAuthority,
+    [],
+    directPush,
+  ));
+  const creatorLive = trackHeist(creatorController);
+  const agentLive = trackHeist(agentController);
+  const [creatorSession, agentSession] = await Promise.all([
+    creatorAuthority.redeem(creatorHandoff),
+    agentAuthority.redeem(agentHandoff),
+  ]);
+  const [creatorRevalidated, agentRevalidated] = await Promise.all([
+    creatorAuthority.resume(),
+    agentAuthority.resume(),
+  ]);
+  assert.equal(creatorSession.state, "usable");
+  assert.equal(agentSession.state, "usable");
+  const [creatorStarted, agentStarted] = await Promise.all([
+    creatorController.start({ kind: "retained", status: creatorRevalidated }),
+    agentController.start({ kind: "retained", status: agentRevalidated }),
+  ]);
+  assert.equal(creatorStarted.status, "live");
+  assert.equal(agentStarted.status, "live");
+  await Promise.all([
+    waitForHeist(creatorController, creatorLive, (state) => state.authorization.role === "navigator"),
+    waitForHeist(agentController, agentLive, (state) => state.authorization.role === "broker"),
+  ]);
+  const webMcp = new AgentHeistWebMcpBridge({
+    controller: agentController,
+    readLiveState: agentLive,
+  });
+  await waitForOffer(creatorController, creatorLive, "inspect_clue", 60_000);
+  await submit(
+    creatorController,
+    creatorLive,
+    "inspect_clue",
+    { clue_id: "route" },
+    matchActionId(matchNumber, 0),
+  );
+  await waitForOffer(creatorController, creatorLive, "publish_clue", 60_000);
+  const routeClaim = claim(ready(creatorLive()).projection.privateClues, "route");
+  await submit(
+    creatorController,
+    creatorLive,
+    "publish_clue",
+    { clue_id: "route", claim_code: routeClaim },
+    matchActionId(matchNumber, 1),
+  );
+  const plan = fixturePlanForRoute(routeClaim);
+  await submit(
+    creatorController,
+    creatorLive,
+    "propose_plan",
+    plan,
+    matchActionId(matchNumber, 2),
+  );
+  await waitForHeist(
+    creatorController,
+    creatorLive,
+    (state) => state.projection.plans.length === 1 &&
+      (state.projection.plans[0]?.endorsements ?? 0) > 0,
+  );
+  await waitForOffer(agentController, agentLive, "commit_move", 120_000);
+  const brokerDecision = await webMcp.read();
+  const availableMoves = arrayField(brokerDecision, "available_moves");
+  const move = record(availableMoves[0]);
+  const planId = ready(agentLive()).projection.plans[0]?.planId;
+  assert.ok(planId);
+  const brokerCommit = await webMcp.commit({
+    action_token: stringField(move, "action_token"),
+    plan_id: planId,
+    contribute_required_resource: true,
+  });
+  assert.equal(brokerCommit.status, "accepted");
+  await waitForOffer(creatorController, creatorLive, "commit_move", 60_000);
+  await submit(
+    creatorController,
+    creatorLive,
+    "commit_move",
+    { selected_plan_id: planId, contribute_required_resource: false },
+    matchActionId(matchNumber, 3),
+  );
+  await waitForOffer(creatorController, creatorLive, "acknowledge_result", 60_000);
+  await submit(
+    creatorController,
+    creatorLive,
+    "acknowledge_result",
+    {},
+    matchActionId(matchNumber, 4),
+  );
+  const terminal = await pollPublicResult(productOrigin, publicId);
+  assert.equal(recordField(terminal, "evidence").class, "exhibition_platform_house_agents");
+  assertNoPrivatePublicFields(terminal);
+  return { runId, publicId, entrySelector: creatorEntry.entrySelector };
+}
+
+async function runPeopleOnlyNoActionMatch(options: {
+  creator: CookieBrowser;
+  browserAgent: CookieBrowser;
+  productOrigin: string;
+  matchNumber: number;
+}): Promise<{ runId: string; publicId: string; entrySelector: string }> {
+  const { creator, browserAgent, productOrigin, matchNumber } = options;
+  const launch = await creator.mutate("/api/launches", {
+    listing_slug: "agent-heist",
+    creator_access: "seat",
+    creator_seat: "seat-1",
+    fill_mode: "people_only",
+    idempotency_key: `hosted_local_match_${matchNumber}_${required("WORLDSTREAM_ACCEPTANCE_NONCE")}`,
+  }, [200, 201]);
+  const launchId = stringField(launch, "launch_id");
+  const invitation = await creator.mutate(
+    `/api/launches/${launchId}/seats/seat-2/invitation`,
+    {},
+    [201],
+  );
+  await browserAgent.mutate("/api/invitations/claim", {
+    invitation_token: stringField(invitation, "invitation_token"),
+    participation: "external_agent",
+  }, [201]);
+  const formed = await startLaunch(creator, launchId);
+  const run = recordField(formed, "run");
+  const runId = stringField(run, "run_id");
+  const publicId = stringField(run, "public_id");
+  const terminal = await pollPublicResult(productOrigin, publicId, 240_000);
+  assert.equal(terminal.state, "result");
+  const summary = recordField(terminal, "result");
+  assert.equal(summary.status, "summary");
+  assert.equal(recordField(summary, "summary").outcome, "failure");
+  assertNoPrivatePublicFields(terminal);
+  return { runId, publicId, entrySelector: firstEntry(run).entrySelector };
+}
+
+/**
+ * Proves that a fresh House-backed formation can reserve the released slot,
+ * then removes only that unstarted probe through the evidence-bound cancel path.
+ */
+async function formAndAbandonHouseCapacityProbe(options: {
+  creator: CookieBrowser;
+  browserAgent: CookieBrowser;
+  matchNumber: number;
+}): Promise<{ readonly runId: string; readonly formed: boolean }> {
+  const { creator, browserAgent, matchNumber } = options;
+  const launch = await creator.mutate("/api/launches", {
+    listing_slug: "agent-heist",
+    creator_access: "seat",
+    creator_seat: "seat-1",
+    fill_mode: "house_agents",
+    idempotency_key: `hosted_local_capacity_probe_${matchNumber}_${required("WORLDSTREAM_ACCEPTANCE_NONCE")}`,
+  }, [200, 201]);
+  const launchId = stringField(launch, "launch_id");
+  const invitation = await creator.mutate(
+    `/api/launches/${launchId}/seats/seat-3/invitation`,
+    {},
+    [201],
+  );
+  await browserAgent.mutate("/api/invitations/claim", {
+    invitation_token: stringField(invitation, "invitation_token"),
+    participation: "external_agent",
+  }, [201]);
+  const formed = await startLaunch(creator, launchId);
+  assert.equal(formed.state, "run_created");
+  const runId = stringField(recordField(formed, "run"), "run_id");
+  const abandonment = await creator.mutate(`/api/launches/${launchId}/cancel`, {}, [200]);
+  assert.equal(abandonment.version, "hosted_launch_abandoned_prestart.v1");
+  assert.equal(abandonment.abandoned, true);
+  const terminalLaunch = await waitForLaunchState(creator, launchId, "abandoned_prestart");
+  const formedAndAbandoned = formed.state === "run_created" &&
+    abandonment.version === "hosted_launch_abandoned_prestart.v1" &&
+    abandonment.abandoned === true &&
+    terminalLaunch.state === "abandoned_prestart";
+  assert.equal(formedAndAbandoned, true);
+  return Object.freeze({ runId, formed: formedAndAbandoned });
+}
+
+type HouseRetirementLane = "terminal" | "prestart";
+
+/**
+ * Replays the bounded generic cleanup lane, then observes only the exact
+ * Run's owner-only retirement records. A clear lane means its immutable Host
+ * receipt was retained; it does not borrow capacity evidence from another Run.
+ */
+async function reconcileAndObserveExactHouseRetirement(input: {
+  readonly reconciler: ResultReconcilerDependencies;
+  readonly runId: string;
+  readonly lane: HouseRetirementLane;
+}): Promise<boolean> {
+  if (input.lane === "terminal") {
+    await reconcileTerminalHouseRunnerRetirementCandidates(input.reconciler, 10);
+  } else {
+    await reconcilePrestartHouseRunnerRetirementCandidates(input.reconciler, 10);
+  }
+  return waitForExactHouseRetirementClearance(
+    input.reconciler.data,
+    input.runId,
+    input.lane,
+  );
+}
+
+async function waitForExactHouseRetirementClearance(
+  data: Pick<
+    ResultReconciliationData,
+    "readTerminalHouseRunnerRetirements" | "readPrestartHouseRunnerRetirements"
+  >,
+  runId: string,
+  lane: HouseRetirementLane,
+  timing: { readonly timeoutMs?: number; readonly pollMs?: number } = {},
+): Promise<boolean> {
+  const timeoutMs = timing.timeoutMs ?? 60_000;
+  const pollMs = timing.pollMs ?? 500;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000 ||
+    !Number.isSafeInteger(pollMs) || pollMs < 1 || pollMs > 5_000) {
+    throw new Error("invalid exact House retirement observation timing");
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const candidates = lane === "terminal"
+      ? await data.readTerminalHouseRunnerRetirements(runId)
+      : await data.readPrestartHouseRunnerRetirements(runId);
+    if (candidates.length === 0) return true;
+    await delay(pollMs);
+  }
+  throw new Error(`exact ${lane} House retirement receipt was not retained before timeout`);
+}
+
+async function waitForLaunchState(
+  browser: CookieBrowser,
+  launchId: string,
+  expectedState: string,
+): Promise<JsonRecord> {
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    const launch = await browser.read(`/api/launches/${launchId}`);
+    if (launch.state === expectedState) return launch;
+    await delay(500);
+  }
+  throw new Error("Hosted capacity probe did not reach its expected terminal state");
+}
+
 test("direct push evidence measures delivered state on one connection, not setup time or downtime", () => {
   const measurement = new DirectPushMeasurement();
   const first = measurement.connection();
@@ -618,6 +1213,104 @@ test("direct push evidence measures delivered state on one connection, not setup
   assert.equal(measurement.seconds, 2);
   reconnected(304_250);
   assert.equal(measurement.seconds, 4);
+});
+
+test("allowance evidence advances only from completed retained ledger attempts", () => {
+  const before = observeHouseAllowanceLedger({
+    schema: HOUSE_ALLOWANCE_LEDGER_SCHEMA,
+    assignments: {},
+  });
+  const after = observeHouseAllowanceLedger({
+    schema: HOUSE_ALLOWANCE_LEDGER_SCHEMA,
+    assignments: {
+      "house-unit-1": {
+        consumed_input_units: 12,
+        consumed_output_units: 4,
+        attempts: {
+          "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+            state: "completed",
+          },
+          "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+            state: "reserved",
+          },
+        },
+      },
+    },
+  });
+  assert.equal(allowanceConsumptionAdvanced(before, after), true);
+  assert.equal(after.completedAttempts, 1);
+  assert.equal(after.consumedAttempts, 1);
+});
+
+test("allowance evidence uses the shared retained House ledger path", () => {
+  assert.equal(
+    houseAllowanceLedgerPath("/private/worldstream-state"),
+    "/private/worldstream-state/hosted-house-runners/units/allowance/allowances.json",
+  );
+});
+
+test("allowance evidence rejects an unknown retained attempt state", () => {
+  assert.throws(() => observeHouseAllowanceLedger({
+    schema: HOUSE_ALLOWANCE_LEDGER_SCHEMA,
+    assignments: {
+      "house-unit-1": {
+        consumed_input_units: 1,
+        consumed_output_units: 1,
+        attempts: {
+          "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+            state: "unverified",
+          },
+        },
+      },
+    },
+  }), /attempt state is invalid/u);
+});
+
+test("exact terminal capacity evidence reads only the completed Run retirement lane", async () => {
+  const reads: string[] = [];
+  const data: Pick<
+    ResultReconciliationData,
+    "readTerminalHouseRunnerRetirements" | "readPrestartHouseRunnerRetirements"
+  > = {
+    async readTerminalHouseRunnerRetirements(runId) {
+      reads.push(`terminal:${runId}`);
+      return [];
+    },
+    async readPrestartHouseRunnerRetirements(runId) {
+      reads.push(`prestart:${runId}`);
+      return [];
+    },
+  };
+  assert.equal(
+    await waitForExactHouseRetirementClearance(
+      data,
+      "10000000-0000-4000-8000-000000000001",
+      "terminal",
+    ),
+    true,
+  );
+  assert.deepEqual(reads, ["terminal:10000000-0000-4000-8000-000000000001"]);
+});
+
+test("exact prestart capacity evidence does not treat an outstanding receipt as released", async () => {
+  const data: Pick<
+    ResultReconciliationData,
+    "readTerminalHouseRunnerRetirements" | "readPrestartHouseRunnerRetirements"
+  > = {
+    async readTerminalHouseRunnerRetirements() { return []; },
+    async readPrestartHouseRunnerRetirements() {
+      return [{}] as never;
+    },
+  };
+  await assert.rejects(
+    () => waitForExactHouseRetirementClearance(
+      data,
+      "10000000-0000-4000-8000-000000000001",
+      "prestart",
+      { timeoutMs: 5, pollMs: 1 },
+    ),
+    /exact prestart House retirement receipt/u,
+  );
 });
 
 function trackHeist(
@@ -1003,8 +1696,12 @@ async function readPublicRun(
   return value;
 }
 
-async function pollPublicResult(origin: string, publicId: string): Promise<JsonRecord> {
-  const deadline = Date.now() + 60_000;
+async function pollPublicResult(
+  origin: string,
+  publicId: string,
+  timeoutMs = 60_000,
+): Promise<JsonRecord> {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const response = await fetch(`${origin}/api/runs/${publicId}`);
     if (response.status === 200) {
@@ -1116,6 +1813,12 @@ function integerField(value: JsonRecord, field: string): number {
   const selected = value[field];
   if (!Number.isSafeInteger(selected)) throw new Error(`${field} must be an integer`);
   return selected as number;
+}
+
+function nonNegativeIntegerField(value: JsonRecord, field: string): number {
+  const selected = integerField(value, field);
+  if (selected < 0) throw new Error(`${field} must not be negative`);
+  return selected;
 }
 
 function required(name: string): string {

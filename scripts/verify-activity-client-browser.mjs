@@ -9,12 +9,15 @@ const browser = await chromium.launch({ headless: true, ...await localBrowserOpt
 
 try {
   if ((await fetch(`${host.origin}/agent-heist/`)).status !== 404) throw new Error("unavailable retained Heist path must not serve replacement bytes");
-  await verifySurface("Agent Heist local", "/agent-heist-v5/", "Agent Heist · WorldStream Activity Client", async (page) => {
+  await verifySurface("Agent Heist local", "/agent-heist-v6/", "Agent Heist · WorldStream Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
     const body = await page.locator("body").innerText();
     reject(body, /Canal Shift|route_service|Recorded fixture|Fixture mode/i, "Heist live client exposed recorded data");
   });
-  await verifySurface("Agent Heist hosted", "/agent-heist-v5/hosted/", "Agent Heist · Hosted Activity Client", async (page) => {
+  await verifySurface("Agent Heist hosted", "/agent-heist-v6/hosted/", "Agent Heist · Hosted Activity Client", async (page) => {
+    await page.getByRole("heading", { name: "Unable to enter this Run" }).waitFor();
+  }, true);
+  await verifySurface("Agent Heist retained v5", "/agent-heist-v5/hosted/", "Agent Heist · Hosted Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Unable to enter this Run" }).waitFor();
   }, true);
   await verifySurface("Agent Heist retained v3", "/agent-heist-v3/hosted/", "Agent Heist · Hosted Activity Client", async (page) => {

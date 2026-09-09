@@ -1,16 +1,68 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { test } from "node:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   assertHostedDevelopmentAllowed,
   hostedDevelopmentPorts,
   hostedDevelopmentListingAllowlist,
   hostedDevelopmentLaunchHttpAccepted,
+  hostedDevelopmentReadinessProbeIdentity,
+  hasRetainedHostedDevelopmentSetup,
+  reconcileHostedDevelopment,
+  HOSTED_LOCAL_RECONCILIATION_SECRET,
+  HOSTED_LOCAL_SMOKE_IDEMPOTENCY_KEY,
+  hostedLocalSmokeIdempotencyKey,
   hostedDevelopmentArguments,
   hostedNativeBuildPlan,
+  hostedNativeShutdownPlan,
+  installHostedNativeBinaries,
   renderHostedDevelopmentConfig,
 } from "./hosted-dev.mjs";
+
+test("hosted smoke uses a deterministic key derived from its exact request intent", () => {
+  assert.match(HOSTED_LOCAL_SMOKE_IDEMPOTENCY_KEY, /^hosted_local_[0-9a-f]{32}$/u);
+  assert.notEqual(HOSTED_LOCAL_SMOKE_IDEMPOTENCY_KEY, "hosted_local_acceptance_idempotency_key_0001");
+  assert.equal(HOSTED_LOCAL_SMOKE_IDEMPOTENCY_KEY, hostedLocalSmokeIdempotencyKey());
+  assert.notEqual(
+    HOSTED_LOCAL_SMOKE_IDEMPOTENCY_KEY,
+    hostedLocalSmokeIdempotencyKey("blake3:21d7d5439208df0b1dbb18f7f42f3a3687d248a523b03fb5b4184b2dd0dcb626"),
+  );
+  assert.throws(() => hostedLocalSmokeIdempotencyKey("not-a-listing"), /Listing digest/u);
+});
+
+test("hosted development reconciliation accepts only a successful bounded pass", async () => {
+  const requests = [];
+  const result = await reconcileHostedDevelopment(
+    "http://127.0.0.1:5180",
+    HOSTED_LOCAL_RECONCILIATION_SECRET,
+    async (input, init) => {
+      requests.push({ input, init });
+      return new Response(JSON.stringify({ attempted: 1, failed: 0 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  );
+  assert.deepEqual(result, { attempted: 1, failed: 0 });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].input, "http://127.0.0.1:5180/api/internal/reconcile");
+  assert.equal(requests[0].init.method, "GET");
+  assert.equal(
+    requests[0].init.headers.authorization,
+    `Bearer ${HOSTED_LOCAL_RECONCILIATION_SECRET}`,
+  );
+  await assert.rejects(
+    () => reconcileHostedDevelopment(
+      "http://127.0.0.1:5180",
+      HOSTED_LOCAL_RECONCILIATION_SECRET,
+      async () => new Response(JSON.stringify({ attempted: 1, failed: 1 }), { status: 503 }),
+    ),
+    /reconciliation failed/u,
+  );
+});
 
 test("fresh hosted client import supplies every exact deployment release", async () => {
   const declarationUrl = new URL("../config/activity-clients/hosted-local-import.json", import.meta.url);
@@ -33,9 +85,46 @@ test("the local launch probe accepts both committed and pending Gateway response
   }
 });
 
+test("the readiness probe identity is stable and scoped to its Listing", () => {
+  const first = hostedDevelopmentReadinessProbeIdentity();
+  const second = hostedDevelopmentReadinessProbeIdentity();
+  const earlierListing = hostedDevelopmentReadinessProbeIdentity(
+    "blake3:04edc964d5cbc1bc5efa422ac856305d55cec609a6ae5c5c1814c8389b776f80",
+  );
+  assert.deepEqual(first, second);
+  assert.deepEqual(first, {
+    roomSetupOperationId: "hosted-local-readiness-1cf75abc",
+    reservationReference: "1cf75abc-b30d-47fd-8e0a-bc5e39813a31",
+  });
+  assert.notDeepEqual(first, earlierListing);
+});
+
+test("retained setup detection accepts only an owned resumable setup", () => {
+  assert.equal(hasRetainedHostedDevelopmentSetup({
+    version: "platform_my_games.v1",
+    items: [{
+      launch_id: "71923a05-7fcd-4bea-a53b-0c15676e484d",
+      state: "setup_pending",
+      action: "continue_setup",
+    }],
+  }), true);
+  for (const value of [
+    null,
+    { version: "platform_my_games.v1", items: [] },
+    { version: "platform_my_games.v1", items: [{ launch_id: "a", state: "live", action: "return_to_game" }] },
+    { version: "platform_my_games.v1", items: [{ launch_id: "a", state: "setup_pending", action: "none" }] },
+    { version: "other", items: [{ launch_id: "a", state: "setup_pending", action: "continue_setup" }] },
+  ]) {
+    assert.equal(hasRetainedHostedDevelopmentSetup(value), false);
+  }
+});
+
 test("canonical acceptance selects one release build while ordinary development stays debug", () => {
-  const development = hostedNativeBuildPlan(false);
-  const acceptance = hostedNativeBuildPlan(true);
+  // This contract is about the default repository target. Do not inherit a
+  // caller's isolated Cargo build directory; a separate test covers the
+  // production behavior that deliberately honors that configuration.
+  const development = hostedNativeBuildPlan(false, undefined, {});
+  const acceptance = hostedNativeBuildPlan(true, undefined, {});
   assert.equal(development.profile, "debug");
   assert.equal(acceptance.profile, "release");
   assert.deepEqual(acceptance.cargoArgs, [
@@ -51,6 +140,7 @@ test("canonical acceptance selects one release build while ordinary development 
     "-p", "worldstream-hosted-gateway", "--bins",
   ]);
   for (const plan of [development, acceptance]) {
+    assert.deepEqual(plan.copyArtifacts, []);
     for (const [field, binary] of [
       ["ctl", "worldstreamctl"],
       ["gateway", "worldstream-hosted-gateway"],
@@ -61,12 +151,66 @@ test("canonical acceptance selects one release build while ordinary development 
   }
 });
 
+test("an alternate Cargo target installs executable artifacts with their mode", async () => {
+  const root = await mkdtemp(join(tmpdir(), "worldstream-hosted-native-"));
+  try {
+    const source = join(root, "cargo", "debug", "worldstreamctl");
+    const execution = join(root, "execution", "debug");
+    await mkdir(join(root, "cargo", "debug"), { recursive: true });
+    await writeFile(source, "#!/bin/sh\n", { mode: 0o700 });
+    await chmod(source, 0o755);
+    await mkdir(execution, { recursive: true });
+    await writeFile(join(execution, "worldstreamctl"), "old-bytes\n", { mode: 0o755 });
+    await installHostedNativeBinaries({
+      executionBinaryRoot: execution,
+      copyArtifacts: [["worldstreamctl", source, join(execution, "worldstreamctl")]],
+    });
+    assert.equal((await stat(join(execution, "worldstreamctl"))).mode & 0o777, 0o755);
+    assert.equal(await readFile(join(execution, "worldstreamctl"), "utf8"), "#!/bin/sh\n");
+    assert.deepEqual(await readdir(execution), ["worldstreamctl"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("alternate-target shutdown uses the built ctl before stable publication", () => {
+  const plan = hostedNativeBuildPlan(false, "debug", { CARGO_TARGET_DIR: "/tmp/alternate-cargo-target" });
+  const shutdown = hostedNativeShutdownPlan(plan, {
+    configFile: "/repo/.worldstream/worldstream.toml",
+    stateDirectory: "/repo/.worldstream/studio",
+    controller: "127.0.0.1:9420",
+  });
+  assert.deepEqual(shutdown.map(({ executable, args }) => ({ executable, command: args.slice(2, 4) })), [
+    { executable: "/tmp/alternate-cargo-target/debug/worldstreamctl", command: ["server", "stop"] },
+    { executable: "/tmp/alternate-cargo-target/debug/worldstreamctl", command: ["server", "controller-stop"] },
+  ]);
+});
+
 test("the native profile can be selected explicitly but never names arbitrary executables", () => {
   assert.equal(hostedNativeBuildPlan(true, "debug").profile, "debug");
   assert.equal(hostedNativeBuildPlan(false, "release").profile, "release");
   for (const invalid of ["", "production", "../release", "/tmp/bin", null, 1]) {
     assert.throws(() => hostedNativeBuildPlan(true, invalid), /native profile/u);
   }
+});
+
+test("the native build plan honors Cargo's configured target directory", () => {
+  const targetRoot = new URL("../.worldstream/test-cargo-target", import.meta.url).pathname;
+  const plan = hostedNativeBuildPlan(false, "debug", { CARGO_TARGET_DIR: targetRoot });
+  const stableRoot = new URL("../target/debug", import.meta.url).pathname;
+  assert.equal(plan.buildBinaryRoot, `${targetRoot}/debug`);
+  assert.equal(plan.executionBinaryRoot, stableRoot);
+  assert.equal(plan.ctl, `${stableRoot}/worldstreamctl`);
+  assert.equal(plan.gateway, `${stableRoot}/worldstream-hosted-gateway`);
+  assert.equal(plan.managedAgentHost, `${stableRoot}/worldstream-managed-agent-host`);
+  assert.deepEqual(plan.copyArtifacts, [
+    ["worldstreamctl", `${targetRoot}/debug/worldstreamctl`, `${stableRoot}/worldstreamctl`],
+    ["worldstreamd", `${targetRoot}/debug/worldstreamd`, `${stableRoot}/worldstreamd`],
+    ["worldstream-studio-supervisor", `${targetRoot}/debug/worldstream-studio-supervisor`, `${stableRoot}/worldstream-studio-supervisor`],
+    ["worldstream-assignment-mcp", `${targetRoot}/debug/worldstream-assignment-mcp`, `${stableRoot}/worldstream-assignment-mcp`],
+    ["worldstream-hosted-gateway", `${targetRoot}/debug/worldstream-hosted-gateway`, `${stableRoot}/worldstream-hosted-gateway`],
+    ["worldstream-managed-agent-host", `${targetRoot}/debug/worldstream-managed-agent-host`, `${stableRoot}/worldstream-managed-agent-host`],
+  ]);
 });
 
 test("the command keeps the release default and accepts only one closed profile override", () => {
@@ -91,7 +235,12 @@ test("local and Fly gateways retain all retained Listings as well as current dis
   const deployed = JSON.parse(value.slice(value.indexOf("=") + 1).trim());
   assert.equal(deployed, hostedDevelopmentListingAllowlist());
   const admitted = new Set(deployed.split(","));
-  assert.equal(admitted.size, 11);
+  assert.equal(admitted.size, 19);
+  assert.ok(admitted.has("blake3:1cf75abcb30d77fdbe0abc5e39813a315bea6900c61e9b49c51b84d995335d74"));
+  assert.ok(admitted.has("blake3:21d7d5439208df0b1dbb18f7f42f3a3687d248a523b03fb5b4184b2dd0dcb626"));
+  assert.ok(admitted.has("blake3:5b0993de4c858771cce34b16cb25e03b2bf509cbe16cd1ce7249a789ea8c426f"));
+  assert.ok(admitted.has("blake3:350beff2dbb28d495a5355ac19a7580f8494589bc0d5c6fec1c521be86a7cf38"));
+  assert.ok(admitted.has("blake3:ab6d61d35786e51e3849c68467aad664bd35cb41f299b86d1bcce3f52e4249db"));
   assert.ok(admitted.has("blake3:48c397a32632896d66beb9ae7f8a6d090338800187c56eb0593997b80bd2b630"));
   assert.ok(admitted.has("blake3:48f76e8c1336e8f50fb6952cd0f2ff4c47cc8c372594db01422a67bca9363782"));
   assert.ok(admitted.has("blake3:9553f4fa320aa6901d0a03870f5c19ce4342d271efd2ef90d4fd287395f6cef1"));

@@ -167,6 +167,32 @@ function template() {
       DEPLOYED_ACCEPTANCE_CHECKS.map((name) => [name, { status: "blocked" }]),
     ),
     metrics: { provider_calls: 0, maximum_direct_push_seconds: 0 },
+    qualification: {
+      match_matrix: [1, 2, 3].map((match) => ({
+        match,
+        mode: match === 3 ? "people_only" : "house_backed",
+        outcome: "failure",
+        provider_call_delta: 0,
+        capacity_released: false,
+        history_retained: false,
+        disconnect_and_catch_up: false,
+        restart_and_reentry: false,
+        no_actions: match === 3,
+      })),
+      retained_history_count: 0,
+      consumed_allowance_observed: false,
+      fresh_setup: { status: "blocked" },
+      retained_upgrade: { status: "blocked" },
+      ordinary_restart: { status: "blocked" },
+      populated_recovery: "deferred_not_verified",
+      rendered_client: {
+        schema: "worldstream/hosted-rendered-browser-journey/v1",
+        outcome: "blocked",
+        completed: false,
+        checks: [],
+        provider: "local_fake_provider_only",
+      },
+    },
     redaction: { private_projections_retained: false, credentials_retained: false },
   };
 }

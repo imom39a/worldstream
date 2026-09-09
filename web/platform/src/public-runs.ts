@@ -103,6 +103,16 @@ export interface PublicLiveRun extends PublicRunBase {
     /** Direct, anonymous Fly WebSocket. It never targets the Vercel BFF. */
     readonly stream_url: string;
   };
+  /**
+   * Deployment-owned navigation for one reviewed Activity Client. These are
+   * presentation routes, not participant authority: the public projection is
+   * still credential-free and the client must fetch it as an anonymous viewer.
+   */
+  readonly client?: {
+    readonly launch_url: string;
+    readonly back_to_games: "/";
+    readonly result_url: string;
+  };
 }
 
 export type PublicRun =
@@ -214,6 +224,54 @@ export function presentPublicRun(
       stream_url: publicProjectionStreamUrl(publicStreamBaseUrl, run.public_id),
     },
   };
+}
+
+/**
+ * Adds a reviewed same-origin Activity Client launch to an already public
+ * record. The caller supplies a path from the reviewed listing/client catalog;
+ * arbitrary query, origin, and return targets are rejected here rather than
+ * delegated to a browser.
+ */
+export function presentPublicViewerClient(
+  run: PublicRun,
+  origin: string,
+  clientPath: string | null,
+): PublicRun {
+  if (run.state !== "live" || clientPath === null) return run;
+  const launch = reviewedClientLaunchUrl(origin, clientPath, run.public_id);
+  if (launch === null) return run;
+  return {
+    ...run,
+    client: {
+      launch_url: launch,
+      back_to_games: "/",
+      result_url: `/runs/${run.public_id}`,
+    },
+  };
+}
+
+function reviewedClientLaunchUrl(
+  origin: string,
+  clientPath: string,
+  publicIdValue: string,
+): string | null {
+  if (!clientPath.startsWith("/") || clientPath.startsWith("//")) return null;
+  let base: URL;
+  let launch: URL;
+  try {
+    base = new URL(origin);
+    launch = new URL(clientPath, base);
+  } catch {
+    return null;
+  }
+  if (
+    base.origin !== origin || launch.origin !== base.origin ||
+    launch.pathname !== clientPath || launch.search !== "" || launch.hash !== ""
+  ) return null;
+  launch.searchParams.set("public_run", publicId(publicIdValue));
+  launch.searchParams.set("platform_return", "/");
+  launch.searchParams.set("platform_result", `/runs/${publicId(publicIdValue)}`);
+  return launch.toString();
 }
 
 /** Validates one credential-free direct gateway origin at process startup. */

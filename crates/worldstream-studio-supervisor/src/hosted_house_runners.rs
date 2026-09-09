@@ -19,8 +19,9 @@ use worldstream_core::CanonicalJsonV1;
 use worldstream_hosted_contract::{
     HostedHouseRunnerAssignmentV1, HostedHouseRunnerReservationOutcomeV1,
     HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerReservationRequestV1,
-    HostedLaunchRequestV1, HouseAgentRevision, ListingRevision,
-    validate_hosted_house_runner_reservation_receipt,
+    HostedHouseRunnerRetirementDispositionV1, HostedHouseRunnerRetirementReceiptV1,
+    HostedHouseRunnerRetirementRequestV1, HostedLaunchRequestV1, HouseAgentRevision,
+    ListingRevision, validate_hosted_house_runner_reservation_receipt,
     validate_hosted_house_runner_reservation_request,
 };
 use worldstream_runtime::{
@@ -56,6 +57,12 @@ const MAX_RECORD_BYTES: usize = 256 * 1024;
 const MAX_RESERVATIONS: usize = 256;
 const MAX_HOUSE_RUNNERS: usize = 4;
 const MAX_HOUSE_RUNNERS_PER_LAUNCH: usize = 2;
+const RETIREMENT_SCHEMA_V1: &str = "worldstream/house-runner-retirement/v1";
+const RETIREMENT_RECEIPT_SCHEMA_V1: &str = "worldstream/house-runner-retirement-receipt/v1";
+const RETIREMENT_TAG_DOMAIN: &str = "worldstream/house-runner-retirement-tag/v1";
+const RETIREMENT_MARKER_FILE: &str = "retired.json";
+const RETIREMENT_INTENT_MARKER_FILE: &str = "retiring.json";
+const OPERATOR_RETIREMENT_MARKER_FILE: &str = "operator-retired.json";
 
 /// Closed Host-side reservation and launch failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -115,6 +122,27 @@ struct RetainedRuntimeBindingV1 {
     runner_template_revision: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RetainedHouseRunnerRetirementV1 {
+    schema: String,
+    authority: String,
+    receipt: HostedHouseRunnerRetirementReceiptV1,
+    allowance_reset: bool,
+}
+
+/// A Host-authenticated, durable pre-stop fence. It intentionally does not
+/// release capacity: only the later signed receipt does that.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RetainedHouseRunnerRetirementIntentV1 {
+    schema: String,
+    authority: String,
+    request: HostedHouseRunnerRetirementRequestV1,
+    authentication_tag: String,
+    allowance_reset: bool,
+}
+
 #[derive(Serialize)]
 struct ReceiptWitnessV1<'a> {
     domain: &'static str,
@@ -129,6 +157,29 @@ struct ReceiptWitnessV1<'a> {
     runner_unit_id: &'a Option<String>,
     failure_code: &'a Option<String>,
     binding_digest: &'a str,
+}
+
+#[derive(Serialize)]
+struct RetirementReceiptWitnessV1<'a> {
+    domain: &'static str,
+    schema: &'a str,
+    host_installation_id: &'a str,
+    reservation_operation_id: &'a str,
+    launch_request_id: &'a str,
+    house_agent_assignment_id: &'a Option<String>,
+    runner_unit_id: &'a str,
+    disposition: HostedHouseRunnerRetirementDispositionV1,
+    platform_evidence_digest: &'a str,
+    stop_witness: &'a str,
+}
+
+#[derive(Serialize)]
+struct RetirementIntentWitnessV1<'a> {
+    domain: &'static str,
+    schema: &'a str,
+    authority: &'a str,
+    request: &'a HostedHouseRunnerRetirementRequestV1,
+    allowance_reset: bool,
 }
 
 enum DependencyCheckErrorV1 {
@@ -157,6 +208,14 @@ trait HouseRunnerDependencySourceV1: Send + Sync {
         listing: &ListingRevision,
         revision: &HouseAgentRevision,
     ) -> Result<(), StartErrorV1>;
+
+    /// Stops the exact locally bound pair. `None` is permitted only when the
+    /// coordinator has proved that no retained runtime binding could have
+    /// started a child for the exact reservation.
+    fn retire(
+        &self,
+        runtime_binding: Option<&RetainedRuntimeBindingV1>,
+    ) -> Result<String, HostedHouseRunnerErrorV1>;
 }
 
 trait HouseAssignmentLaunchIssuerV1: Send + Sync {
@@ -478,6 +537,37 @@ impl HouseRunnerDependencySourceV1 for LiveHouseRunnerDependencySourceV1 {
             return Err(StartErrorV1::Unavailable);
         }
         Ok(())
+    }
+
+    fn retire(
+        &self,
+        runtime_binding: Option<&RetainedRuntimeBindingV1>,
+    ) -> Result<String, HostedHouseRunnerErrorV1> {
+        let Some(binding) = runtime_binding else {
+            // A managed House child can only be started after its durable
+            // runtime binding is retained. Its absence is therefore the
+            // narrow proof that a pre-Genesis unit has no child to stop.
+            return canonical_blake3(&serde_json::json!({
+                "domain": "worldstream/house-runner-stop-witness/v1",
+                "kind": "no_runtime_binding",
+            }));
+        };
+        let status = self
+            .managed_hosts
+            .stop(&binding.local_assignment_id)
+            .map_err(|_| HostedHouseRunnerErrorV1::Unavailable)?;
+        if status.state != ManagedAgentHostStateV1::Stopped || status.ready {
+            return Err(HostedHouseRunnerErrorV1::Unavailable);
+        }
+        canonical_blake3(&serde_json::json!({
+            "domain": "worldstream/house-runner-stop-witness/v1",
+            "kind": "exact_managed_pair_stopped",
+            "reservation_operation_id": binding.reservation_operation_id,
+            "room_setup_operation_id": binding.room_setup_operation_id,
+            "house_agent_assignment_id": binding.house_agent_assignment_id,
+            "runner_unit_id": binding.runner_unit_id,
+            "local_assignment_id": binding.local_assignment_id,
+        }))
     }
 }
 
@@ -961,6 +1051,111 @@ impl HostedHouseRunnerOperationsV1 {
         Ok(receipt)
     }
 
+    /// Stops, fences, and durably records one exact retained House Runner unit.
+    ///
+    /// The hosted Controller route authenticates the caller. This operation
+    /// then independently binds that request to the retained reservation and
+    /// (when Genesis occurred) to the exact assignment/runtime binding. It
+    /// never changes an Assignment, reservation receipt, or allowance ledger.
+    /// A retry returns the original signed retirement receipt.
+    ///
+    /// # Errors
+    /// Returns a closed failure when platform evidence is malformed, the
+    /// target is changed or ambiguous, a known child cannot be stopped, or the
+    /// durable fence cannot be established.
+    pub fn retire(
+        &self,
+        request: &HostedHouseRunnerRetirementRequestV1,
+    ) -> Result<HostedHouseRunnerRetirementReceiptV1, HostedHouseRunnerErrorV1> {
+        validate_retirement_request(request, &self.host_installation_id)?;
+        let _guard = self.lock();
+        let reservation = self.load_reservation(&request.reservation_operation_id)?;
+        self.verify_receipt(&reservation.receipt)?;
+        if reservation.receipt.outcome != HostedHouseRunnerReservationOutcomeV1::Succeeded
+            || reservation.receipt.launch_request_id != request.launch_request_id
+        {
+            return Err(HostedHouseRunnerErrorV1::Invalid);
+        }
+        let runner_unit_id = reservation
+            .receipt
+            .runner_unit_id
+            .as_deref()
+            .ok_or(HostedHouseRunnerErrorV1::Unavailable)?;
+        let unit_directory = self.units.join(runner_unit_id);
+
+        if let Some(receipt) = self.automatic_retirement(&unit_directory)? {
+            if receipt_matches_retirement_request(&receipt, request, runner_unit_id) {
+                self.verify_retirement_receipt(&receipt)?;
+                return Ok(receipt);
+            }
+            return Err(HostedHouseRunnerErrorV1::Conflict);
+        }
+        // A retained legacy operator marker is already a fence. It cannot be
+        // converted into an automatic receipt because it lacks the platform
+        // evidence correspondence required by this path.
+        if self.operator_retired(&reservation.receipt)? {
+            return Err(HostedHouseRunnerErrorV1::Conflict);
+        }
+
+        let launch_binding =
+            self.load_launch_binding_unlocked(&reservation.receipt.reservation_operation_id)?;
+        let runtime_binding =
+            self.load_runtime_binding_unlocked(&reservation.receipt.reservation_operation_id)?;
+        validate_retirement_target(
+            request,
+            &reservation.receipt,
+            launch_binding.as_ref(),
+            runtime_binding.as_ref(),
+        )?;
+
+        // Install the Host-owned fence before draining a live unit. A crash
+        // after this point can leave capacity occupied, but never lets a late
+        // launch retry spawn a replacement child; the same evidence-bound
+        // request resumes the stop/finalize sequence below.
+        let directory = prepare_data_directory(&unit_directory)
+            .map_err(|_| HostedHouseRunnerErrorV1::Unavailable)?;
+        self.install_or_match_retirement_intent(&directory, request)?;
+        let stop_witness = self.source.retire(runtime_binding.as_ref())?;
+        if !valid_evidence_digest(&stop_witness) {
+            return Err(HostedHouseRunnerErrorV1::Unavailable);
+        }
+        let mut receipt = HostedHouseRunnerRetirementReceiptV1 {
+            schema: RETIREMENT_RECEIPT_SCHEMA_V1.to_owned(),
+            host_installation_id: self.host_installation_id.to_string(),
+            reservation_operation_id: request.reservation_operation_id.clone(),
+            launch_request_id: request.launch_request_id.clone(),
+            house_agent_assignment_id: request.house_agent_assignment_id.clone(),
+            runner_unit_id: runner_unit_id.to_owned(),
+            disposition: request.disposition,
+            platform_evidence_digest: request.platform_evidence_digest.clone(),
+            stop_witness,
+            authentication_tag: String::new(),
+        };
+        receipt.authentication_tag = self.sign_retirement_receipt(&receipt)?;
+        let marker = RetainedHouseRunnerRetirementV1 {
+            schema: RETIREMENT_SCHEMA_V1.to_owned(),
+            authority: "host_reconciliation_after_exact_stop".to_owned(),
+            receipt: receipt.clone(),
+            allowance_reset: false,
+        };
+        let marker_path = directory.join(RETIREMENT_MARKER_FILE);
+        match persist_new(&marker_path, &marker) {
+            Ok(()) => Ok(receipt),
+            Err(HostedHouseRunnerErrorV1::Conflict) => {
+                let Some(existing) = self.automatic_retirement(&directory)? else {
+                    return Err(HostedHouseRunnerErrorV1::Unavailable);
+                };
+                if existing == receipt {
+                    self.verify_retirement_receipt(&existing)?;
+                    Ok(existing)
+                } else {
+                    Err(HostedHouseRunnerErrorV1::Conflict)
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     fn operator_retired(
         &self,
         receipt: &HostedHouseRunnerReservationReceiptV1,
@@ -970,8 +1165,26 @@ impl HostedHouseRunnerOperationsV1 {
             .as_ref()
             .ok_or(HostedHouseRunnerErrorV1::Unavailable)?;
         let directory = self.units.join(unit);
+        if let Some(retirement) = self.automatic_retirement(&directory)? {
+            // A valid Host signature alone is not sufficient to release a
+            // slot. The retained fence must attest to this exact succeeded
+            // reservation and its deterministic unit; otherwise a copied
+            // fence could free unrelated capacity.
+            if retirement.reservation_operation_id != receipt.reservation_operation_id
+                || retirement.launch_request_id != receipt.launch_request_id
+                || retirement.runner_unit_id != *unit
+            {
+                return Err(HostedHouseRunnerErrorV1::Unavailable);
+            }
+            return Ok(true);
+        }
+        // An incomplete retirement is a durable spawn fence, but not proof
+        // of a completed stop and therefore never frees capacity.
+        if self.retirement_intent(&directory)?.is_some() {
+            return Ok(false);
+        }
         let evidence: serde_json::Value =
-            match read_record(&directory.join("operator-retired.json")) {
+            match read_record(&directory.join(OPERATOR_RETIREMENT_MARKER_FILE)) {
                 Ok(value) => value,
                 Err(RecordReadErrorV1::NotFound) => return Ok(false),
                 Err(RecordReadErrorV1::Unavailable) => {
@@ -991,6 +1204,117 @@ impl HostedHouseRunnerOperationsV1 {
             return Err(HostedHouseRunnerErrorV1::Unavailable);
         }
         Ok(true)
+    }
+
+    fn automatic_retirement(
+        &self,
+        directory: &Path,
+    ) -> Result<Option<HostedHouseRunnerRetirementReceiptV1>, HostedHouseRunnerErrorV1> {
+        let marker: RetainedHouseRunnerRetirementV1 =
+            match read_record(&directory.join(RETIREMENT_MARKER_FILE)) {
+                Ok(value) => value,
+                Err(RecordReadErrorV1::NotFound) => return Ok(None),
+                Err(RecordReadErrorV1::Unavailable) => {
+                    return Err(HostedHouseRunnerErrorV1::Unavailable);
+                }
+            };
+        worldstream_runtime::validate_data_directory(directory)
+            .map_err(|_| HostedHouseRunnerErrorV1::Unavailable)?;
+        if marker.schema != RETIREMENT_SCHEMA_V1
+            || marker.authority != "host_reconciliation_after_exact_stop"
+            || marker.allowance_reset
+        {
+            return Err(HostedHouseRunnerErrorV1::Unavailable);
+        }
+        self.verify_retirement_receipt(&marker.receipt)?;
+        Ok(Some(marker.receipt))
+    }
+
+    fn install_or_match_retirement_intent(
+        &self,
+        directory: &Path,
+        request: &HostedHouseRunnerRetirementRequestV1,
+    ) -> Result<(), HostedHouseRunnerErrorV1> {
+        let mut intent = RetainedHouseRunnerRetirementIntentV1 {
+            schema: RETIREMENT_SCHEMA_V1.to_owned(),
+            authority: "host_reconciliation_before_exact_stop".to_owned(),
+            request: request.clone(),
+            authentication_tag: String::new(),
+            allowance_reset: false,
+        };
+        intent.authentication_tag = self.sign_retirement_intent(&intent)?;
+        let path = directory.join(RETIREMENT_INTENT_MARKER_FILE);
+        match persist_new(&path, &intent) {
+            Ok(()) => Ok(()),
+            Err(HostedHouseRunnerErrorV1::Conflict) => {
+                let existing = self
+                    .retirement_intent(directory)?
+                    .ok_or(HostedHouseRunnerErrorV1::Unavailable)?;
+                if existing.request == *request {
+                    Ok(())
+                } else {
+                    Err(HostedHouseRunnerErrorV1::Conflict)
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn retirement_intent(
+        &self,
+        directory: &Path,
+    ) -> Result<Option<RetainedHouseRunnerRetirementIntentV1>, HostedHouseRunnerErrorV1> {
+        let intent: RetainedHouseRunnerRetirementIntentV1 =
+            match read_record(&directory.join(RETIREMENT_INTENT_MARKER_FILE)) {
+                Ok(value) => value,
+                Err(RecordReadErrorV1::NotFound) => return Ok(None),
+                Err(RecordReadErrorV1::Unavailable) => {
+                    return Err(HostedHouseRunnerErrorV1::Unavailable);
+                }
+            };
+        worldstream_runtime::validate_data_directory(directory)
+            .map_err(|_| HostedHouseRunnerErrorV1::Unavailable)?;
+        if intent.schema != RETIREMENT_SCHEMA_V1
+            || intent.authority != "host_reconciliation_before_exact_stop"
+            || intent.allowance_reset
+        {
+            return Err(HostedHouseRunnerErrorV1::Unavailable);
+        }
+        self.verify_retirement_intent(&intent)?;
+        Ok(Some(intent))
+    }
+
+    fn load_launch_binding_unlocked(
+        &self,
+        reservation_operation_id: &str,
+    ) -> Result<Option<RetainedLaunchBindingV1>, HostedHouseRunnerErrorV1> {
+        match read_record(
+            &self
+                .launch_bindings
+                .join(format!("{reservation_operation_id}.json")),
+        ) {
+            Ok(binding) if valid_launch_binding(&binding) => Ok(Some(binding)),
+            Ok(_) => Err(HostedHouseRunnerErrorV1::Unavailable),
+            Err(RecordReadErrorV1::NotFound) => Ok(None),
+            Err(RecordReadErrorV1::Unavailable) => Err(HostedHouseRunnerErrorV1::Unavailable),
+        }
+    }
+
+    fn load_runtime_binding_unlocked(
+        &self,
+        reservation_operation_id: &str,
+    ) -> Result<Option<RetainedRuntimeBindingV1>, HostedHouseRunnerErrorV1> {
+        let root = self
+            .units
+            .parent()
+            .ok_or(HostedHouseRunnerErrorV1::Unavailable)?
+            .join("runtime-bindings");
+        match read_record(&root.join(format!("{reservation_operation_id}.json"))) {
+            Ok(binding) if valid_runtime_binding(&binding) => Ok(Some(binding)),
+            Ok(_) => Err(HostedHouseRunnerErrorV1::Unavailable),
+            Err(RecordReadErrorV1::NotFound) => Ok(None),
+            Err(RecordReadErrorV1::Unavailable) => Err(HostedHouseRunnerErrorV1::Unavailable),
+        }
     }
 
     /// Reads one exact reservation identity without re-running dependency checks.
@@ -1232,6 +1556,96 @@ impl HostedHouseRunnerOperationsV1 {
         Ok(())
     }
 
+    fn sign_retirement_receipt(
+        &self,
+        receipt: &HostedHouseRunnerRetirementReceiptV1,
+    ) -> Result<String, HostedHouseRunnerErrorV1> {
+        let bytes = canonical_bytes(&RetirementReceiptWitnessV1 {
+            domain: RETIREMENT_TAG_DOMAIN,
+            schema: &receipt.schema,
+            host_installation_id: &receipt.host_installation_id,
+            reservation_operation_id: &receipt.reservation_operation_id,
+            launch_request_id: &receipt.launch_request_id,
+            house_agent_assignment_id: &receipt.house_agent_assignment_id,
+            runner_unit_id: &receipt.runner_unit_id,
+            disposition: receipt.disposition,
+            platform_evidence_digest: &receipt.platform_evidence_digest,
+            stop_witness: &receipt.stop_witness,
+        })?;
+        Ok(hex(hmac::sign(&self.authenticator, &bytes).as_ref()))
+    }
+
+    fn verify_retirement_receipt(
+        &self,
+        receipt: &HostedHouseRunnerRetirementReceiptV1,
+    ) -> Result<(), HostedHouseRunnerErrorV1> {
+        if receipt.schema != RETIREMENT_RECEIPT_SCHEMA_V1
+            || receipt.host_installation_id != self.host_installation_id.as_ref()
+            || !uuid_reference(&receipt.reservation_operation_id)
+            || !uuid_reference(&receipt.launch_request_id)
+            || !receipt
+                .house_agent_assignment_id
+                .as_deref()
+                .is_none_or(uuid_reference)
+            || !safe_public_reference(&receipt.runner_unit_id, 128)
+            || !valid_evidence_digest(&receipt.platform_evidence_digest)
+            || !valid_evidence_digest(&receipt.stop_witness)
+        {
+            return Err(HostedHouseRunnerErrorV1::Invalid);
+        }
+        hmac::verify(
+            &self.authenticator,
+            &canonical_bytes(&RetirementReceiptWitnessV1 {
+                domain: RETIREMENT_TAG_DOMAIN,
+                schema: &receipt.schema,
+                host_installation_id: &receipt.host_installation_id,
+                reservation_operation_id: &receipt.reservation_operation_id,
+                launch_request_id: &receipt.launch_request_id,
+                house_agent_assignment_id: &receipt.house_agent_assignment_id,
+                runner_unit_id: &receipt.runner_unit_id,
+                disposition: receipt.disposition,
+                platform_evidence_digest: &receipt.platform_evidence_digest,
+                stop_witness: &receipt.stop_witness,
+            })?,
+            &decode_hex(&receipt.authentication_tag)?,
+        )
+        .map_err(|_| HostedHouseRunnerErrorV1::Invalid)?;
+        Ok(())
+    }
+
+    fn sign_retirement_intent(
+        &self,
+        intent: &RetainedHouseRunnerRetirementIntentV1,
+    ) -> Result<String, HostedHouseRunnerErrorV1> {
+        let bytes = canonical_bytes(&RetirementIntentWitnessV1 {
+            domain: RETIREMENT_TAG_DOMAIN,
+            schema: &intent.schema,
+            authority: &intent.authority,
+            request: &intent.request,
+            allowance_reset: intent.allowance_reset,
+        })?;
+        Ok(hex(hmac::sign(&self.authenticator, &bytes).as_ref()))
+    }
+
+    fn verify_retirement_intent(
+        &self,
+        intent: &RetainedHouseRunnerRetirementIntentV1,
+    ) -> Result<(), HostedHouseRunnerErrorV1> {
+        validate_retirement_request(&intent.request, &self.host_installation_id)?;
+        hmac::verify(
+            &self.authenticator,
+            &canonical_bytes(&RetirementIntentWitnessV1 {
+                domain: RETIREMENT_TAG_DOMAIN,
+                schema: &intent.schema,
+                authority: &intent.authority,
+                request: &intent.request,
+                allowance_reset: intent.allowance_reset,
+            })?,
+            &decode_hex(&intent.authentication_tag)?,
+        )
+        .map_err(|_| HostedHouseRunnerErrorV1::Invalid)
+    }
+
     fn lock(&self) -> MutexGuard<'_, ()> {
         self.mutation.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -1307,6 +1721,86 @@ fn valid_launch_binding(binding: &RetainedLaunchBindingV1) -> bool {
         && safe_public_reference(&binding.runner_unit_id, 128)
 }
 
+fn validate_retirement_request(
+    request: &HostedHouseRunnerRetirementRequestV1,
+    host_installation_id: &str,
+) -> Result<(), HostedHouseRunnerErrorV1> {
+    if request.schema != "worldstream/house-runner-retirement-request/v1"
+        || request.host_installation_id != host_installation_id
+        || !uuid_reference(&request.reservation_operation_id)
+        || !uuid_reference(&request.launch_request_id)
+        || !request
+            .house_agent_assignment_id
+            .as_deref()
+            .is_none_or(uuid_reference)
+        || !valid_evidence_digest(&request.platform_evidence_digest)
+    {
+        return Err(HostedHouseRunnerErrorV1::Invalid);
+    }
+    Ok(())
+}
+
+fn validate_retirement_target(
+    request: &HostedHouseRunnerRetirementRequestV1,
+    reservation: &HostedHouseRunnerReservationReceiptV1,
+    launch_binding: Option<&RetainedLaunchBindingV1>,
+    runtime_binding: Option<&RetainedRuntimeBindingV1>,
+) -> Result<(), HostedHouseRunnerErrorV1> {
+    let Some(runner_unit_id) = reservation.runner_unit_id.as_deref() else {
+        return Err(HostedHouseRunnerErrorV1::Invalid);
+    };
+    match launch_binding {
+        Some(binding)
+            if binding.reservation_operation_id == request.reservation_operation_id
+                && binding.launch_request_id == request.launch_request_id
+                && binding.runner_unit_id == runner_unit_id
+                && request.house_agent_assignment_id.as_deref()
+                    == Some(binding.house_agent_assignment_id.as_str()) => {}
+        Some(_) => return Err(HostedHouseRunnerErrorV1::Conflict),
+        None if request.disposition
+            == HostedHouseRunnerRetirementDispositionV1::FailedPreGenesis
+            && request.house_agent_assignment_id.is_none() => {}
+        None => return Err(HostedHouseRunnerErrorV1::Conflict),
+    }
+    match runtime_binding {
+        Some(binding)
+            if binding.reservation_operation_id == request.reservation_operation_id
+                && binding.runner_unit_id == runner_unit_id
+                && request.house_agent_assignment_id.as_deref()
+                    == Some(binding.house_agent_assignment_id.as_str())
+                && request.disposition
+                    != HostedHouseRunnerRetirementDispositionV1::FailedPreGenesis =>
+        {
+            if let Some(launch) = launch_binding
+                && binding.room_setup_operation_id != launch.room_setup_operation_id
+            {
+                return Err(HostedHouseRunnerErrorV1::Conflict);
+            }
+        }
+        Some(_) => return Err(HostedHouseRunnerErrorV1::Conflict),
+        None if request.disposition == HostedHouseRunnerRetirementDispositionV1::RunTerminal => {
+            return Err(HostedHouseRunnerErrorV1::Unavailable);
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+fn receipt_matches_retirement_request(
+    receipt: &HostedHouseRunnerRetirementReceiptV1,
+    request: &HostedHouseRunnerRetirementRequestV1,
+    runner_unit_id: &str,
+) -> bool {
+    receipt.schema == RETIREMENT_RECEIPT_SCHEMA_V1
+        && receipt.host_installation_id == request.host_installation_id
+        && receipt.reservation_operation_id == request.reservation_operation_id
+        && receipt.launch_request_id == request.launch_request_id
+        && receipt.house_agent_assignment_id == request.house_agent_assignment_id
+        && receipt.runner_unit_id == runner_unit_id
+        && receipt.disposition == request.disposition
+        && receipt.platform_evidence_digest == request.platform_evidence_digest
+}
+
 fn valid_runtime_binding(binding: &RetainedRuntimeBindingV1) -> bool {
     binding.schema == RUNTIME_BINDING_SCHEMA_V1
         && uuid_reference(&binding.reservation_operation_id)
@@ -1330,6 +1824,14 @@ fn valid_runtime_binding(binding: &RetainedRuntimeBindingV1) -> bool {
 fn valid_blake3_digest(value: &str) -> bool {
     value.len() == 71
         && value.starts_with("blake3:")
+        && value[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn valid_evidence_digest(value: &str) -> bool {
+    value.len() == 71
+        && (value.starts_with("blake3:") || value.starts_with("sha256:"))
         && value[7..]
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
@@ -1561,6 +2063,8 @@ mod tests {
     struct FakeSource {
         dependency: Result<String, &'static str>,
         starts: Arc<Mutex<Vec<String>>>,
+        retirements: Arc<Mutex<Vec<Option<String>>>>,
+        retirement_failure: bool,
     }
 
     impl FakeSource {
@@ -1568,6 +2072,8 @@ mod tests {
             Self {
                 dependency: Ok(format!("blake3:{}", "a".repeat(64))),
                 starts: Arc::new(Mutex::new(Vec::new())),
+                retirements: Arc::new(Mutex::new(Vec::new())),
+                retirement_failure: false,
             }
         }
     }
@@ -1597,6 +2103,23 @@ mod tests {
                 .unwrap_or_else(PoisonError::into_inner)
                 .push(assignment.house_agent_assignment_id.clone());
             Ok(())
+        }
+
+        fn retire(
+            &self,
+            runtime_binding: Option<&RetainedRuntimeBindingV1>,
+        ) -> Result<String, HostedHouseRunnerErrorV1> {
+            if self.retirement_failure {
+                return Err(HostedHouseRunnerErrorV1::Unavailable);
+            }
+            self.retirements
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(runtime_binding.map(|binding| binding.local_assignment_id.clone()));
+            canonical_blake3(&serde_json::json!({
+                "domain": "worldstream/house-runner-stop-witness/v1",
+                "binding": runtime_binding.map(|binding| &binding.reservation_operation_id),
+            }))
         }
     }
 
@@ -1690,6 +2213,47 @@ mod tests {
             frozen_launch_request: serde_json::json!({}),
             frozen_roster: serde_json::json!({}),
             frozen_room_setup_specification: serde_json::json!({}),
+        }
+    }
+
+    fn retirement_request(
+        receipt: &HostedHouseRunnerReservationReceiptV1,
+        assignment_id: Option<&str>,
+        disposition: HostedHouseRunnerRetirementDispositionV1,
+    ) -> HostedHouseRunnerRetirementRequestV1 {
+        HostedHouseRunnerRetirementRequestV1 {
+            schema: "worldstream/house-runner-retirement-request/v1".to_owned(),
+            host_installation_id: receipt.host_installation_id.clone(),
+            reservation_operation_id: receipt.reservation_operation_id.clone(),
+            launch_request_id: receipt.launch_request_id.clone(),
+            house_agent_assignment_id: assignment_id.map(str::to_owned),
+            disposition,
+            platform_evidence_digest: format!("sha256:{}", "7".repeat(64)),
+        }
+    }
+
+    fn runtime_binding(
+        receipt: &HostedHouseRunnerReservationReceiptV1,
+        assignment_id: &str,
+    ) -> RetainedRuntimeBindingV1 {
+        RetainedRuntimeBindingV1 {
+            schema: RUNTIME_BINDING_SCHEMA_V1.to_owned(),
+            reservation_operation_id: receipt.reservation_operation_id.clone(),
+            room_setup_operation_id: "hosted-house-launch-01".to_owned(),
+            house_agent_assignment_id: assignment_id.to_owned(),
+            runner_unit_id: receipt.runner_unit_id.clone().unwrap(),
+            room_id: "room-01".to_owned(),
+            local_assignment_id: "local-assignment-01".to_owned(),
+            member_id: "member-01".to_owned(),
+            principal_id: "principal-01".to_owned(),
+            role: "navigator".to_owned(),
+            runner_id: "runner-01".to_owned(),
+            instance_id: "instance-01".to_owned(),
+            house_agent_revision_digest: receipt.house_agent_revision_digest.clone(),
+            profile_id: "profile-01".to_owned(),
+            profile_revision: "1".to_owned(),
+            runner_template_id: "template-01".to_owned(),
+            runner_template_revision: "1".to_owned(),
         }
     }
 
@@ -1866,6 +2430,190 @@ mod tests {
                 .failure_code
                 .as_deref(),
             Some("house_runner_capacity_exhausted")
+        );
+    }
+
+    #[test]
+    fn automatic_retirement_fences_exact_units_then_reuses_only_global_capacity() {
+        let directory = tempdir().unwrap();
+        let source = FakeSource::ready();
+        let retirements = Arc::clone(&source.retirements);
+        let (operations, listing, revisions) = make_operations(directory.path(), source);
+        let first_request = request(1, 1, "navigator", &revisions[0], &listing);
+        let first = operations.reserve(&first_request).unwrap();
+        for index in 2..=4 {
+            assert_eq!(
+                operations
+                    .reserve(&request(index, index, "navigator", &revisions[0], &listing))
+                    .unwrap()
+                    .outcome,
+                HostedHouseRunnerReservationOutcomeV1::Succeeded
+            );
+        }
+        assert_eq!(
+            operations
+                .reserve(&request(5, 5, "navigator", &revisions[0], &listing))
+                .unwrap()
+                .failure_code
+                .as_deref(),
+            Some("house_runner_capacity_exhausted")
+        );
+
+        let retired = operations
+            .retire(&retirement_request(
+                &first,
+                None,
+                HostedHouseRunnerRetirementDispositionV1::FailedPreGenesis,
+            ))
+            .unwrap();
+        assert_eq!(
+            retired.runner_unit_id,
+            *first.runner_unit_id.as_ref().unwrap()
+        );
+        assert_eq!(
+            retirements.lock().unwrap().as_slice(),
+            &[None],
+            "the no-Genesis branch proves no local child was started"
+        );
+        assert_eq!(
+            operations
+                .retire(&retirement_request(
+                    &first,
+                    None,
+                    HostedHouseRunnerRetirementDispositionV1::FailedPreGenesis,
+                ))
+                .unwrap(),
+            retired,
+            "a duplicate reconciliation returns the original signed evidence"
+        );
+        assert_eq!(
+            operations
+                .reserve(&request(6, 6, "navigator", &revisions[0], &listing))
+                .unwrap()
+                .outcome,
+            HostedHouseRunnerReservationOutcomeV1::Succeeded,
+            "only the global concurrent slot is reusable"
+        );
+        assert_eq!(operations.read(&first_request).unwrap(), first);
+        let marker = directory
+            .path()
+            .join("units")
+            .join(first.runner_unit_id.as_ref().unwrap())
+            .join(RETIREMENT_MARKER_FILE);
+        assert!(marker.exists());
+    }
+
+    #[test]
+    fn terminal_retirement_requires_the_exact_runtime_binding_and_stops_that_child() {
+        let directory = tempdir().unwrap();
+        let source = FakeSource::ready();
+        let retirements = Arc::clone(&source.retirements);
+        let (operations, listing, revisions) = make_operations(directory.path(), source);
+        let request = request(1, 1, "navigator", &revisions[0], &listing);
+        let reservation = operations.reserve(&request).unwrap();
+        let assignment = "20000000-0000-4000-8000-000000000001";
+        operations
+            .bind_launch(&launch(
+                &listing,
+                vec![HostedHouseRunnerAssignmentV1 {
+                    house_agent_assignment_id: assignment.to_owned(),
+                    reservation_receipt: reservation.clone(),
+                }],
+            ))
+            .unwrap();
+        let bindings = prepare_data_directory(&directory.path().join("runtime-bindings")).unwrap();
+        persist_new(
+            &bindings.join(format!("{}.json", reservation.reservation_operation_id)),
+            &runtime_binding(&reservation, assignment),
+        )
+        .unwrap();
+
+        operations
+            .retire(&retirement_request(
+                &reservation,
+                Some(assignment),
+                HostedHouseRunnerRetirementDispositionV1::RunTerminal,
+            ))
+            .unwrap();
+        assert_eq!(
+            retirements.lock().unwrap().as_slice(),
+            &[Some("local-assignment-01".to_owned())]
+        );
+
+        let wrong = operations.retire(&retirement_request(
+            &reservation,
+            Some("20000000-0000-4000-8000-000000000002"),
+            HostedHouseRunnerRetirementDispositionV1::RunTerminal,
+        ));
+        assert_eq!(wrong, Err(HostedHouseRunnerErrorV1::Conflict));
+    }
+
+    #[test]
+    fn pre_start_abandonment_retires_the_frozen_assignment_without_inventing_an_outcome() {
+        let directory = tempdir().unwrap();
+        let source = FakeSource::ready();
+        let retirements = Arc::clone(&source.retirements);
+        let (operations, listing, revisions) = make_operations(directory.path(), source);
+        let request = request(1, 1, "navigator", &revisions[0], &listing);
+        let reservation = operations.reserve(&request).unwrap();
+        let assignment = "20000000-0000-4000-8000-000000000001";
+        operations
+            .bind_launch(&launch(
+                &listing,
+                vec![HostedHouseRunnerAssignmentV1 {
+                    house_agent_assignment_id: assignment.to_owned(),
+                    reservation_receipt: reservation.clone(),
+                }],
+            ))
+            .unwrap();
+
+        let receipt = operations
+            .retire(&retirement_request(
+                &reservation,
+                Some(assignment),
+                HostedHouseRunnerRetirementDispositionV1::PreStartAbandoned,
+            ))
+            .unwrap();
+        assert_eq!(
+            receipt.disposition,
+            HostedHouseRunnerRetirementDispositionV1::PreStartAbandoned
+        );
+        assert_eq!(retirements.lock().unwrap().as_slice(), &[None]);
+    }
+
+    #[test]
+    fn unavailable_stop_never_installs_a_capacity_releasing_fence() {
+        let directory = tempdir().unwrap();
+        let mut source = FakeSource::ready();
+        source.retirement_failure = true;
+        let (operations, listing, revisions) = make_operations(directory.path(), source);
+        let reservation = operations
+            .reserve(&request(1, 1, "navigator", &revisions[0], &listing))
+            .unwrap();
+        assert_eq!(
+            operations.retire(&retirement_request(
+                &reservation,
+                None,
+                HostedHouseRunnerRetirementDispositionV1::FailedPreGenesis,
+            )),
+            Err(HostedHouseRunnerErrorV1::Unavailable)
+        );
+        assert!(
+            !directory
+                .path()
+                .join("units")
+                .join(reservation.runner_unit_id.as_ref().unwrap())
+                .join(RETIREMENT_MARKER_FILE)
+                .exists()
+        );
+        assert!(
+            directory
+                .path()
+                .join("units")
+                .join(reservation.runner_unit_id.as_ref().unwrap())
+                .join(RETIREMENT_INTENT_MARKER_FILE)
+                .exists(),
+            "a failed stop remains durably fenced and keeps capacity occupied"
         );
     }
 

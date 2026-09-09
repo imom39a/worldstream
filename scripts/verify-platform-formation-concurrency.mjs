@@ -1,5 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { fixtureAdmissionExpectation } from "./formation-capacity-window.mjs";
+
+class RpcError extends Error {
+  constructor(status, code, message) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
 
 const repository = new URL("..", import.meta.url).pathname;
 const runNamespace = `concurrency-${randomUUID()}`;
@@ -182,6 +191,17 @@ try {
     });
   }
 
+  // This probe may run against a retained local installation which already
+  // has live Runs. Snapshot the immutable gate and that external occupancy
+  // before fixture admission. The fixture may only consume the remaining
+  // capacity; it must not rewrite the production gate or remove retained rows.
+  const capacityBaseline = readActiveRunCapacity();
+  assert(capacityBaseline.hardLimit === 10, "the global active-Run hard limit changed unexpectedly");
+  const expectedAdmissions = fixtureAdmissionExpectation({
+    hardLimit: capacityBaseline.hardLimit,
+    baselineActiveRuns: capacityBaseline.activeRuns,
+    attempts: capacityLaunches.length,
+  });
   const authorizations = await Promise.all(capacityLaunches.map((launch) =>
     rpcOutcome("authorize_host_mutation_v1", {
       p_creator_account_id: launch.accountId,
@@ -190,10 +210,24 @@ try {
       p_room_setup_operation_id: launch.operation,
     })
   ));
-  assert(authorizations.filter((outcome) => outcome.ok).length === 10, "the global gate did not admit exactly ten concurrent Runs");
-  assert(authorizations.filter((outcome) => !outcome.ok).length === 1, "the global gate did not reject exactly one concurrent Run");
+  const admitted = authorizations.filter((outcome) => outcome.ok);
+  const rejected = authorizations.filter((outcome) => !outcome.ok);
+  assert(
+    admitted.length === expectedAdmissions.admitted,
+    `the global gate admitted ${admitted.length} fixture Runs; expected ${expectedAdmissions.admitted} above ${capacityBaseline.activeRuns} retained Runs`,
+  );
+  assert(
+    rejected.length === expectedAdmissions.rejected,
+    `the global gate rejected ${rejected.length} fixture Runs; expected ${expectedAdmissions.rejected}`,
+  );
+  assert(
+    rejected.every((outcome) => outcome.code === "55000" && outcome.message === "global_active_run_capacity_unavailable"),
+    "the global gate rejected a fixture Run for a reason other than global active-Run capacity",
+  );
 
-  console.log("Formation concurrency verified: one launch, one invitation winner, one House draw, and ten global Run reservations.");
+  console.log(
+    `Formation concurrency verified: one launch, one invitation winner, one House draw, and ${admitted.length} fixture Run reservations above ${capacityBaseline.activeRuns} retained Runs.`,
+  );
 } finally {
   cleanup();
 }
@@ -228,7 +262,10 @@ async function rpc(name, body) {
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     const code = payload && typeof payload === "object" ? payload.code : "unknown";
-    throw new Error(`${name} failed with ${response.status}/${String(code)}`);
+    const message = payload && typeof payload === "object" && typeof payload.message === "string"
+      ? payload.message
+      : `${name} failed with ${response.status}/${String(code)}`;
+    throw new RpcError(response.status, String(code), message);
   }
   return payload;
 }
@@ -237,8 +274,35 @@ async function rpcOutcome(name, body) {
   try {
     return { ok: true, value: await rpc(name, body) };
   } catch (error) {
-    return { ok: false, error };
+    return {
+      ok: false,
+      error,
+      code: error instanceof RpcError ? error.code : "unknown",
+      message: error instanceof RpcError ? error.message : "unknown",
+    };
   }
+}
+
+function readActiveRunCapacity() {
+  const output = execFileSync("psql", ["-X", "-At", "-v", "ON_ERROR_STOP=1", databaseUrl, "-c", `
+    select gates.hard_limit, count(reservations.reservation_id)::integer
+    from platform_store.capacity_gates gates
+    left join platform_store.capacity_reservations reservations
+      on reservations.kind = 'active_run'
+     and reservations.released_at is null
+    where gates.gate_kind = 'active_run'
+    group by gates.hard_limit;
+  `], {
+    cwd: repository,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+  }).trim();
+  const [hardLimit, activeRuns, ...extra] = output.split("|");
+  assert(extra.length === 0 && hardLimit !== undefined && activeRuns !== undefined, "could not read the global active-Run capacity baseline");
+  const parsedHardLimit = Number.parseInt(hardLimit, 10);
+  const parsedActiveRuns = Number.parseInt(activeRuns, 10);
+  assert(Number.isInteger(parsedHardLimit) && Number.isInteger(parsedActiveRuns), "the global active-Run capacity baseline was invalid");
+  return { hardLimit: parsedHardLimit, activeRuns: parsedActiveRuns };
 }
 
 function expectSingleRow(value) {

@@ -1068,6 +1068,50 @@ pub struct HostedHouseRunnerReservationReceiptV1 {
     pub authentication_tag: String,
 }
 
+/// The platform evidence disposition that permits Host-local House Runner
+/// retirement. It is operational coordination, never an Activity Phase or
+/// Outcome.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedHouseRunnerRetirementDispositionV1 {
+    RunTerminal,
+    FailedPreGenesis,
+    PreStartAbandoned,
+}
+
+/// Service-authenticated request to stop and fence one exact House Runner.
+///
+/// It carries a digest of already-retained platform evidence, rather than the
+/// evidence bytes, any Room state, provider data, or process control details.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedHouseRunnerRetirementRequestV1 {
+    pub schema: String,
+    pub host_installation_id: String,
+    pub reservation_operation_id: String,
+    pub launch_request_id: String,
+    pub house_agent_assignment_id: Option<String>,
+    pub disposition: HostedHouseRunnerRetirementDispositionV1,
+    pub platform_evidence_digest: String,
+}
+
+/// Signed Host evidence that one exact House Runner was fenced only after
+/// stopping its bound children or proving no child could have started.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedHouseRunnerRetirementReceiptV1 {
+    pub schema: String,
+    pub host_installation_id: String,
+    pub reservation_operation_id: String,
+    pub launch_request_id: String,
+    pub house_agent_assignment_id: Option<String>,
+    pub runner_unit_id: String,
+    pub disposition: HostedHouseRunnerRetirementDispositionV1,
+    pub platform_evidence_digest: String,
+    pub stop_witness: String,
+    pub authentication_tag: String,
+}
+
 /// Immutable platform Assignment paired with the exact authenticated Host receipt.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1104,6 +1148,42 @@ pub struct HostedLaunchEvidenceRequestV1 {
     pub listing_revision_digest: String,
     pub launch_request_digest: String,
     pub room_setup_operation_id: String,
+}
+
+/// Exact Host evidence that a Genesis-created Room was durably fenced before
+/// its Lobby launch committed. This is coordination evidence only: it does
+/// not represent an Activity outcome or alter Room truth.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedPrestartAbandonmentEvidenceV1 {
+    pub schema: String,
+    pub host_installation_id: String,
+    pub launch_request_id: String,
+    pub listing_revision_digest: String,
+    pub launch_request_digest: String,
+    pub room_setup_operation_id: String,
+    pub room_id: String,
+    pub lobby_launch_committed: bool,
+    pub abandonment_fence_digest: String,
+    pub authentication_tag: String,
+}
+
+/// Exact Host evidence that a retained setup operation was fenced before
+/// Genesis. This is deliberately narrower than a pre-start abandonment: no
+/// Room or Run exists, and the evidence only proves that this one immutable
+/// setup operation can never create one later.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedProvisioningAbandonmentEvidenceV1 {
+    pub schema: String,
+    pub host_installation_id: String,
+    pub launch_request_id: String,
+    pub listing_revision_digest: String,
+    pub launch_request_digest: String,
+    pub room_setup_operation_id: String,
+    pub genesis_committed: bool,
+    pub provisioning_fence_digest: String,
+    pub authentication_tag: String,
 }
 
 /// Bounded hosted launch progress. Activity phase and outcome remain `WorldStream` facts.
@@ -2077,6 +2157,60 @@ pub fn validate_hosted_house_runner_reservation_receipt(
     }
 }
 
+/// Validates a service-only House Runner retirement request.
+///
+/// The receiving Host independently verifies that the supplied identifiers
+/// match one retained successful reservation and, when applicable, its exact
+/// Assignment and runtime binding.
+pub fn validate_hosted_house_runner_retirement_request(
+    request: &HostedHouseRunnerRetirementRequestV1,
+) -> Result<(), ContractError> {
+    if request.schema != "worldstream/house-runner-retirement-request/v1" {
+        return Err(ContractError::Unsupported);
+    }
+    validate_host_installation_reference(&request.host_installation_id)?;
+    validate_uuid_reference(&request.reservation_operation_id)?;
+    validate_uuid_reference(&request.launch_request_id)?;
+    if let Some(assignment) = &request.house_agent_assignment_id {
+        validate_uuid_reference(assignment)?;
+    }
+    validate_any_digest(&request.platform_evidence_digest)?;
+    Ok(())
+}
+
+/// Validates the public shape of Host-signed retirement evidence.
+///
+/// The platform may retain a hash of this response, while authentication is
+/// verified only by the issuing Host.
+pub fn validate_hosted_house_runner_retirement_receipt(
+    receipt: &HostedHouseRunnerRetirementReceiptV1,
+) -> Result<(), ContractError> {
+    if receipt.schema != "worldstream/house-runner-retirement-receipt/v1" {
+        return Err(ContractError::Unsupported);
+    }
+    validate_host_installation_reference(&receipt.host_installation_id)?;
+    validate_uuid_reference(&receipt.reservation_operation_id)?;
+    validate_uuid_reference(&receipt.launch_request_id)?;
+    if let Some(assignment) = &receipt.house_agent_assignment_id {
+        validate_uuid_reference(assignment)?;
+    }
+    if !valid_runner_unit_id(&receipt.runner_unit_id) {
+        return Err(ContractError::InvalidShape);
+    }
+    validate_any_digest(&receipt.platform_evidence_digest)?;
+    validate_digest(&receipt.stop_witness, "blake3")?;
+    validate_hex(&receipt.authentication_tag, 64)?;
+    Ok(())
+}
+
+fn validate_any_digest(value: &str) -> Result<(), ContractError> {
+    if validate_digest(value, "blake3").is_ok() || validate_digest(value, "sha256").is_ok() {
+        Ok(())
+    } else {
+        Err(ContractError::InvalidShape)
+    }
+}
+
 fn validate_hosted_house_runner_assignments(
     request: &HostedLaunchRequestV1,
     roster: &FrozenRoster,
@@ -2206,6 +2340,54 @@ pub fn validate_hosted_launch_evidence_request(
     validate_digest(&request.listing_revision_digest, "blake3")?;
     validate_digest(&request.launch_request_digest, "blake3")?;
     validate_hosted_operation_reference(&request.room_setup_operation_id)
+}
+
+/// Validates the narrow evidence returned by the exact Host pre-start fence.
+///
+/// # Errors
+/// Rejects a shape that cannot safely bind one retained Host operation to one
+/// platform Run correspondence.
+pub fn validate_hosted_prestart_abandonment_evidence(
+    evidence: &HostedPrestartAbandonmentEvidenceV1,
+) -> Result<(), ContractError> {
+    if evidence.schema != "worldstream/hosted-prestart-abandonment-evidence/v1"
+        || evidence.lobby_launch_committed
+    {
+        return Err(ContractError::Unsupported);
+    }
+    validate_host_installation_reference(&evidence.host_installation_id)?;
+    validate_uuid_reference(&evidence.launch_request_id)?;
+    validate_digest(&evidence.listing_revision_digest, "blake3")?;
+    validate_digest(&evidence.launch_request_digest, "blake3")?;
+    validate_hosted_operation_reference(&evidence.room_setup_operation_id)?;
+    validate_ulid_reference(&evidence.room_id)?;
+    validate_digest(&evidence.abandonment_fence_digest, "blake3")?;
+    validate_hex(&evidence.authentication_tag, 64)
+}
+
+/// Validates the exact Host fence for a setup operation that never reached
+/// Genesis. Its absence of Room and Run identifiers is intentional: those
+/// facts do not exist and must not be invented by recovery code; the retained
+/// Host binding still supplies the exact platform launch request identity.
+///
+/// # Errors
+/// Rejects a shape that cannot safely bind one retained Host operation to one
+/// pre-Genesis platform launch.
+pub fn validate_hosted_provisioning_abandonment_evidence(
+    evidence: &HostedProvisioningAbandonmentEvidenceV1,
+) -> Result<(), ContractError> {
+    if evidence.schema != "worldstream/hosted-provisioning-abandonment-evidence/v1"
+        || evidence.genesis_committed
+    {
+        return Err(ContractError::Unsupported);
+    }
+    validate_host_installation_reference(&evidence.host_installation_id)?;
+    validate_uuid_reference(&evidence.launch_request_id)?;
+    validate_digest(&evidence.listing_revision_digest, "blake3")?;
+    validate_digest(&evidence.launch_request_digest, "blake3")?;
+    validate_hosted_operation_reference(&evidence.room_setup_operation_id)?;
+    validate_digest(&evidence.provisioning_fence_digest, "blake3")?;
+    validate_hex(&evidence.authentication_tag, 64)
 }
 
 fn validate_hosted_operation_reference(value: &str) -> Result<(), ContractError> {
@@ -2632,10 +2814,11 @@ fn validate_projector(document: &ResultProjectorDocument) -> Result<(), Contract
     validate_schema_reference(&document.input.projection)?;
     validate_identifier(&document.output.schema, 128)?;
     validate_digest(&document.output.schema_digest, "blake3")?;
-    if document.input.projection.schema != PROJECTION_SCHEMA
-        || document.input.projection.digest != PROJECTION_SCHEMA_DIGEST
-        || document.output.schema != RESULT_SCHEMA
-        || document.output.schema_digest != RESULT_SCHEMA_DIGEST
+    let is_agent_heist_projection = document.input.projection.schema == PROJECTION_SCHEMA;
+    if is_agent_heist_projection
+        && (document.input.projection.digest != PROJECTION_SCHEMA_DIGEST
+            || document.output.schema != RESULT_SCHEMA
+            || document.output.schema_digest != RESULT_SCHEMA_DIGEST)
     {
         return Err(ContractError::Unsupported);
     }
@@ -2684,13 +2867,15 @@ fn validate_projector(document: &ResultProjectorDocument) -> Result<(), Contract
             }
         }
     }
-    let expected = BTreeSet::from(["outcome", "reason", "score", "selected_plan_id"]);
-    if outputs != expected
-        || document.program.terminal.field != "phase"
-        || document.program.terminal.equals != "complete"
-        || document.program.outcome_field != "outcome"
-    {
-        return Err(ContractError::InvalidShape);
+    if is_agent_heist_projection {
+        let expected = BTreeSet::from(["outcome", "reason", "score", "selected_plan_id"]);
+        if outputs != expected
+            || document.program.terminal.field != "phase"
+            || document.program.terminal.equals != "complete"
+            || document.program.outcome_field != "outcome"
+        {
+            return Err(ContractError::InvalidShape);
+        }
     }
     Ok(())
 }
@@ -2764,13 +2949,17 @@ pub fn project_result(
         return Err(ContractError::ReferenceMismatch);
     }
     validate_complete_head(&input.source_head)?;
-    validate_agent_heist_public_projection(&input.public_projection)?;
+    if revision.document.input.projection.schema == PROJECTION_SCHEMA {
+        validate_agent_heist_public_projection(&input.public_projection)?;
+    } else {
+        validate_generic_public_projection(&input.public_projection)?;
+    }
     let output = match projector.runtime {
         RetainedRuntime::DeclarativeV1 => {
             runtime_v1::interpret(&revision.document, &input.public_projection)?
         }
     };
-    validate_result_output(&output)?;
+    validate_result_output(&output, &revision.document)?;
     let bytes = canonicalize(&output)?;
     if bytes.len() > revision.document.output.maximum_bytes {
         return Err(ContractError::OutputTooLarge);
@@ -3051,7 +3240,70 @@ fn validate_agent_heist_public_projection(value: &Value) -> Result<(), ContractE
     Ok(())
 }
 
-fn validate_result_output(value: &Value) -> Result<(), ContractError> {
+fn validate_generic_public_projection(value: &Value) -> Result<(), ContractError> {
+    if !value.is_object() {
+        return Err(ContractError::InvalidShape);
+    }
+    validate_json(value)
+}
+
+fn validate_result_output(
+    value: &Value,
+    document: &ResultProjectorDocument,
+) -> Result<(), ContractError> {
+    if document.input.projection.schema == PROJECTION_SCHEMA {
+        return validate_agent_heist_result_output(value);
+    }
+    let object = value.as_object().ok_or(ContractError::InvalidShape)?;
+    match object.get("status").and_then(Value::as_str) {
+        Some("not_terminal" | "terminal_without_outcome") if object.len() == 1 => Ok(()),
+        Some("summary") if object.len() == 2 => {
+            let summary = object.get("summary").ok_or(ContractError::InvalidShape)?;
+            let summary = summary.as_object().ok_or(ContractError::InvalidShape)?;
+            let expected = document
+                .program
+                .summary_fields
+                .iter()
+                .map(SummaryField::output)
+                .chain(std::iter::once("schema"))
+                .collect::<Vec<_>>();
+            if summary.len() != expected.len()
+                || !summary.keys().all(|key| expected.contains(&key.as_str()))
+                || summary.get("schema").and_then(Value::as_str) != Some(&document.output.schema)
+            {
+                return Err(ContractError::InvalidShape);
+            }
+            for field in &document.program.summary_fields {
+                let value = summary
+                    .get(field.output())
+                    .ok_or(ContractError::InvalidShape)?;
+                match field {
+                    SummaryField::Enum { values, .. }
+                        if value
+                            .as_str()
+                            .is_some_and(|item| values.iter().any(|allowed| allowed == item)) => {}
+                    SummaryField::NullableIdentifier { .. } if value.is_null() => {}
+                    SummaryField::NullableIdentifier { maximum_bytes, .. } => {
+                        validate_public_reference(
+                            value.as_str().ok_or(ContractError::InvalidShape)?,
+                            *maximum_bytes,
+                        )?;
+                    }
+                    SummaryField::Integer {
+                        minimum, maximum, ..
+                    } if value
+                        .as_u64()
+                        .is_some_and(|item| item >= *minimum && item <= *maximum) => {}
+                    _ => return Err(ContractError::InvalidShape),
+                }
+            }
+            Ok(())
+        }
+        _ => Err(ContractError::InvalidShape),
+    }
+}
+
+fn validate_agent_heist_result_output(value: &Value) -> Result<(), ContractError> {
     let object = value.as_object().ok_or(ContractError::InvalidShape)?;
     match object.get("status").and_then(Value::as_str) {
         Some("not_terminal" | "terminal_without_outcome") if object.len() == 1 => Ok(()),

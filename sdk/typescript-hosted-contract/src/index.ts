@@ -567,7 +567,11 @@ export function projectResult(
   ) {
     throw new ContractViolation("reference_mismatch");
   }
-  validateAgentHeistPublicProjection(input.public_projection);
+  if (revision.value.input.projection.schema === PROJECTION_SCHEMA) {
+    validateAgentHeistPublicProjection(input.public_projection);
+  } else {
+    validateGenericPublicProjection(input.public_projection);
+  }
   let output: CanonicalObject;
   try {
     output = interpretProjectorV1(revision.value, input.public_projection);
@@ -575,7 +579,7 @@ export function projectResult(
     if (error instanceof ProjectorRuntimeViolation) throw new ContractViolation("invalid_shape");
     throw error;
   }
-  validateResultOutput(output);
+  validateResultOutput(output, revision.value);
   const bytes = encodeCanonical(output);
   if (bytes.byteLength > revision.value.output.maximum_bytes) throw new ContractViolation("output_too_large");
   return bytes;
@@ -720,27 +724,29 @@ function validateProjector(value: CanonicalJson): void {
     throw new ContractViolation("unsupported");
   }
   const projection = schemaReference(input.projection);
-  if (projection.schema !== PROJECTION_SCHEMA || projection.digest !== PROJECTION_SCHEMA_DIGEST) throw new ContractViolation("unsupported");
+  if (projection.schema === PROJECTION_SCHEMA && projection.digest !== PROJECTION_SCHEMA_DIGEST) {
+    throw new ContractViolation("unsupported");
+  }
   const program = closedRecord(projector.program, ["schema", "terminal", "outcome_field", "summary_fields"]);
   if (program.schema !== "worldstream/result-projector-program/v1") throw new ContractViolation("unsupported");
   const terminal = closedRecord(program.terminal, ["field", "equals"]);
-  if (jsonKey(terminal.field) !== "phase" || text(terminal.equals, 64) !== "complete" || jsonKey(program.outcome_field) !== "outcome") {
-    throw new ContractViolation("invalid_shape");
-  }
+  jsonKey(terminal.field);
+  text(terminal.equals, 64);
+  jsonKey(program.outcome_field);
   const fields = array(program.summary_fields);
   if (fields.length === 0 || fields.length > 32) throw new ContractViolation("unbounded");
   const outputs = new Set<string>();
   const sources = new Set<string>();
   for (const field of fields) validateSummaryField(field, outputs, sources);
-  if (!["outcome", "reason", "score", "selected_plan_id"].every((item) => outputs.has(item)) || outputs.size !== 4) {
-    throw new ContractViolation("invalid_shape");
-  }
   const output = closedRecord(projector.output, ["schema", "schema_digest", "canonicalizer", "maximum_bytes"]);
-  if (
-    identifier(output.schema, 128) !== RESULT_SCHEMA
-    || digest(output.schema_digest, "blake3") !== RESULT_SCHEMA_DIGEST
-    || output.canonicalizer !== "worldstream/canonical-json/v1"
-  ) {
+  identifier(output.schema, 128);
+  digest(output.schema_digest, "blake3");
+  if (projection.schema === PROJECTION_SCHEMA && (
+    output.schema !== RESULT_SCHEMA || output.schema_digest !== RESULT_SCHEMA_DIGEST
+  )) {
+    throw new ContractViolation("unsupported");
+  }
+  if (output.canonicalizer !== "worldstream/canonical-json/v1") {
     throw new ContractViolation("unsupported");
   }
   const maximumInput = integer(projector.maximum_input_bytes);
@@ -858,7 +864,15 @@ function validatePublicOutcome(value: CanonicalJson): void {
   enumValue(outcome.reason, ["no_strict_majority", "scored_selected_plan"]);
 }
 
-function validateResultOutput(value: CanonicalObject): void {
+function validateGenericPublicProjection(value: CanonicalJson | undefined): void {
+  const projection = record(value);
+  validateJson(projection);
+}
+
+function validateResultOutput(
+  value: CanonicalObject,
+  revision: ResultProjectorRevisionValue,
+): void {
   const status = stringValue(value.status);
   if (status === "not_terminal" || status === "terminal_without_outcome") {
     closedKeys(value, ["status"]);
@@ -866,12 +880,25 @@ function validateResultOutput(value: CanonicalObject): void {
   }
   if (status !== "summary") throw new ContractViolation("invalid_shape");
   closedKeys(value, ["status", "summary"]);
-  const summary = closedRecord(value.summary, ["schema", "outcome", "selected_plan_id", "score", "reason"]);
-  if (summary.schema !== RESULT_SCHEMA) throw new ContractViolation("invalid_shape");
-  enumValue(summary.outcome, ["success", "partial_failure", "failure"]);
-  if (summary.selected_plan_id !== null) publicReference(summary.selected_plan_id, 128);
-  boundedInteger(summary.score, 0, 5);
-  enumValue(summary.reason, ["no_strict_majority", "scored_selected_plan"]);
+  const summary = closedRecord(value.summary, [
+    "schema",
+    ...revision.program.summary_fields.map((field) => field.output),
+  ]);
+  if (summary.schema !== revision.output.schema) throw new ContractViolation("invalid_shape");
+  for (const field of revision.program.summary_fields) {
+    const selected = summary[field.output];
+    switch (field.kind) {
+      case "enum":
+        enumValue(selected, field.values);
+        break;
+      case "nullable_identifier":
+        if (selected !== null) publicReference(selected, field.maximum_bytes);
+        break;
+      case "integer":
+        boundedInteger(selected, field.minimum, field.maximum);
+        break;
+    }
+  }
 }
 
 function packReference(value: CanonicalJson | undefined): PackReference {

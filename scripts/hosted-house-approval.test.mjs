@@ -115,6 +115,65 @@ test("successor migration publishes the exact reviewed canonical documents witho
   assert.doesNotMatch(migration, /house_agent_host_approvals|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
 });
 
+test("r9 listing correction pins the checked artifact bytes instead of legacy source ordering", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260909001157_retained_runner_r9_listing_correction.sql", import.meta.url), "utf8");
+  const listing = JSON.parse(await readFile(new URL("../config/hosted/listings/agent-heist-0.17.0.json", import.meta.url), "utf8"));
+  const artifact = Buffer.from(migration.match(/\$artifact\$([\s\S]*?)\$artifact\$/u)?.[1] ?? "");
+  assert.deepEqual(artifact, canonicalBytes(listing));
+  assert.equal(`blake3:${hash(artifact)}`, "blake3:350beff2dbb28d495a5355ac19a7580f8494589bc0d5c6fec1c521be86a7cf38");
+  assert.match(migration, /canonical_document = expected_document/u);
+  assert.doesNotMatch(migration, /update\s+platform_store|delete\s+from/iu);
+});
+
+test("r10 successor pins current reviewed artifacts without rebinding retained approval", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260909004704_retained_runner_r10_successor.sql", import.meta.url), "utf8");
+  const houses = [...migration.matchAll(/\$house\$([\s\S]*?)\$house\$/gu)].map((match) => Buffer.from(match[1]));
+  const planner = JSON.parse(await readFile(new URL("../config/hosted/house-agents/cooperative-planner-11.json", import.meta.url), "utf8"));
+  const skeptic = JSON.parse(await readFile(new URL("../config/hosted/house-agents/skeptical-auditor-10.json", import.meta.url), "utf8"));
+  const listing = JSON.parse(await readFile(new URL("../config/hosted/listings/agent-heist-0.18.0.json", import.meta.url), "utf8"));
+  const artifact = Buffer.from(migration.match(/\$artifact\$([\s\S]*?)\$artifact\$/u)?.[1] ?? "");
+  assert.deepEqual(houses, [canonicalBytes(planner), canonicalBytes(skeptic)]);
+  assert.deepEqual(artifact, canonicalBytes(listing));
+  assert.equal(`blake3:${hash(houses[0])}`, "blake3:269f18e75fc3fb87b6f17e85080a0c8078f83116b74509b832d23c047ebcd316");
+  assert.equal(`blake3:${hash(houses[1])}`, "blake3:49bc5c43a57eb90f5a5aaa4f8118efba1f8ff00204d3ed45a511050928f0bc9f");
+  assert.equal(`blake3:${hash(artifact)}`, "blake3:5b0993de4c858771cce34b16cb25e03b2bf509cbe16cd1ce7249a789ea8c426f");
+  assert.doesNotMatch(migration, /house_agent_host_approvals|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
+});
+
+test("r11 successor pins new reviewed artifacts without rebinding r10", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260909090000_retained_runner_r11_successor.sql", import.meta.url), "utf8");
+  const houses = [...migration.matchAll(/\$house\$([\s\S]*?)\$house\$/gu)].map((match) => Buffer.from(match[1]));
+  const planner = JSON.parse(await readFile(new URL("../config/hosted/house-agents/cooperative-planner-12.json", import.meta.url), "utf8"));
+  const skeptic = JSON.parse(await readFile(new URL("../config/hosted/house-agents/skeptical-auditor-11.json", import.meta.url), "utf8"));
+  const listing = JSON.parse(await readFile(new URL("../config/hosted/listings/agent-heist-0.19.0.json", import.meta.url), "utf8"));
+  const artifact = Buffer.from(migration.match(/\$artifact\$([\s\S]*?)\$artifact\$/u)?.[1] ?? "");
+  assert.deepEqual(houses, [canonicalBytes(planner), canonicalBytes(skeptic)]);
+  assert.deepEqual(artifact, canonicalBytes(listing));
+  assert.equal(`blake3:${hash(houses[0])}`, "blake3:3970a3d67cd15b55f01aa59013fb0d26e2b9ca7b4be635e6f659171b24aaed02");
+  assert.equal(`blake3:${hash(houses[1])}`, "blake3:f406af7f13dff7f1ed41f48b469f10a68cd36d7b183f859211d2022bf1c72bb0");
+  assert.equal(`blake3:${hash(artifact)}`, "blake3:21d7d5439208df0b1dbb18f7f42f3a3687d248a523b03fb5b4184b2dd0dcb626");
+  assert.equal(planner.runner_template.revision, "11");
+  assert.equal(skeptic.runner_template.revision, "11");
+  assert.doesNotMatch(migration, /house_agent_host_approvals|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
+});
+
+test("r12 successor advances the executable chain without rebinding r11", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260909100000_retained_runner_r12_successor.sql", import.meta.url), "utf8");
+  const houses = [...migration.matchAll(/\$house\$([\s\S]*?)\$house\$/gu)].map((match) => Buffer.from(match[1]));
+  const planner = JSON.parse(await readFile(new URL("../config/hosted/house-agents/cooperative-planner-13.json", import.meta.url), "utf8"));
+  const skeptic = JSON.parse(await readFile(new URL("../config/hosted/house-agents/skeptical-auditor-12.json", import.meta.url), "utf8"));
+  const listing = JSON.parse(await readFile(new URL("../config/hosted/listings/agent-heist-0.20.0.json", import.meta.url), "utf8"));
+  const artifact = Buffer.from(migration.match(/\$artifact\$([\s\S]*?)\$artifact\$/u)?.[1] ?? "");
+  assert.deepEqual(houses, [canonicalBytes(planner), canonicalBytes(skeptic)]);
+  assert.deepEqual(artifact, canonicalBytes(listing));
+  assert.equal(`blake3:${hash(houses[0])}`, "blake3:b624622cf68798968daa9548d32bddb3404298931fd532a8fd87266cc0ecf415");
+  assert.equal(`blake3:${hash(houses[1])}`, "blake3:742801ab85a5932827cf539af62547eff4f1041cf5c81aee1d39e2b492a02451");
+  assert.equal(`blake3:${hash(artifact)}`, "blake3:1cf75abcb30d77fdbe0abc5e39813a315bea6900c61e9b49c51b84d995335d74");
+  assert.equal(planner.runner_template.revision, "12");
+  assert.equal(skeptic.runner_template.revision, "12");
+  assert.doesNotMatch(migration, /house_agent_host_approvals|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
+});
+
 test("clock-safe migration retains exact metadata and grants no operating authority", async () => {
   const migration = await readFile(new URL("../supabase/migrations/20260908040223_hosted_clock_safe_heist_revision.sql", import.meta.url), "utf8");
   const houseDocuments = [...migration.matchAll(/\$house\$([\s\S]*?)\$house\$/gu)].map((match) => Buffer.from(match[1]));

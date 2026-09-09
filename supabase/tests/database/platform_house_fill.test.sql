@@ -91,6 +91,27 @@ select ok(
   'House coordination adds no security-definer API function'
 );
 
+-- Preserve retained Runner reservations. The canonical four-unit policy is
+-- asserted above; this transaction-only fixture gate is offset by existing
+-- occupancy so the test can exercise its four fixture reservations without
+-- deleting local state. The enclosing rollback restores the exact gate,
+-- constraint, and trigger.
+create temporary table house_runner_capacity_baseline as
+select count(*)::integer as active_count
+from platform_store.house_runner_reservations
+where state in ('pending', 'ambiguous', 'succeeded') and released_at is null;
+grant select on house_runner_capacity_baseline to service_role;
+
+alter table platform_store.house_runner_capacity_gates
+  disable trigger protect_house_runner_capacity_gate_v1;
+alter table platform_store.house_runner_capacity_gates
+  drop constraint house_runner_gate_exact_limit;
+update platform_store.house_runner_capacity_gates gates
+set hard_limit = (select active_count + 4 from house_runner_capacity_baseline)
+where gates.gate_kind = 'runner_unit';
+alter table platform_store.house_runner_capacity_gates
+  enable trigger protect_house_runner_capacity_gate_v1;
+
 insert into platform_store.platform_accounts(account_id)
 values
   ('20000000-0000-4000-8000-000000000001'),
@@ -699,6 +720,227 @@ select is(
    where reservations.launch_request_id = (select launch_request_id from insufficient_launch)),
   0,
   'insufficient candidates create no partial Runner reservation set'
+);
+
+-- A terminal Run can free only the exact retained Runner unit after its Host
+-- receipt is durably recorded. These assertions deliberately exercise the
+-- RPC boundary, not direct table updates.
+insert into platform_store.activity_runs (
+  activity_run_id,
+  launch_request_id,
+  listing_revision_digest,
+  creator_account_id,
+  host_installation_id,
+  room_setup_operation_id,
+  room_id,
+  launch_request_digest,
+  pack_id,
+  pack_version,
+  pack_revision_digest,
+  genesis_room_seq,
+  genesis_or_transition_hash,
+  canonical_genesis_evidence,
+  genesis_evidence_digest,
+  public_id,
+  evidence_class,
+  initial_reconciliation_state
+)
+select
+  '24000000-0000-4000-8000-000000000001',
+  launches.launch_request_id,
+  launches.listing_revision_digest,
+  launches.creator_account_id,
+  'house-test-host',
+  'house-launch-operation',
+  '01ARZ3NDEKTSV4RRFFQ69G5FBC',
+  'blake3:' || repeat('a', 64),
+  'worldstream.test.house-retirement',
+  '1.0.0',
+  'blake3:' || repeat('b', 64),
+  0,
+  'blake3:' || repeat('c', 64),
+  convert_to('{}', 'utf8'),
+  extensions.digest(convert_to('{}', 'utf8'), 'sha256'),
+  repeat('d', 32),
+  'exhibition_platform_house_agents',
+  'ready'
+from platform_store.launch_requests launches
+where launches.launch_request_id = (select launch_request_id from house_launch);
+
+create temporary table terminal_house_retirement_fixture as
+select
+  assignments.house_agent_assignment_id,
+  assignments.execution_allowance,
+  reservations.reservation_operation_id,
+  reservations.runner_unit_id,
+  reservations.reservation_receipt_digest,
+  convert_to(jsonb_build_object(
+    'schema', 'worldstream/house-runner-retirement-receipt/v1',
+    'host_installation_id', 'house-test-host',
+    'reservation_operation_id', reservations.reservation_operation_id,
+    'launch_request_id', assignments.launch_request_id,
+    'house_agent_assignment_id', assignments.house_agent_assignment_id,
+    'runner_unit_id', reservations.runner_unit_id,
+    'disposition', 'run_terminal',
+    'platform_evidence_digest', 'sha256:' || repeat('e', 64),
+    'stop_witness', 'blake3:' || repeat('f', 64),
+    'authentication_tag', repeat('1', 64)
+  )::text, 'utf8') as canonical_receipt
+from platform_store.house_agent_assignments assignments
+join platform_store.house_runner_reservations reservations
+  on reservations.reservation_operation_id = assignments.reservation_operation_id
+where assignments.launch_request_id = (select launch_request_id from house_launch)
+order by assignments.house_agent_assignment_id;
+
+select is(
+  platform_api.record_terminal_house_runner_retirement_v1(
+    '24000000-0000-4000-8000-000000000001',
+    (select house_agent_assignment_id from terminal_house_retirement_fixture limit 1),
+    (select canonical_receipt from terminal_house_retirement_fixture limit 1),
+    extensions.digest(
+      (select canonical_receipt from terminal_house_retirement_fixture limit 1), 'sha256'
+    )
+  ),
+  false,
+  'a nonterminal Run cannot release a House reservation'
+);
+select is(
+  (select count(*)::integer from platform_store.house_runner_reservations reservations
+   where reservations.launch_request_id = (select launch_request_id from house_launch)
+     and reservations.state = 'succeeded' and reservations.released_at is null),
+  2,
+  'nonterminal retirement leaves both retained units live'
+);
+
+insert into platform_store.activity_run_terminal_evidence (
+  activity_run_id,
+  listing_revision_digest,
+  result_projector_revision_digest,
+  projector_status,
+  result_indexer_membership_id,
+  source_head,
+  source_room_seq,
+  source_projection_hash,
+  integrity_status,
+  integrity_generation,
+  host_evidence_digest,
+  canonical_terminal_evidence,
+  terminal_evidence_digest
+)
+select
+  '24000000-0000-4000-8000-000000000001',
+  launches.listing_revision_digest,
+  'blake3:' || repeat('1', 64),
+  'terminal_without_outcome',
+  '01ARZ3NDEKTSV4RRFFQ69G5FBD',
+  '{}'::jsonb,
+  1,
+  'blake3:' || repeat('2', 64),
+  'healthy',
+  1,
+  extensions.digest(convert_to('host-evidence', 'utf8'), 'sha256'),
+  convert_to('{}', 'utf8'),
+  decode(repeat('ee', 32), 'hex')
+from platform_store.launch_requests launches
+where launches.launch_request_id = (select launch_request_id from house_launch);
+
+select is(
+  platform_api.record_terminal_house_runner_retirement_v1(
+    '24000000-0000-4000-8000-000000000099',
+    (select house_agent_assignment_id from terminal_house_retirement_fixture limit 1),
+    (select canonical_receipt from terminal_house_retirement_fixture limit 1),
+    extensions.digest(
+      (select canonical_receipt from terminal_house_retirement_fixture limit 1), 'sha256'
+    )
+  ),
+  false,
+  'a receipt cannot release its reservation through a different Run'
+);
+select is(
+  platform_api.record_terminal_house_runner_retirement_v1(
+    '24000000-0000-4000-8000-000000000001',
+    '24000000-0000-4000-8000-000000000099',
+    (select canonical_receipt from terminal_house_retirement_fixture limit 1),
+    extensions.digest(
+      (select canonical_receipt from terminal_house_retirement_fixture limit 1), 'sha256'
+    )
+  ),
+  false,
+  'a receipt cannot release its reservation through a different Assignment'
+);
+select is(
+  platform_api.record_terminal_house_runner_retirement_v1(
+    '24000000-0000-4000-8000-000000000001',
+    (select house_agent_assignment_id from terminal_house_retirement_fixture limit 1),
+    (select canonical_receipt from terminal_house_retirement_fixture limit 1),
+    extensions.digest(
+      (select canonical_receipt from terminal_house_retirement_fixture limit 1), 'sha256'
+    )
+  ),
+  true,
+  'the exact terminal Host receipt releases its one matching reservation'
+);
+select is(
+  (select count(*)::integer from platform_store.house_runner_reservations reservations
+   where reservations.launch_request_id = (select launch_request_id from house_launch)
+     and reservations.state = 'released'),
+  1,
+  'a signed-shape receipt releases only one retained unit'
+);
+select is(
+  (select count(*)::integer from platform_store.house_runner_reservations reservations
+   where reservations.launch_request_id = (select launch_request_id from house_launch)
+     and reservations.state = 'succeeded' and reservations.released_at is null),
+  1,
+  'the other retained unit is not released by a sibling receipt'
+);
+select is(
+  platform_api.record_terminal_house_runner_retirement_v1(
+    '24000000-0000-4000-8000-000000000001',
+    (select house_agent_assignment_id from terminal_house_retirement_fixture limit 1),
+    (select canonical_receipt from terminal_house_retirement_fixture limit 1),
+    extensions.digest(
+      (select canonical_receipt from terminal_house_retirement_fixture limit 1), 'sha256'
+    )
+  ),
+  true,
+  'an exact duplicate receipt is idempotent'
+);
+select is(
+  platform_api.record_terminal_house_runner_retirement_v1(
+    '24000000-0000-4000-8000-000000000001',
+    (select house_agent_assignment_id from terminal_house_retirement_fixture limit 1),
+    convert_to(
+      jsonb_set(
+        convert_from((select canonical_receipt from terminal_house_retirement_fixture limit 1), 'utf8')::jsonb,
+        '{authentication_tag}', to_jsonb(repeat('2', 64))
+      )::text,
+      'utf8'
+    ),
+    extensions.digest(
+      convert_to(
+        jsonb_set(
+          convert_from((select canonical_receipt from terminal_house_retirement_fixture limit 1), 'utf8')::jsonb,
+          '{authentication_tag}', to_jsonb(repeat('2', 64))
+        )::text,
+        'utf8'
+      ),
+      'sha256'
+    )
+  ),
+  false,
+  'a conflicting receipt cannot replace the retained exact receipt'
+);
+select ok(
+  (select bool_and(assignments.execution_allowance = fixture.execution_allowance)
+   from platform_store.house_agent_assignments assignments
+   join terminal_house_retirement_fixture fixture
+     on fixture.house_agent_assignment_id = assignments.house_agent_assignment_id)
+  and (select bool_and(reservations.reservation_receipt_digest = fixture.reservation_receipt_digest)
+       from platform_store.house_runner_reservations reservations
+       join terminal_house_retirement_fixture fixture
+         on fixture.reservation_operation_id = reservations.reservation_operation_id),
+  'retirement never changes retained Assignment allowance or reservation history'
 );
 
 select finish();

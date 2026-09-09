@@ -246,6 +246,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .heist-boundary-shell { color: var(--game-text); background-image: linear-gradient(90deg, #080e13f5, #080e13b8), var(--heist-art); background-size: cover; background-position: center; }
 .heist-boundary-shell h1 { font-family: var(--game-display); letter-spacing: 0; }
 .heist-boundary-shell p { font-size: 1rem; }
+.activity-client-navigation { display: flex; justify-content: flex-end; gap: 12px; min-height: 48px; padding: 8px max(24px, calc((100vw - 1420px) / 2)); border-bottom: 1px solid var(--game-line); background: #0d161d; }
+.activity-client-navigation :is(button, a) { min-height: 32px; padding: 7px 11px; border: 1px solid #36534f; color: var(--game-text); background: transparent; font: 700 .75rem var(--game-display); letter-spacing: .06em; text-decoration: none; text-transform: uppercase; cursor: pointer; }
+.activity-client-navigation a { border-color: var(--game-gold); color: var(--game-gold); }
 .heist-skip-link { position: fixed; z-index: 30; top: 8px; left: 8px; padding: 12px; color: #080e13; background: var(--game-gold); transform: translateY(-160%); }
 .heist-skip-link:focus { transform: translateY(0); }
 .heist-live-shell :is(button, input, select, a, summary):focus-visible { outline: 2px solid var(--game-gold); outline-offset: 4px; }

@@ -9,7 +9,10 @@ import {
   type PlatformBff,
 } from "./bff.js";
 import { HttpHostedBrowserSessionClient } from "./browser-sessions.js";
-import { HttpHostedFormationGateway } from "./hosted-formation.js";
+import {
+  HostedFormationCoordinator,
+  HttpHostedFormationGateway,
+} from "./hosted-formation.js";
 import {
   createHostedResultReconciler,
   withHostedResultReconciliation,
@@ -33,7 +36,7 @@ export function createDevelopmentPlatformServer(environment = process.env) {
   const platform = createDevelopmentPlatformBff(
     {
       canonicalOrigin,
-      allowedReturnTargets: ["/", "/join"],
+      allowedReturnTargets: ["/", "/join", "/my-games"],
       sessionKey: base64Key(required(environment, "WORLDSTREAM_SESSION_KEY_BASE64")),
       oauthKey: base64Key(required(environment, "WORLDSTREAM_OAUTH_KEY_BASE64")),
       developmentMode: exactMode(environment.WORLDSTREAM_DEVELOPMENT_IDENTITY_BYPASS),
@@ -62,6 +65,25 @@ export function createDevelopmentPlatformServer(environment = process.env) {
           hostedGatewayUrl,
           serviceAuthority,
         }),
+        hostedFormation === undefined
+          ? undefined
+          : {
+              canonicalOrigin,
+              cronSecret: required(
+                environment,
+                "WORLDSTREAM_LOCAL_RECONCILIATION_SECRET",
+              ),
+              recover: (launchId: string) => new HostedFormationCoordinator(
+                hostedFormation.data,
+                hostedFormation.gateway,
+                hostedFormation.hostInstallationId,
+              ).recover(launchId),
+              abandonPrestart: (launchId: string) => new HostedFormationCoordinator(
+                hostedFormation.data,
+                hostedFormation.gateway,
+                hostedFormation.hostInstallationId,
+              ).abandonPrestart(launchId),
+            },
       );
   const server = createServer((request, response) => {
     void dispatch(bff, canonicalOrigin, request, response);

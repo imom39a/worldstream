@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
-import { runHostedSmokeCommand } from "./hosted-production-smoke.mjs";
+import {
+  hostedSmokeBinaryRoot,
+  runHostedSmokeCommand,
+  runRoomCreateWithRetainedSetupRetry,
+} from "./hosted-production-smoke.mjs";
 
 const setupFailure = {
   schema: "worldstream/operator-command/v1",
@@ -85,6 +92,110 @@ test("the real partial Room operation envelope retains its stage without nested 
     'hosted_smoke_command_failed:{"command":"room create","status":"partial","code":"setup_incomplete","stage":"member_capability"}');
 });
 
+test("a retained setup envelope retries the exact Room create command once", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "worldstream-hosted-smoke-retry-"));
+  const attemptFile = join(temporary, "attempt");
+  const child = [
+    "const fs = require('node:fs');",
+    "const attemptFile = process.argv[1];",
+    "const attempt = fs.existsSync(attemptFile) ? Number(fs.readFileSync(attemptFile, 'utf8')) + 1 : 1;",
+    "fs.writeFileSync(attemptFile, String(attempt));",
+    `if (attempt === 1) { process.stdout.write(${JSON.stringify(JSON.stringify(setupFailure))}); process.exitCode = 4; }`,
+    "else process.stdout.write(JSON.stringify({ room_id: 'retained-room', operation_id: 'retained-operation' }));",
+  ].join(" ");
+  const command = ["room", "create", "--file", "retained-room.json"];
+  const calls = [];
+  try {
+    const result = await runRoomCreateWithRetainedSetupRetry(async (args) => {
+      calls.push(args);
+      return runHostedSmokeCommand(
+        process.execPath,
+        ["-e", child, attemptFile],
+        {},
+        true,
+        `${args[0]} ${args[1]}`,
+      );
+    }, command);
+    assert.equal(result.stdout, JSON.stringify({ room_id: "retained-room", operation_id: "retained-operation" }));
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0], command);
+    assert.deepEqual(calls[1], command);
+    assert.strictEqual(calls[0], calls[1]);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("a retained Room create can progress through every staged setup boundary", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "worldstream-hosted-smoke-stages-"));
+  const attemptFile = join(temporary, "attempt");
+  const stages = ["room_creation", "member_capability", "runner_capability"];
+  const child = [
+    "const fs = require('node:fs');",
+    "const attemptFile = process.argv[1];",
+    "const attempt = fs.existsSync(attemptFile) ? Number(fs.readFileSync(attemptFile, 'utf8')) + 1 : 1;",
+    "fs.writeFileSync(attemptFile, String(attempt));",
+    `if (attempt <= 3) { process.stdout.write(${JSON.stringify(JSON.stringify({ ...setupFailure, stage: "__STAGE__" }))}.replace('__STAGE__', [${stages.map((stage) => JSON.stringify(stage)).join(",")}][attempt - 1])); process.exitCode = 4; }`,
+    "else process.stdout.write(JSON.stringify({ room_id: 'retained-room', operation_id: 'retained-operation' }));",
+  ].join(" ");
+  const command = ["room", "create", "--file", "retained-room.json"];
+  const calls = [];
+  try {
+    const result = await runRoomCreateWithRetainedSetupRetry(async (args) => {
+      calls.push(args);
+      return runHostedSmokeCommand(
+        process.execPath,
+        ["-e", child, attemptFile],
+        {},
+        true,
+        `${args[0]} ${args[1]}`,
+      );
+    }, command);
+    assert.equal(result.stdout, JSON.stringify({ room_id: "retained-room", operation_id: "retained-operation" }));
+    assert.equal(calls.length, 4);
+    assert.ok(calls.every((args) => args === calls[0]));
+    assert.deepEqual(calls[0], command);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("the retained Room create retry has a four-attempt total cap", async () => {
+  const command = ["room", "create", "--file", "retained-room.json"];
+  const failure = new Error("retained setup still incomplete");
+  Object.defineProperty(failure, "operatorFailure", {
+    value: Object.freeze({
+      command: "room create",
+      status: "partial",
+      code: "setup_incomplete",
+      stage: "runner_capability",
+    }),
+  });
+  let calls = 0;
+  await assert.rejects(
+    runRoomCreateWithRetainedSetupRetry(async () => {
+      calls += 1;
+      throw failure;
+    }, command),
+    failure,
+  );
+  assert.equal(calls, 4);
+});
+
+test("unrelated Room create failures are not retried", async () => {
+  let calls = 0;
+  const command = ["room", "create", "--file", "retained-room.json"];
+  const child = "process.stdout.write(JSON.stringify({ schema: 'worldstream/operator-command/v1', command: 'room create', status: 'unavailable', code: 'controller_unavailable', message: 'private', next_action: 'private' })); process.exitCode = 4;";
+  await assert.rejects(
+    runRoomCreateWithRetainedSetupRetry(async (args) => {
+      calls += 1;
+      return runHostedSmokeCommand(process.execPath, ["-e", child], {}, true, `${args[0]} ${args[1]}`);
+    }, command),
+    { message: 'hosted_smoke_command_failed:{"command":"room create","status":"unavailable","code":"controller_unavailable"}' },
+  );
+  assert.equal(calls, 1);
+});
+
 test("known non-setup failure pairs stay bounded and a failed process cannot claim success", async () => {
   const { operation_id, room_id, stage, ...base } = setupFailure;
   const failure = { ...base, command: "room list", status: "unavailable", code: "controller_unavailable" };
@@ -117,4 +228,12 @@ test("truncated output cannot masquerade as a valid failure envelope", async () 
     runHostedSmokeCommand(process.execPath, ["-e", child, JSON.stringify(setupFailure)], {}, true, "room create"),
     { message: "hosted_smoke_command_failed" },
   );
+});
+
+test("the hosted package smoke honors Cargo's isolated target directory", () => {
+  assert.equal(
+    hostedSmokeBinaryRoot({ CARGO_TARGET_DIR: "/tmp/worldstream-hosted-smoke-target" }),
+    "/tmp/worldstream-hosted-smoke-target/debug",
+  );
+  assert.match(hostedSmokeBinaryRoot({}), /\/target\/debug$/u);
 });

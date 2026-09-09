@@ -6,6 +6,47 @@ also defines the evidence required before the preview is called ready.
 For observed deployment results and outstanding checks, see the
 [2026-09-07 deployment record](hosted-preview-status-2026-09-07.md).
 
+## Platform-stability milestone — accepted 2026-09-08
+
+The [accepted design decisions](activity-platform-design.md) require generic
+setup, My games, entry, Run Re-entry, verified results, and safe repeat play.
+Use Heist 0.3 with compatible client usability fixes as the first end-to-end
+activity. Other Pack contracts must work without Heist branches in the shared
+platform. Gameplay improvements, ranked leaderboards, and another hosted game
+are outside this milestone.
+
+The approved specification is
+[IMO-187](https://linear.app/imom39a/issue/IMO-187/stabilize-the-generic-hosted-activity-platform-mvp).
+The [implementation handoff](activity-platform-design.md#implementation-handoff--published-2026-09-08)
+links each slice. IMO-184 remains the final deployed acceptance gate; publishing
+the tickets is not evidence that this support contract has passed.
+
+Qualification requires three consecutive local matches with scripted
+participants and the fake provider, followed by one tightly capped real-LLM
+match on the same deployed source revision. Test the actual browser journey,
+including invitations, refresh, navigation away and back, restart, spectating,
+result publication, and starting another game without operator cleanup. Keep
+the existing supported-device, direct-WebSocket, and negative-security gates;
+use non-Heist contract fixtures to verify the shared boundaries. Model victory
+is not an acceptance condition. Local build and publication are supported;
+CI/CD is not required.
+
+The redacted local evidence uses
+`worldstream/hosted-preview-acceptance-evidence/v2`. It contains a three-row
+match matrix with per-match fake-provider call deltas, retained-history and
+consumed-allowance observations, capacity release after each terminal result,
+fresh setup after the third match, ordinary restart/re-entry status, and the
+redacted receipt from the rendered Activity Client journey. The rendered
+journey is one matrix match, not an additional unaccounted-for match.
+`populated_recovery` is always recorded as `deferred_not_verified` under
+[ADR 0026](adr/0026-defer-populated-disaster-recovery-for-the-hobby-preview.md);
+an ordinary restart pass never upgrades that deferred recovery claim.
+
+The commands and historical evidence described below are not automatically
+proof of this expanded journey. The existing local protocol harness does not
+render browser pages and must be extended or supplemented for these checks.
+No passing stabilization evidence is claimed by this documentation change.
+
 ## Deployment addresses
 
 The operator has provisioned these MVP endpoints:
@@ -90,6 +131,37 @@ A retained House Agent restarts with the same Assignment, reviewed revision,
 working directory, and allowance ledger. Restart does not reserve a new House
 Agent or refill its budget. If its retained binding, executable, or credential
 cannot be verified, restoration stays incomplete instead of replacing it.
+
+### Completion and repeat play
+
+The stabilization release must stop and fence completed House Runner units and
+release their capacity safely without routine operator intervention. Platform
+Run capacity and House Runner capacity are separate obligations. Preserve their
+exact lifecycle evidence and consumed allowances; a stopped process, closed
+browser, or elapsed timeout is not proof that an ambiguous Run ended. An
+unresolved operation may temporarily block another launch. House spending
+exhaustion remains an honest unavailable state, not permission to reset a
+budget. The existing offline retirement procedure alone does not qualify this
+repeat-play requirement.
+
+### Disaster-recovery limit
+
+[ADR 0026](adr/0026-defer-populated-disaster-recovery-for-the-hobby-preview.md)
+defers populated cross-system restore qualification for this hobby preview.
+Ordinary same-volume restart must preserve acknowledged Room history and
+support authorized Run Re-entry. That requirement is not deferred.
+
+Keep protected, paired, off-Machine captures under the existing backup cadence.
+Without the populated correspondence verifier, these captures are unqualified
+recovery evidence, not verified Hosted Recovery Checkpoints. Catastrophic
+storage loss may require an explicitly operator-approved fresh preview and a
+public history-loss disclosure. No current reset is authorized, no partial
+restore may be served as coherent history, and no recovery operation may
+repeat an ambiguous paid call or refill consumed spending allowances.
+
+The earlier zero-history drill remains evidence only for its exact empty
+installation. The populated-recovery gate remains unfinished and must be
+tracked separately rather than marked passed for this release.
 
 ### Hosting costs are separate from model limits
 
@@ -197,8 +269,19 @@ production Platform and Fly startup paths reject every development substitute.
 Run database capacity and concurrency tests before this acceptance command,
 not against the same database while a match is running. The tests deliberately
 exercise global admission limits. Finish other Rust builds and tests first,
-too: a build can replace a Runner executable whose exact checksum is already
-approved by the local stack. Changed executables are correctly refused.
+too. Runner template r9 and later copy their checked executable bytes to an
+owner-only, BLAKE3-addressed retained path before import. A later build may add
+a successor path, but must never replace the bytes selected by an active
+Assignment. Earlier r7/r8 templates retain their historical image-level
+executable paths and are not safe to carry through an active executable
+upgrade; do not claim that this new rule repairs them. Drain or fence those
+legacy assignments before changing their image.
+
+The current fresh-assignment chain is Runner template r12, Cooperative Planner
+profile 13, Skeptical Auditor profile 12, and Agent Heist Listing 0.20.0. It
+exists because the recovery-read fix changed the managed Host executable. The
+chain changes no Pack, client, model route, allowance, projector, or gameplay
+rule; r11/0.19 and earlier remain retained immutable identities.
 A failed match retains its state and capacity
 reservation for diagnosis; the command does not silently delete it or create a
 replacement authority. Keep a private copy of the local Runtime and database
@@ -220,7 +303,8 @@ private Projection data in the file. A passing deployed candidate must record:
 - the exact Git commit, Vercel deployment, Fly image, Supabase schema head,
   Listing, Pack, Activity Client, and result projector identities;
 - real GitHub OAuth;
-- exactly one separately bounded real OpenRouter provider-call proof;
+- one tightly capped real-LLM match with recorded OpenRouter provider-call
+  evidence within the existing per-assignment, aggregate, and key limits;
 - more than five minutes of direct Fly push;
 - Chrome desktop, iOS Safari, and ChatGPT desktop observations;
 - disconnect, Catch-up, Fly restart, and re-entry;
@@ -264,10 +348,13 @@ separate random `CRON_SECRET` of at least 32 characters on Vercel. The sweep rea
 at most ten candidates, repairs retained Genesis/setup correspondence, and checks
 Replay-verified results. A failed candidate does not stop the rest of the batch.
 Selection places unreleased active-Run reservations first (the MVP limit is ten),
-then the least recently attempted work across all other categories. Missing
-correspondence/results break ties ahead of published-result rechecks. A private
-last-attempt timestamp rotates old or failing candidates across categories;
-it is scheduling data, not proof of Room state or successful verification.
+then the least recently attempted work across all other incomplete categories.
+Missing correspondence and result-without-summary work remains retryable.
+Once terminal evidence and a replay-verified indexed result are both recorded,
+the Run is immutable platform history and is removed from the Host poll queue;
+historical result reads use that stored result. A private last-attempt timestamp
+rotates old or failing candidates across categories; it is scheduling data, not
+proof of Room state or successful verification.
 Public result reads continue to repair result evidence. This is an MVP fallback,
 not a low-latency scheduler or a guarantee that all backlog clears in one day.
 
@@ -278,8 +365,17 @@ smoke test, pgTAP, capacity concurrency probes, and database security checks.
 
 ## Release decision
 
-The preview is ready only when both local and deployed evidence pass for the
-same Git commit and deployment identities, the isolated checkpoint restore
-drill passes, and no P0 or P1 authority, privacy, recovery, or result-integrity
-defect remains open. Missing production credentials or infrastructure is a
-blocked candidate, not a partial pass.
+The stabilization preview is ready only when the expanded local and deployed
+journey checks above pass for the same Git commit and deployment identities,
+protected paired state captures are retained, and no P0 or P1 authority,
+privacy, ordinary-restart durability, result-integrity, or allowance defect
+remains open. My games, safe setup recovery, browser re-entry, verified result
+publication, and automatic completed-unit retirement must work without routine
+operator repair.
+
+Under ADR 0026, populated disaster-recovery qualification is explicitly deferred
+and must not be reported as passed. That scoped exception does not excuse a
+failed ordinary restart, a partial restore served as coherent state, or an
+untested browser path. Missing production credentials or infrastructure is a
+blocked candidate, not a partial pass. No existing acceptance receipt is
+silently upgraded to satisfy this revised contract.

@@ -51,6 +51,11 @@ const HANDOFF_TTL_LIMIT: Duration = Duration::from_mins(5);
 const DEFAULT_SESSION_TTL: Duration = Duration::from_hours(12);
 const CLIENT_CONTRACT_V1: &str = "worldstream/activity-client-protocol/v1";
 const TOKEN_BYTES: usize = 32;
+// Runtime restart briefly makes safe membership/status reads unavailable. Two
+// bounded delays provide three total attempts; stream-ticket issuance,
+// one-use handoff redemption, and gameplay Actions remain non-retryable.
+const TRANSIENT_GATEWAY_RETRY_DELAYS: [Duration; 2] =
+    [Duration::from_millis(250), Duration::from_millis(500)];
 
 /// Resolves only the exact immutable hosted Run Membership correspondence.
 /// Implementations must keep the Membership bearer inside the Host boundary.
@@ -362,6 +367,11 @@ impl HostedBrowserSessionBrokerV1 {
             client_release_digest: record.target.candidate.release_digest.clone(),
             client_surface_id: record.target.candidate.surface_id.clone(),
         };
+        // Ticket issuance is deliberately single-attempt. A transport
+        // failure after the Runtime has accepted the request is ambiguous:
+        // retrying could mint a second admission value. The safe restart
+        // recovery seam is the cursor-independent membership read above;
+        // callers can obtain a fresh ticket only after that revalidation.
         let response = self
             .inner
             .gateway
@@ -424,10 +434,23 @@ impl HostedBrowserSessionBrokerV1 {
         &self,
         authority: &HumanSeatAuthorityV1,
     ) -> Result<CurrentMembershipSnapshotV1, HostedBrowserSessionErrorV1> {
-        self.inner
-            .gateway
-            .membership_status(authority)
-            .map_err(map_gateway_error)
+        let mut attempt = 0;
+        loop {
+            match self.inner.gateway.membership_status(authority) {
+                Ok(current) => return Ok(current),
+                Err(error)
+                    if matches!(
+                        error,
+                        ParticipantConsoleGatewayErrorV1::Disconnected
+                            | ParticipantConsoleGatewayErrorV1::Unavailable
+                    ) && attempt < TRANSIENT_GATEWAY_RETRY_DELAYS.len() =>
+                {
+                    std::thread::sleep(TRANSIENT_GATEWAY_RETRY_DELAYS[attempt]);
+                    attempt += 1;
+                }
+                Err(error) => return Err(map_gateway_error(error)),
+            }
+        }
     }
 
     fn resolve_pinned_client(
@@ -910,6 +933,8 @@ mod tests {
     #[derive(Clone)]
     struct FakeGateway {
         current: Arc<Mutex<Option<CurrentMembershipSnapshotV1>>>,
+        membership_failures: Arc<Mutex<usize>>,
+        membership_calls: Arc<Mutex<usize>>,
         stream_requests: Arc<Mutex<Vec<HostedBrowserWebSocketTicketIssueRequest>>>,
         revoked_sessions: Arc<Mutex<Vec<String>>>,
     }
@@ -919,6 +944,18 @@ mod tests {
             &self,
             authority: &HumanSeatAuthorityV1,
         ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+            *self
+                .membership_calls
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) += 1;
+            let mut failures = self
+                .membership_failures
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if *failures > 0 {
+                *failures -= 1;
+                return Err(ParticipantConsoleGatewayErrorV1::Unavailable);
+            }
             self.current_membership(authority, None)
         }
 
@@ -1074,6 +1111,8 @@ mod tests {
                 access_mode: AccessMode::Participant,
                 role: binding.role.clone(),
             }))),
+            membership_failures: Arc::new(Mutex::new(0)),
+            membership_calls: Arc::new(Mutex::new(0)),
             stream_requests: Arc::new(Mutex::new(Vec::new())),
             revoked_sessions: Arc::new(Mutex::new(Vec::new())),
         };
@@ -1358,6 +1397,92 @@ mod tests {
                 .as_slice(),
             &[expected_session_digest]
         );
+    }
+
+    #[test]
+    fn transient_runtime_membership_read_is_retried_before_issue_status_and_ticket() {
+        let fixture = fixture(Duration::from_mins(1), Duration::from_mins(1));
+        *fixture
+            .gateway
+            .membership_failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = 2;
+
+        // The first read observes the Runtime restart as unavailable. The
+        // broker retries the cursor-independent read, then issues the exact
+        // same one-use handoff without changing the Membership correspondence.
+        let handoff = issue(&fixture.broker);
+        let session = redeem(&fixture.broker, &handoff, ACCOUNT, None).expect("session");
+        *fixture
+            .gateway
+            .membership_failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = 2;
+        assert_eq!(
+            fixture.broker.status(&session_request(&session)),
+            Ok(HostedBrowserSessionStatusV1 {
+                schema: "worldstream/hosted-browser-session-status/v1".to_owned(),
+                state: HostedBrowserSessionStateV1::Usable,
+            })
+        );
+
+        // The ticket path performs its own safe membership revalidation. It
+        // tolerates the same bounded Runtime restart window before the
+        // single-attempt ticket mint.
+        *fixture
+            .gateway
+            .membership_failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = 2;
+        let ticket = fixture
+            .broker
+            .stream_ticket(&HostedBrowserStreamTicketRequestV1 {
+                schema: "worldstream/hosted-browser-stream-ticket-request/v1".to_owned(),
+                session,
+                after_frame_seq: None,
+            })
+            .expect("stream ticket");
+        assert!(ticket.ticket.starts_with("wst1:"));
+        assert_eq!(
+            fixture
+                .gateway
+                .stream_requests
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn permanent_membership_rejection_is_not_retried() {
+        let fixture = fixture(Duration::from_mins(1), Duration::from_mins(1));
+        let session =
+            redeem(&fixture.broker, &issue(&fixture.broker), ACCOUNT, None).expect("session");
+        fixture
+            .gateway
+            .current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+            .expect("current membership")
+            .role = Some("planner".to_owned());
+        let calls_before = *fixture
+            .gateway
+            .membership_calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+
+        assert_eq!(
+            fixture.broker.status(&session_request(&session)),
+            Err(HostedBrowserSessionErrorV1::Rejected)
+        );
+        let calls_after = *fixture
+            .gateway
+            .membership_calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(calls_after - calls_before, 1);
     }
 
     #[test]

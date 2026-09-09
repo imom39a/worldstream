@@ -38,10 +38,11 @@ export interface HostedLaunch {
   readonly launch_id: string;
   readonly activity_slug: string;
   readonly activity_title: string;
-  readonly state: "collecting" | "provisioning" | "reconciling" | "run_created" | "cancelled" | "expired" | "failed_pre_genesis";
+  readonly state: "collecting" | "provisioning" | "reconciling" | "run_created" | "cancelled" | "expired" | "failed_pre_genesis" | "abandoned_prestart";
   readonly expires_at: string;
   readonly can_manage: boolean;
   readonly fill_mode: "people_only" | "house_agents";
+  readonly recovery_state: "not_started" | "genesis_not_proven" | "genesis_recorded_repairing" | "entry_ready";
   readonly house_fill: {
     readonly state: string;
     readonly claim_window_closes_at: string;
@@ -58,6 +59,30 @@ export interface HostedLaunch {
     }[];
   } | null;
   readonly retry_after_seconds?: number | null;
+}
+
+export interface MyGamesIndex {
+  readonly version: "platform_my_games.v1";
+  readonly items: readonly {
+    readonly launch_id: string;
+    readonly title: string;
+    readonly state:
+      | "setup_pending"
+      | "setup_cancelled"
+      | "setup_abandoned"
+      | "setup_failed"
+      | "live"
+      | "publication_pending"
+      | "terminal_without_outcome"
+      | "result_suppressed"
+      | "dependency_failure"
+      | "verified_result";
+    readonly updated_at: string;
+    readonly participation: "human" | "external_agent";
+    readonly action: "continue_setup" | "return_to_game" | "view_result" | "none";
+    readonly result_public_id?: string;
+  }[];
+  readonly next: { readonly before_at: string; readonly before_launch_id: string } | null;
 }
 
 export type PublicJson = null | boolean | number | string | readonly PublicJson[] | {
@@ -112,6 +137,11 @@ export type PublicRun =
   | PublicRunBase & {
       readonly state: "live";
       readonly live: { readonly available: true; readonly stream_url: string };
+      readonly client?: {
+        readonly launch_url: string;
+        readonly back_to_games: "/";
+        readonly result_url: string;
+      };
     }
   | PublicRunBase & {
       readonly state: "result";
@@ -187,8 +217,8 @@ export async function readCatalog(): Promise<readonly HostedActivitySummary[]> {
   return value.activities as unknown as readonly HostedActivitySummary[];
 }
 
-export async function readPublicRun(publicId: string): Promise<PublicRun> {
-  const response = await fetch(`/api/runs/${encodeURIComponent(publicId)}`);
+export async function readPublicRun(publicId: string, signal?: AbortSignal): Promise<PublicRun> {
+  const response = await fetch(`/api/runs/${encodeURIComponent(publicId)}`, { signal });
   const value = await safeJson(response);
   if (!response.ok || value.version !== "public_run.v1") {
     throw new Error("public_run_unavailable");
@@ -210,6 +240,16 @@ export async function readRecentResults(): Promise<RecentResults> {
 
 export async function readLaunch(launchId: string): Promise<HostedLaunch> {
   return requestLaunch(`/api/launches/${encodeURIComponent(launchId)}`);
+}
+
+export async function readMyGames(cursor?: MyGamesIndex["next"]): Promise<MyGamesIndex> {
+  const query = cursor === undefined || cursor === null ? "" : `?before_at=${encodeURIComponent(cursor.before_at)}&before_launch_id=${encodeURIComponent(cursor.before_launch_id)}`;
+  const response = await fetch(`/api/my-games${query}`, { credentials: "same-origin" });
+  const value = await safeJson(response);
+  if (!response.ok || value.version !== "platform_my_games.v1" || !Array.isArray(value.items)) {
+    throw new Error(errorCode(value) ?? "my_games_unavailable");
+  }
+  return value as unknown as MyGamesIndex;
 }
 
 export async function createLaunch(
@@ -295,7 +335,7 @@ export async function developmentSignIn(): Promise<void> {
   if (!response.ok) throw new Error("development_sign_in_unavailable");
 }
 
-export function githubSignIn(returnTarget: "/" | "/join"): void {
+export function githubSignIn(returnTarget: "/" | "/join" | "/my-games"): void {
   window.location.assign(`/api/auth/github/start?return_to=${encodeURIComponent(returnTarget)}`);
 }
 

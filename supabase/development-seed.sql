@@ -54,6 +54,26 @@ insert into platform_store.house_agent_host_approvals (
 ),
 (
   'hosted-dev',
+  'blake3:1a5edc340f6a2e7d66db5710d069dcf3c849028147f00fa2d99db2cd30ca9399',
+  'blake3:9999999999999999999999999999999999999999999999999999999999999999',
+  'blake3:8888888888888888888888888888888888888888888888888888888888888888',
+  'blake3:3333333333333333333333333333333333333333333333333333333333333333',
+  'openrouter-house',
+  extensions.digest(convert_to('hosted-dev:cooperative-planner:9', 'utf8'), 'sha256'),
+  true
+),
+(
+  'hosted-dev',
+  'blake3:6146f54874747d6d4b16e06bca7872696f09c16dfe3b3177e5ab0c6c06034155',
+  'blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  'blake3:8888888888888888888888888888888888888888888888888888888888888888',
+  'blake3:3333333333333333333333333333333333333333333333333333333333333333',
+  'openrouter-house',
+  extensions.digest(convert_to('hosted-dev:skeptical-auditor:8', 'utf8'), 'sha256'),
+  true
+),
+(
+  'hosted-dev',
   'blake3:1665aa7c527861012829c237b1fdab760cbce918036a128d10ba06b7fa4cd098',
   'blake3:8888888888888888888888888888888888888888888888888888888888888888',
   'blake3:7777777777777777777777777777777777777777777777777777777777777777',
@@ -71,6 +91,86 @@ insert into platform_store.house_agent_host_approvals (
   'openrouter-house',
   extensions.digest(convert_to('hosted-dev:skeptical-auditor:7', 'utf8'), 'sha256'),
   true
+),
+(
+  'hosted-dev',
+  'blake3:f61c494b644621e55eacf32dafbbf61f9471160eb2b91181e21c03ef5ed82271',
+  'blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  'blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+  'blake3:3333333333333333333333333333333333333333333333333333333333333333',
+  'openrouter-house',
+  extensions.digest(convert_to('hosted-dev:cooperative-planner:10', 'utf8'), 'sha256'),
+  true
+),
+(
+  'hosted-dev',
+  'blake3:c794a69db2c617724483aaa86e0b55f1d694936c4735932b75c2ae5cacdcfecd',
+  'blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+  'blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+  'blake3:3333333333333333333333333333333333333333333333333333333333333333',
+  'openrouter-house',
+  extensions.digest(convert_to('hosted-dev:skeptical-auditor:9', 'utf8'), 'sha256'),
+  true
+),
+(
+  'hosted-dev',
+  'blake3:269f18e75fc3fb87b6f17e85080a0c8078f83116b74509b832d23c047ebcd316',
+  'blake3:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+  'blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+  'blake3:913cd093b4b0752dba259ff0fdd90a5faac9da405adf2d7dd75e9716cc25a272',
+  'openrouter-house',
+  extensions.digest(convert_to('hosted-dev:cooperative-planner:11', 'utf8'), 'sha256'),
+  true
+),
+(
+  'hosted-dev',
+  'blake3:49bc5c43a57eb90f5a5aaa4f8118efba1f8ff00204d3ed45a511050928f0bc9f',
+  'blake3:abababababababababababababababababababababababababababababababab',
+  'blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+  'blake3:913cd093b4b0752dba259ff0fdd90a5faac9da405adf2d7dd75e9716cc25a272',
+  'openrouter-house',
+  extensions.digest(convert_to('hosted-dev:skeptical-auditor:10', 'utf8'), 'sha256'),
+  true
+),
+(
+  'hosted-dev',
+  'blake3:3970a3d67cd15b55f01aa59013fb0d26e2b9ca7b4be635e6f659171b24aaed02',
+  'blake3:1212121212121212121212121212121212121212121212121212121212121212',
+  'blake3:1313131313131313131313131313131313131313131313131313131313131313',
+  'blake3:8d06ab48b3a7ac17a68e1923b2227d69fe97291cb7f80ef3d234e8e43b483ec4',
+  'openrouter-house',
+  extensions.digest(convert_to('hosted-dev:cooperative-planner:12', 'utf8'), 'sha256'),
+  true
+),
+(
+  'hosted-dev',
+  'blake3:f406af7f13dff7f1ed41f48b469f10a68cd36d7b183f859211d2022bf1c72bb0',
+  'blake3:1111111111111111111111111111111111111111111111111111111111111111',
+  'blake3:1313131313131313131313131313131313131313131313131313131313131313',
+  'blake3:8d06ab48b3a7ac17a68e1923b2227d69fe97291cb7f80ef3d234e8e43b483ec4',
+  'openrouter-house',
+  extensions.digest(convert_to('hosted-dev:skeptical-auditor:11', 'utf8'), 'sha256'),
+  true
+),
+(
+  'hosted-dev',
+  'blake3:b624622cf68798968daa9548d32bddb3404298931fd532a8fd87266cc0ecf415',
+  'blake3:1414141414141414141414141414141414141414141414141414141414141414',
+  'blake3:1616161616161616161616161616161616161616161616161616161616161616',
+  'blake3:d2328ad1da149d163ff7a5f2093b40ea0f232951cd34a5b24112d64cdfa837dd',
+  'openrouter-house',
+  extensions.digest(convert_to('hosted-dev:cooperative-planner:13', 'utf8'), 'sha256'),
+  true
+),
+(
+  'hosted-dev',
+  'blake3:742801ab85a5932827cf539af62547eff4f1041cf5c81aee1d39e2b492a02451',
+  'blake3:1515151515151515151515151515151515151515151515151515151515151515',
+  'blake3:1616161616161616161616161616161616161616161616161616161616161616',
+  'blake3:d2328ad1da149d163ff7a5f2093b40ea0f232951cd34a5b24112d64cdfa837dd',
+  'openrouter-house',
+  extensions.digest(convert_to('hosted-dev:skeptical-auditor:12', 'utf8'), 'sha256'),
+  true
 )
 on conflict (host_installation_id, house_agent_revision_digest) do nothing;
 
@@ -80,8 +180,8 @@ update platform_store.house_agent_host_approvals
 set available_for_new_assignments = false, availability_checked_at = clock_timestamp()
 where host_installation_id = 'hosted-dev'
   and house_agent_revision_digest not in (
-    'blake3:1665aa7c527861012829c237b1fdab760cbce918036a128d10ba06b7fa4cd098',
-    'blake3:5a826962c0f09c40a1b760d2c0eec9af216b9eb703b2e6f971fc24e32f0564d1'
+    'blake3:b624622cf68798968daa9548d32bddb3404298931fd532a8fd87266cc0ecf415',
+    'blake3:742801ab85a5932827cf539af62547eff4f1041cf5c81aee1d39e2b492a02451'
   )
   and available_for_new_assignments;
 
@@ -101,7 +201,12 @@ $$;
 insert into auth.users(id)
 values
   ('00000000-0000-4000-8000-00000000d001'),
-  ('00000000-0000-4000-8000-00000000d002')
+  ('00000000-0000-4000-8000-00000000d002'),
+  -- Dedicated hosted qualification identities. Keep these separate from the
+  -- retained manual-development identities above so old local setups do not
+  -- consume the qualification account's single pre-Genesis reservation.
+  ('00000000-0000-4000-8000-00000000d003'),
+  ('00000000-0000-4000-8000-00000000d004')
 on conflict (id) do nothing;
 
 do $$
@@ -124,6 +229,54 @@ begin
     or existing.erasure_requested_at is not null
   then
     raise exception using errcode = '23505', message = 'development_identity_conflict';
+  end if;
+end;
+$$;
+
+do $$
+declare
+  existing platform_store.github_identities%rowtype;
+begin
+  select * into existing
+  from platform_store.github_identities identities
+  where identities.auth_user_id = '00000000-0000-4000-8000-00000000d003';
+
+  if not found then
+    perform * from platform_api.sync_github_identity_v1(
+      '00000000-0000-4000-8000-00000000d003',
+      'worldstream-development-qualification',
+      'worldstream-local-qualification',
+      null
+    );
+  elsif existing.provider_subject <> 'worldstream-development-qualification'
+    or existing.github_login <> 'worldstream-local-qualification'
+    or existing.erasure_requested_at is not null
+  then
+    raise exception using errcode = '23505', message = 'development_qualification_identity_conflict';
+  end if;
+end;
+$$;
+
+do $$
+declare
+  existing platform_store.github_identities%rowtype;
+begin
+  select * into existing
+  from platform_store.github_identities identities
+  where identities.auth_user_id = '00000000-0000-4000-8000-00000000d004';
+
+  if not found then
+    perform * from platform_api.sync_github_identity_v1(
+      '00000000-0000-4000-8000-00000000d004',
+      'worldstream-development-qualification-agent',
+      'worldstream-local-qualification-agent',
+      null
+    );
+  elsif existing.provider_subject <> 'worldstream-development-qualification-agent'
+    or existing.github_login <> 'worldstream-local-qualification-agent'
+    or existing.erasure_requested_at is not null
+  then
+    raise exception using errcode = '23505', message = 'development_qualification_agent_identity_conflict';
   end if;
 end;
 $$;

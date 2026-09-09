@@ -459,6 +459,45 @@ describe("HostedLiveSessionController", () => {
     expect(setup.controller.state.canAct).toBe(true);
   });
 
+  it("never resubmits an uncertain Action after reconnect", async () => {
+    const setup = fixture();
+    const first = await openResetSession(setup);
+    const uncertain = setup.controller.submitAction({
+      actionId: id("35"),
+      basedOnRoomSeq: 7,
+      actionType: "commit_move",
+      payload: { selected_plan_id: "plan-a" },
+    });
+
+    await expect(uncertain).rejects.toThrow(/receipt timed out/u);
+    expect(setup.controller.state.message).toMatch(/outcome is uncertain/u);
+    expect(sentMessages(first).filter((message) => message.type === "action.submit")).toHaveLength(1);
+
+    const reconnecting = setup.controller.reconnect();
+    await vi.waitFor(() => expect(setup.sockets).toHaveLength(2));
+    const second = setup.sockets[1] as FakeSocket;
+    second.open();
+    second.receive(welcome());
+    second.receive(attached({
+      kind: "projection_reset",
+      baseline_frame_head: 10,
+      reason: "client_cursor_behind",
+    }, null));
+    second.receive(reset(10));
+    const sync = sentMessages(second).find((message) => message.type === "room.sync_ack");
+    second.receive(
+      envelope(
+        "room.sync_acked",
+        { through_frame_head: 10 },
+        String(sync?.message_id),
+      ),
+    );
+    await reconnecting;
+
+    expect(setup.controller.state).toMatchObject({ status: "live", synchronized: true });
+    expect(sentMessages(second).filter((message) => message.type === "action.submit")).toHaveLength(0);
+  });
+
   it("keeps spectators read-only and answers heartbeat without authority fields", async () => {
     const setup = fixture();
     const socket = await openResetSession(setup, "spectator");

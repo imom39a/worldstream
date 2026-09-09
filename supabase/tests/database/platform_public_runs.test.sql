@@ -28,6 +28,14 @@ select ok(
   'only the server-secret role can build a public Run DTO'
 );
 
+-- A retained local installation can already have reviewed public results.
+-- Keep that history visible and assert only this transaction's delta; rollback
+-- leaves both the fixture and the retained baseline untouched.
+create temporary table recent_results_baseline as
+select jsonb_array_length(platform_api.list_recent_results_v1(20) -> 'results')
+  as result_count;
+grant select on recent_results_baseline to service_role;
+
 insert into auth.users(id) values
   ('81000000-0000-4000-8000-000000000001'),
   ('81000000-0000-4000-8000-000000000002');
@@ -521,8 +529,8 @@ select is(
 );
 select is(
   jsonb_array_length(platform_api.list_recent_results_v1(100) -> 'results'),
-  1,
-  'Recent Results is bounded and includes the public Agent Heist result'
+  least((select result_count + 1 from recent_results_baseline), 20),
+  'Recent Results is bounded and includes this transaction''s public Agent Heist result'
 );
 select is(
   platform_api.list_recent_results_v1(100) ->> 'maximum',
@@ -604,8 +612,8 @@ select is(
 );
 select is(
   jsonb_array_length(platform_api.list_recent_results_v1(20) -> 'results'),
-  0,
-  'a permanently suppressed result leaves Recent Results'
+  (select result_count from recent_results_baseline),
+  'a permanently suppressed result leaves the retained Recent Results baseline'
 );
 
 reset role;

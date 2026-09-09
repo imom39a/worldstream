@@ -20,6 +20,7 @@ RUN WORLDSTREAM_BUILD_REVISION="${SOURCE_REVISION}" cargo build --locked --relea
     && cp target/release/worldstream-assignment-mcp /out/ \
     && cp target/release/worldstream-managed-agent-host /out/ \
     && cp target/release/worldstream-hosted-gateway /out/ \
+    && cp target/release/worldstream-hosted-artifact-digest /out/ \
     && target/release/worldstream-hosted-artifact-digest \
       target/release/worldstream-managed-agent-host \
       > /out/managed-agent-host.blake3
@@ -52,10 +53,11 @@ COPY --from=builder /out/worldstream-studio-supervisor /usr/local/bin/worldstrea
 COPY --from=builder /out/worldstream-assignment-mcp /usr/local/bin/worldstream-assignment-mcp
 COPY --from=builder /out/worldstream-managed-agent-host /usr/local/bin/worldstream-managed-agent-host
 COPY --from=builder /out/worldstream-hosted-gateway /usr/local/bin/worldstream-hosted-gateway
+COPY --from=builder /out/worldstream-hosted-artifact-digest /usr/local/bin/worldstream-hosted-artifact-digest
 COPY --from=builder /out/managed-agent-host.blake3 /opt/worldstream/hosted/managed-agent-host.blake3
 COPY scripts/hosted-runtime.mjs /opt/worldstream/hosted/hosted-runtime.mjs
 COPY scripts/hosted-volume-capture.mjs /opt/worldstream/hosted/hosted-volume-capture.mjs
-COPY config/activity-clients/releases/agent-heist-web-v5.json /opt/worldstream/hosted/agent-heist-web.json
+COPY config/activity-clients/releases/agent-heist-web-v6.json /opt/worldstream/hosted/agent-heist-web.json
 COPY config/activity-clients/releases/inspector-web-v2.json /opt/worldstream/hosted/inspector-web.json
 COPY config/activity-clients/hosted-local-bindings.json /opt/worldstream/hosted/activity-client-bindings.json
 COPY packaging/hosted/entrypoint.sh /usr/local/bin/worldstream-hosted-entrypoint
@@ -67,6 +69,7 @@ RUN chmod 0755 \
       /usr/local/bin/worldstream-assignment-mcp \
       /usr/local/bin/worldstream-managed-agent-host \
       /usr/local/bin/worldstream-hosted-gateway \
+      /usr/local/bin/worldstream-hosted-artifact-digest \
       /usr/local/bin/worldstream-hosted-entrypoint \
     && chmod 0644 /opt/worldstream/hosted/*.json /opt/worldstream/hosted/*.mjs \
     && chmod 0444 /opt/worldstream/hosted/managed-agent-host.blake3 \

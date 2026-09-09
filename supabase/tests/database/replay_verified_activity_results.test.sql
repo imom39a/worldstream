@@ -577,9 +577,28 @@ select ok(
 );
 
 select is(
-  (select count(*)::integer from platform_api.list_reconciliation_candidates_v1(1000)),
+  (select count(*)::integer
+   from platform_api.list_reconciliation_candidates_v1(1000) candidates
+   where candidates.activity_run_id = '72000000-0000-4000-8000-000000000001'),
   0,
-  'candidate enumeration is bounded and excludes a freshly reconciled Run'
+  'candidate enumeration excludes this freshly reconciled Run despite retained local work'
+);
+-- The five-minute recheck window must not turn immutable terminal evidence
+-- back into a Host dependency. Simulate a retained result whose last index
+-- event is old; the candidate remains absent.
+reset role;
+set local session_replication_role = replica;
+update platform_store.activity_run_index_events
+set observed_at = clock_timestamp() - interval '1 hour'
+where activity_run_id = '72000000-0000-4000-8000-000000000001';
+set local session_replication_role = origin;
+set local role service_role;
+select is(
+  (select count(*)::integer
+   from platform_api.list_reconciliation_candidates_v1(1000) candidates
+   where candidates.activity_run_id = '72000000-0000-4000-8000-000000000001'),
+  0,
+  'an old event cannot requeue a terminal Run with a recorded result'
 );
 
 create temporary table divergent_result_document as
@@ -719,21 +738,38 @@ begin
 end;
 $$;
 set local session_replication_role = origin;
+-- The fairness fixtures exercise incomplete terminal reconciliation. The
+-- completed terminal-result regression is covered by the dedicated fixture
+-- above, so every old fixture here remains retryable.
+set local session_replication_role = replica;
+delete from platform_store.indexed_activity_results
+where activity_run_id in (select run_id from fairness_runs where position <= 12);
+update platform_store.activity_run_terminal_evidence set projector_status = 'terminal_without_outcome'
+where activity_run_id in (select run_id from fairness_runs where position <= 12);
+set local session_replication_role = origin;
 select is(
-  (select activity_run_id from platform_api.list_reconciliation_candidates_v1(1)),
+  (select candidates.activity_run_id
+   from platform_api.list_reconciliation_candidates_v1(100) candidates
+   join fairness_runs on fairness_runs.run_id = candidates.activity_run_id
+   limit 1),
   (select run_id from fairness_runs where position = 13),
-  'new active capacity is selected before twelve old published rechecks'
+  'new fixture active capacity is selected before twelve fixture published rechecks'
 );
 create temporary table first_fair_batch as
-select * from platform_api.list_reconciliation_candidates_v1(10);
+select candidates.*
+from platform_api.list_reconciliation_candidates_v1(100) candidates
+join fairness_runs on fairness_runs.run_id = candidates.activity_run_id
+limit 10;
 select is((select count(*)::integer from first_fair_batch), 10, 'the recovery batch remains bounded');
 select platform_api.mark_reconciliation_attempt_v1(launch_request_id) from first_fair_batch;
 select ok(
   exists (
-    select 1 from platform_api.list_reconciliation_candidates_v1(10) candidates
+    select 1
+    from platform_api.list_reconciliation_candidates_v1(100) candidates
+    join fairness_runs on fairness_runs.run_id = candidates.activity_run_id
     where candidates.activity_run_id not in (select activity_run_id from first_fair_batch)
   ),
-  'unsuccessful or unchanged historical attempts rotate instead of starving the next page'
+  'fixture historical attempts rotate instead of starving the next fixture page'
 );
 set local session_replication_role = replica;
 delete from platform_store.indexed_activity_results

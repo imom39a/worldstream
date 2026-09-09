@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(126);
+select plan(128);
 
 select has_schema('platform_store', 'private store schema exists');
 select has_schema('platform_api', 'RPC-only API schema exists');
@@ -102,8 +102,12 @@ select is(
     'create_launch_request_v1(uuid, text, text, bytea, bytea, bytea, text, text, text, text, text)',
     'expire_launch_request_v1(uuid)',
     'freeze_launch_request_v1(uuid, uuid, bytea, bytea, bytea, text, text, text)',
+    'list_my_games_v1(uuid, timestamp with time zone, uuid, integer)',
+    'list_prestart_abandonment_candidates_v1(integer)',
+    'list_prestart_house_runner_retirement_candidates_v1(integer)',
     'list_recent_results_v1(integer)',
     'list_reconciliation_candidates_v1(integer)',
+    'list_terminal_house_runner_retirement_candidates_v1(integer)',
     'mark_reconciliation_attempt_v1(uuid)',
     'purge_expired_oauth_attempts_v1(integer)',
     'read_genesis_reconciliation_v1(uuid)',
@@ -115,19 +119,25 @@ select is(
     'read_integrity_reconciliation_v1(uuid)',
     'read_launch_request_v1(uuid, uuid)',
     'read_owned_run_v1(uuid, uuid)',
+    'read_prestart_house_runner_retirements_v1(uuid)',
     'read_public_relay_binding_candidate_v1(uuid)',
     'read_public_run_v1(text)',
     'read_result_reconciliation_v1(uuid)',
+    'read_terminal_house_runner_retirements_v1(uuid)',
     'read_terminal_reconciliation_v1(uuid)',
     'record_genesis_v1(uuid, bytea, bytea)',
     'record_hosted_deployment_revision_v1(bytea, bytea, text, text, text, jsonb)',
     'record_hosted_recovery_checkpoint_v1(uuid, text, bytea, bytea, bytea, bytea, bytea)',
     'record_house_runner_reservation_v1(uuid, text, text, bytea, bytea, text)',
     'record_integrity_observation_v1(uuid, bytea, bytea)',
+    'record_prestart_abandonment_v1(uuid, bytea, bytea)',
+    'record_prestart_house_runner_retirement_v1(uuid, uuid, bytea, bytea)',
+    'record_provisioning_abandonment_v1(uuid, bytea, bytea)',
     'record_public_relay_binding_v1(uuid, bytea, bytea, bytea, bytea)',
     'record_result_v1(uuid, bytea, bytea, bytea, bytea)',
     'record_run_terminal_v1(uuid, bytea, bytea)',
     'record_terminal_conflict_v1(uuid, bytea, bytea)',
+    'record_terminal_house_runner_retirement_v1(uuid, uuid, bytea, bytea)',
     'release_seat_claim_v1(uuid, uuid, text)',
     'reset_seat_claim_v1(uuid, uuid, text)',
     'resolve_owned_run_membership_v1(uuid, uuid, text)',
@@ -175,6 +185,44 @@ select ok(not has_function_privilege('authenticated', 'platform_api.begin_accoun
 select ok(not has_function_privilege('authenticated', 'platform_store.admit_oauth_start_v1()', 'execute'), 'authenticated cannot use OAuth limiter');
 select ok(not has_function_privilege('authenticated', 'platform_store.admit_account_mutation_v1(uuid)', 'execute'), 'authenticated cannot use account limiter');
 select ok(not has_function_privilege('authenticated', 'platform_store.write_github_identity_v1(uuid,text,text,text)', 'execute'), 'authenticated cannot use the identity writer');
+
+select ok(
+  not exists (
+    select 1
+    from (values
+      ('platform_api.list_my_games_v1(uuid,timestamptz,uuid,integer)'),
+      ('platform_api.list_prestart_abandonment_candidates_v1(integer)'),
+      ('platform_api.list_prestart_house_runner_retirement_candidates_v1(integer)'),
+      ('platform_api.list_terminal_house_runner_retirement_candidates_v1(integer)'),
+      ('platform_api.read_prestart_house_runner_retirements_v1(uuid)'),
+      ('platform_api.read_terminal_house_runner_retirements_v1(uuid)'),
+      ('platform_api.record_prestart_abandonment_v1(uuid,bytea,bytea)'),
+      ('platform_api.record_prestart_house_runner_retirement_v1(uuid,uuid,bytea,bytea)'),
+      ('platform_api.record_terminal_house_runner_retirement_v1(uuid,uuid,bytea,bytea)')
+    ) reviewed(function_signature)
+    where has_function_privilege('anon', reviewed.function_signature, 'execute')
+       or has_function_privilege('authenticated', reviewed.function_signature, 'execute')
+  ),
+  'browser roles cannot execute the reviewed My Games or House retirement RPCs'
+);
+select ok(
+  not exists (
+    select 1
+    from (values
+      ('platform_api.list_my_games_v1(uuid,timestamptz,uuid,integer)'),
+      ('platform_api.list_prestart_abandonment_candidates_v1(integer)'),
+      ('platform_api.list_prestart_house_runner_retirement_candidates_v1(integer)'),
+      ('platform_api.list_terminal_house_runner_retirement_candidates_v1(integer)'),
+      ('platform_api.read_prestart_house_runner_retirements_v1(uuid)'),
+      ('platform_api.read_terminal_house_runner_retirements_v1(uuid)'),
+      ('platform_api.record_prestart_abandonment_v1(uuid,bytea,bytea)'),
+      ('platform_api.record_prestart_house_runner_retirement_v1(uuid,uuid,bytea,bytea)'),
+      ('platform_api.record_terminal_house_runner_retirement_v1(uuid,uuid,bytea,bytea)')
+    ) reviewed(function_signature)
+    where not has_function_privilege('service_role', reviewed.function_signature, 'execute')
+  ),
+  'service role can execute every reviewed My Games or House retirement RPC'
+);
 
 select ok(has_function_privilege('service_role', 'platform_api.begin_github_oauth_v1(bytea,bytea,bytea,text)', 'execute'), 'service role can begin OAuth');
 select ok(has_function_privilege('service_role', 'platform_api.consume_github_oauth_v1(bytea,bytea,text)', 'execute'), 'service role can consume OAuth');

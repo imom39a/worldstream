@@ -56,13 +56,29 @@ Catalog review and Host execution authority are separate controls. A checked-in
 listing is review evidence; it is not a Room Host allowlist. The Host must still
 allowlist the exact Listing Revision, Pack, client surface, and projector identities.
 
-The agent-ready candidate, Listing `0.12.0`, pins Heist `0.4.0`, Client v5,
-Planner 8, Auditor 7 and Template 7. It is not deployment approval. Client v5
-uses `/agent-heist-v5/` and `/agent-heist-v5/hosted/`; v4 remains a retained
-verified build at its original paths. The new Pack adds useful phase invitations
-and one-shot reminders without changing deadlines, scoring or stale-Head checks.
-The new Result Projector pins the new Pack while retaining the same public
-summary program. The old projector remains available for old Runs.
+The retained Listing `0.12.0` pins Heist `0.4.0`, Client v5, Planner 8,
+Auditor 7 and Template 7. It remains addressable for Runs created before the
+current discovery revision. Client v5 uses `/agent-heist-v5/` and
+`/agent-heist-v5/hosted/`; v4 remains a retained verified build at its original
+paths. The old Pack and Result Projector remain available for those Runs.
+
+Listing `0.13.0` is retained as the exact Heist `0.3.0`/Client v5 profile. It
+does not replace or mutate Listing `0.12.0`, Listing `0.11.0`, or any existing
+Run. Exact Listing digest resolution remains available for retained formation
+and result reads.
+
+Listing `0.14.0` is a retained discovery and fresh-setup profile for the
+frozen Heist `0.3.0` Pack. It binds immutable Client v6 bytes, including the
+independent public viewer surface at `/agent-heist-v6/hosted/`. A new Listing
+revision changes discovery only; it does not rewrite Listing `0.13.0` or any
+existing Run.
+
+Listing `0.20.0` is the current discovery profile. It keeps the frozen Heist
+`0.3.0` Pack, Client v6 release, result projector, public policy, and limits
+unchanged. It advances only the House Agent references to the Runner template
+`12` compatibility chain after the managed Host executable changed. Listings
+`0.19.0` and earlier remain retained for existing Rooms and Assignments; no
+existing Runner executable path or House approval is rebound.
 
 The launch request is intentionally small:
 

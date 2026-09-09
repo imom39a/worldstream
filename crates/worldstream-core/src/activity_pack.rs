@@ -2590,9 +2590,14 @@ impl PackRegistryEntryV1 {
         artifacts: PackRegistryArtifactsV1,
         status: PackRegistryStatusV1,
     ) -> Self {
-        Self::embedded(revision_lock, descriptor, artifacts,
+        Self::embedded(
+            revision_lock,
+            descriptor,
+            artifacts,
             ReviewedExecutorProvenanceV1::AgentHeistLobbyV4,
-            crate::AgentHeistLobbyV4, status)
+            crate::AgentHeistLobbyV4,
+            status,
+        )
     }
 
     #[must_use]

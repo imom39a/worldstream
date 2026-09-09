@@ -4,6 +4,7 @@ const spies = vi.hoisted(() => ({
   render: vi.fn(),
   authority: vi.fn(),
   controller: vi.fn(),
+  publicController: vi.fn(),
 }));
 
 vi.mock("react-dom/client", () => ({ createRoot: () => ({ render: spies.render }) }));
@@ -15,6 +16,9 @@ vi.mock("@worldstream/client", () => ({
   },
   HostedLiveSessionController: class {
     constructor(options: unknown) { spies.controller(options); }
+  },
+  PublicProjectionSessionController: class {
+    constructor(options: unknown) { spies.publicController(options); }
   },
 }));
 
@@ -69,6 +73,38 @@ test("missing deployment stream configuration fails closed without a same-origin
   await import("./main");
   await vi.waitFor(() => expect(spies.render).toHaveBeenCalledOnce());
 
+  expect(spies.authority).not.toHaveBeenCalled();
+  expect(spies.controller).not.toHaveBeenCalled();
+});
+
+test("the selected public viewer uses a credential-free public projection, not participant admission", async () => {
+  const publicId = "a".repeat(32);
+  const viewerUrl = `${browserOrigin}/agent-heist-v6/hosted/?public_run=${publicId}&platform_return=%2F&platform_result=%2Fruns%2F${publicId}`;
+  vi.stubGlobal("window", {
+    location: new URL(viewerUrl),
+    history: { replaceState: vi.fn() },
+  });
+  const publicStream = `wss://worldstream-preview.fly.dev/v1/hosted/public-runs/${publicId}/stream`;
+  const fetchRun = vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      version: "public_run.v1",
+      state: "live",
+      live: { stream_url: publicStream },
+      client: { launch_url: viewerUrl },
+    }),
+  });
+  vi.stubGlobal("fetch", fetchRun);
+
+  await import("./main");
+  await vi.waitFor(() => expect(spies.publicController).toHaveBeenCalledOnce());
+
+  expect(fetchRun).toHaveBeenCalledExactlyOnceWith(`/api/runs/${publicId}`, {
+    credentials: "omit",
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+  });
+  expect(spies.publicController).toHaveBeenCalledWith({ streamUrl: publicStream });
   expect(spies.authority).not.toHaveBeenCalled();
   expect(spies.controller).not.toHaveBeenCalled();
 });

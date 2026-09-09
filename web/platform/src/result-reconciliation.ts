@@ -115,8 +115,47 @@ export interface ReconciliationWriteReceipt {
   readonly safeCode: string;
 }
 
+/** Exact, server-derived Host cleanup material for one terminal House seat. */
+export interface TerminalHouseRunnerRetirementCandidate {
+  readonly hostInstallationId: string;
+  readonly reservationOperationId: string;
+  readonly launchRequestId: string;
+  readonly houseAgentAssignmentId: string;
+  readonly terminalEvidenceDigest: string;
+}
+
+/** Exact server-derived cleanup material after immutable pre-start abandonment. */
+export interface PrestartHouseRunnerRetirementCandidate {
+  readonly hostInstallationId: string;
+  readonly reservationOperationId: string;
+  readonly launchRequestId: string;
+  readonly houseAgentAssignmentId: string;
+  readonly abandonmentEvidenceDigest: string;
+}
+
+/** The narrow service-only Host request; it is never a browser payload. */
+export interface HostedHouseRunnerRetirementRequest {
+  readonly schema: "worldstream/house-runner-retirement-request/v1";
+  readonly host_installation_id: string;
+  readonly reservation_operation_id: string;
+  readonly launch_request_id: string;
+  readonly house_agent_assignment_id: string;
+  readonly disposition: "run_terminal" | "pre_start_abandoned";
+  readonly platform_evidence_digest: string;
+}
+
 export interface ResultReconciliationData {
   listCandidates(limit: number): Promise<readonly ResultReconciliationCandidate[]>;
+  /**
+   * Returns terminal Runs whose exact House retirement receipts are still
+   * absent. This is intentionally separate from result indexing: a Host
+   * outage must not make a published result disappear from automatic retry.
+   */
+  listTerminalHouseRunnerRetirementRuns(limit: number): Promise<readonly string[]>;
+  /** Independent retry lane; it remains eligible after result-free abandonment. */
+  listPrestartHouseRunnerRetirementRuns(limit: number): Promise<readonly string[]>;
+  /** DB-time-selected post-Genesis, pre-Lobby-abandonment candidates. */
+  listPrestartAbandonmentLaunches(limit: number): Promise<readonly string[]>;
   markAttempt(launchRequestId: string): Promise<void>;
   readTerminal(runId: string): Promise<TerminalReconciliationState | null>;
   readResult(runId: string): Promise<ResultReconciliationState | null>;
@@ -130,6 +169,24 @@ export interface ResultReconciliationData {
     evidence: Uint8Array,
     evidenceDigest: Uint8Array,
   ): Promise<ReconciliationWriteReceipt>;
+  readTerminalHouseRunnerRetirements(
+    runId: string,
+  ): Promise<readonly TerminalHouseRunnerRetirementCandidate[]>;
+  recordTerminalHouseRunnerRetirement(input: {
+    readonly runId: string;
+    readonly candidate: TerminalHouseRunnerRetirementCandidate;
+    readonly canonicalReceipt: Uint8Array;
+    readonly receiptDigest: Uint8Array;
+  }): Promise<boolean>;
+  readPrestartHouseRunnerRetirements(
+    runId: string,
+  ): Promise<readonly PrestartHouseRunnerRetirementCandidate[]>;
+  recordPrestartHouseRunnerRetirement(input: {
+    readonly runId: string;
+    readonly candidate: PrestartHouseRunnerRetirementCandidate;
+    readonly canonicalReceipt: Uint8Array;
+    readonly receiptDigest: Uint8Array;
+  }): Promise<boolean>;
   recordResult(
     runId: string,
     evidence: Uint8Array,
@@ -146,6 +203,10 @@ export interface ResultReconciliationData {
 
 export interface HostedResultSourceClient {
   readResultSource(request: ResultSourceRequest): Promise<unknown>;
+}
+
+export interface HostedHouseRetirementClient {
+  retireHouseRunner(request: HostedHouseRunnerRetirementRequest): Promise<CanonicalObject>;
 }
 
 export interface PinnedProjectorArtifactBundle {
@@ -290,6 +351,75 @@ export class HttpHostedResultSourceClient implements HostedResultSourceClient {
   }
 }
 
+/** Literal service-only client for the Fly House-retirement route. */
+export class HttpHostedHouseRetirementClient implements HostedHouseRetirementClient {
+  readonly #endpoint: URL;
+  readonly #serviceAuthority: string;
+  readonly #timeoutMs: number;
+  readonly #fetch: typeof fetch;
+
+  constructor(input: {
+    baseUrl: string;
+    serviceAuthority: string;
+    timeoutMs?: number;
+    fetchImplementation?: typeof fetch;
+  }) {
+    const base = new URL(input.baseUrl);
+    const local = base.hostname === "localhost" || base.hostname === "127.0.0.1";
+    if (
+      (!local && base.protocol !== "https:")
+      || (local && !["http:", "https:"].includes(base.protocol))
+      || base.username !== ""
+      || base.password !== ""
+      || base.search !== ""
+      || base.hash !== ""
+      || input.serviceAuthority.length < 32
+      || input.serviceAuthority.length > 512
+      || /\s/u.test(input.serviceAuthority)
+    ) {
+      throw new ResultReconciliationRejectedError("invalid_house_retirement_configuration");
+    }
+    const timeoutMs = input.timeoutMs ?? 15_000;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000) {
+      throw new ResultReconciliationRejectedError("invalid_house_retirement_timeout");
+    }
+    this.#endpoint = new URL("/v1/hosted/house-runners/retire", base);
+    this.#serviceAuthority = input.serviceAuthority;
+    this.#timeoutMs = timeoutMs;
+    this.#fetch = input.fetchImplementation ?? fetch;
+  }
+
+  async retireHouseRunner(request: HostedHouseRunnerRetirementRequest): Promise<CanonicalObject> {
+    let response: Response;
+    try {
+      response = await this.#fetch(this.#endpoint, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${this.#serviceAuthority}`,
+          "content-type": "application/json",
+          accept: "application/json",
+        },
+        body: JSON.stringify(request),
+        signal: AbortSignal.timeout(this.#timeoutMs),
+      });
+    } catch (error) {
+      throw new ResultReconciliationUnavailableError("house_retirement_unavailable", { cause: error });
+    }
+    if (!response.ok) {
+      if (response.status === 404 || (response.status >= 500 && response.status <= 599)) {
+        throw new ResultReconciliationUnavailableError("house_retirement_unavailable");
+      }
+      throw new ResultReconciliationRejectedError("house_retirement_rejected");
+    }
+    const bytes = await readBoundedBody(response, MAX_GATEWAY_RESPONSE_BYTES);
+    try {
+      return record(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+    } catch (error) {
+      throw new ResultReconciliationRejectedError("invalid_house_retirement_response", { cause: error });
+    }
+  }
+}
+
 export type ResultReconciliationOutcome =
   | "not_terminal"
   | "terminal_without_outcome"
@@ -308,6 +438,7 @@ export interface ResultReconciliationReport {
 
 export interface ResultReconcilerDependencies {
   readonly source: HostedResultSourceClient;
+  readonly houseRetirement: HostedHouseRetirementClient;
   readonly data: ResultReconciliationData;
   readonly projectors: PinnedResultProjectorRegistry;
 }
@@ -410,6 +541,7 @@ export async function reconcileActivityResult(
 
   if (projected.status === "terminal_without_outcome") {
     await recordCurrentIntegrity(dependencies.data, evidence, hostEvidenceDigest.tagged, null);
+    await attemptTerminalHouseRunnerRetirement(request.run_id, dependencies);
     return {
       runId: request.run_id,
       outcome: "terminal_without_outcome",
@@ -426,11 +558,13 @@ export async function reconcileActivityResult(
       hostEvidenceDigest.tagged,
       null,
     );
-    return report(
+    const outcome = report(
       request.run_id,
       result?.resultRecorded === true ? "result_suppressed" : "blocked",
       integrityReceipt,
     );
+    await attemptTerminalHouseRunnerRetirement(request.run_id, dependencies);
+    return outcome;
   }
 
   const summaryDigest = `sha256:${Buffer.from(summary.digest).toString("hex")}`;
@@ -445,7 +579,9 @@ export async function reconcileActivityResult(
       const outcome = integrityReceipt.safeCode === "result_reverified"
         ? "result_reverified"
         : "result_confirmed";
-      return report(request.run_id, outcome, integrityReceipt);
+      const reportValue = report(request.run_id, outcome, integrityReceipt);
+      await attemptTerminalHouseRunnerRetirement(request.run_id, dependencies);
+      return reportValue;
     }
   }
 
@@ -481,13 +617,173 @@ export async function reconcileActivityResult(
     summary.digest,
   );
   if (resultReceipt.disposition === "conflict") {
+    // The new summary conflicts, but the already-retained terminal evidence is
+    // still sufficient for exact Host cleanup.
+    await attemptTerminalHouseRunnerRetirement(request.run_id, dependencies);
     return report(request.run_id, "conflict", resultReceipt);
   }
-  return report(
+  const reportValue = report(
     request.run_id,
     resultReceipt.disposition === "duplicate" ? "result_confirmed" : "result_recorded",
     resultReceipt,
   );
+  await attemptTerminalHouseRunnerRetirement(request.run_id, dependencies);
+  return reportValue;
+}
+
+/**
+ * Retires only assignments returned by the terminal-evidence-gated platform
+ * read. This belongs after `recordTerminal`: a live Run has no material to
+ * send to Fly. A failed call leaves the immutable terminal evidence intact,
+ * so a later bounded reconciliation retries the same idempotent request.
+ */
+async function retireTerminalHouseRunners(
+  runId: string,
+  dependencies: ResultReconcilerDependencies,
+): Promise<void> {
+  const candidates = await dependencies.data.readTerminalHouseRunnerRetirements(runId);
+  if (candidates.length > 2) {
+    throw new ResultReconciliationRejectedError("terminal_house_retirement_limit_exceeded");
+  }
+  for (const candidate of candidates) {
+    const request = retirementRequest(candidate);
+    const rawReceipt = await dependencies.houseRetirement.retireHouseRunner(request);
+    validateRetirementReceipt(rawReceipt, request);
+    const canonicalReceipt = encodeCanonical(rawReceipt);
+    const recorded = await dependencies.data.recordTerminalHouseRunnerRetirement({
+      runId,
+      candidate,
+      canonicalReceipt,
+      receiptDigest: sha256(canonicalReceipt),
+    });
+    if (!recorded) {
+      throw new ResultReconciliationRejectedError("terminal_house_retirement_record_rejected");
+    }
+  }
+}
+
+/** Same exact Host primitive, with abandonment evidence as the sole release authority. */
+async function retirePrestartHouseRunners(
+  runId: string,
+  dependencies: ResultReconcilerDependencies,
+): Promise<void> {
+  const candidates = await dependencies.data.readPrestartHouseRunnerRetirements(runId);
+  if (candidates.length > 2) {
+    throw new ResultReconciliationRejectedError("prestart_house_retirement_limit_exceeded");
+  }
+  for (const candidate of candidates) {
+    const request = prestartRetirementRequest(candidate);
+    const rawReceipt = await dependencies.houseRetirement.retireHouseRunner(request);
+    validateRetirementReceipt(rawReceipt, request);
+    const canonicalReceipt = encodeCanonical(rawReceipt);
+    const recorded = await dependencies.data.recordPrestartHouseRunnerRetirement({
+      runId,
+      candidate,
+      canonicalReceipt,
+      receiptDigest: sha256(canonicalReceipt),
+    });
+    if (!recorded) {
+      throw new ResultReconciliationRejectedError("prestart_house_retirement_record_rejected");
+    }
+  }
+}
+
+/**
+ * Result evidence and its public index are durable before Host cleanup is
+ * attempted. A transient Host failure is therefore non-fatal to the visible
+ * result. `listTerminalHouseRunnerRetirementRuns` provides the bounded,
+ * automatic retry path until the immutable receipt has been recorded.
+ */
+async function attemptTerminalHouseRunnerRetirement(
+  runId: string,
+  dependencies: ResultReconcilerDependencies,
+): Promise<void> {
+  try {
+    await retireTerminalHouseRunners(runId, dependencies);
+  } catch (error) {
+    if (!(error instanceof ResultReconciliationUnavailableError)) throw error;
+  }
+}
+
+function retirementRequest(
+  candidate: TerminalHouseRunnerRetirementCandidate,
+): HostedHouseRunnerRetirementRequest {
+  if (
+    !REFERENCE_PATTERN.test(candidate.hostInstallationId)
+    || !UUID_PATTERN.test(candidate.reservationOperationId)
+    || !UUID_PATTERN.test(candidate.launchRequestId)
+    || !UUID_PATTERN.test(candidate.houseAgentAssignmentId)
+    || !SHA256_PATTERN.test(candidate.terminalEvidenceDigest)
+  ) {
+    throw new ResultReconciliationRejectedError("invalid_terminal_house_retirement_candidate");
+  }
+  return {
+    schema: "worldstream/house-runner-retirement-request/v1",
+    host_installation_id: candidate.hostInstallationId,
+    reservation_operation_id: candidate.reservationOperationId,
+    launch_request_id: candidate.launchRequestId,
+    house_agent_assignment_id: candidate.houseAgentAssignmentId,
+    disposition: "run_terminal",
+    platform_evidence_digest: candidate.terminalEvidenceDigest,
+  };
+}
+
+function prestartRetirementRequest(
+  candidate: PrestartHouseRunnerRetirementCandidate,
+): HostedHouseRunnerRetirementRequest {
+  if (
+    !REFERENCE_PATTERN.test(candidate.hostInstallationId)
+    || !UUID_PATTERN.test(candidate.reservationOperationId)
+    || !UUID_PATTERN.test(candidate.launchRequestId)
+    || !UUID_PATTERN.test(candidate.houseAgentAssignmentId)
+    || !SHA256_PATTERN.test(candidate.abandonmentEvidenceDigest)
+  ) {
+    throw new ResultReconciliationRejectedError("invalid_prestart_house_retirement_candidate");
+  }
+  return {
+    schema: "worldstream/house-runner-retirement-request/v1",
+    host_installation_id: candidate.hostInstallationId,
+    reservation_operation_id: candidate.reservationOperationId,
+    launch_request_id: candidate.launchRequestId,
+    house_agent_assignment_id: candidate.houseAgentAssignmentId,
+    disposition: "pre_start_abandoned",
+    platform_evidence_digest: candidate.abandonmentEvidenceDigest,
+  };
+}
+
+function validateRetirementReceipt(
+  value: CanonicalObject,
+  request: HostedHouseRunnerRetirementRequest,
+): void {
+  exactKeys(value, [
+    "schema",
+    "host_installation_id",
+    "reservation_operation_id",
+    "launch_request_id",
+    "house_agent_assignment_id",
+    "runner_unit_id",
+    "disposition",
+    "platform_evidence_digest",
+    "stop_witness",
+    "authentication_tag",
+  ]);
+  const runnerUnitId = reference(value.runner_unit_id);
+  const stopWitness = digest(value.stop_witness, BLAKE3_PATTERN);
+  const authenticationTag = hexTag(value.authentication_tag);
+  if (
+    value.schema !== "worldstream/house-runner-retirement-receipt/v1"
+    || value.host_installation_id !== request.host_installation_id
+    || value.reservation_operation_id !== request.reservation_operation_id
+    || value.launch_request_id !== request.launch_request_id
+    || value.house_agent_assignment_id !== request.house_agent_assignment_id
+    || value.disposition !== request.disposition
+    || value.platform_evidence_digest !== request.platform_evidence_digest
+    || !REFERENCE_PATTERN.test(runnerUnitId)
+    || !BLAKE3_PATTERN.test(stopWitness)
+    || !/^[0-9a-f]{64}$/u.test(authenticationTag)
+  ) {
+    throw new ResultReconciliationRejectedError("terminal_house_retirement_receipt_mismatch");
+  }
 }
 
 /** Runs one bounded reconciliation pass and ignores Genesis candidates. */
@@ -509,7 +805,53 @@ export async function reconcileActivityResultCandidates(
       reports.push(await reconcileActivityResult(candidate, dependencies));
     }
   }
+  await reconcileTerminalHouseRunnerRetirementCandidates(dependencies, limit);
+  await reconcilePrestartHouseRunnerRetirementCandidates(dependencies, limit);
   return reports;
+}
+
+/** A bounded retry lane for exact House cleanup after result-free abandonment. */
+export async function reconcilePrestartHouseRunnerRetirementCandidates(
+  dependencies: ResultReconcilerDependencies,
+  limit = 100,
+): Promise<void> {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new ResultReconciliationRejectedError("invalid_candidate_limit");
+  }
+  const retirementRuns = await dependencies.data.listPrestartHouseRunnerRetirementRuns(limit);
+  if (retirementRuns.length > limit || retirementRuns.length > 100) {
+    throw new ResultReconciliationRejectedError("prestart_house_retirement_candidate_limit_exceeded");
+  }
+  for (const runId of retirementRuns) {
+    if (!UUID_PATTERN.test(runId)) {
+      throw new ResultReconciliationRejectedError("invalid_prestart_house_retirement_run");
+    }
+    try {
+      await retirePrestartHouseRunners(runId, dependencies);
+    } catch (error) {
+      if (!(error instanceof ResultReconciliationUnavailableError)) throw error;
+    }
+  }
+}
+
+/** A bounded independent retry lane for terminal Host cleanup receipts. */
+export async function reconcileTerminalHouseRunnerRetirementCandidates(
+  dependencies: ResultReconcilerDependencies,
+  limit = 100,
+): Promise<void> {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new ResultReconciliationRejectedError("invalid_candidate_limit");
+  }
+  const retirementRuns = await dependencies.data.listTerminalHouseRunnerRetirementRuns(limit);
+  if (retirementRuns.length > limit || retirementRuns.length > 100) {
+    throw new ResultReconciliationRejectedError("terminal_house_retirement_candidate_limit_exceeded");
+  }
+  for (const runId of retirementRuns) {
+    if (!UUID_PATTERN.test(runId)) {
+      throw new ResultReconciliationRejectedError("invalid_terminal_house_retirement_run");
+    }
+    await attemptTerminalHouseRunnerRetirement(runId, dependencies);
+  }
 }
 
 function candidateRequest(candidate: ResultReconciliationCandidate): ResultSourceRequest {
@@ -873,6 +1215,14 @@ function digest(value: unknown, pattern: RegExp): string {
     throw new ResultReconciliationRejectedError("invalid_digest");
   }
   return value;
+}
+
+function hexTag(value: unknown): string {
+  const result = boundedString(value, 64);
+  if (!/^[0-9a-f]{64}$/u.test(result)) {
+    throw new ResultReconciliationRejectedError("invalid_authentication_tag");
+  }
+  return result;
 }
 
 function literal<const T extends string>(value: unknown, expected: T): T {

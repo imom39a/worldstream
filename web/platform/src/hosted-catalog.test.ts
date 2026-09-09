@@ -4,12 +4,14 @@ import { resolve } from "node:path";
 import { test } from "vitest";
 
 import { encodeCanonical } from "@worldstream/pack-sdk";
+import { deriveRoomSetup } from "@worldstream/hosted-contract";
 
 import {
   AGENT_HEIST_LISTING_DIGEST,
   listPublicHostedActivities,
   reviewedActivityByDigest,
   reviewedActivityBySlug,
+  reviewedPublicViewerClientPath,
   reviewedSeatId,
   reviewedSeatKey,
 } from "./hosted-catalog.js";
@@ -23,14 +25,14 @@ test("the hosted catalog resolves only the reviewed Agent Heist revision", async
   assert.equal(reviewedActivityByDigest(`blake3:${"0".repeat(64)}`), null);
 
   const source = JSON.parse(
-    await readFile(resolve("../..", "config/hosted/listings/agent-heist-0.12.0.json"), "utf8"),
+    await readFile(resolve("../..", "config/hosted/listings/agent-heist-0.20.0.json"), "utf8"),
   );
   assert.deepEqual(
     [...activity.listing.canonicalBytes],
     [...encodeCanonical(source)],
   );
   const release = JSON.parse(await readFile(
-    resolve("../..", "config/activity-clients/releases/agent-heist-web-v5.json"), "utf8",
+    resolve("../..", "config/activity-clients/releases/agent-heist-web-v6.json"), "utf8",
   ));
   assert.equal(activity.listing.value.client.release_digest, release.release_digest);
   assert.equal(activity.listing.value.client.surface_id, "heist-hosted-web");
@@ -48,13 +50,24 @@ test("the hosted catalog resolves only the reviewed Agent Heist revision", async
   assert.equal(reviewedSeatKey(activity, "worldstream.unknown-role"), null);
 });
 
+test("client selection is a reviewed client-contract concern, not a Pack branch", () => {
+  assert.equal(
+    reviewedPublicViewerClientPath({ publicViewerClientPath: "/negotiate-v1/hosted/" }),
+    "/negotiate-v1/hosted/",
+  );
+  assert.equal(reviewedPublicViewerClientPath({ publicViewerClientPath: null }), null);
+  const current = reviewedActivityBySlug("agent-heist");
+  assert.ok(current);
+  assert.equal(reviewedPublicViewerClientPath(current.public), "/agent-heist-v6/hosted/");
+});
+
 test("new discovery retains old exact Listing resolution without replacing its client", () => {
   const old = reviewedActivityByDigest("blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956");
   const current = reviewedActivityBySlug("agent-heist");
   assert.ok(old);
   assert.ok(current);
   assert.equal(old.listing.value.version, "0.3.0");
-  assert.equal(current.listing.value.version, "0.12.0");
+  assert.equal(current.listing.value.version, "0.20.0");
   assert.notEqual(old.listing.value.client.release_digest, current.listing.value.client.release_digest);
   assert.equal(old.public.clientPath, null);
   assert.equal(old.public.availability, "dependency_unavailable");
@@ -64,7 +77,7 @@ test("the public catalog contains only friendly bounded product choices", () => 
   const available = listPublicHostedActivities(true);
   assert.deepEqual(available.map(({ slug }) => slug), ["agent-heist", "negotiate"]);
   assert.equal(available[0]?.availability, "available");
-  assert.equal(available[0]?.clientPath, "/agent-heist-v5/hosted/");
+  assert.equal(available[0]?.clientPath, "/agent-heist-v6/hosted/");
   assert.equal(available[0]?.houseTerms?.maximumAgents, 2);
   assert.equal(available[1]?.availability, "coming_soon");
 
@@ -81,6 +94,7 @@ test("the first live Room retains its exact v4 client and pre-TLS House identiti
   assert.ok(retained);
   assert.equal(retained.listing.value.version, "0.7.0");
   assert.equal(retained.public.clientPath, "/agent-heist-v4/hosted/");
+  assert.equal(retained.public.publicViewerClientPath, null);
   assert.equal(retained.houseAgents.size, 2);
   assert.deepEqual([...retained.houseAgents.values()].map((r) => r.value.runner_template.revision), ["2", "2"]);
 });
@@ -96,6 +110,108 @@ test("the prior live gameplay release retains its original Pack and client", () 
   for (const house of retained.houseAgents.values()) assert.equal(house.value.runner_template.revision, "6");
 });
 
+test("the current discovery Listing binds the current client to the frozen Heist 0.3 Pack", async () => {
+  const candidate = reviewedActivityByDigest("blake3:1cf75abcb30d77fdbe0abc5e39813a315bea6900c61e9b49c51b84d995335d74");
+  assert.ok(candidate);
+  assert.equal(candidate, reviewedActivityBySlug("agent-heist"));
+  assert.equal(candidate.listing.value.version, "0.20.0");
+  assert.equal(candidate.listing.value.pack.version, "0.3.0");
+  assert.equal(candidate.listing.value.pack.digest, "blake3:4e4c970403f29a8448a1a3bcf7a96c030df713499730288f324c7e200d160b2d");
+  assert.equal(candidate.listing.value.client.release_digest, "sha256:ed70155dd56f13010f33ab6cba55f3085443840a7e0f7a286e32b2e6d1719d10");
+  assert.equal(candidate.public.clientPath, "/agent-heist-v6/hosted/");
+  const source = JSON.parse(await readFile(resolve("../..", "config/hosted/listings/agent-heist-0.20.0.json"), "utf8"));
+  const predecessor = JSON.parse(await readFile(resolve("../..", "config/hosted/listings/agent-heist-0.19.0.json"), "utf8"));
+  assert.deepEqual([...candidate.listing.canonicalBytes], [...encodeCanonical(source)]);
+  assert.deepEqual(source.pack, predecessor.pack);
+  assert.deepEqual(source.client, predecessor.client);
+  assert.deepEqual(source.result, predecessor.result);
+  assert.deepEqual(source.room_setup, predecessor.room_setup);
+});
+
+test("the r11 Listing remains resolvable after the r12 successor advances discovery", () => {
+  const retained = reviewedActivityByDigest("blake3:21d7d5439208df0b1dbb18f7f42f3a3687d248a523b03fb5b4184b2dd0dcb626");
+  assert.ok(retained);
+  assert.equal(retained.listing.value.version, "0.19.0");
+  assert.deepEqual(
+    [...retained.houseAgents.values()].map((house) => house.value.runner_template.revision),
+    ["11", "11"],
+  );
+});
+
+test("the retained r9 Listing remains resolvable across every reviewed surface", () => {
+  const retained = reviewedActivityByDigest("blake3:ab6d61d35786e51e3849c68467aad664bd35cb41f299b86d1bcce3f52e4249db");
+  assert.ok(retained);
+  assert.equal(retained.listing.value.version, "0.16.0");
+  assert.deepEqual(
+    [...retained.houseAgents.values()].map((house) => house.value.runner_template.revision),
+    ["9", "9"],
+  );
+});
+
+test("the r10 Listing remains resolvable with its original House identities", () => {
+  const retained = reviewedActivityByDigest("blake3:5b0993de4c858771cce34b16cb25e03b2bf509cbe16cd1ce7249a789ea8c426f");
+  assert.ok(retained);
+  assert.equal(retained.listing.value.version, "0.18.0");
+  assert.deepEqual(
+    [...retained.houseAgents.values()].map((house) => house.value.runner_template.revision),
+    ["10", "10"],
+  );
+});
+
+test("the prior Heist 0.3 discovery Listing remains pinned to v5", () => {
+  const retained = reviewedActivityByDigest("blake3:a12a29ad0382c7053a14295a60d017fbdc817c24e513521f85be982f5ec07dfc");
+  assert.ok(retained);
+  assert.equal(retained.listing.value.version, "0.13.0");
+  assert.equal(retained.listing.value.pack.version, "0.3.0");
+  assert.equal(retained.listing.value.client.release_digest, "sha256:4228b6f0cd6f7fdb19fe03e2e8b997a0d6ced8b0d2069c67952afb1ddceeb0ca");
+  assert.equal(retained.public.clientPath, "/agent-heist-v5/hosted/");
+  assert.equal(retained.public.publicViewerClientPath, null);
+});
+
+test("retained 0.12 formation can derive its current House revision", () => {
+  const retained = reviewedActivityByDigest("blake3:10135b2b12664dec3fc51a23c917d8468474af93b9c20ee5ed068b61e2dee61c");
+  assert.ok(retained);
+  assert.equal(retained.listing.value.version, "0.12.0");
+  const house = retained.houseAgents.get("blake3:5a826962c0f09c40a1b760d2c0eec9af216b9eb703b2e6f971fc24e32f0564d1");
+  assert.ok(house);
+  const launch = encodeCanonical({
+    schema: "worldstream/launch-request/v2",
+    listing_revision_digest: retained.listing.digest,
+    inputs: {},
+    creator: { participation: "seat", principal_reference: "account:creator" },
+  });
+  const roster = encodeCanonical({
+    schema: "worldstream/frozen-roster/v1",
+    listing_revision_digest: retained.listing.digest,
+    members: [
+      {
+        seat_id: "navigator",
+        participation: "account_human",
+        principal_reference: "account:creator",
+        display_name: "Navigator",
+      },
+      {
+        seat_id: "insider",
+        participation: "house_agent_fill",
+        principal_reference: "house:retained:insider",
+        display_name: house.value.display_name,
+        house_agent_revision_digest: house.digest,
+        agent_profile: {
+          profile_id: house.value.agent_profile.profile_id,
+          revision: house.value.agent_profile.revision,
+        },
+        runner_template: {
+          template_id: house.value.runner_template.template_id,
+          revision: house.value.runner_template.revision,
+        },
+      },
+    ],
+  });
+  const setup = deriveRoomSetup(retained.listing, launch, roster, [...retained.houseAgents.values()]);
+  const setupValue = JSON.parse(new TextDecoder().decode(setup));
+  assert.equal(setupValue.pack.version, "0.4.0");
+});
+
 test("retained Rooms keep the original v2 client after the design release", () => {
   const retained = reviewedActivityByDigest("blake3:04edc964d5cbc1bc5efa422ac856305d55cec609a6ae5c5c1814c8389b776f80");
   assert.ok(retained);
@@ -105,16 +221,16 @@ test("retained Rooms keep the original v2 client after the design release", () =
   assert.equal(retained.listing.value.client.release_digest, "sha256:493260d162be2bdfda28e71b6e4f94d5ef5c11e7f03adfbee3ab9295bdf4594b");
 });
 
-test("discovery uses two Granite strategies while retained Listings keep their original House routes", () => {
+test("discovery uses the frozen 0.3 House strategies while retained Listings keep their original routes", () => {
   const current = reviewedActivityBySlug("agent-heist");
   const retained = reviewedActivityByDigest("blake3:9553f4fa320aa6901d0a03870f5c19ce4342d271efd2ef90d4fd287395f6cef1");
   assert.ok(current);
   assert.ok(retained);
-  assert.equal(current.listing.value.version, "0.12.0");
+  assert.equal(current.listing.value.version, "0.20.0");
   assert.equal(retained.listing.value.version, "0.5.0");
   assert.equal(retained.public.clientPath, "/agent-heist-v3/hosted/");
   assert.notDeepEqual(current.listing.value.client, retained.listing.value.client);
-  assert.equal(current.listing.value.pack.version, "0.4.0");
+  assert.equal(current.listing.value.pack.version, "0.3.0");
   assert.equal(retained.listing.value.pack.version, "0.2.0");
   assert.deepEqual(current.listing.value.result.publication, retained.listing.value.result.publication);
   const strategies = [...current.houseAgents.values()];
@@ -129,9 +245,9 @@ test("discovery uses two Granite strategies while retained Listings keep their o
     assert.equal(strategy.value.allowance.model_call_attempts, 10);
   }
   const planner = strategies.find(({ value }) => value.house_agent_id === "worldstream.house.cooperative-planner");
-  assert.equal(planner?.value.agent_profile.revision, "8");
-  assert.equal(planner?.value.version, "8");
-  assert.equal(planner?.value.runner_template.revision, "7");
+  assert.equal(planner?.value.agent_profile.revision, "13");
+  assert.equal(planner?.value.version, "13");
+  assert.equal(planner?.value.runner_template.revision, "12");
   const oldPlanner = [...retained.houseAgents.values()].find(({ value }) => value.house_agent_id === "worldstream.house.cooperative-planner");
   assert.equal(oldPlanner?.value.route.model_slug, "qwen/qwen3.8-flash-20260826");
   assert.equal(oldPlanner?.value.agent_profile.revision, "1");

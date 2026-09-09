@@ -5,6 +5,7 @@ import {
   HOSTED_ACCEPTANCE_SCHEMA,
   LOCAL_ACCEPTANCE_CHECKS,
   DEPLOYED_ACCEPTANCE_CHECKS,
+  REQUIRED_RENDERED_CLIENT_CHECKS,
   validateHostedAcceptanceEvidence,
 } from "./hosted-acceptance-evidence.mjs";
 
@@ -27,7 +28,33 @@ function localEvidence() {
     checks: Object.fromEntries(
       LOCAL_ACCEPTANCE_CHECKS.map((name) => [name, { status: "passed" }]),
     ),
-    metrics: { provider_calls: 1, maximum_direct_push_seconds: 8 },
+    metrics: { provider_calls: 3, maximum_direct_push_seconds: 8 },
+    qualification: {
+      match_matrix: [1, 2, 3].map((match) => ({
+        match,
+        mode: match === 3 ? "people_only" : "house_backed",
+        outcome: match === 3 ? "failure" : "success",
+        provider_call_delta: match === 3 ? 0 : 1,
+        capacity_released: true,
+        history_retained: match > 1,
+        disconnect_and_catch_up: match === 1,
+        restart_and_reentry: match === 1,
+        no_actions: match === 3,
+      })),
+      retained_history_count: 2,
+      consumed_allowance_observed: true,
+      fresh_setup: { status: "passed" },
+      retained_upgrade: { status: "passed" },
+      ordinary_restart: { status: "passed" },
+      populated_recovery: "deferred_not_verified",
+      rendered_client: {
+        schema: "worldstream/hosted-rendered-browser-journey/v1",
+        outcome: "passed",
+        completed: true,
+        checks: [...REQUIRED_RENDERED_CLIENT_CHECKS],
+        provider: "local_fake_provider_only",
+      },
+    },
     redaction: { private_projections_retained: false, credentials_retained: false },
   };
 }
@@ -47,13 +74,54 @@ test("acceptance evidence requires every exact check and matching outcome", () =
   assert.doesNotThrow(() => validateHostedAcceptanceEvidence(dirty));
 });
 
+test("passed local evidence requires the accepted three-match scenario distribution", () => {
+  const invalidMode = localEvidence();
+  invalidMode.qualification.match_matrix[0].mode = "people_only";
+  assert.throws(() => validateHostedAcceptanceEvidence(invalidMode), /qualification_scenario_invalid/u);
+
+  const invalidOutcome = localEvidence();
+  invalidOutcome.qualification.match_matrix[2].outcome = "success";
+  assert.throws(() => validateHostedAcceptanceEvidence(invalidOutcome), /qualification_scenario_invalid/u);
+
+  const providerCallOnPeopleOnly = localEvidence();
+  providerCallOnPeopleOnly.qualification.match_matrix[2].provider_call_delta = 1;
+  assert.throws(() => validateHostedAcceptanceEvidence(providerCallOnPeopleOnly), /qualification_scenario_invalid/u);
+
+  const missingRestartProof = localEvidence();
+  missingRestartProof.qualification.match_matrix[0].restart_and_reentry = false;
+  assert.throws(() => validateHostedAcceptanceEvidence(missingRestartProof), /qualification_scenario_invalid/u);
+});
+
+test("passed evidence requires the complete rendered-browser proof", () => {
+  const evidence = localEvidence();
+  evidence.qualification.rendered_client.checks = evidence.qualification.rendered_client.checks
+    .filter((check) => check !== "rendered_room_start");
+  assert.throws(() => validateHostedAcceptanceEvidence(evidence), /rendered_client_checks_incomplete/u);
+});
+
 test("passed evidence rejects template identity even when every check is green", () => {
   const evidence = localEvidence();
   evidence.candidate_kind = "deployed";
   evidence.checks = Object.fromEntries(DEPLOYED_ACCEPTANCE_CHECKS.map((name) => [name, { status: "passed" }]));
   evidence.metrics.maximum_direct_push_seconds = 301;
+  evidence.outcome = "blocked";
+  evidence.qualification.fresh_setup.status = "blocked";
+  evidence.qualification.retained_upgrade.status = "blocked";
+  evidence.qualification.ordinary_restart.status = "blocked";
+  evidence.checks = Object.fromEntries(DEPLOYED_ACCEPTANCE_CHECKS.map((name) => [name, { status: "blocked" }]));
   evidence.deployment.platform_revision = "dpl_fixture123";
   evidence.deployment.gateway_revision = evidence.commit;
+  evidence.qualification.rendered_client.provider = "openrouter/production";
+  assert.doesNotThrow(() => validateHostedAcceptanceEvidence(evidence));
+  evidence.outcome = "passed";
+  evidence.metrics.provider_calls = 1;
+  evidence.qualification.fresh_setup.status = "passed";
+  evidence.qualification.retained_upgrade.status = "passed";
+  evidence.qualification.ordinary_restart.status = "passed";
+  evidence.checks = Object.fromEntries(DEPLOYED_ACCEPTANCE_CHECKS.map((name) => [name, { status: "passed" }]));
+  evidence.qualification.rendered_client.provider = "local_fake_provider_only";
+  assert.throws(() => validateHostedAcceptanceEvidence(evidence), /rendered_client_provider_invalid/u);
+  evidence.qualification.rendered_client.provider = "openrouter/production";
   assert.doesNotThrow(() => validateHostedAcceptanceEvidence(evidence));
   const exactlyFiveMinutes = structuredClone(evidence);
   exactlyFiveMinutes.metrics.maximum_direct_push_seconds = 300;

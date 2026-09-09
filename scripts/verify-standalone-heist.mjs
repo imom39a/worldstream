@@ -15,6 +15,13 @@ import { activityClientBuildDigest } from "./activity-client-identities.mjs";
 
 const execute = promisify(execFile);
 const executableNames = ["worldstreamctl", "worldstreamd", "worldstream-studio-supervisor", "worldstream-assignment-mcp"];
+const executableBuild = {
+  schema: "worldstream/local-executable-build/v1",
+  packages: ["worldstream-server", "worldstream-studio-supervisor"],
+  binaries: executableNames,
+  jobs: 1,
+  elapsed_ms: 0,
+};
 const executablePreflight = {
   schema: "worldstream/local-executable-preflight/v1",
   purpose: "help_only_not_service_readiness",
@@ -35,6 +42,7 @@ let startAttempted = false;
 let proofFailure;
 let receipt;
 try {
+  await buildExactExecutables();
   await mkdir(join(root, "bin"), { mode: 0o700 });
   for (const binary of executableNames) {
     await copyFile(join(workspace, "target/debug", binary), join(root, "bin", binary));
@@ -42,19 +50,25 @@ try {
   // Run the exact retained copies once before the managed startup deadline.
   // Normal OS execution policy still applies; never recopy after this check.
   await preflightExecutables();
-  const release = JSON.parse(await readFile(join(workspace, "config/activity-clients/releases/agent-heist-web-v4.json"), "utf8"));
+  const release = JSON.parse(await readFile(join(workspace, "config/activity-clients/releases/agent-heist-web-v6.json"), "utf8"));
   assert.equal(await activityClientBuildDigest(join(workspace, "clients/agent-heist-web/dist")), release.artifacts[0].digest);
   await writeFile(config, `config_version = 1\n[server]\nbind = "127.0.0.1:9410"\n[storage]\nprofile = "sqlite-bundled"\ndata_dir = "${join(root, "runtime")}"\ndeployment_lineage = "development/local-heist-proof"\nstorage_epoch = 1\n[authority.bootstrap]\nsecret_file = "${join(root, "authority.secret")}"\n`, { mode: 0o600 });
   const bindings = JSON.parse(await readFile(join(workspace, "config/activity-clients/local-bindings.json"), "utf8"));
   bindings.deployments = bindings.deployments.filter((value) => value.release_digest === release.release_digest || value.client_id.includes("inspector"));
-  bindings.bindings = bindings.bindings.filter((value) => value.pack.id === "worldstream.agent-heist" && value.pack.version === "0.3.0");
+  const agentHeistDeployment = bindings.deployments.find((value) => value.client_id === "worldstream.agent-heist.web");
+  assert.ok(agentHeistDeployment, "the selected Heist release must have a retained deployment");
+  bindings.bindings = bindings.bindings.filter((value) =>
+    value.pack.id === "worldstream.agent-heist"
+    && value.pack.version === "0.3.0"
+    && value.deployment_id === agentHeistDeployment.deployment_id,
+  );
   for (const deployment of bindings.deployments) for (const surface of deployment.surfaces) {
     surface.launch_url = `${host.origin}${new URL(surface.launch_url).pathname}`;
   }
   await writeFile(join(root, "bindings.json"), JSON.stringify(bindings), { mode: 0o600 });
   const declaration = join(root, "clients.json");
   await writeFile(declaration, JSON.stringify({ schema: "worldstream/client-declaration-import/v1",
-    release_files: ["agent-heist-web-v4.json", "inspector-web-v2.json"].map((name) => join(workspace, "config/activity-clients/releases", name)),
+    release_files: ["agent-heist-web-v6.json", "inspector-web-v2.json"].map((name) => join(workspace, "config/activity-clients/releases", name)),
     bindings_file: join(root, "bindings.json") }), { mode: 0o600 });
   await cli("init");
   const preview = await cli("init", "--client-declaration", declaration, "--preview");
@@ -76,7 +90,7 @@ try {
   });
   assert.ok(handoffResponse.ok);
   const handoff = await handoffResponse.json();
-  assert.equal(new URL(handoff.client_url).pathname, "/agent-heist-v4/");
+  assert.equal(new URL(handoff.client_url).pathname, "/agent-heist-v6/");
   const page = await browser.newPage();
   let platformRequests = 0;
   page.on("request", (request) => { if (new URL(request.url()).pathname === "/api/auth/session") platformRequests += 1; });
@@ -100,8 +114,8 @@ try {
   await page.getByText("Role Navigator", { exact: true }).waitFor();
   assert.equal(platformRequests, 0);
   receipt = { status: "passed", surface: "heist-web", release_digest: release.release_digest,
-    checks: ["exact_release_bytes", "cli_init_import_start_example_validate_create", "protected_controller_handoff", "authorized_navigator_lobby", "live_navigator_readiness", "fragment_removed", "cookie_reload", "no_platform_auth"],
-    os_browser_opener: "not_exercised", provider_calls: 0, executable_preflight: executablePreflight };
+    checks: ["exact_release_bytes", "exact_runtime_executables", "cli_init_import_start_example_validate_create", "protected_controller_handoff", "authorized_navigator_lobby", "live_navigator_readiness", "fragment_removed", "cookie_reload", "no_platform_auth"],
+    os_browser_opener: "not_exercised", provider_calls: 0, executable_build: executableBuild, executable_preflight: executablePreflight };
 } catch (error) {
   proofFailure = error;
 } finally {
@@ -120,6 +134,19 @@ try {
 }
 if (proofFailure) throw proofFailure;
 console.log(JSON.stringify(receipt));
+
+async function buildExactExecutables() {
+  const args = ["build", "--locked", "-j", "1",
+    "-p", "worldstream-server", "--bin", "worldstreamctl", "--bin", "worldstreamd",
+    "-p", "worldstream-studio-supervisor", "--bin", "worldstream-studio-supervisor", "--bin", "worldstream-assignment-mcp"];
+  const started = performance.now();
+  try {
+    await execute("cargo", args, { cwd: workspace, timeout: 900_000, maxBuffer: 4 * 1024 * 1024 });
+  } catch (error) {
+    throw new Error(`Exact local Runtime executable build failed (private output suppressed): ${error.code ?? "unavailable"}`);
+  }
+  executableBuild.elapsed_ms = Math.round(performance.now() - started);
+}
 
 async function preflightExecutables() {
   const startedAt = performance.now();

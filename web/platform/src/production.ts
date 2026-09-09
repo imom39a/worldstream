@@ -60,7 +60,7 @@ export function createProductionPlatformBff(
   const platform = createVercelPlatformBff(
     {
       canonicalOrigin,
-      allowedReturnTargets: ["/", "/join"],
+      allowedReturnTargets: ["/", "/join", "/my-games"],
       sessionKey: exactBase64Key(
         required(environment, "WORLDSTREAM_SESSION_KEY_BASE64"),
       ),
@@ -101,6 +101,9 @@ export function createProductionPlatformBff(
       recover: (launchId) => new HostedFormationCoordinator(
         hostedFormationData, hostedFormationGateway, hostInstallationId,
       ).recover(launchId),
+      abandonPrestart: (launchId) => new HostedFormationCoordinator(
+        hostedFormationData, hostedFormationGateway, hostInstallationId,
+      ).abandonPrestart(launchId),
     },
   );
 }

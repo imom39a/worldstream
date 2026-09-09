@@ -27,13 +27,16 @@ use serde::{Deserialize, Serialize};
 use worldstream_core::CanonicalJsonV1;
 use worldstream_hosted_contract::{
     HostedGenesisEvidenceV1, HostedGenesisHeadV1, HostedHouseRunnerReservationReceiptV1,
-    HostedHouseRunnerReservationRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
-    HostedLaunchStageV1, HostedLaunchStatusV1, HostedPublicRelayBindRequestV1,
+    HostedHouseRunnerReservationRequestV1, HostedHouseRunnerRetirementReceiptV1,
+    HostedHouseRunnerRetirementRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
+    HostedLaunchStageV1, HostedLaunchStatusV1, HostedPrestartAbandonmentEvidenceV1,
+    HostedProvisioningAbandonmentEvidenceV1, HostedPublicRelayBindRequestV1,
     HostedResultSourceEvidenceV1, HostedResultSourceRequestV1, HouseAgentRevision, ListingRevision,
     PackReference as HostedPackReference, validate_hosted_genesis_evidence,
     validate_hosted_launch_evidence_request, validate_hosted_launch_request,
-    validate_hosted_public_relay_bind_request, validate_hosted_result_source_evidence,
-    validate_hosted_result_source_request,
+    validate_hosted_prestart_abandonment_evidence,
+    validate_hosted_provisioning_abandonment_evidence, validate_hosted_public_relay_bind_request,
+    validate_hosted_result_source_evidence, validate_hosted_result_source_request,
 };
 use worldstream_runtime::{
     create_owner_only_file, prepare_data_directory, validate_owner_only_file,
@@ -56,6 +59,8 @@ use crate::{
 };
 
 const BINDING_SCHEMA_V1: &str = "worldstream/hosted-launch-binding/v1";
+const PRESTART_ABANDONMENT_SCHEMA_V1: &str = "worldstream/hosted-prestart-abandonment/v1";
+const PROVISIONING_ABANDONMENT_SCHEMA_V1: &str = "worldstream/hosted-provisioning-abandonment/v1";
 const ACCESS_TAG_KEY: &[u8] = b"worldstream/hosted-controller-authority/v1";
 const MAX_BINDING_BYTES: usize = 16 * 1024;
 const MAX_BINDINGS: usize = 256;
@@ -82,6 +87,42 @@ struct RetainedHostedLaunchBindingV1 {
     room_setup_specification_digest: String,
     room_setup_operation_id: String,
     capacity_reservation_reference: String,
+}
+
+/// Durable pre-start fence retained beside one exact launch binding. It is
+/// written before the Host returns any abandonment evidence, so a restart
+/// cannot later resume or spawn the Lobby for this operation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RetainedPrestartAbandonmentV1 {
+    schema: String,
+    host_installation_id: String,
+    launch_request_id: String,
+    listing_revision_digest: String,
+    launch_request_digest: String,
+    room_setup_operation_id: String,
+    room_id: String,
+    abandonment_fence_digest: String,
+    authentication_tag: String,
+}
+
+/// Durable fence for one retained setup operation that never committed
+/// Genesis. Unlike pre-start abandonment it contains no Room or Run identity,
+/// because neither exists. It is written before evidence leaves this Host.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RetainedProvisioningAbandonmentV1 {
+    schema: String,
+    host_installation_id: String,
+    /// The exact platform launch capacity reservation reference retained in
+    /// the Host binding. This binds the durable fence to one launch request
+    /// and is required before platform capacity may be released.
+    launch_request_id: String,
+    listing_revision_digest: String,
+    launch_request_digest: String,
+    room_setup_operation_id: String,
+    provisioning_fence_digest: String,
+    authentication_tag: String,
 }
 
 trait HostedRoomOperationBackendV1: Send + Sync + 'static {
@@ -133,6 +174,14 @@ trait HostedHouseRunnerBackendV1: Send + Sync + 'static {
         request: &HostedHouseRunnerReservationRequestV1,
     ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerErrorV1>;
 
+    fn retire(
+        &self,
+        request: &HostedHouseRunnerRetirementRequestV1,
+    ) -> Result<HostedHouseRunnerRetirementReceiptV1, HostedHouseRunnerErrorV1> {
+        let _ = request;
+        Err(HostedHouseRunnerErrorV1::Invalid)
+    }
+
     fn read(
         &self,
         request: &HostedHouseRunnerReservationRequestV1,
@@ -160,6 +209,13 @@ impl HostedHouseRunnerBackendV1 for HostedHouseRunnerOperationsV1 {
         request: &HostedHouseRunnerReservationRequestV1,
     ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerErrorV1> {
         HostedHouseRunnerOperationsV1::read(self, request)
+    }
+
+    fn retire(
+        &self,
+        request: &HostedHouseRunnerRetirementRequestV1,
+    ) -> Result<HostedHouseRunnerRetirementReceiptV1, HostedHouseRunnerErrorV1> {
+        HostedHouseRunnerOperationsV1::retire(self, request)
     }
 
     fn bind_launch(&self, request: &HostedLaunchRequestV1) -> Result<(), HostedHouseRunnerErrorV1> {
@@ -408,7 +464,23 @@ impl HostedLaunchOperationsV1 {
                 .reservation_reference
                 .clone(),
         };
-        self.bind(&binding)?;
+        // Launch and pre-start abandonment share this lock. The durable fence
+        // therefore wins before any future spawn/launch attempt can pass the
+        // retained binding boundary.
+        let _guard = self.lock();
+        if self
+            .load_provisioning_abandonment_unlocked(&binding.room_setup_operation_id)?
+            .is_some()
+        {
+            return Err(HostedLaunchErrorV1::Conflict);
+        }
+        self.bind_unlocked(&binding)?;
+        if self
+            .load_prestart_abandonment_unlocked(&binding.room_setup_operation_id)?
+            .is_some()
+        {
+            return Err(HostedLaunchErrorV1::Conflict);
+        }
         if !request.house_runner_assignments.is_empty() {
             self.house_runners
                 .as_ref()
@@ -462,12 +534,95 @@ impl HostedLaunchOperationsV1 {
         {
             return Err(HostedLaunchErrorV1::Conflict);
         }
-        let room = match self.backend.inspect(&binding.room_setup_operation_id) {
-            Ok(status) => Some(status),
-            Err(HostedLaunchErrorV1::NotFound) => None,
-            Err(error) => return Err(error),
+        // A retained binding alone is not evidence that a Room setup operation
+        // still exists. Propagate Host NotFound so the Gateway can distinguish
+        // the narrow pre-Genesis recovery proof from a provisioning status.
+        let room = self.backend.inspect(&binding.room_setup_operation_id)?;
+        Ok(public_status(&binding, Some(room), None))
+    }
+
+    /// Durably fences one Genesis-created Room before its Lobby task commits.
+    ///
+    /// The platform may request this only through service authentication, but
+    /// the Host decides from its current retained task assessment. A deadline
+    /// is merely a scheduling signal; no caller-supplied timestamp can make a
+    /// launched Lobby abandonable.
+    pub fn abandon_prestart(
+        &self,
+        request: &HostedLaunchEvidenceRequestV1,
+    ) -> Result<HostedPrestartAbandonmentEvidenceV1, HostedLaunchErrorV1> {
+        validate_hosted_launch_evidence_request(request)
+            .map_err(|_| HostedLaunchErrorV1::Invalid)?;
+        let _guard = self.lock();
+        let binding = self.load_unlocked(&request.room_setup_operation_id)?;
+        if binding.listing_revision_digest != request.listing_revision_digest
+            || binding.launch_request_digest != request.launch_request_digest
+        {
+            return Err(HostedLaunchErrorV1::Conflict);
+        }
+        if let Some(retained) =
+            self.load_prestart_abandonment_unlocked(&binding.room_setup_operation_id)?
+        {
+            return self.prestart_abandonment_evidence(&binding, retained);
+        }
+        let status = self.backend.inspect(&binding.room_setup_operation_id)?;
+        let Some(room_id) = status.room_id else {
+            return Err(HostedLaunchErrorV1::Conflict);
         };
-        Ok(public_status(&binding, room, None))
+        if !status.complete
+            || status.assessment.as_ref().is_some_and(|assessment| {
+                assessment
+                    .launch
+                    .as_ref()
+                    .is_some_and(|launch| launch.state == TaskLaunchStateV1::Launched)
+            })
+        {
+            return Err(HostedLaunchErrorV1::Conflict);
+        }
+        let retained = self.new_prestart_abandonment(&binding, &room_id)?;
+        // This fsync'd marker is the durable spawn fence. It must exist before
+        // the evidence can authorize platform capacity or House cleanup.
+        self.persist_prestart_abandonment_unlocked(&retained)?;
+        self.prestart_abandonment_evidence(&binding, retained)
+    }
+
+    /// Durably fences one exact setup operation only after the Host has
+    /// independently rechecked that it has no Room/Genesis operation. This is
+    /// the pre-Genesis recovery closure for an interrupted legacy provision;
+    /// it is not a cancellation or generic Room-control surface.
+    pub fn abandon_provisioning(
+        &self,
+        request: &HostedLaunchEvidenceRequestV1,
+    ) -> Result<HostedProvisioningAbandonmentEvidenceV1, HostedLaunchErrorV1> {
+        validate_hosted_launch_evidence_request(request)
+            .map_err(|_| HostedLaunchErrorV1::Invalid)?;
+        let _guard = self.lock();
+        if let Some(retained) =
+            self.load_provisioning_abandonment_unlocked(&request.room_setup_operation_id)?
+        {
+            return self.provisioning_abandonment_evidence(request, retained);
+        }
+
+        // The binding is the only Host-retained correspondence to the
+        // platform launch request. Its absence is ambiguous durable state,
+        // not proof that a prior Host mutation did not happen.
+        let binding = self.load_unlocked(&request.room_setup_operation_id)?;
+        if binding.listing_revision_digest != request.listing_revision_digest
+            || binding.launch_request_digest != request.launch_request_digest
+        {
+            return Err(HostedLaunchErrorV1::Conflict);
+        }
+        // This is the Host-side proof. A missing setup operation is the only
+        // safe pre-Genesis condition; an existing operation remains
+        // reconcilable and must never be abandoned from elapsed time alone.
+        match self.backend.inspect(&request.room_setup_operation_id) {
+            Err(HostedLaunchErrorV1::NotFound) => {}
+            Ok(_) => return Err(HostedLaunchErrorV1::Conflict),
+            Err(error) => return Err(error),
+        }
+        let retained = self.new_provisioning_abandonment(&binding)?;
+        self.persist_provisioning_abandonment_unlocked(&retained)?;
+        self.provisioning_abandonment_evidence(request, retained)
     }
 
     /// Reads the exact sequence-zero Room and Membership correspondence for
@@ -679,6 +834,21 @@ impl HostedLaunchOperationsV1 {
             .map_err(map_house_error)
     }
 
+    /// Stops and fences one exact completed or safely resolved House unit.
+    ///
+    /// This remains a service-only, evidence-bound route. It exposes no
+    /// generic process control, Room mutation, or provider accounting surface.
+    pub fn retire_house_runner(
+        &self,
+        request: &HostedHouseRunnerRetirementRequestV1,
+    ) -> Result<HostedHouseRunnerRetirementReceiptV1, HostedLaunchErrorV1> {
+        self.house_runners
+            .as_ref()
+            .ok_or(HostedLaunchErrorV1::NotFound)?
+            .retire(request)
+            .map_err(map_house_error)
+    }
+
     /// Rechecks only retained hosted Rooms whose Lobby launch has not reached
     /// a terminal state. This is the bounded bridge from asynchronous client
     /// and Runner presence to the existing idempotent Task launch intent.
@@ -694,6 +864,18 @@ impl HostedLaunchOperationsV1 {
             .map_err(|_| HostedLaunchErrorV1::Unavailable)?;
         for binding in self.bindings_unlocked()? {
             if launched.contains(&binding.room_setup_operation_id) {
+                continue;
+            }
+            if self
+                .load_prestart_abandonment_unlocked(&binding.room_setup_operation_id)?
+                .is_some()
+            {
+                continue;
+            }
+            if self
+                .load_provisioning_abandonment_unlocked(&binding.room_setup_operation_id)?
+                .is_some()
+            {
                 continue;
             }
             let status = self.backend.inspect(&binding.room_setup_operation_id)?;
@@ -729,8 +911,10 @@ impl HostedLaunchOperationsV1 {
         Ok(())
     }
 
-    fn bind(&self, requested: &RetainedHostedLaunchBindingV1) -> Result<(), HostedLaunchErrorV1> {
-        let _guard = self.lock();
+    fn bind_unlocked(
+        &self,
+        requested: &RetainedHostedLaunchBindingV1,
+    ) -> Result<(), HostedLaunchErrorV1> {
         match self.load_unlocked(&requested.room_setup_operation_id) {
             Ok(existing) if existing == *requested => return Ok(()),
             Ok(_) => return Err(HostedLaunchErrorV1::Conflict),
@@ -738,10 +922,7 @@ impl HostedLaunchOperationsV1 {
             Err(error) => return Err(error),
         }
         for binding in self.bindings_unlocked()? {
-            if binding.launch_request_digest == requested.launch_request_digest
-                || binding.capacity_reservation_reference
-                    == requested.capacity_reservation_reference
-            {
+            if binding.capacity_reservation_reference == requested.capacity_reservation_reference {
                 return Err(HostedLaunchErrorV1::Conflict);
             }
         }
@@ -770,6 +951,9 @@ impl HostedLaunchOperationsV1 {
             {
                 continue;
             }
+            if name.ends_with(".abandoned.json") || name.ends_with(".provisioning-abandoned.json") {
+                continue;
+            }
             let operation = name
                 .strip_suffix(".json")
                 .ok_or(HostedLaunchErrorV1::Unavailable)?;
@@ -779,6 +963,289 @@ impl HostedLaunchOperationsV1 {
             }
         }
         Ok(bindings)
+    }
+
+    fn load_prestart_abandonment_unlocked(
+        &self,
+        operation: &str,
+    ) -> Result<Option<RetainedPrestartAbandonmentV1>, HostedLaunchErrorV1> {
+        if !safe_operation(operation) {
+            return Err(HostedLaunchErrorV1::Invalid);
+        }
+        let path = self.prestart_abandonment_path(operation);
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(HostedLaunchErrorV1::Unavailable),
+            Ok(_) => {}
+        }
+        validate_owner_only_file(&path).map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        let bytes = fs::read(&path).map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        if bytes.len() > MAX_BINDING_BYTES {
+            return Err(HostedLaunchErrorV1::Unavailable);
+        }
+        let retained = serde_json::from_slice::<RetainedPrestartAbandonmentV1>(&bytes)
+            .map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        if !valid_prestart_abandonment(&retained, operation, &self.host_installation_id) {
+            return Err(HostedLaunchErrorV1::Unavailable);
+        }
+        Ok(Some(retained))
+    }
+
+    fn load_provisioning_abandonment_unlocked(
+        &self,
+        operation: &str,
+    ) -> Result<Option<RetainedProvisioningAbandonmentV1>, HostedLaunchErrorV1> {
+        if !safe_operation(operation) {
+            return Err(HostedLaunchErrorV1::Invalid);
+        }
+        let path = self.provisioning_abandonment_path(operation);
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(HostedLaunchErrorV1::Unavailable),
+            Ok(_) => {}
+        }
+        validate_owner_only_file(&path).map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        let bytes = fs::read(&path).map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        if bytes.len() > MAX_BINDING_BYTES {
+            return Err(HostedLaunchErrorV1::Unavailable);
+        }
+        let retained = serde_json::from_slice::<RetainedProvisioningAbandonmentV1>(&bytes)
+            .map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        if !valid_provisioning_abandonment(&retained, operation, &self.host_installation_id) {
+            return Err(HostedLaunchErrorV1::Unavailable);
+        }
+        Ok(Some(retained))
+    }
+
+    fn new_prestart_abandonment(
+        &self,
+        binding: &RetainedHostedLaunchBindingV1,
+        room_id: &str,
+    ) -> Result<RetainedPrestartAbandonmentV1, HostedLaunchErrorV1> {
+        let fingerprint = serde_json::json!({
+            "domain": "worldstream/hosted-prestart-abandonment-fence/v1",
+            "host_installation_id": binding.host_installation_id,
+            "launch_request_id": binding.capacity_reservation_reference,
+            "listing_revision_digest": binding.listing_revision_digest,
+            "launch_request_digest": binding.launch_request_digest,
+            "room_setup_operation_id": binding.room_setup_operation_id,
+            "room_id": room_id,
+        });
+        let fence_bytes =
+            serde_json::to_vec(&fingerprint).map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        let abandonment_fence_digest = format!("blake3:{}", blake3::hash(&fence_bytes).to_hex());
+        let authentication_tag = blake3::hash(
+            format!("worldstream/hosted-prestart-abandonment-tag/v1:{abandonment_fence_digest}")
+                .as_bytes(),
+        )
+        .to_hex()
+        .to_string();
+        Ok(RetainedPrestartAbandonmentV1 {
+            schema: PRESTART_ABANDONMENT_SCHEMA_V1.to_owned(),
+            host_installation_id: binding.host_installation_id.clone(),
+            launch_request_id: binding.capacity_reservation_reference.clone(),
+            listing_revision_digest: binding.listing_revision_digest.clone(),
+            launch_request_digest: binding.launch_request_digest.clone(),
+            room_setup_operation_id: binding.room_setup_operation_id.clone(),
+            room_id: room_id.to_owned(),
+            abandonment_fence_digest,
+            authentication_tag,
+        })
+    }
+
+    fn new_provisioning_abandonment(
+        &self,
+        binding: &RetainedHostedLaunchBindingV1,
+    ) -> Result<RetainedProvisioningAbandonmentV1, HostedLaunchErrorV1> {
+        let fingerprint = serde_json::json!({
+            "domain": "worldstream/hosted-provisioning-abandonment-fence/v1",
+            "host_installation_id": self.host_installation_id.as_ref(),
+            "launch_request_id": binding.capacity_reservation_reference,
+            "listing_revision_digest": binding.listing_revision_digest,
+            "launch_request_digest": binding.launch_request_digest,
+            "room_setup_operation_id": binding.room_setup_operation_id,
+        });
+        let fence_bytes =
+            serde_json::to_vec(&fingerprint).map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        let provisioning_fence_digest = format!("blake3:{}", blake3::hash(&fence_bytes).to_hex());
+        let authentication_tag = blake3::hash(
+            format!(
+                "worldstream/hosted-provisioning-abandonment-tag/v1:{provisioning_fence_digest}"
+            )
+            .as_bytes(),
+        )
+        .to_hex()
+        .to_string();
+        Ok(RetainedProvisioningAbandonmentV1 {
+            schema: PROVISIONING_ABANDONMENT_SCHEMA_V1.to_owned(),
+            host_installation_id: self.host_installation_id.to_string(),
+            launch_request_id: binding.capacity_reservation_reference.clone(),
+            listing_revision_digest: binding.listing_revision_digest.clone(),
+            launch_request_digest: binding.launch_request_digest.clone(),
+            room_setup_operation_id: binding.room_setup_operation_id.clone(),
+            provisioning_fence_digest,
+            authentication_tag,
+        })
+    }
+
+    fn persist_prestart_abandonment_unlocked(
+        &self,
+        retained: &RetainedPrestartAbandonmentV1,
+    ) -> Result<(), HostedLaunchErrorV1> {
+        if !valid_prestart_abandonment(
+            retained,
+            &retained.room_setup_operation_id,
+            &self.host_installation_id,
+        ) {
+            return Err(HostedLaunchErrorV1::Invalid);
+        }
+        let bytes =
+            serde_json::to_vec_pretty(retained).map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        if bytes.len() > MAX_BINDING_BYTES {
+            return Err(HostedLaunchErrorV1::Unavailable);
+        }
+        let temporary = self.root.join(format!(
+            ".{}.abandoned.{}.tmp",
+            retained.room_setup_operation_id,
+            blake3::hash(retained.abandonment_fence_digest.as_bytes()).to_hex()
+        ));
+        let target = self.prestart_abandonment_path(&retained.room_setup_operation_id);
+        let mut file =
+            create_owner_only_file(&temporary).map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        if file
+            .write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .is_err()
+        {
+            let _ = fs::remove_file(&temporary);
+            return Err(HostedLaunchErrorV1::Unavailable);
+        }
+        drop(file);
+        let published = fs::hard_link(&temporary, &target)
+            .and_then(|()| sync_directory(self.root.as_ref()))
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    HostedLaunchErrorV1::Conflict
+                } else {
+                    HostedLaunchErrorV1::Unavailable
+                }
+            });
+        let _ = fs::remove_file(temporary);
+        published
+    }
+
+    fn persist_provisioning_abandonment_unlocked(
+        &self,
+        retained: &RetainedProvisioningAbandonmentV1,
+    ) -> Result<(), HostedLaunchErrorV1> {
+        if !valid_provisioning_abandonment(
+            retained,
+            &retained.room_setup_operation_id,
+            &self.host_installation_id,
+        ) {
+            return Err(HostedLaunchErrorV1::Invalid);
+        }
+        let bytes =
+            serde_json::to_vec_pretty(retained).map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        if bytes.len() > MAX_BINDING_BYTES {
+            return Err(HostedLaunchErrorV1::Unavailable);
+        }
+        let temporary = self.root.join(format!(
+            ".{}.provisioning-abandoned.{}.tmp",
+            retained.room_setup_operation_id,
+            blake3::hash(retained.provisioning_fence_digest.as_bytes()).to_hex()
+        ));
+        let target = self.provisioning_abandonment_path(&retained.room_setup_operation_id);
+        let mut file =
+            create_owner_only_file(&temporary).map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        if file
+            .write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .is_err()
+        {
+            let _ = fs::remove_file(&temporary);
+            return Err(HostedLaunchErrorV1::Unavailable);
+        }
+        drop(file);
+        let published = fs::hard_link(&temporary, &target)
+            .and_then(|()| sync_directory(self.root.as_ref()))
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    HostedLaunchErrorV1::Conflict
+                } else {
+                    HostedLaunchErrorV1::Unavailable
+                }
+            });
+        let _ = fs::remove_file(temporary);
+        published
+    }
+
+    fn prestart_abandonment_evidence(
+        &self,
+        binding: &RetainedHostedLaunchBindingV1,
+        retained: RetainedPrestartAbandonmentV1,
+    ) -> Result<HostedPrestartAbandonmentEvidenceV1, HostedLaunchErrorV1> {
+        if retained.host_installation_id != binding.host_installation_id
+            || retained.launch_request_id != binding.capacity_reservation_reference
+            || retained.listing_revision_digest != binding.listing_revision_digest
+            || retained.launch_request_digest != binding.launch_request_digest
+            || retained.room_setup_operation_id != binding.room_setup_operation_id
+        {
+            return Err(HostedLaunchErrorV1::Unavailable);
+        }
+        let evidence = HostedPrestartAbandonmentEvidenceV1 {
+            schema: "worldstream/hosted-prestart-abandonment-evidence/v1".to_owned(),
+            host_installation_id: retained.host_installation_id,
+            launch_request_id: retained.launch_request_id,
+            listing_revision_digest: retained.listing_revision_digest,
+            launch_request_digest: retained.launch_request_digest,
+            room_setup_operation_id: retained.room_setup_operation_id,
+            room_id: retained.room_id,
+            lobby_launch_committed: false,
+            abandonment_fence_digest: retained.abandonment_fence_digest,
+            authentication_tag: retained.authentication_tag,
+        };
+        validate_hosted_prestart_abandonment_evidence(&evidence)
+            .map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        Ok(evidence)
+    }
+
+    fn provisioning_abandonment_evidence(
+        &self,
+        request: &HostedLaunchEvidenceRequestV1,
+        retained: RetainedProvisioningAbandonmentV1,
+    ) -> Result<HostedProvisioningAbandonmentEvidenceV1, HostedLaunchErrorV1> {
+        if retained.host_installation_id != self.host_installation_id.as_ref()
+            || !uuid_reference(&retained.launch_request_id)
+            || retained.listing_revision_digest != request.listing_revision_digest
+            || retained.launch_request_digest != request.launch_request_digest
+            || retained.room_setup_operation_id != request.room_setup_operation_id
+        {
+            return Err(HostedLaunchErrorV1::Unavailable);
+        }
+        let evidence = HostedProvisioningAbandonmentEvidenceV1 {
+            schema: "worldstream/hosted-provisioning-abandonment-evidence/v1".to_owned(),
+            host_installation_id: retained.host_installation_id,
+            launch_request_id: retained.launch_request_id,
+            listing_revision_digest: retained.listing_revision_digest,
+            launch_request_digest: retained.launch_request_digest,
+            room_setup_operation_id: retained.room_setup_operation_id,
+            genesis_committed: false,
+            provisioning_fence_digest: retained.provisioning_fence_digest,
+            authentication_tag: retained.authentication_tag,
+        };
+        validate_hosted_provisioning_abandonment_evidence(&evidence)
+            .map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        Ok(evidence)
+    }
+
+    fn prestart_abandonment_path(&self, operation: &str) -> PathBuf {
+        self.root.join(format!("{operation}.abandoned.json"))
+    }
+
+    fn provisioning_abandonment_path(&self, operation: &str) -> PathBuf {
+        self.root
+            .join(format!("{operation}.provisioning-abandoned.json"))
     }
 
     fn load_unlocked(
@@ -974,6 +1441,53 @@ fn valid_binding(
         && uuid_reference(&binding.capacity_reservation_reference)
 }
 
+fn valid_prestart_abandonment(
+    retained: &RetainedPrestartAbandonmentV1,
+    operation: &str,
+    host_installation_id: &str,
+) -> bool {
+    retained.schema == PRESTART_ABANDONMENT_SCHEMA_V1
+        && retained.host_installation_id == host_installation_id
+        && retained.room_setup_operation_id == operation
+        && safe_operation(operation)
+        && uuid_reference(&retained.launch_request_id)
+        && tagged_digest(&retained.listing_revision_digest, "blake3")
+        && tagged_digest(&retained.launch_request_digest, "blake3")
+        && valid_ulid(&retained.room_id)
+        && tagged_digest(&retained.abandonment_fence_digest, "blake3")
+        && valid_hex(&retained.authentication_tag, 64)
+}
+
+fn valid_provisioning_abandonment(
+    retained: &RetainedProvisioningAbandonmentV1,
+    operation: &str,
+    host_installation_id: &str,
+) -> bool {
+    retained.schema == PROVISIONING_ABANDONMENT_SCHEMA_V1
+        && retained.host_installation_id == host_installation_id
+        && retained.room_setup_operation_id == operation
+        && safe_operation(operation)
+        && uuid_reference(&retained.launch_request_id)
+        && tagged_digest(&retained.listing_revision_digest, "blake3")
+        && tagged_digest(&retained.launch_request_digest, "blake3")
+        && tagged_digest(&retained.provisioning_fence_digest, "blake3")
+        && valid_hex(&retained.authentication_tag, 64)
+}
+
+fn valid_ulid(value: &str) -> bool {
+    value.len() == 26 && value.bytes().all(|byte| {
+        byte.is_ascii_digit()
+            || matches!(byte, b'A'..=b'H' | b'J'..=b'K' | b'M'..=b'N' | b'P'..=b'T' | b'V'..=b'Z')
+    })
+}
+
+fn valid_hex(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn safe_operation(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
@@ -1072,10 +1586,13 @@ pub fn is_hosted_launch_route(method: &Method, path: &str) -> bool {
                 "POST",
                 "/api/v1/hosted-launches:submit"
                     | "/api/v1/hosted-launches:read"
+                    | "/api/v1/hosted-launches:abandon-prestart"
+                    | "/api/v1/hosted-launches:abandon-provisioning"
                     | "/api/v1/hosted-launches:read-genesis"
                     | "/api/v1/hosted-launches:read-result-source"
                     | "/api/v1/hosted-house-runners:reserve"
                     | "/api/v1/hosted-house-runners:read"
+                    | "/api/v1/hosted-house-runners:retire"
                     | "/api/v1/hosted-browser-handoffs:issue"
                     | "/api/v1/hosted-browser-handoffs:redeem"
                     | "/api/v1/hosted-browser-sessions:status"
@@ -1097,6 +1614,14 @@ pub fn hosted_launch_router(
         .route("/api/v1/hosted-launches:submit", post(hosted_submit))
         .route("/api/v1/hosted-launches:read", post(hosted_read))
         .route(
+            "/api/v1/hosted-launches:abandon-prestart",
+            post(hosted_abandon_prestart),
+        )
+        .route(
+            "/api/v1/hosted-launches:abandon-provisioning",
+            post(hosted_abandon_provisioning),
+        )
+        .route(
             "/api/v1/hosted-launches:read-genesis",
             post(hosted_read_genesis),
         )
@@ -1109,6 +1634,10 @@ pub fn hosted_launch_router(
             post(hosted_house_reserve),
         )
         .route("/api/v1/hosted-house-runners:read", post(hosted_house_read))
+        .route(
+            "/api/v1/hosted-house-runners:retire",
+            post(hosted_house_retire),
+        )
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .layer(from_fn_with_state(Arc::new(access), admit_hosted_launch))
         .with_state(operations)
@@ -1143,6 +1672,28 @@ async fn hosted_read(
 ) -> Result<Json<HostedLaunchStatusV1>, HostedLaunchErrorV1> {
     let request = decode_request::<HostedLaunchEvidenceRequestV1>(&body)?;
     tokio::task::spawn_blocking(move || operations.read(&request))
+        .await
+        .map_err(|_| HostedLaunchErrorV1::Unavailable)?
+        .map(Json)
+}
+
+async fn hosted_abandon_prestart(
+    State(operations): State<HostedLaunchOperationsV1>,
+    body: Bytes,
+) -> Result<Json<HostedPrestartAbandonmentEvidenceV1>, HostedLaunchErrorV1> {
+    let request = decode_request::<HostedLaunchEvidenceRequestV1>(&body)?;
+    tokio::task::spawn_blocking(move || operations.abandon_prestart(&request))
+        .await
+        .map_err(|_| HostedLaunchErrorV1::Unavailable)?
+        .map(Json)
+}
+
+async fn hosted_abandon_provisioning(
+    State(operations): State<HostedLaunchOperationsV1>,
+    body: Bytes,
+) -> Result<Json<HostedProvisioningAbandonmentEvidenceV1>, HostedLaunchErrorV1> {
+    let request = decode_request::<HostedLaunchEvidenceRequestV1>(&body)?;
+    tokio::task::spawn_blocking(move || operations.abandon_provisioning(&request))
         .await
         .map_err(|_| HostedLaunchErrorV1::Unavailable)?
         .map(Json)
@@ -1187,6 +1738,17 @@ async fn hosted_house_read(
 ) -> Result<Json<HostedHouseRunnerReservationReceiptV1>, HostedLaunchErrorV1> {
     let request = decode_request::<HostedHouseRunnerReservationRequestV1>(&body)?;
     tokio::task::spawn_blocking(move || operations.read_house_runner(&request))
+        .await
+        .map_err(|_| HostedLaunchErrorV1::Unavailable)?
+        .map(Json)
+}
+
+async fn hosted_house_retire(
+    State(operations): State<HostedLaunchOperationsV1>,
+    body: Bytes,
+) -> Result<Json<HostedHouseRunnerRetirementReceiptV1>, HostedLaunchErrorV1> {
+    let request = decode_request::<HostedHouseRunnerRetirementRequestV1>(&body)?;
+    tokio::task::spawn_blocking(move || operations.retire_house_runner(&request))
         .await
         .map_err(|_| HostedLaunchErrorV1::Unavailable)?
         .map(Json)
@@ -1262,8 +1824,14 @@ mod tests {
     const LISTING: &[u8] = include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json");
     const HOUSE_LISTING: &[u8] =
         include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json");
+    const CURRENT_LISTING: &[u8] =
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.20.0.json");
     const HOUSE_AGENT: &[u8] =
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json");
+    const CURRENT_PLANNER: &[u8] =
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-13.json");
+    const CURRENT_AUDITOR: &[u8] =
+        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-12.json");
     const LAUNCH: &[u8] =
         include_bytes!("../../../fixtures/hosted-contract/valid/agent-heist-launch-request.json");
     const ROSTER: &[u8] =
@@ -1485,6 +2053,12 @@ mod tests {
             .unwrap_or_else(|error| unreachable!("valid fixture: {error}"))
     }
 
+    fn canonical_value(value: &Value) -> Vec<u8> {
+        let bytes = serde_json::to_vec(value)
+            .unwrap_or_else(|error| unreachable!("serialize JSON value: {error}"));
+        canonical(&bytes)
+    }
+
     fn value(source: &[u8]) -> Value {
         serde_json::from_slice(source)
             .unwrap_or_else(|error| unreachable!("valid fixture: {error}"))
@@ -1656,6 +2230,175 @@ mod tests {
         (request, listing, house)
     }
 
+    fn current_house_request(
+        operation: &str,
+        house_source: &[u8],
+    ) -> (HostedLaunchRequestV1, ListingRevision, HouseAgentRevision) {
+        let listing = ListingRevision::from_canonical_bytes(&canonical(CURRENT_LISTING))
+            .unwrap_or_else(|error| unreachable!("current listing: {error}"));
+        let house = HouseAgentRevision::from_canonical_bytes(&canonical(house_source))
+            .unwrap_or_else(|error| unreachable!("current House revision: {error}"));
+        let launch_reference = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let mut launch = value(LAUNCH);
+        launch["listing_revision_digest"] = serde_json::json!(listing.digest());
+        let mut roster = value(ROSTER);
+        roster["listing_revision_digest"] = serde_json::json!(listing.digest());
+        roster["members"][1] = serde_json::json!({
+            "seat_id": "insider",
+            "participation": "house_agent_fill",
+            "principal_reference": format!("house:{launch_reference}:insider"),
+            "display_name": house.display_name(),
+            "house_agent_revision_digest": house.digest(),
+            "agent_profile": {
+                "profile_id": house.agent_profile().0,
+                "revision": house.agent_profile().1,
+            },
+            "runner_template": {
+                "template_id": house.runner_template().0,
+                "revision": house.runner_template().1,
+            }
+        });
+        let launch_bytes = canonical(
+            &serde_json::to_vec(&launch)
+                .unwrap_or_else(|error| unreachable!("serialize current launch: {error}")),
+        );
+        let roster_bytes = canonical(
+            &serde_json::to_vec(&roster)
+                .unwrap_or_else(|error| unreachable!("serialize current roster: {error}")),
+        );
+        let setup = derive_room_setup_with_house_agents(
+            &listing,
+            &launch_bytes,
+            &roster_bytes,
+            std::slice::from_ref(&house),
+        )
+        .and_then(|setup| setup.canonical_bytes())
+        .unwrap_or_else(|error| unreachable!("derive current House setup: {error}"));
+        let request = HostedLaunchRequestV1 {
+            schema: "worldstream/hosted-launch-request/v1".to_owned(),
+            listing_revision_digest: listing.digest().to_owned(),
+            launch_request_digest: format!("blake3:{}", blake3::hash(&launch_bytes).to_hex()),
+            launch_input_digest: sha256(b"{}"),
+            frozen_roster_digest: sha256(&roster_bytes),
+            room_setup_specification_digest: format!("blake3:{}", blake3::hash(&setup).to_hex()),
+            room_setup_operation_id: operation.to_owned(),
+            capacity_authorization: HostedCapacityAuthorizationV1 {
+                schema: "worldstream/platform-capacity-authorization/v1".to_owned(),
+                host_installation_id: "hosted-test".to_owned(),
+                reservation_reference: launch_reference.to_owned(),
+            },
+            house_runner_assignments: vec![HostedHouseRunnerAssignmentV1 {
+                house_agent_assignment_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc".to_owned(),
+                reservation_receipt: HostedHouseRunnerReservationReceiptV1 {
+                    schema: "worldstream/house-runner-reservation-receipt/v1".to_owned(),
+                    host_installation_id: "hosted-test".to_owned(),
+                    reservation_operation_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd".to_owned(),
+                    launch_request_id: launch_reference.to_owned(),
+                    listing_revision_digest: listing.digest().to_owned(),
+                    seat_id: "insider".to_owned(),
+                    house_agent_revision_digest: house.digest().to_owned(),
+                    outcome: HostedHouseRunnerReservationOutcomeV1::Succeeded,
+                    runner_unit_id: Some("house-insider-01".to_owned()),
+                    failure_code: None,
+                    binding_digest: format!("blake3:{}", "e".repeat(64)),
+                    authentication_tag: "f".repeat(64),
+                },
+            }],
+            frozen_launch_request: launch,
+            frozen_roster: roster,
+            frozen_room_setup_specification: value(&setup),
+        };
+        (request, listing, house)
+    }
+
+    #[test]
+    fn current_house_profiles_validate_against_listing_019() {
+        for house_source in [CURRENT_PLANNER, CURRENT_AUDITOR] {
+            let (request, listing, house) =
+                current_house_request("hosted-current-profile", house_source);
+            validate_hosted_launch_request(
+                &request,
+                "hosted-test",
+                &listing,
+                std::slice::from_ref(&house),
+            )
+            .unwrap_or_else(|error| unreachable!("current profile validation: {error:?}"));
+        }
+    }
+
+    #[test]
+    fn repeated_launch_document_can_bind_distinct_capacity_and_room_operations() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+        let root = directory.path().join("hosted");
+        let backend = FakeBackend::default();
+        let operations = HostedLaunchOperationsV1::open_with_backend(
+            &root,
+            "hosted-test",
+            vec![listing()],
+            Vec::new(),
+            backend,
+        )
+        .unwrap_or_else(|error| unreachable!("valid operations: {error:?}"));
+
+        let first = request("hosted-repeated-launch-01");
+        operations
+            .submit(&first)
+            .unwrap_or_else(|error| unreachable!("first launch: {error:?}"));
+
+        let mut second = first.clone();
+        second.room_setup_operation_id = "hosted-repeated-launch-02".to_owned();
+        second.capacity_authorization.reservation_reference =
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".to_owned();
+        second.frozen_roster["members"][1]["display_name"] =
+            serde_json::json!("Remote Insider Two");
+        let launch_bytes = canonical_value(&second.frozen_launch_request);
+        let roster_bytes = canonical_value(&second.frozen_roster);
+        let setup =
+            derive_room_setup_with_house_agents(&listing(), &launch_bytes, &roster_bytes, &[])
+                .and_then(|setup| setup.canonical_bytes())
+                .unwrap_or_else(|error| unreachable!("derive second setup: {error}"));
+        second.frozen_roster_digest = sha256(&roster_bytes);
+        second.room_setup_specification_digest =
+            format!("blake3:{}", blake3::hash(&setup).to_hex());
+        second.frozen_room_setup_specification = serde_json::from_slice(&setup)
+            .unwrap_or_else(|error| unreachable!("setup JSON: {error}"));
+
+        assert_eq!(
+            second.launch_request_digest, first.launch_request_digest,
+            "the launch document identity is intentionally shared"
+        );
+        assert_ne!(second.frozen_roster_digest, first.frozen_roster_digest);
+        assert_ne!(
+            second.room_setup_specification_digest,
+            first.room_setup_specification_digest
+        );
+        operations
+            .submit(&second)
+            .unwrap_or_else(|error| unreachable!("second independent launch: {error:?}"));
+        assert!(root.join("hosted-repeated-launch-01.json").is_file());
+        assert!(root.join("hosted-repeated-launch-02.json").is_file());
+
+        let mut reused_capacity = second.clone();
+        reused_capacity.room_setup_operation_id = "hosted-repeated-launch-03".to_owned();
+        reused_capacity.capacity_authorization.reservation_reference =
+            first.capacity_authorization.reservation_reference.clone();
+        assert_eq!(
+            operations.submit(&reused_capacity),
+            Err(HostedLaunchErrorV1::Conflict),
+            "one capacity reservation cannot bind two Room operations"
+        );
+
+        let mut changed_same_operation = second.clone();
+        changed_same_operation
+            .capacity_authorization
+            .reservation_reference = "cccccccc-cccc-4ccc-8ccc-cccccccccccc".to_owned();
+        assert_eq!(
+            operations.submit(&changed_same_operation),
+            Err(HostedLaunchErrorV1::Conflict),
+            "a changed identity cannot replace an exact retained operation"
+        );
+    }
+
     #[test]
     fn exact_retry_and_restart_reuse_one_retained_binding() {
         let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
@@ -1709,8 +2452,248 @@ mod tests {
     }
 
     #[test]
+    fn retained_binding_with_absent_setup_operation_reads_as_not_found() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+        let backend = FakeBackend::default();
+        let operations = HostedLaunchOperationsV1::open_with_backend(
+            &directory.path().join("hosted"),
+            "hosted-test",
+            vec![listing()],
+            Vec::new(),
+            backend.clone(),
+        )
+        .unwrap_or_else(|error| unreachable!("valid operations: {error:?}"));
+        let launch = request("hosted-retained-missing-operation-01");
+        operations
+            .submit(&launch)
+            .unwrap_or_else(|error| unreachable!("retained binding: {error:?}"));
+        backend
+            .statuses
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        let evidence = HostedLaunchEvidenceRequestV1 {
+            schema: "worldstream/hosted-launch-evidence-request/v1".to_owned(),
+            listing_revision_digest: launch.listing_revision_digest,
+            launch_request_digest: launch.launch_request_digest,
+            room_setup_operation_id: launch.room_setup_operation_id,
+        };
+        assert_eq!(
+            operations.read(&evidence),
+            Err(HostedLaunchErrorV1::NotFound),
+            "an exact binding with no retained Room operation is absence proof, not a status"
+        );
+    }
+
+    #[test]
+    fn prestart_abandonment_is_durable_idempotent_and_fences_future_lobby_launches() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+        let root = directory.path().join("hosted");
+        let backend = FakeBackend::default();
+        backend.complete_on_advance();
+        let operations = HostedLaunchOperationsV1::open_with_backend(
+            &root,
+            "hosted-test",
+            vec![listing()],
+            Vec::new(),
+            backend.clone(),
+        )
+        .unwrap_or_else(|error| unreachable!("valid operations: {error:?}"));
+        let launch = request("hosted-prestart-abandon-01");
+        operations
+            .submit(&launch)
+            .unwrap_or_else(|error| unreachable!("Genesis-created Room: {error:?}"));
+        let evidence_request = HostedLaunchEvidenceRequestV1 {
+            schema: "worldstream/hosted-launch-evidence-request/v1".to_owned(),
+            listing_revision_digest: launch.listing_revision_digest.clone(),
+            launch_request_digest: launch.launch_request_digest.clone(),
+            room_setup_operation_id: launch.room_setup_operation_id.clone(),
+        };
+
+        let first = operations
+            .abandon_prestart(&evidence_request)
+            .unwrap_or_else(|error| unreachable!("pre-start abandonment: {error:?}"));
+        let duplicate = operations
+            .abandon_prestart(&evidence_request)
+            .unwrap_or_else(|error| unreachable!("idempotent abandonment: {error:?}"));
+        assert_eq!(first, duplicate);
+        assert!(!first.lobby_launch_committed);
+        assert!(
+            root.join("hosted-prestart-abandon-01.abandoned.json")
+                .is_file()
+        );
+        assert_eq!(
+            operations.submit(&launch),
+            Err(HostedLaunchErrorV1::Conflict),
+            "the durable fence rejects a new launch attempt"
+        );
+
+        backend
+            .launches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        let reopened = HostedLaunchOperationsV1::open_with_backend(
+            &root,
+            "hosted-test",
+            vec![listing()],
+            Vec::new(),
+            backend.clone(),
+        )
+        .unwrap_or_else(|error| unreachable!("reopened operations: {error:?}"));
+        reopened
+            .reconcile_ready_lobbies()
+            .unwrap_or_else(|error| unreachable!("fenced reconciliation: {error:?}"));
+        assert!(
+            backend
+                .launches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty(),
+            "a restart reloads the durable fence before attempting launch"
+        );
+    }
+
+    #[test]
+    fn prestart_abandonment_refuses_a_room_whose_lobby_has_launched() {
+        use crate::{
+            room_launch::RoomLaunchAssessmentV1,
+            task_setup::{
+                TaskLaunchApplicabilityV1, TaskLaunchStateV1, TaskLaunchStatusV1, TaskReadinessV1,
+            },
+        };
+
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+        let backend = FakeBackend::default();
+        backend.complete_on_advance();
+        let operations = HostedLaunchOperationsV1::open_with_backend(
+            &directory.path().join("hosted"),
+            "hosted-test",
+            vec![listing()],
+            Vec::new(),
+            backend.clone(),
+        )
+        .unwrap_or_else(|error| unreachable!("valid operations: {error:?}"));
+        let launch = request("hosted-prestart-launched-01");
+        operations
+            .submit(&launch)
+            .unwrap_or_else(|error| unreachable!("Genesis-created Room: {error:?}"));
+        let mut status = backend
+            .inspect(&launch.room_setup_operation_id)
+            .unwrap_or_else(|error| unreachable!("retained Room status: {error:?}"));
+        status.assessment = Some(RoomLaunchAssessmentV1 {
+            version: "room_launch_assessment.v1".to_owned(),
+            operation: launch.room_setup_operation_id.clone(),
+            room_id: status.room_id.clone().unwrap_or_default(),
+            provisioning_complete: true,
+            applicability: TaskLaunchApplicabilityV1::LobbyLaunch,
+            readiness: TaskReadinessV1 {
+                ready_to_launch: true,
+                seats: Vec::new(),
+            },
+            launch: Some(TaskLaunchStatusV1 {
+                state: TaskLaunchStateV1::Launched,
+                attempts: 1,
+                transition_id: None,
+                attention: None,
+            }),
+        });
+        backend
+            .statuses
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(launch.room_setup_operation_id.clone(), status);
+        let evidence_request = HostedLaunchEvidenceRequestV1 {
+            schema: "worldstream/hosted-launch-evidence-request/v1".to_owned(),
+            listing_revision_digest: launch.listing_revision_digest,
+            launch_request_digest: launch.launch_request_digest,
+            room_setup_operation_id: launch.room_setup_operation_id,
+        };
+        assert_eq!(
+            operations.abandon_prestart(&evidence_request),
+            Err(HostedLaunchErrorV1::Conflict)
+        );
+    }
+
+    #[test]
+    fn provisioning_abandonment_is_durable_for_an_absent_pre_genesis_operation() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+        let root = directory.path().join("hosted");
+        let backend = FakeBackend::default();
+        let operations = HostedLaunchOperationsV1::open_with_backend(
+            &root,
+            "hosted-test",
+            vec![listing()],
+            Vec::new(),
+            backend.clone(),
+        )
+        .unwrap_or_else(|error| unreachable!("valid operations: {error:?}"));
+        let launch = request("hosted-provisioning-abandon-01");
+        let evidence_request = HostedLaunchEvidenceRequestV1 {
+            schema: "worldstream/hosted-launch-evidence-request/v1".to_owned(),
+            listing_revision_digest: launch.listing_revision_digest.clone(),
+            launch_request_digest: launch.launch_request_digest.clone(),
+            room_setup_operation_id: launch.room_setup_operation_id.clone(),
+        };
+        assert_eq!(
+            operations.abandon_provisioning(&evidence_request),
+            Err(HostedLaunchErrorV1::NotFound),
+            "a missing Host binding is ambiguous durable state, never absence proof"
+        );
+        operations
+            .submit(&launch)
+            .unwrap_or_else(|error| unreachable!("initial retained setup: {error:?}"));
+        backend
+            .statuses
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        let first = operations
+            .abandon_provisioning(&evidence_request)
+            .unwrap_or_else(|error| unreachable!("pre-Genesis fence: {error:?}"));
+        let duplicate = operations
+            .abandon_provisioning(&evidence_request)
+            .unwrap_or_else(|error| unreachable!("idempotent fence: {error:?}"));
+        assert_eq!(first, duplicate);
+        assert!(!first.genesis_committed);
+        assert!(
+            root.join("hosted-provisioning-abandon-01.provisioning-abandoned.json")
+                .is_file()
+        );
+        assert_eq!(
+            operations.submit(&launch),
+            Err(HostedLaunchErrorV1::Conflict),
+            "the durable pre-Genesis fence rejects any later exact launch"
+        );
+        assert_eq!(
+            backend
+                .advances
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len(),
+            1,
+            "only the original setup attempt existed before fencing"
+        );
+
+        let reopened = HostedLaunchOperationsV1::open_with_backend(
+            &root,
+            "hosted-test",
+            vec![listing()],
+            Vec::new(),
+            backend,
+        )
+        .unwrap_or_else(|error| unreachable!("reopened operations: {error:?}"));
+        assert_eq!(
+            reopened.submit(&launch),
+            Err(HostedLaunchErrorV1::Conflict),
+            "a Host restart reloads the exact durable fence"
+        );
+    }
+
+    #[test]
     fn hosted_service_route_allowlist_includes_realtime_admission_only_at_exact_paths() {
         for path in [
+            "/api/v1/hosted-launches:abandon-prestart",
             "/api/v1/hosted-browser-handoffs:issue",
             "/api/v1/hosted-browser-handoffs:redeem",
             "/api/v1/hosted-browser-sessions:status",
@@ -2241,6 +3224,30 @@ mod tests {
         }
 
         let launch = request("hosted-launch-route-01");
+        let prestart_request = HostedLaunchEvidenceRequestV1 {
+            schema: "worldstream/hosted-launch-evidence-request/v1".to_owned(),
+            listing_revision_digest: launch.listing_revision_digest.clone(),
+            launch_request_digest: launch.launch_request_digest.clone(),
+            room_setup_operation_id: launch.room_setup_operation_id.clone(),
+        };
+        let encoded_prestart = serde_json::to_vec(&prestart_request)
+            .ok()
+            .and_then(|source| CanonicalJsonV1::parse(&source).ok())
+            .and_then(|value| value.to_bytes().ok())
+            .unwrap_or_else(|| unreachable!("canonical pre-start request"));
+        let unauthorized = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/hosted-launches:abandon-prestart")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(encoded_prestart))
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
         let encoded = serde_json::to_vec(&launch)
             .ok()
             .and_then(|source| CanonicalJsonV1::parse(&source).ok())

@@ -3,7 +3,7 @@ import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 export const HOSTED_ACCEPTANCE_SCHEMA =
-  "worldstream/hosted-preview-acceptance-evidence/v1";
+  "worldstream/hosted-preview-acceptance-evidence/v2";
 
 export const LOCAL_ACCEPTANCE_CHECKS = Object.freeze([
   "clean_candidate_revision",
@@ -34,6 +34,22 @@ export const DEPLOYED_ACCEPTANCE_CHECKS = Object.freeze([
   "replay_verified_terminal_result",
   "recent_results_publication",
   "negative_security_cutline",
+]);
+
+export const REQUIRED_RENDERED_CLIENT_CHECKS = Object.freeze([
+  "rendered_catalog",
+  "visible_local_identity",
+  "rendered_role_and_fill_selection",
+  "rendered_waiting_room_invitation_and_roster",
+  "rendered_room_start",
+  "independent_participant_activity_client",
+  "rendered_navigator_completion_actions",
+  "house_endorsed_and_committed",
+  "leave_to_my_games",
+  "original_membership_reentry",
+  "anonymous_public_spectator_client",
+  "anonymous_public_run_page_reconciled_without_reload",
+  "anonymous_public_result",
 ]);
 
 const DIGEST = /^(?:blake3|sha256):[0-9a-f]{64}$/u;
@@ -79,6 +95,7 @@ export function validateHostedAcceptanceEvidence(value, expectedKind = undefined
     "deployment",
     "checks",
     "metrics",
+    "qualification",
     "redaction",
   ]);
   if (value.schema !== HOSTED_ACCEPTANCE_SCHEMA) invalid("evidence_schema_invalid");
@@ -98,6 +115,7 @@ export function validateHostedAcceptanceEvidence(value, expectedKind = undefined
   validateDeployment(value.deployment, value.candidate_kind);
   validateChecks(value.checks, value.candidate_kind, value.outcome);
   validateMetrics(value.metrics, value.candidate_kind, value.outcome);
+  validateQualification(value.qualification, value.outcome, value.candidate_kind);
   if (value.outcome === "passed") {
     if (/^0+$/u.test(value.commit)) invalid("placeholder_candidate_identity");
     for (const identity of Object.values(value.deployment)) {
@@ -214,7 +232,7 @@ function validateMetrics(value, kind, outcome) {
   if (
     !Number.isSafeInteger(value.provider_calls) ||
     value.provider_calls < 0 ||
-    value.provider_calls > 10 ||
+    value.provider_calls > 90 ||
     !Number.isSafeInteger(value.maximum_direct_push_seconds) ||
     value.maximum_direct_push_seconds < 0 ||
     value.maximum_direct_push_seconds > 86_400
@@ -226,6 +244,126 @@ function validateMetrics(value, kind, outcome) {
     (value.provider_calls !== 1 || value.maximum_direct_push_seconds <= 300)
   ) {
     invalid("deployed_metrics_invalid");
+  }
+}
+
+export function validateQualification(value, outcome, candidateKind) {
+  exactObject(value, [
+    "match_matrix",
+    "retained_history_count",
+    "consumed_allowance_observed",
+    "fresh_setup",
+    "retained_upgrade",
+    "ordinary_restart",
+    "populated_recovery",
+    "rendered_client",
+  ]);
+  if (!Array.isArray(value.match_matrix) || value.match_matrix.length !== 3) {
+    invalid("match_matrix_invalid");
+  }
+  for (const [index, match] of value.match_matrix.entries()) {
+    exactObject(match, [
+      "match",
+      "mode",
+      "outcome",
+      "provider_call_delta",
+      "capacity_released",
+      "history_retained",
+      "disconnect_and_catch_up",
+      "restart_and_reentry",
+      "no_actions",
+    ]);
+    if (match.match !== index + 1 || !["house_backed", "people_only"].includes(match.mode)) {
+      invalid("match_matrix_invalid");
+    }
+    if (!['success', 'failure'].includes(match.outcome)) invalid("match_outcome_invalid");
+    if (!Number.isSafeInteger(match.provider_call_delta) || match.provider_call_delta < 0 || match.provider_call_delta > 90) {
+      invalid("match_provider_delta_invalid");
+    }
+    for (const field of [
+      "capacity_released",
+      "history_retained",
+      "disconnect_and_catch_up",
+      "restart_and_reentry",
+      "no_actions",
+    ]) {
+      if (typeof match[field] !== "boolean") invalid("match_boolean_invalid");
+    }
+  }
+  if (!Number.isSafeInteger(value.retained_history_count) || value.retained_history_count < 0 || value.retained_history_count > 1000) {
+    invalid("retained_history_invalid");
+  }
+  if (typeof value.consumed_allowance_observed !== "boolean") invalid("allowance_observation_invalid");
+  for (const field of ["fresh_setup", "retained_upgrade", "ordinary_restart"]) {
+    exactObject(value[field], ["status"], ["note"]);
+    if (!['passed', 'blocked'].includes(value[field].status)) invalid("qualification_status_invalid");
+    if (value[field].note !== undefined && (typeof value[field].note !== "string" || value[field].note.length > 256)) {
+      invalid("qualification_note_invalid");
+    }
+  }
+  if (value.populated_recovery !== "deferred_not_verified") invalid("populated_recovery_status_invalid");
+  exactObject(value.rendered_client, ["schema", "outcome", "completed", "checks", "provider"]);
+  if (
+    value.rendered_client.schema !== "worldstream/hosted-rendered-browser-journey/v1" ||
+    !["passed", "blocked"].includes(value.rendered_client.outcome) ||
+    typeof value.rendered_client.completed !== "boolean" ||
+    typeof value.rendered_client.provider !== "string" ||
+    (value.rendered_client.provider !== "local_fake_provider_only" &&
+      !IDENTIFIER.test(value.rendered_client.provider)) ||
+    !Array.isArray(value.rendered_client.checks) ||
+    value.rendered_client.checks.some((check) => typeof check !== "string" || !IDENTIFIER.test(check))
+  ) {
+    invalid("rendered_client_receipt_invalid");
+  }
+  if (candidateKind === "local" && value.rendered_client.provider !== "local_fake_provider_only") {
+    invalid("rendered_client_provider_invalid");
+  }
+  if (
+    candidateKind === "deployed" &&
+    outcome === "passed" &&
+    value.rendered_client.provider === "local_fake_provider_only"
+  ) {
+    invalid("rendered_client_provider_invalid");
+  }
+  if (value.rendered_client.outcome === "passed" && value.rendered_client.completed !== true) {
+    invalid("rendered_client_receipt_incomplete");
+  }
+  if (outcome === "passed") {
+    const renderedChecks = new Set(value.rendered_client.checks);
+    if (REQUIRED_RENDERED_CLIENT_CHECKS.some((check) => !renderedChecks.has(check))) {
+      invalid("rendered_client_checks_incomplete");
+    }
+    const [first, second, third] = value.match_matrix;
+    if (
+      first === undefined || second === undefined || third === undefined ||
+      first.mode !== "house_backed" || first.outcome !== "success" ||
+      first.provider_call_delta < 1 || first.capacity_released !== true ||
+      first.history_retained !== false ||
+      first.disconnect_and_catch_up !== true ||
+      first.restart_and_reentry !== true || first.no_actions !== false ||
+      second.mode !== "house_backed" || second.outcome !== "success" ||
+      second.provider_call_delta < 1 || second.capacity_released !== true ||
+      second.history_retained !== true ||
+      second.disconnect_and_catch_up !== false ||
+      second.restart_and_reentry !== false || second.no_actions !== false ||
+      third.mode !== "people_only" || third.outcome !== "failure" ||
+      third.provider_call_delta !== 0 || third.capacity_released !== true ||
+      third.history_retained !== true ||
+      third.disconnect_and_catch_up !== false ||
+      third.restart_and_reentry !== false || third.no_actions !== true
+    ) {
+      invalid("qualification_scenario_invalid");
+    }
+  }
+  if (outcome === "passed" && (
+    value.match_matrix.some((match) => match.capacity_released !== true) ||
+    value.retained_history_count < 2 ||
+    value.consumed_allowance_observed !== true ||
+    value.fresh_setup.status !== "passed" ||
+    value.retained_upgrade.status !== "passed" ||
+    value.ordinary_restart.status !== "passed"
+  )) {
+    invalid("qualification_incomplete");
   }
 }
 

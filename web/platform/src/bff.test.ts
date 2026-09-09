@@ -19,6 +19,7 @@ import {
 import {
   HostedBrowserSessionMissingError,
   HostedBrowserSessionRejectedError,
+  HostedBrowserSessionUnavailableError,
   type HostedBrowserHandoff,
   type HostedBrowserSessionClient,
   type HostedBrowserSessionStatus,
@@ -27,6 +28,8 @@ import {
 import type { PublicRunData } from "./public-runs.js";
 import { createSupabaseBffDependencies } from "./supabase.js";
 import { HttpHostedFormationGateway } from "./hosted-formation.js";
+import type { HostedFormationData, HostedFormationGateway } from "./hosted-formation.js";
+import { AGENT_HEIST_LISTING_DIGEST } from "./hosted-catalog.js";
 
 const ORIGIN = "https://arena.example";
 
@@ -44,11 +47,29 @@ class FakeData implements PlatformDataClient {
   oauthStartLimit = 120;
   accountMutationLimit = 32;
   membership: OwnedRunMembershipCorrespondence | null = null;
+  membershipResolver: ((input: {
+    accountId: string;
+    runId: string;
+    entrySelector: string;
+  }) => OwnedRunMembershipCorrespondence | null) | null = null;
   readonly membershipResolutions: Array<{
     readonly accountId: string;
     readonly runId: string;
     readonly entrySelector: string;
   }> = [];
+  myGames: import("./bff.js").MyGamesIndex | null = {
+    version: "platform_my_games.v1",
+    items: [{
+      launchId: "10000000-0000-4000-8000-000000000001",
+      title: "Agent Heist",
+      state: "verified_result",
+      updatedAt: "2026-09-08T00:00:00.000Z",
+      participation: "external_agent",
+      action: "view_result",
+      resultPublicId: "a".repeat(32),
+    }],
+    next: null,
+  };
 
   async beginGithubOAuth(attempt: OAuthAttempt): Promise<boolean> {
     if (this.oauthStarts >= this.oauthStartLimit) return false;
@@ -145,12 +166,17 @@ class FakeData implements PlatformDataClient {
     return true;
   }
 
+  async listMyGames(): Promise<import("./bff.js").MyGamesIndex | null> {
+    return this.erased ? null : this.myGames;
+  }
+
   async resolveOwnedRunMembership(input: {
     accountId: string;
     runId: string;
     entrySelector: string;
   }): Promise<OwnedRunMembershipCorrespondence | null> {
     this.membershipResolutions.push(input);
+    if (this.membershipResolver !== null) return this.membershipResolver(input);
     return this.membership;
   }
 }
@@ -166,6 +192,8 @@ class FakeHostedBrowserSessions implements HostedBrowserSessionClient {
   readonly streamTickets: Array<{ session: string; afterFrameSeq: number | null }> = [];
   readonly logouts: string[] = [];
   redeemError: Error | null = null;
+  statusError: Error | null = null;
+  streamTicketError: Error | null = null;
   nextSession = `wss1:${"b".repeat(64)}`;
 
   async issueHandoff(
@@ -190,6 +218,7 @@ class FakeHostedBrowserSessions implements HostedBrowserSessionClient {
 
   async sessionStatus(session: string): Promise<HostedBrowserSessionStatus> {
     this.statusReads.push(session);
+    if (this.statusError !== null) throw this.statusError;
     return { state: "usable" };
   }
 
@@ -198,6 +227,7 @@ class FakeHostedBrowserSessions implements HostedBrowserSessionClient {
     afterFrameSeq: number | null,
   ): Promise<{ ticket: string; expiresInMs: number }> {
     this.streamTickets.push({ session, afterFrameSeq });
+    if (this.streamTicketError !== null) throw this.streamTicketError;
     return { ticket: `wst1:${"c".repeat(64)}`, expiresInMs: 15_000 };
   }
 
@@ -386,6 +416,95 @@ async function csrf(
   return body.csrf;
 }
 
+test("My games is account-scoped, preserves the reviewed result route, and rejects erased accounts", async () => {
+  const { bff, data } = harness();
+  const signedIn = await signIn(bff);
+  const response = await bff.fetch(new Request(`${ORIGIN}/api/my-games`, {
+    headers: { cookie: `__Host-worldstream-session=${signedIn.sessionCookie}` },
+  }));
+  assert.equal(response.status, 200);
+  const body = await response.json() as { items: Array<Record<string, unknown>> };
+  assert.equal(body.items[0]?.participation, "external_agent");
+  assert.equal(body.items[0]?.result_public_id, "a".repeat(32));
+  assert.equal("entry_selector" in (body.items[0] ?? {}), false);
+
+  data.erased = true;
+  const erased = await bff.fetch(new Request(`${ORIGIN}/api/my-games`, {
+    headers: { cookie: `__Host-worldstream-session=${signedIn.sessionCookie}` },
+  }));
+  assert.equal(erased.status, 401);
+});
+
+test("provisioning cancellation uses the ordinary lane only before Host mutation", async () => {
+  const launchId = "20000000-0000-4000-8000-000000000002";
+  const launch = {
+    launchRequestId: launchId,
+    listingRevisionDigest: AGENT_HEIST_LISTING_DIGEST,
+    state: "provisioning",
+    expiresAt: "2026-09-09T00:00:00.000Z",
+    creatorAccessChoice: "seat",
+    creatorSeatId: "seat-1",
+    houseFillChoice: "disabled",
+    rosterFrozen: true,
+    canManage: true,
+    seats: [],
+  } as const;
+  const material = (hostMutationStarted: boolean) => ({
+    launchRequestId: launchId,
+    hostMutationStarted,
+  }) as never;
+  const makeBff = (hostMutationStarted: boolean) => {
+    const counters = { cancellations: 0 };
+    const hostedData = {
+      readLaunchRequest: async () => launch,
+      readHostedLaunchMaterial: async () => material(hostMutationStarted),
+      cancelLaunchRequest: async () => { counters.cancellations += 1; return true; },
+    } as unknown as HostedFormationData;
+    const bff = createPlatformBff({
+      canonicalOrigin: ORIGIN,
+      allowedReturnTargets: ["/", "/activities/heist"],
+      sessionKey: Buffer.alloc(32, 7),
+      oauthKey: Buffer.alloc(32, 9),
+    }, {
+      authClient: () => new FakeAuth(),
+      dataClient: new FakeData(),
+      hostedFormationData: hostedData,
+      hostedFormationGateway: {} as HostedFormationGateway,
+      hostedFormationHostInstallationId: "fly-primary",
+    });
+    return { bff, counters };
+  };
+
+  {
+    const { bff, counters } = makeBff(false);
+    const signedIn = await signIn(bff);
+    const response = await bff.fetch(mutation(
+      `/api/launches/${launchId}/cancel`,
+      signedIn.sessionCookie,
+      await csrf(bff, signedIn.sessionCookie),
+    ));
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      version: "hosted_launch_cancelled.v1",
+      cancelled: true,
+    });
+    assert.equal(counters.cancellations, 1);
+  }
+
+  {
+    const { bff, counters } = makeBff(true);
+    const signedIn = await signIn(bff);
+    const response = await bff.fetch(mutation(
+      `/api/launches/${launchId}/cancel`,
+      signedIn.sessionCookie,
+      await csrf(bff, signedIn.sessionCookie),
+    ));
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { error: { code: "launch_unavailable" } });
+    assert.equal(counters.cancellations, 0);
+  }
+});
+
 function mutation(path: string, sessionCookie: string, csrfValue: string, body = "{}") {
   return new Request(`${ORIGIN}${path}`, {
     method: "POST",
@@ -535,6 +654,76 @@ test("a live public Run points directly to Fly and never carries a credential", 
     /"stream_url":"wss:\/\/stream\.arena\.example\/v1\/hosted\/public-runs\/b{32}\/stream"/u,
   );
   assert.doesNotMatch(text, /ticket|token|credential|membership|room_id/u);
+});
+
+test("an anonymous public Run receives only the server-selected exact viewer release", async () => {
+  const source = {
+    version: "public_run.v1",
+    state: "live",
+    public_id: "c".repeat(32),
+    activity: {
+      listing_key: "worldstream.agent-heist.public-preview",
+      title: "Agent Heist",
+      description: "A live social strategy activity.",
+      listing_revision: AGENT_HEIST_LISTING_DIGEST,
+      pack: {
+        id: "worldstream.agent-heist",
+        version: "0.3.0",
+        revision: `blake3:${"2".repeat(64)}`,
+      },
+    },
+    started_at: "2026-09-05T10:00:00.000Z",
+    evidence: { class: "unranked", label: "Unranked activity" },
+    participants: [],
+    live: { available: true },
+  } as const;
+  const publicRuns: PublicRunData = {
+    async readPublicRun() { return source; },
+    async listRecentResults() {
+      return { version: "recent_results.v1", activity: "agent-heist", order: "newest_first", maximum: 20, results: [] };
+    },
+  };
+  const { bff } = harness(undefined, publicRuns, "https://stream.arena.example");
+  const response = await bff.fetch(new Request(`${ORIGIN}/api/runs/${"c".repeat(32)}`));
+  assert.equal(response.status, 200);
+  const body = await response.json() as Record<string, unknown>;
+  assert.deepEqual(body.client, {
+    launch_url: `https://arena.example/agent-heist-v6/hosted/?public_run=${"c".repeat(32)}&platform_return=%2F&platform_result=%2Fruns%2F${"c".repeat(32)}`,
+    back_to_games: "/",
+    result_url: `/runs/${"c".repeat(32)}`,
+  });
+  assert.doesNotMatch(JSON.stringify(body), /handoff|membership|credential|room_id|entry_selector/u);
+});
+
+test("a retained public Run never upgrades itself to the current viewer release", async () => {
+  const source = {
+    version: "public_run.v1",
+    state: "live",
+    public_id: "d".repeat(32),
+    activity: {
+      listing_key: "worldstream.agent-heist.public-preview",
+      title: "Retained Agent Heist",
+      description: "A retained client contract.",
+      listing_revision: "blake3:48c397a32632896d66beb9ae7f8a6d090338800187c56eb0593997b80bd2b630",
+      pack: { id: "worldstream.agent-heist", version: "0.3.0", revision: `blake3:${"2".repeat(64)}` },
+    },
+    started_at: "2026-09-05T10:00:00.000Z",
+    evidence: { class: "unranked", label: "Unranked activity" },
+    participants: [],
+    live: { available: true },
+  } as const;
+  const publicRuns: PublicRunData = {
+    async readPublicRun() { return source; },
+    async listRecentResults() {
+      return { version: "recent_results.v1", activity: "agent-heist", order: "newest_first", maximum: 20, results: [] };
+    },
+  };
+  const { bff } = harness(undefined, publicRuns, "https://stream.arena.example");
+  const response = await bff.fetch(new Request(`${ORIGIN}/api/runs/${"d".repeat(32)}`));
+  assert.equal(response.status, 200);
+  const body = await response.json() as Record<string, unknown>;
+  assert.equal(body.client, undefined);
+  assert.match(JSON.stringify(body), /worldstream-preview\.fly|stream\.arena/u);
 });
 
 test("OAuth start accepts only immutable configured return targets", async () => {
@@ -1000,6 +1189,57 @@ test("closed people-only launch admission returns temporary unavailability witho
   }
 });
 
+test("a confirmed activity-capacity gate is not presented as a malformed formation", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: string[] = [];
+  try {
+    globalThis.fetch = async (input) => {
+      const request = input instanceof Request ? input : new Request(input);
+      requests.push(request.url);
+      assert.equal(request.url, "https://project.supabase.co/rest/v1/rpc/create_launch_request_v1");
+      return Response.json({
+        code: "55000",
+        message: "pre_genesis_capacity_unavailable",
+      }, { status: 400 });
+    };
+    const formationData = createSupabaseBffDependencies({
+      url: "https://project.supabase.co",
+      publishableKey: `sb_publishable_${"p".repeat(32)}`,
+      dataSecretKey: `sb_secret_${"s".repeat(32)}`,
+    }).hostedFormationData;
+    assert.ok(formationData);
+    const auth = new FakeAuth();
+    const bff = createPlatformBff({
+      canonicalOrigin: ORIGIN,
+      allowedReturnTargets: ["/", "/activities/heist"],
+      sessionKey: Buffer.alloc(32, 7),
+      oauthKey: Buffer.alloc(32, 9),
+    }, {
+      authClient: () => auth,
+      dataClient: new FakeData(),
+      hostedFormationData: formationData,
+      hostedFormationGateway: new HttpHostedFormationGateway({
+        baseUrl: "https://gateway.example",
+        serviceAuthority: "synthetic-gateway-authority-at-least-32-characters",
+      }),
+      hostedFormationHostInstallationId: "fly-primary",
+    });
+    const { sessionCookie } = await signIn(bff);
+    const response = await bff.fetch(mutation("/api/launches", sessionCookie, await csrf(bff, sessionCookie), JSON.stringify({
+      listing_slug: "agent-heist",
+      creator_access: "seat",
+      creator_seat: "seat-1",
+      fill_mode: "people_only",
+      idempotency_key: "b".repeat(32),
+    })));
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { error: { code: "activity_capacity_unavailable" } });
+    assert.deepEqual(requests, ["https://project.supabase.co/rest/v1/rpc/create_launch_request_v1"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("credential rejection remains distinct from dependency unavailability", async () => {
   {
     const { auth, bff } = harness();
@@ -1213,7 +1453,7 @@ test("hosted Run entry resolves only the signed-in account and returns one clien
   const body = await response.json() as Record<string, unknown>;
   assert.deepEqual(body, {
     version: "platform_run_entry.v1",
-    client_url: `https://arena.example/clients/heist/#handoff=wsh1:${"a".repeat(64)}`,
+    client_url: `https://arena.example/clients/heist/?platform_return=%2F#handoff=wsh1:${"a".repeat(64)}`,
   });
   assert.deepEqual(data.membershipResolutions, [{
     accountId: "00000000-0000-4000-8000-000000000001",
@@ -1381,6 +1621,155 @@ test("hosted status and logout use only the opaque session and fail closed", asy
   missing.headers.set("x-worldstream-participant-handoff", `wsh1:${"e".repeat(64)}`);
   assert.equal((await bff.fetch(missing)).status, 401);
   assert.equal(hosted.redeemed.length, 2);
+});
+
+test("hosted re-entry preserves the original participant Membership and supports spectator admission", async () => {
+  const hosted = new FakeHostedBrowserSessions();
+  const { bff, data } = harness(hosted);
+  data.membership = membership();
+  const signedIn = await signIn(bff);
+  const csrfValue = await csrf(bff, signedIn.sessionCookie);
+  const enter = async () => bff.fetch(mutation(
+    "/api/runs/enter",
+    signedIn.sessionCookie,
+    csrfValue,
+    JSON.stringify({ run_id: data.membership?.runId, entry_selector: "e".repeat(32) }),
+  ));
+  const redeem = async (response: Response, priorSession?: string) => {
+    const body = await response.json() as { client_url: string };
+    const handoff = new URL(body.client_url).hash.slice("#handoff=".length);
+    const request = mutation(
+      "/api/v1/participant-console/handoffs:redeem",
+      signedIn.sessionCookie,
+      csrfValue,
+    );
+    request.headers.set("x-worldstream-participant-handoff", handoff);
+    if (priorSession !== undefined) {
+      request.headers.set(
+        "cookie",
+        `__Host-worldstream-session=${signedIn.sessionCookie}; ws_participant_session=${priorSession}`,
+      );
+    }
+    return bff.fetch(request);
+  };
+
+  const firstEntry = await enter();
+  assert.equal(firstEntry.status, 201);
+  const firstRedemption = await redeem(firstEntry);
+  assert.equal(firstRedemption.status, 200);
+  const firstSession = cookieValue(firstRedemption, "ws_participant_session");
+  assert.ok(firstSession);
+
+  hosted.nextSession = `wss1:${"d".repeat(64)}`;
+  const reentry = await enter();
+  assert.equal(reentry.status, 201);
+  const secondRedemption = await redeem(reentry, firstSession);
+  assert.equal(secondRedemption.status, 200);
+  assert.equal(hosted.redeemed.at(-1)?.priorSession, firstSession);
+  assert.equal(hosted.issued[0]?.binding.membershipId, data.membership?.membershipId);
+  assert.equal(hosted.issued[1]?.binding.membershipId, data.membership?.membershipId);
+  assert.equal(hosted.issued[1]?.binding.roomId, hosted.issued[0]?.binding.roomId);
+  assert.equal(hosted.issued[1]?.binding.runId, hosted.issued[0]?.binding.runId);
+
+  data.membership = {
+    ...membership(),
+    accessMode: "spectator",
+    purpose: "creator_spectator",
+    seatId: null,
+    role: null,
+    principalKind: "human",
+  };
+  const spectatorEntry = await enter();
+  assert.equal(spectatorEntry.status, 201);
+  assert.equal((await redeem(spectatorEntry)).status, 200);
+  assert.equal(hosted.issued.at(-1)?.binding.accessMode, "spectator");
+  assert.equal(hosted.issued.at(-1)?.binding.purpose, "creator_spectator");
+  assert.equal(hosted.issued.at(-1)?.binding.seatId, null);
+  assert.equal(hosted.issued.at(-1)?.binding.role, null);
+});
+
+test("expired hosted sessions clear only activity access, refuse cross-Run entry, and keep sign-in continuity", async () => {
+  const hosted = new FakeHostedBrowserSessions();
+  const { bff, data } = harness(hosted);
+  data.membership = membership();
+  data.membershipResolver = (input) =>
+    input.runId === data.membership?.runId && input.entrySelector === "e".repeat(32)
+      ? data.membership
+      : null;
+  const signedIn = await signIn(bff);
+  const csrfValue = await csrf(bff, signedIn.sessionCookie);
+  const expired = `wss1:${"e".repeat(64)}`;
+  hosted.statusError = new HostedBrowserSessionMissingError();
+
+  const status = await bff.fetch(new Request(
+    `${ORIGIN}/api/v1/participant-console/session`,
+    {
+      headers: {
+        cookie: `__Host-worldstream-session=${signedIn.sessionCookie}; ws_participant_session=${expired}`,
+        origin: ORIGIN,
+        "sec-fetch-site": "same-origin",
+      },
+    },
+  ));
+  assert.equal(status.status, 401);
+  assert.deepEqual(await status.json(), {
+    code: "participant_session_authority_invalid",
+    message: "This Activity Client session is not available.",
+    next_action: "return_to_task_setup",
+    retryable: false,
+  });
+  assert.match(status.headers.getSetCookie().join("\n"), /ws_participant_session=;.*Max-Age=0/u);
+
+  const signInStatus = await bff.fetch(new Request(`${ORIGIN}/api/auth/session`, {
+    headers: { cookie: `__Host-worldstream-session=${signedIn.sessionCookie}` },
+  }));
+  assert.equal(signInStatus.status, 200);
+  assert.equal((await signInStatus.json() as { authenticated: boolean }).authenticated, true);
+
+  const crossRun = await bff.fetch(mutation(
+    "/api/runs/enter",
+    signedIn.sessionCookie,
+    csrfValue,
+    JSON.stringify({
+      run_id: "20000000-0000-4000-8000-000000000002",
+      entry_selector: "e".repeat(32),
+    }),
+  ));
+  assert.equal(crossRun.status, 404);
+  assert.deepEqual(await crossRun.json(), { error: { code: "run_entry_unavailable" } });
+  assert.equal(hosted.issued.length, 0);
+});
+
+test("transient hosted session outages retain the Browser Activity Session and platform sign-in", async () => {
+  const hosted = new FakeHostedBrowserSessions();
+  const { bff } = harness(hosted);
+  const signedIn = await signIn(bff);
+  const activitySession = `wss1:${"f".repeat(64)}`;
+  hosted.statusError = new HostedBrowserSessionUnavailableError();
+
+  const status = await bff.fetch(new Request(
+    `${ORIGIN}/api/v1/participant-console/session`,
+    {
+      headers: {
+        cookie: `__Host-worldstream-session=${signedIn.sessionCookie}; ws_participant_session=${activitySession}`,
+        origin: ORIGIN,
+        "sec-fetch-site": "same-origin",
+      },
+    },
+  ));
+  assert.equal(status.status, 503);
+  assert.deepEqual(await status.json(), {
+    code: "participant_session_unavailable",
+    message: "The Activity Client cannot reach the Room service safely.",
+    next_action: "reconnect",
+    retryable: true,
+  });
+  assert.doesNotMatch(status.headers.getSetCookie().join("\n"), /ws_participant_session=;.*Max-Age=0/u);
+
+  const signInStatus = await bff.fetch(new Request(`${ORIGIN}/api/auth/session`, {
+    headers: { cookie: `__Host-worldstream-session=${signedIn.sessionCookie}` },
+  }));
+  assert.equal(signInStatus.status, 200);
 });
 
 test("development identity substitute is explicit and preserves the production session contract", async () => {

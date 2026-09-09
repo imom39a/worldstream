@@ -10,6 +10,8 @@ describe("hosted activity catalog shell", () => {
       .toBe("The live room service is temporarily unavailable.");
     expect(friendlyError(new Error("formation_unavailable")))
       .toBe("The room could not be created.");
+    expect(friendlyError(new Error("activity_capacity_unavailable")))
+      .toBe("Active activity capacity is currently in use. Try again after an activity finishes.");
   });
 
   it("keeps discovery independent of any one Activity Pack before catalog data arrives", () => {

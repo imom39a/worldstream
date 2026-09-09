@@ -2,6 +2,8 @@ import { fileURLToPath } from "node:url";
 
 import { defineConfig } from "vite";
 import { resolveBuildRevision } from "./buildRevision.ts";
+import bindings from "../../config/activity-clients/hosted-local-bindings.json" with { type: "json" };
+import { hostedLocalClientProxy } from "./src/hostedLocalClientRouting.ts";
 
 const sourceRevision = resolveBuildRevision();
 const platformBffTarget = localPlatformBffTarget(process.env.WORLDSTREAM_LOCAL_PLATFORM_BFF_TARGET);
@@ -35,16 +37,7 @@ export default defineConfig({
             },
             ...(activityClientTarget === undefined
               ? {}
-              : {
-                  "/agent-heist-v3": {
-                    target: activityClientTarget,
-                    changeOrigin: true,
-                  },
-                  "/agent-heist-v2": {
-                    target: activityClientTarget,
-                    changeOrigin: true,
-                  },
-                }),
+              : hostedLocalClientProxy(activityClientTarget, bindings)),
           },
         }),
   },

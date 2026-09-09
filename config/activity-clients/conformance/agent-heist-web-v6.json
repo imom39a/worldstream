@@ -1,0 +1,22 @@
+{
+  "schema": "worldstream/client-conformance-evidence/v1",
+  "subject": {
+    "client_id": "worldstream.agent-heist.web",
+    "artifact_digest": "sha256:7ece544f3f9b48be523dc769e720860c0174d600627416da1eb8bf665ade9c29",
+    "release_claims_digest": "sha256:4b0e07c94efa2132cfd1978cbae8cdc7f2f594a97df976da25c3bbce43b2f88a",
+    "client_contract": "worldstream/activity-client-protocol/v1"
+  },
+  "checks": [
+    "release-distribution-and-host-binding-exact-references",
+    "live-adapter-starts-empty",
+    "projection-reset-replaces-authorized-state",
+    "participant-and-spectator-access-mode-gating",
+    "webmcp-authorized-read-wait-and-semantic-action-boundaries",
+    "recorded-gallery-cannot-consume-live-state",
+    "deployment-owned-stream-bootstrap-and-recovery",
+    "separate-local-kernel-and-hosted-entrypoints-without-auth-fallback"
+  ],
+  "reproduce": "pnpm activity-clients:verify",
+  "authority": "informative_only",
+  "notice": "Passing this check is not a security audit, deployment proof, Host approval, or Client Binding."
+}

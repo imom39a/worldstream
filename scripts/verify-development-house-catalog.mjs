@@ -24,5 +24,5 @@ const result = spawnSync("psql", ["-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1
 const checks = (result.stdout ?? "").split("\n").filter((line) => /^(?:not )?ok \d+ /u.test(line));
 for (const check of checks) console.log(check);
 assert.equal(result.status, 0, "local development seed check could not complete");
-assert.equal(checks.length, 3, "local development seed check was incomplete");
+assert.equal(checks.length, 4, "local development seed check was incomplete");
 assert.ok(checks.every((line) => line.startsWith("ok ")), "local development House catalog is incompatible");

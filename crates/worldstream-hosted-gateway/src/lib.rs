@@ -41,16 +41,22 @@ use worldstream_hosted_contract::{
     HostedBrowserSessionRequestV1, HostedBrowserSessionStatusV1,
     HostedBrowserStreamTicketRequestV1, HostedBrowserStreamTicketResponseV1,
     HostedGenesisEvidenceV1, HostedHouseRunnerReservationReceiptV1,
-    HostedHouseRunnerReservationRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
-    HostedLaunchStatusV1, HostedPublicRelayBindReceiptV1, HostedPublicRelayBindRequestV1,
-    HostedPublicStreamTicketRequestV1, HostedResultSourceEvidenceV1, HostedResultSourceRequestV1,
+    HostedHouseRunnerReservationRequestV1, HostedHouseRunnerRetirementReceiptV1,
+    HostedHouseRunnerRetirementRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
+    HostedLaunchStatusV1, HostedPrestartAbandonmentEvidenceV1,
+    HostedProvisioningAbandonmentEvidenceV1, HostedPublicRelayBindReceiptV1,
+    HostedPublicRelayBindRequestV1, HostedPublicStreamTicketRequestV1,
+    HostedResultSourceEvidenceV1, HostedResultSourceRequestV1,
     validate_hosted_browser_handoff_redeem_request,
     validate_hosted_browser_handoff_redeem_response, validate_hosted_browser_handoff_request,
     validate_hosted_browser_handoff_response, validate_hosted_browser_session_logout,
     validate_hosted_browser_session_request, validate_hosted_browser_session_status,
     validate_hosted_browser_stream_ticket_request, validate_hosted_browser_stream_ticket_response,
     validate_hosted_genesis_evidence, validate_hosted_house_runner_reservation_receipt,
-    validate_hosted_launch_evidence_request, validate_hosted_public_relay_bind_receipt,
+    validate_hosted_house_runner_retirement_receipt,
+    validate_hosted_house_runner_retirement_request, validate_hosted_launch_evidence_request,
+    validate_hosted_prestart_abandonment_evidence,
+    validate_hosted_provisioning_abandonment_evidence, validate_hosted_public_relay_bind_receipt,
     validate_hosted_public_relay_bind_request, validate_hosted_public_stream_ticket_request,
     validate_hosted_result_source_evidence, validate_hosted_result_source_request,
 };
@@ -256,6 +262,25 @@ pub trait HostedGatewayBackend: Send + Sync + 'static {
         request: &HostedLaunchEvidenceRequestV1,
     ) -> Result<HostedLaunchStatusV1, HostedGatewayError>;
 
+    /// Fences one exact Genesis-created Room only when the Host proves its
+    /// Lobby task has not launched. This is not a generic Room-control API.
+    fn abandon_prestart(
+        &self,
+        _request: &HostedLaunchEvidenceRequestV1,
+    ) -> Result<HostedPrestartAbandonmentEvidenceV1, HostedGatewayError> {
+        Err(HostedGatewayError::Rejected)
+    }
+
+    /// Fences one exact retained setup operation only when the Host proves it
+    /// never reached Genesis. This is service-only recovery evidence, not a
+    /// generic launch cancellation endpoint.
+    fn abandon_provisioning(
+        &self,
+        _request: &HostedLaunchEvidenceRequestV1,
+    ) -> Result<HostedProvisioningAbandonmentEvidenceV1, HostedGatewayError> {
+        Err(HostedGatewayError::Rejected)
+    }
+
     /// Reads private sequence-zero correspondence for platform reconciliation.
     ///
     /// # Errors
@@ -293,6 +318,15 @@ pub trait HostedGatewayBackend: Send + Sync + 'static {
         &self,
         _request: &HostedHouseRunnerReservationRequestV1,
     ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedGatewayError> {
+        Err(HostedGatewayError::Rejected)
+    }
+
+    /// Stops and fences one evidence-bound House Runner unit. This is not a
+    /// general process-control surface.
+    fn retire_house_runner(
+        &self,
+        _request: &HostedHouseRunnerRetirementRequestV1,
+    ) -> Result<HostedHouseRunnerRetirementReceiptV1, HostedGatewayError> {
         Err(HostedGatewayError::Rejected)
     }
 
@@ -477,7 +511,7 @@ impl HostedGatewayBackend for FixedHostAdapterBackend {
     ) -> Result<HostedLaunchStatusV1, HostedGatewayError> {
         let (status, body) = self.call("/api/v1/hosted-launches:read", request)?;
         if status != 200 {
-            return Err(classify_upstream_status(status));
+            return Err(classify_read_upstream_status(status));
         }
         let response = serde_json::from_slice::<HostedLaunchStatusV1>(&body)
             .map_err(|_| HostedGatewayError::Unavailable)?;
@@ -490,13 +524,41 @@ impl HostedGatewayBackend for FixedHostAdapterBackend {
         Ok(response)
     }
 
+    fn abandon_prestart(
+        &self,
+        request: &HostedLaunchEvidenceRequestV1,
+    ) -> Result<HostedPrestartAbandonmentEvidenceV1, HostedGatewayError> {
+        let (status, body) = self.call("/api/v1/hosted-launches:abandon-prestart", request)?;
+        if status != 200 {
+            return Err(classify_upstream_status(status));
+        }
+        let response = serde_json::from_slice::<HostedPrestartAbandonmentEvidenceV1>(&body)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        validate_prestart_abandonment_response(&response, request)?;
+        Ok(response)
+    }
+
+    fn abandon_provisioning(
+        &self,
+        request: &HostedLaunchEvidenceRequestV1,
+    ) -> Result<HostedProvisioningAbandonmentEvidenceV1, HostedGatewayError> {
+        let (status, body) = self.call("/api/v1/hosted-launches:abandon-provisioning", request)?;
+        if status != 200 {
+            return Err(classify_upstream_status(status));
+        }
+        let response = serde_json::from_slice::<HostedProvisioningAbandonmentEvidenceV1>(&body)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        validate_provisioning_abandonment_response(&response, request)?;
+        Ok(response)
+    }
+
     fn genesis_evidence(
         &self,
         request: &HostedLaunchEvidenceRequestV1,
     ) -> Result<HostedGenesisEvidenceV1, HostedGatewayError> {
         let (status, body) = self.call("/api/v1/hosted-launches:read-genesis", request)?;
         if status != 200 {
-            return Err(classify_upstream_status(status));
+            return Err(classify_read_upstream_status(status));
         }
         let response = serde_json::from_slice::<HostedGenesisEvidenceV1>(&body)
             .map_err(|_| HostedGatewayError::Unavailable)?;
@@ -530,6 +592,20 @@ impl HostedGatewayBackend for FixedHostAdapterBackend {
         request: &HostedHouseRunnerReservationRequestV1,
     ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedGatewayError> {
         self.house_runner_call("/api/v1/hosted-house-runners:read", request)
+    }
+
+    fn retire_house_runner(
+        &self,
+        request: &HostedHouseRunnerRetirementRequestV1,
+    ) -> Result<HostedHouseRunnerRetirementReceiptV1, HostedGatewayError> {
+        let (status, body) = self.call("/api/v1/hosted-house-runners:retire", request)?;
+        if status != 200 {
+            return Err(classify_read_upstream_status(status));
+        }
+        let receipt = serde_json::from_slice::<HostedHouseRunnerRetirementReceiptV1>(&body)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        validate_house_runner_retirement_response(&receipt, request)?;
+        Ok(receipt)
     }
 
     fn issue_browser_handoff(
@@ -790,6 +866,11 @@ pub fn hosted_gateway_router(
         .route("/version", get(version))
         .route("/v1/hosted/launch", post(launch))
         .route("/v1/hosted/evidence", post(evidence))
+        .route("/v1/hosted/abandon-prestart", post(abandon_prestart))
+        .route(
+            "/v1/hosted/abandon-provisioning",
+            post(abandon_provisioning),
+        )
         .route("/v1/hosted/genesis-evidence", post(genesis_evidence))
         .route(
             "/v1/hosted/result-source-evidence",
@@ -800,6 +881,7 @@ pub fn hosted_gateway_router(
             post(reserve_house_runner),
         )
         .route("/v1/hosted/house-runners/read", post(read_house_runner))
+        .route("/v1/hosted/house-runners/retire", post(retire_house_runner))
         .route(
             "/v1/hosted/browser-handoffs/issue",
             post(issue_browser_handoff),
@@ -881,6 +963,28 @@ async fn evidence(
     evidence_operation(&state, &headers, &body).await
 }
 
+async fn abandon_prestart(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Ok(body) = body else {
+        return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
+    };
+    abandon_prestart_operation(&state, &headers, &body).await
+}
+
+async fn abandon_provisioning(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Ok(body) = body else {
+        return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
+    };
+    abandon_provisioning_operation(&state, &headers, &body).await
+}
+
 async fn genesis_evidence(
     State(state): State<GatewayState>,
     headers: HeaderMap,
@@ -923,6 +1027,17 @@ async fn read_house_runner(
         return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
     };
     house_runner_operation(&state, &headers, &body, false).await
+}
+
+async fn retire_house_runner(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Ok(body) = body else {
+        return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
+    };
+    house_runner_retirement_operation(&state, &headers, &body).await
 }
 
 async fn issue_browser_handoff(
@@ -1043,7 +1158,7 @@ async fn evidence_operation(state: &GatewayState, headers: &HeaderMap, body: &[u
         .await
         .map_err(|_| HostedGatewayError::Unavailable)
         .and_then(|result| result);
-    service_result("evidence", &listing_revision_digest, result, StatusCode::OK)
+    read_service_result("evidence", &listing_revision_digest, result)
 }
 
 async fn genesis_evidence_operation(
@@ -1073,6 +1188,64 @@ async fn genesis_evidence_operation(
         .map_err(|_| HostedGatewayError::Unavailable)
         .and_then(|result| result);
     genesis_result(&listing_revision_digest, result)
+}
+
+async fn abandon_prestart_operation(
+    state: &GatewayState,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    if let Some(response) = reject_service_envelope(state, headers) {
+        return response;
+    }
+    let Ok(request) = serde_json::from_slice::<HostedLaunchEvidenceRequestV1>(body) else {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if validate_hosted_launch_evidence_request(&request).is_err() {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if !listing_allowed(state, &request.listing_revision_digest) {
+        return safe_error(StatusCode::FORBIDDEN, "listing_not_allowed");
+    }
+    if !admit_rate(state) {
+        return safe_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
+    let backend = Arc::clone(&state.backend);
+    let listing_revision_digest = request.listing_revision_digest.clone();
+    let result = tokio::task::spawn_blocking(move || backend.abandon_prestart(&request))
+        .await
+        .map_err(|_| HostedGatewayError::Unavailable)
+        .and_then(|result| result);
+    prestart_abandonment_result(&listing_revision_digest, result)
+}
+
+async fn abandon_provisioning_operation(
+    state: &GatewayState,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    if let Some(response) = reject_service_envelope(state, headers) {
+        return response;
+    }
+    let Ok(request) = serde_json::from_slice::<HostedLaunchEvidenceRequestV1>(body) else {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if validate_hosted_launch_evidence_request(&request).is_err() {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if !listing_allowed(state, &request.listing_revision_digest) {
+        return safe_error(StatusCode::FORBIDDEN, "listing_not_allowed");
+    }
+    if !admit_rate(state) {
+        return safe_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
+    let backend = Arc::clone(&state.backend);
+    let listing_revision_digest = request.listing_revision_digest.clone();
+    let result = tokio::task::spawn_blocking(move || backend.abandon_provisioning(&request))
+        .await
+        .map_err(|_| HostedGatewayError::Unavailable)
+        .and_then(|result| result);
+    provisioning_abandonment_result(&listing_revision_digest, result)
 }
 
 async fn result_source_evidence_operation(
@@ -1143,6 +1316,31 @@ async fn house_runner_operation(
     .map_err(|_| HostedGatewayError::Unavailable)
     .and_then(|result| result);
     house_runner_result(operation, &listing_revision_digest, result)
+}
+
+async fn house_runner_retirement_operation(
+    state: &GatewayState,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    if let Some(response) = reject_service_envelope(state, headers) {
+        return response;
+    }
+    let Ok(request) = serde_json::from_slice::<HostedHouseRunnerRetirementRequestV1>(body) else {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if validate_hosted_house_runner_retirement_request(&request).is_err() {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if !admit_rate(state) {
+        return safe_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
+    let backend = Arc::clone(&state.backend);
+    let result = tokio::task::spawn_blocking(move || backend.retire_house_runner(&request))
+        .await
+        .map_err(|_| HostedGatewayError::Unavailable)
+        .and_then(|result| result);
+    house_runner_retirement_result(result)
 }
 
 async fn browser_handoff_issue_operation(
@@ -1387,6 +1585,59 @@ fn service_result(
     }
 }
 
+/// Read-only correspondence preserves a missing Host operation as 404. The
+/// Controller uses that distinction to retry the same frozen operation after
+/// a lost/restarted Host, while launch mutations retain the conflict mapping
+/// above.
+fn read_service_result(
+    operation: &'static str,
+    listing_revision_digest: &str,
+    result: Result<HostedLaunchStatusV1, HostedGatewayError>,
+) -> Response {
+    match result {
+        Ok(status) => {
+            tracing::info!(
+                target: "worldstream.hosted_gateway",
+                operation,
+                listing_revision_digest,
+                outcome = "accepted",
+                "hosted gateway operation"
+            );
+            no_store((StatusCode::OK, Json(status)).into_response())
+        }
+        Err(HostedGatewayError::Missing) => {
+            tracing::info!(
+                target: "worldstream.hosted_gateway",
+                operation,
+                listing_revision_digest,
+                outcome = "missing",
+                "hosted gateway operation"
+            );
+            safe_error(StatusCode::NOT_FOUND, "operation_missing")
+        }
+        Err(HostedGatewayError::Rejected | HostedGatewayError::InvalidConfiguration) => {
+            tracing::warn!(
+                target: "worldstream.hosted_gateway",
+                operation,
+                listing_revision_digest,
+                outcome = "rejected",
+                "hosted gateway operation"
+            );
+            safe_error(StatusCode::CONFLICT, "operation_rejected")
+        }
+        Err(HostedGatewayError::Unavailable) => {
+            tracing::warn!(
+                target: "worldstream.hosted_gateway",
+                operation,
+                listing_revision_digest,
+                outcome = "unavailable",
+                "hosted gateway operation"
+            );
+            safe_error(StatusCode::SERVICE_UNAVAILABLE, "operation_unavailable")
+        }
+    }
+}
+
 fn house_runner_result(
     operation: &'static str,
     listing_revision_digest: &str,
@@ -1414,6 +1665,21 @@ fn house_runner_result(
     }
 }
 
+fn house_runner_retirement_result(
+    result: Result<HostedHouseRunnerRetirementReceiptV1, HostedGatewayError>,
+) -> Response {
+    match result {
+        Ok(receipt) => no_store((StatusCode::OK, Json(receipt)).into_response()),
+        Err(HostedGatewayError::Missing) => safe_error(StatusCode::NOT_FOUND, "operation_missing"),
+        Err(HostedGatewayError::Rejected | HostedGatewayError::InvalidConfiguration) => {
+            safe_error(StatusCode::CONFLICT, "operation_rejected")
+        }
+        Err(HostedGatewayError::Unavailable) => {
+            safe_error(StatusCode::SERVICE_UNAVAILABLE, "operation_unavailable")
+        }
+    }
+}
+
 fn genesis_result(
     listing_revision_digest: &str,
     result: Result<HostedGenesisEvidenceV1, HostedGatewayError>,
@@ -1423,6 +1689,57 @@ fn genesis_result(
             tracing::info!(
                 target: "worldstream.hosted_gateway",
                 operation = "genesis_evidence",
+                listing_revision_digest,
+                outcome = "accepted",
+                "hosted gateway operation"
+            );
+            no_store((StatusCode::OK, Json(evidence)).into_response())
+        }
+        Err(HostedGatewayError::Missing) => safe_error(StatusCode::NOT_FOUND, "operation_missing"),
+        Err(HostedGatewayError::Rejected | HostedGatewayError::InvalidConfiguration) => {
+            safe_error(StatusCode::CONFLICT, "operation_rejected")
+        }
+        Err(HostedGatewayError::Unavailable) => {
+            safe_error(StatusCode::SERVICE_UNAVAILABLE, "operation_unavailable")
+        }
+    }
+}
+
+fn prestart_abandonment_result(
+    listing_revision_digest: &str,
+    result: Result<HostedPrestartAbandonmentEvidenceV1, HostedGatewayError>,
+) -> Response {
+    match result {
+        Ok(evidence) => {
+            tracing::info!(
+                target: "worldstream.hosted_gateway",
+                operation = "abandon_prestart",
+                listing_revision_digest,
+                outcome = "accepted",
+                "hosted gateway operation"
+            );
+            no_store((StatusCode::OK, Json(evidence)).into_response())
+        }
+        Err(
+            HostedGatewayError::Rejected
+            | HostedGatewayError::Missing
+            | HostedGatewayError::InvalidConfiguration,
+        ) => safe_error(StatusCode::CONFLICT, "operation_rejected"),
+        Err(HostedGatewayError::Unavailable) => {
+            safe_error(StatusCode::SERVICE_UNAVAILABLE, "operation_unavailable")
+        }
+    }
+}
+
+fn provisioning_abandonment_result(
+    listing_revision_digest: &str,
+    result: Result<HostedProvisioningAbandonmentEvidenceV1, HostedGatewayError>,
+) -> Response {
+    match result {
+        Ok(evidence) => {
+            tracing::info!(
+                target: "worldstream.hosted_gateway",
+                operation = "abandon_provisioning",
                 listing_revision_digest,
                 outcome = "accepted",
                 "hosted gateway operation"
@@ -1482,10 +1799,13 @@ fn fixed_http_request(
                     "POST",
                     "/api/v1/hosted-launches:submit"
                         | "/api/v1/hosted-launches:read"
+                        | "/api/v1/hosted-launches:abandon-prestart"
+                        | "/api/v1/hosted-launches:abandon-provisioning"
                         | "/api/v1/hosted-launches:read-genesis"
                         | "/api/v1/hosted-launches:read-result-source"
                         | "/api/v1/hosted-house-runners:reserve"
                         | "/api/v1/hosted-house-runners:read"
+                        | "/api/v1/hosted-house-runners:retire"
                         | "/api/v1/hosted-browser-handoffs:issue"
                         | "/api/v1/hosted-browser-handoffs:redeem"
                         | "/api/v1/hosted-browser-sessions:status"
@@ -1649,6 +1969,14 @@ fn classify_upstream_status(status: u16) -> HostedGatewayError {
     }
 }
 
+fn classify_read_upstream_status(status: u16) -> HostedGatewayError {
+    match status {
+        404 => HostedGatewayError::Missing,
+        400 | 401 | 403 | 409 | 422 => HostedGatewayError::Rejected,
+        _ => HostedGatewayError::Unavailable,
+    }
+}
+
 fn classify_browser_upstream_status(status: u16) -> HostedGatewayError {
     match status {
         401 | 404 => HostedGatewayError::Missing,
@@ -1698,6 +2026,38 @@ fn validate_genesis_response(
     Ok(())
 }
 
+fn validate_prestart_abandonment_response(
+    response: &HostedPrestartAbandonmentEvidenceV1,
+    request: &HostedLaunchEvidenceRequestV1,
+) -> Result<(), HostedGatewayError> {
+    validate_hosted_prestart_abandonment_evidence(response)
+        .map_err(|_| HostedGatewayError::Unavailable)?;
+    if response.listing_revision_digest != request.listing_revision_digest
+        || response.launch_request_digest != request.launch_request_digest
+        || response.room_setup_operation_id != request.room_setup_operation_id
+        || response.lobby_launch_committed
+    {
+        return Err(HostedGatewayError::Unavailable);
+    }
+    Ok(())
+}
+
+fn validate_provisioning_abandonment_response(
+    response: &HostedProvisioningAbandonmentEvidenceV1,
+    request: &HostedLaunchEvidenceRequestV1,
+) -> Result<(), HostedGatewayError> {
+    validate_hosted_provisioning_abandonment_evidence(response)
+        .map_err(|_| HostedGatewayError::Unavailable)?;
+    if response.listing_revision_digest != request.listing_revision_digest
+        || response.launch_request_digest != request.launch_request_digest
+        || response.room_setup_operation_id != request.room_setup_operation_id
+        || response.genesis_committed
+    {
+        return Err(HostedGatewayError::Unavailable);
+    }
+    Ok(())
+}
+
 fn validate_result_source_response(
     response: &HostedResultSourceEvidenceV1,
     request: &HostedResultSourceRequestV1,
@@ -1726,6 +2086,24 @@ fn validate_house_runner_response(
         || receipt.listing_revision_digest != request.listing_revision_digest
         || receipt.seat_id != request.seat_id
         || receipt.house_agent_revision_digest != request.house_agent_revision_digest
+    {
+        return Err(HostedGatewayError::Unavailable);
+    }
+    Ok(())
+}
+
+fn validate_house_runner_retirement_response(
+    receipt: &HostedHouseRunnerRetirementReceiptV1,
+    request: &HostedHouseRunnerRetirementRequestV1,
+) -> Result<(), HostedGatewayError> {
+    validate_hosted_house_runner_retirement_receipt(receipt)
+        .map_err(|_| HostedGatewayError::Unavailable)?;
+    if receipt.host_installation_id != request.host_installation_id
+        || receipt.reservation_operation_id != request.reservation_operation_id
+        || receipt.launch_request_id != request.launch_request_id
+        || receipt.house_agent_assignment_id != request.house_agent_assignment_id
+        || receipt.disposition != request.disposition
+        || receipt.platform_evidence_digest != request.platform_evidence_digest
     {
         return Err(HostedGatewayError::Unavailable);
     }
@@ -2498,8 +2876,11 @@ fn no_store(mut response: Response) -> Response {
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserConnectionLimiter, MAX_BROWSER_CONNECTIONS, MAX_BROWSER_CONNECTIONS_PER_PEER,
+        BrowserConnectionLimiter, HostedGatewayError, MAX_BROWSER_CONNECTIONS,
+        MAX_BROWSER_CONNECTIONS_PER_PEER, classify_read_upstream_status, classify_upstream_status,
+        genesis_result, house_runner_retirement_result, read_service_result, service_result,
     };
+    use axum::http::StatusCode;
 
     #[test]
     fn browser_connection_capacity_is_bounded_and_released() {
@@ -2520,5 +2901,43 @@ mod tests {
         assert!(global.reserve("over-capacity".to_owned()).is_none());
         drop(permits);
         assert!(global.reserve("after-release".to_owned()).is_some());
+    }
+
+    #[test]
+    fn read_only_missing_host_operations_preserve_not_found() {
+        assert_eq!(
+            classify_read_upstream_status(404),
+            HostedGatewayError::Missing
+        );
+        assert_eq!(classify_upstream_status(404), HostedGatewayError::Rejected);
+        let evidence = read_service_result(
+            "evidence",
+            "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Err(HostedGatewayError::Missing),
+        );
+        assert_eq!(evidence.status(), StatusCode::NOT_FOUND);
+
+        let genesis = genesis_result(
+            "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Err(HostedGatewayError::Missing),
+        );
+        assert_eq!(genesis.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn launch_missing_host_operations_remain_conflicts() {
+        let launch = service_result(
+            "launch",
+            "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Err(HostedGatewayError::Missing),
+            StatusCode::ACCEPTED,
+        );
+        assert_eq!(launch.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn missing_house_retirement_operations_preserve_not_found() {
+        let response = house_runner_retirement_result(Err(HostedGatewayError::Missing));
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }

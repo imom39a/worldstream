@@ -26,7 +26,8 @@ It exposes:
 
 | Surface | Local path | Responsibility |
 | --- | --- | --- |
-| Agent Heist | `/agent-heist-v3/` | exact Heist participant or spectator experience |
+| Agent Heist 0.3 (current) | `/agent-heist-v6/` | exact Heist participant or spectator experience |
+| Agent Heist (retained releases) | `/agent-heist-v2/` through `/agent-heist-v5/` | original approved client for a retained binding |
 | Negotiate 0.1 | `/negotiate/` | retained exact 0.1 participant or spectator experience |
 | Negotiate 0.2 | `/negotiate-v3/` | current exact 0.2 participant or spectator experience |
 | WorldStream Inspector | `/inspector-v2/` | Pack-neutral authorized protocol workbench and configured fallback |

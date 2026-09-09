@@ -152,6 +152,26 @@ describe("standalone Agent Heist live participant surface", () => {
     expect(markup).not.toMatch(/room_id|member_id|Bearer\s|wsh1:|wsb1:/);
   });
 
+  it("keeps the opaque selector flow usable for the frozen Heist 0.3 Pack", () => {
+    const planId = "158CGNGHR8Q7YJ7HKKDH6M8CXZ";
+    const markup = renderToStaticMarkup(<AgentHeistClientView state={{
+      ...readyState(),
+      pack: {
+        id: "worldstream.agent-heist",
+        version: "0.3.0",
+        digest: "blake3:4e4c970403f29a8448a1a3bcf7a96c030df713499730288f324c7e200d160b2d",
+      },
+      projection: {
+        ...readyState().projection,
+        plans: [{ ...readyState().projection.plans[0]!, planId }],
+      },
+      offers: [{ ...readyState().offers[0]!, actionType: "endorse_plan" as const }],
+    }} connection="live" onAct={vi.fn()} />);
+
+    expect(markup).toContain(`<option value="${planId}">`);
+    expect(markup).not.toMatch(/<input[^>]*name="plan_id"/);
+  });
+
   it("renders no action or domain content before an authorized Reset", () => {
     const markup = renderToStaticMarkup(
       <AgentHeistClientView state={{ kind: "awaiting" }} connection="connecting" onAct={vi.fn()} />,

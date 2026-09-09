@@ -56,7 +56,7 @@ The ready output shows these default endpoints:
 | Service | Address | Exposure |
 | --- | --- | --- |
 | Product | `http://127.0.0.1:5180/` | Local browser |
-| Agent Heist asset server | `http://127.0.0.1:5173/agent-heist-v4/hosted/` | Product proxy only |
+| Agent Heist asset server | `http://127.0.0.1:5173/agent-heist-v6/hosted/` | Product proxy only |
 | Hosted Gateway | `http://127.0.0.1:8080/` | Local client |
 | Platform BFF | `http://127.0.0.1:3000/` | Product proxy only |
 | Fake OpenRouter | `http://127.0.0.1:8787/` | Local process only |
@@ -67,8 +67,8 @@ The ready output shows these default endpoints:
 The product proxies `/api/*` to the Platform BFF. Browser cookies and request
 origins therefore use the product origin, as they do in the hosted design.
 Start at the product catalog, not at the asset server. The catalog opens
-`/agent-heist-v4/hosted/` on the product origin after it authorizes your entry.
-The separate `/agent-heist-v4/` surface is for the standalone local-kernel
+`/agent-heist-v6/hosted/` on the product origin after it authorizes your entry.
+The separate `/agent-heist-v6/` surface is for the standalone local-kernel
 flow in [Getting started](getting-started.md); it does not use platform sign-in.
 
 If an approved Activity Client Host is already on port `5173`, the command

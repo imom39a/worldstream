@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { test } from "vitest";
 
 import {
+  PlatformActivityCapacityUnavailableError,
   PlatformCredentialRejectedError,
   PlatformDependencyUnavailableError,
   PlatformRateLimitExceededError,
@@ -107,6 +108,47 @@ test("closed launch admission is temporary only for the exact launch RPC error",
   }
 });
 
+test("only exact durable capacity gates become an activity-capacity response", async () => {
+  const originalFetch = globalThis.fetch;
+  let failure = { code: "55000", message: "pre_genesis_capacity_unavailable" };
+  try {
+    globalThis.fetch = async () => Response.json(failure, { status: 400 });
+    const data = createSupabaseBffDependencies({
+      url: URL,
+      publishableKey: PUBLISHABLE,
+      dataSecretKey: SECRET,
+    }).hostedFormationData;
+    assert.ok(data);
+    const create = () => data.createLaunchRequest({
+      accountId: "10000000-0000-4000-8000-000000000001",
+      listingRevisionDigest: `blake3:${"1".repeat(64)}`,
+      idempotencyNamespace: "capacity-test",
+      idempotencyKeyDigest: new Uint8Array(32),
+      canonicalLaunchInput: new TextEncoder().encode("{}"),
+      launchInputDigest: new Uint8Array(32),
+      houseFillChoice: "disabled",
+      creatorAccessChoice: "seat",
+      creatorSeatId: "navigator",
+    });
+    await assert.rejects(create(), (error: unknown) =>
+      error instanceof PlatformActivityCapacityUnavailableError && error.scope === "account",
+    );
+    failure = { code: "55000", message: "global_active_run_capacity_unavailable" };
+    await assert.rejects(() => data.authorizeHostMutation(
+      "10000000-0000-4000-8000-000000000001",
+      "20000000-0000-4000-8000-000000000001",
+      "hosted-preview-1",
+      "launch-20000000000040008000000000000001",
+    ), (error: unknown) =>
+      error instanceof PlatformActivityCapacityUnavailableError && error.scope === "platform",
+    );
+    failure = { code: "55000", message: "unrecognized_capacity_like_error" };
+    await assert.rejects(create(), PlatformCredentialRejectedError);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("public Run reads use only the server-secret DTO RPCs", async () => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ readonly url: string; readonly body: unknown }> = [];
@@ -161,6 +203,18 @@ test("result reconciliation uses only typed server RPCs and exact bytea inputs",
           room_setup_operation_id: "hosted-result-01",
         }]);
       }
+      if (request.url.endsWith("/list_terminal_house_runner_retirement_candidates_v1")) {
+        return Response.json([{ activity_run_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }]);
+      }
+      if (request.url.endsWith("/list_prestart_house_runner_retirement_candidates_v1")) {
+        return Response.json([{ activity_run_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }]);
+      }
+      if (request.url.endsWith("/list_prestart_abandonment_candidates_v1")) {
+        return Response.json([{
+          activity_run_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          launch_request_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        }]);
+      }
       if (request.url.endsWith("/read_terminal_reconciliation_v1")) {
         return Response.json({
           terminal_recorded: true,
@@ -177,13 +231,66 @@ test("result reconciliation uses only typed server RPCs and exact bytea inputs",
           publishable: false,
         });
       }
+      if (request.url.endsWith("/read_terminal_house_runner_retirements_v1")) {
+        return Response.json([{
+          host_installation_id: "hosted-test",
+          reservation_operation_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          launch_request_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          house_agent_assignment_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+          terminal_evidence_digest: `sha256:${"3".repeat(64)}`,
+        }]);
+      }
+      if (request.url.endsWith("/record_terminal_house_runner_retirement_v1")) {
+        return Response.json(true);
+      }
+      if (request.url.endsWith("/read_prestart_house_runner_retirements_v1")) {
+        return Response.json([{
+          host_installation_id: "hosted-test",
+          reservation_operation_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          launch_request_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          house_agent_assignment_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+          abandonment_evidence_digest: `sha256:${"4".repeat(64)}`,
+        }]);
+      }
+      if (request.url.endsWith("/record_prestart_house_runner_retirement_v1")) {
+        return Response.json(true);
+      }
       return Response.json({ disposition: "applied", safe_code: "result_recorded" });
     };
     const data = createSupabaseResultReconciliationData(URL, SECRET);
     const candidates = await data.listCandidates(10);
     assert.equal(candidates[0]?.candidateKind, "result_source");
+    assert.deepEqual(await data.listTerminalHouseRunnerRetirementRuns(10), [
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    ]);
+    assert.deepEqual(await data.listPrestartHouseRunnerRetirementRuns(10), [
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    ]);
+    assert.deepEqual(await data.listPrestartAbandonmentLaunches(10), [
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    ]);
     assert.equal((await data.readTerminal("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"))?.projectorStatus, "summary");
     assert.equal((await data.readResult("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"))?.integrityGeneration, 3);
+    const [retirement] = await data.readTerminalHouseRunnerRetirements(
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    );
+    assert.equal(retirement?.houseAgentAssignmentId, "dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+    assert.equal(await data.recordTerminalHouseRunnerRetirement({
+      runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      candidate: retirement!,
+      canonicalReceipt: Uint8Array.of(4, 5, 6),
+      receiptDigest: Uint8Array.of(7, 8, 9),
+    }), true);
+    const [prestartRetirement] = await data.readPrestartHouseRunnerRetirements(
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    );
+    assert.equal(prestartRetirement?.abandonmentEvidenceDigest, `sha256:${"4".repeat(64)}`);
+    assert.equal(await data.recordPrestartHouseRunnerRetirement({
+      runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      candidate: prestartRetirement!,
+      canonicalReceipt: Uint8Array.of(4, 5, 6),
+      receiptDigest: Uint8Array.of(7, 8, 9),
+    }), true);
     const bytes = Uint8Array.of(1, 2, 3);
     await data.recordResult(
       "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",

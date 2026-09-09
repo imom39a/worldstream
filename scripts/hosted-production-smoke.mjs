@@ -6,12 +6,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostedDevelopmentListingAllowlist } from "./hosted-dev.mjs";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const LISTING_DIGEST = "blake3:48c397a32632896d66beb9ae7f8a6d090338800187c56eb0593997b80bd2b630";
+const LISTING_DIGEST = "blake3:21d7d5439208df0b1dbb18f7f42f3a3687d248a523b03fb5b4184b2dd0dcb626";
 const CONTROLLER_AUTHORITY = "hosted-smoke-controller-authority-000000000000";
 const SERVICE_AUTHORITY = "hosted-smoke-service-authority-000000000000000";
 
 async function main() {
-  const binaryRoot = join(REPOSITORY_ROOT, "target", "debug");
+  const binaryRoot = hostedSmokeBinaryRoot();
   for (const binary of [
     "worldstreamctl",
     "worldstreamd",
@@ -35,7 +35,7 @@ async function main() {
   ]);
   await Promise.all([
     copyFile(
-      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "agent-heist-web-v5.json"),
+      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "agent-heist-web-v6.json"),
       join(assetRoot, "agent-heist-web.json"),
     ),
     copyFile(
@@ -111,7 +111,10 @@ async function main() {
       "--pack", "worldstream.agent-heist@0.3.0",
       "--output", setup,
     ]);
-    const created = JSON.parse((await ctl(["room", "create", "--file", setup])).stdout);
+    const created = JSON.parse((await runRoomCreateWithRetainedSetupRetry(
+      ctl,
+      ["room", "create", "--file", setup],
+    )).stdout);
     const roomId = created.room_id;
     const operationId = created.operation_id;
     if (typeof roomId !== "string" || typeof operationId !== "string") {
@@ -146,6 +149,16 @@ async function main() {
     if (appliance !== null) await stopAppliance(appliance);
     await rm(temporary, { recursive: true, force: true });
   }
+}
+
+// `hosted:package:smoke` builds debug binaries. Honor Cargo's standard target
+// override so the smoke can isolate build artifacts without accidentally
+// exercising a stale repository `target/debug` executable.
+export function hostedSmokeBinaryRoot(environment = process.env) {
+  const targetRoot = environment.CARGO_TARGET_DIR === undefined
+    ? join(REPOSITORY_ROOT, "target")
+    : resolve(REPOSITORY_ROOT, environment.CARGO_TARGET_DIR);
+  return join(targetRoot, "debug");
 }
 
 function startAppliance(environment) {
@@ -232,6 +245,10 @@ const OPERATOR_COMMANDS = new Set([
   "room example", "room create", "room list", "client export-credentials",
 ]);
 const SETUP_STAGES = new Set(["room_creation", "member_capability", "runner_capability"]);
+// One initial create plus one exact re-observation for each legitimate setup
+// boundary. A retained operation may advance from room creation to member and
+// then runner capability across these attempts, but never indefinitely.
+const MAX_ROOM_CREATE_ATTEMPTS = 1 + SETUP_STAGES.size;
 const FAILURE_STATUS = new Map([
   ["setup_incomplete", "partial"],
   ["operation_failed", "failed"],
@@ -296,10 +313,49 @@ export function runHostedSmokeCommand(command, args, environment, capture, expec
       if (code === 0) resolvePromise({ stdout: capture ? stdout : "", stderr: "" });
       else {
         const diagnostic = stdoutTruncated ? null : safeOperatorFailure(stdout, expectedCommand);
-        rejectPromise(new Error(`hosted_smoke_command_failed${diagnostic === null ? "" : `:${JSON.stringify(diagnostic)}`}`));
+        const error = new Error(`hosted_smoke_command_failed${diagnostic === null ? "" : `:${JSON.stringify(diagnostic)}`}`);
+        if (diagnostic !== null) {
+          Object.defineProperty(error, "operatorFailure", {
+            configurable: false,
+            enumerable: false,
+            value: Object.freeze(diagnostic),
+            writable: false,
+          });
+        }
+        rejectPromise(error);
       }
     });
   });
+}
+
+export async function runRoomCreateWithRetainedSetupRetry(execute, commandArgs) {
+  if (typeof execute !== "function" || !Array.isArray(commandArgs) ||
+    commandArgs[0] !== "room" || commandArgs[1] !== "create") {
+    throw new Error("hosted_smoke_invalid_room_create_command");
+  }
+  // Freeze one exact argv vector. A retry is a re-observation of the retained
+  // operation, never a newly constructed Room create request.
+  const exactCommand = Object.freeze([...commandArgs]);
+  let attempts = 0;
+  while (true) {
+    attempts += 1;
+    try {
+      return await execute(exactCommand);
+    } catch (error) {
+      if (!isRetainedSetupIncomplete(error) || attempts >= MAX_ROOM_CREATE_ATTEMPTS) {
+        throw error;
+      }
+    }
+  }
+}
+
+function isRetainedSetupIncomplete(error) {
+  const failure = error?.operatorFailure;
+  return failure !== null && typeof failure === "object" &&
+    failure.command === "room create" &&
+    failure.status === "partial" &&
+    failure.code === "setup_incomplete" &&
+    SETUP_STAGES.has(failure.stage);
 }
 
 function delay(milliseconds) {

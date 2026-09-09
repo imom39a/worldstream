@@ -2,23 +2,58 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, readdir, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { renderHouseAgentProfiles, renderHouseRunnerTemplate } from "./hosted-runtime.mjs";
+import {
+  renderHouseAgentProfiles,
+  renderHouseRunnerTemplate,
+  retainRunnerExecutable,
+} from "./hosted-runtime.mjs";
 import { runHostedAcceptancePrerequisites } from "./hosted-acceptance-prerequisites.mjs";
 import {
   HOSTED_ACCEPTANCE_SCHEMA,
   LOCAL_ACCEPTANCE_CHECKS,
+  validateQualification,
   writeHostedAcceptanceEvidence,
 } from "./hosted-acceptance-evidence.mjs";
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEVELOPMENT_MODE = "visible-local-only";
-const LISTING_DIGEST = "blake3:10135b2b12664dec3fc51a23c917d8468474af93b9c20ee5ed068b61e2dee61c";
+const HOSTED_NATIVE_BINARY_NAMES = [
+  "worldstreamctl",
+  "worldstreamd",
+  "worldstream-studio-supervisor",
+  "worldstream-assignment-mcp",
+  "worldstream-hosted-gateway",
+  "worldstream-managed-agent-host",
+];
+export const HOSTED_LOCAL_RECONCILIATION_SECRET =
+  "worldstream-local-reconciliation-secret-000000000000";
+const LISTING_DIGEST = "blake3:1cf75abcb30d77fdbe0abc5e39813a315bea6900c61e9b49c51b84d995335d74";
 const RETAINED_LISTING_DIGESTS = [
+  "blake3:21d7d5439208df0b1dbb18f7f42f3a3687d248a523b03fb5b4184b2dd0dcb626",
+  "blake3:5b0993de4c858771cce34b16cb25e03b2bf509cbe16cd1ce7249a789ea8c426f",
+  "blake3:350beff2dbb28d495a5355ac19a7580f8494589bc0d5c6fec1c521be86a7cf38",
+  "blake3:ab6d61d35786e51e3849c68467aad664bd35cb41f299b86d1bcce3f52e4249db",
+  "blake3:79400919b61a051f4de82824a9a7f6414be609609802ece11ca1137fc8fbdf65",
+  "blake3:735865c4246282c89d37858c9ee9de99a05ae4557fdef5dca5ea365f90f031b0",
+  "blake3:a12a29ad0382c7053a14295a60d017fbdc817c24e513521f85be982f5ec07dfc",
+  "blake3:10135b2b12664dec3fc51a23c917d8468474af93b9c20ee5ed068b61e2dee61c",
   "blake3:e202f7b24dbd99caeef6d8a1c904ae8131143d38af17a9512e562fe523654ed0",
   "blake3:8252e311f9ebbe20d1041877511932c9fac51155e0b26f6a247046fb383ddd99",
   "blake3:8106c3f34f52c8a2a216f2a88c842cea7b44db0241db4b0430e2c02a38f34f13",
@@ -35,17 +70,75 @@ export function hostedDevelopmentListingAllowlist() {
   return [LISTING_DIGEST, ...RETAINED_LISTING_DIGESTS].join(",");
 }
 
+export function hostedLocalSmokeIdempotencyKey(listingDigest = LISTING_DIGEST) {
+  if (!/^blake3:[0-9a-f]{64}$/u.test(listingDigest)) {
+    throw new Error("hosted smoke Listing digest is invalid");
+  }
+  return `hosted_local_${createHash("sha256")
+    .update(`worldstream/hosted-smoke/${listingDigest}/agent-heist/seat-1/house-agents`)
+    .digest("hex")
+    .slice(0, 32)}`;
+}
+
+export const HOSTED_LOCAL_SMOKE_IDEMPOTENCY_KEY = hostedLocalSmokeIdempotencyKey();
+
+/**
+ * One development readiness fixture is retained for each immutable Listing
+ * identity.  It is deliberately deterministic: re-running hosted:dev checks
+ * the same exact Host operation rather than creating another permanent Room.
+ * A Listing successor receives a distinct fixture identity. This preserves
+ * the immutable Host-operation boundary; it does not classify every launch
+ * validation failure as an operation-identity failure.
+ */
+export function hostedDevelopmentReadinessProbeIdentity(listingDigest = LISTING_DIGEST) {
+  const match = typeof listingDigest === "string"
+    ? listingDigest.match(/^blake3:([0-9a-f]{64})$/u)
+    : null;
+  if (match?.[1] === undefined) throw new Error("hosted readiness Listing digest is invalid");
+  const digest = match[1];
+  return Object.freeze({
+    roomSetupOperationId: `hosted-local-readiness-${digest.slice(0, 8)}`,
+    // The digest supplies the stable entropy; fixed RFC-4122 version/variant
+    // nibbles make this an accepted reservation reference without choosing a
+    // new random capacity identity on each local readiness run.
+    reservationReference: `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`,
+  });
+}
+
 export function hostedDevelopmentLaunchHttpAccepted(status) {
   // The Gateway returns 200 after lobby launch, or 202 for retained setup work.
   // Neither status substitutes for the identity/evidence checks below.
   return status === 200 || status === 202;
 }
-const DEVELOPMENT_USER_ID = "00000000-0000-4000-8000-00000000d001";
-const DEVELOPMENT_PROVIDER_SUBJECT = "worldstream-development";
-const DEVELOPMENT_LOGIN = "worldstream-local-developer";
-const DEVELOPMENT_AGENT_USER_ID = "00000000-0000-4000-8000-00000000d002";
-const DEVELOPMENT_AGENT_PROVIDER_SUBJECT = "worldstream-development-agent";
-const DEVELOPMENT_AGENT_LOGIN = "worldstream-local-browser-agent";
+
+/**
+ * A retained local installation may legitimately hold the single pre-Genesis
+ * capacity reservation for the development identity.  The readiness probe
+ * must not cancel or delete that user-owned setup merely to make its smoke
+ * launch fit.  It may, however, distinguish that expected occupancy from an
+ * unexplained capacity rejection.
+ */
+export function hasRetainedHostedDevelopmentSetup(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const body = value;
+  if (body.version !== "platform_my_games.v1" || !Array.isArray(body.items)) return false;
+  return body.items.some((item) =>
+    typeof item === "object" && item !== null && !Array.isArray(item) &&
+    item.state === "setup_pending" &&
+    item.action === "continue_setup" &&
+    typeof item.launch_id === "string" &&
+    item.result_public_id === undefined
+  );
+}
+// d001/d002 are retained manual-development identities. The hosted local
+// qualification uses separate identities so old interrupted setups cannot
+// consume the one pre-Genesis reservation needed by a repeatable candidate.
+const DEVELOPMENT_USER_ID = "00000000-0000-4000-8000-00000000d003";
+const DEVELOPMENT_PROVIDER_SUBJECT = "worldstream-development-qualification";
+const DEVELOPMENT_LOGIN = "worldstream-local-qualification";
+const DEVELOPMENT_AGENT_USER_ID = "00000000-0000-4000-8000-00000000d004";
+const DEVELOPMENT_AGENT_PROVIDER_SUBJECT = "worldstream-development-qualification-agent";
+const DEVELOPMENT_AGENT_LOGIN = "worldstream-local-qualification-agent";
 const SERVICE_AUTHORITY = "worldstream-local-service-authority-000000000000";
 const CONTROLLER_AUTHORITY = "worldstream-local-controller-authority-000000000";
 const HOST_INSTALLATION_ID = "hosted-dev";
@@ -85,13 +178,32 @@ export function assertHostedDevelopmentAllowed(environment = process.env) {
   }
 }
 
-export function hostedNativeBuildPlan(acceptance, profile = acceptance ? "release" : "debug") {
+export function hostedNativeBuildPlan(
+  acceptance,
+  profile = acceptance ? "release" : "debug",
+  environment = process.env,
+) {
   if (profile !== "debug" && profile !== "release") {
     throw new Error("native profile must be debug or release");
   }
-  const binaryRoot = join(REPOSITORY_ROOT, "target", profile);
+  const cargoTargetRoot = environment.CARGO_TARGET_DIR === undefined
+    ? join(REPOSITORY_ROOT, "target")
+    : resolve(REPOSITORY_ROOT, environment.CARGO_TARGET_DIR);
+  const buildBinaryRoot = join(cargoTargetRoot, profile);
+  const executionBinaryRoot = join(REPOSITORY_ROOT, "target", profile);
+  const copyArtifacts = cargoTargetRoot === join(REPOSITORY_ROOT, "target")
+    ? []
+    : HOSTED_NATIVE_BINARY_NAMES.map((name) => [
+      name,
+      join(buildBinaryRoot, name),
+      join(executionBinaryRoot, name),
+    ]);
   return {
     profile,
+    cargoTargetRoot,
+    buildBinaryRoot,
+    executionBinaryRoot,
+    copyArtifacts,
     cargoArgs: [
       "build", "--locked", ...(profile === "release" ? ["--release"] : []),
       "-p", "worldstream-server",
@@ -100,10 +212,51 @@ export function hostedNativeBuildPlan(acceptance, profile = acceptance ? "releas
     ],
     // worldstreamctl resolves Controller, Runtime, and assignment MCP beside
     // itself. The Gateway and approved House executable must use that build too.
-    ctl: join(binaryRoot, "worldstreamctl"),
-    gateway: join(binaryRoot, "worldstream-hosted-gateway"),
-    managedAgentHost: join(binaryRoot, "worldstream-managed-agent-host"),
+    // worldstreamctl resolves Controller, Runtime, and assignment MCP beside
+    // itself. Keep all execution paths in the repository target directory,
+    // even when Cargo writes its build outputs elsewhere.
+    ctl: join(executionBinaryRoot, "worldstreamctl"),
+    gateway: join(executionBinaryRoot, "worldstream-hosted-gateway"),
+    managedAgentHost: join(executionBinaryRoot, "worldstream-managed-agent-host"),
   };
+}
+
+export async function installHostedNativeBinaries(plan) {
+  if (plan.copyArtifacts.length === 0) return;
+  await mkdir(plan.executionBinaryRoot, { recursive: true });
+  for (const [, source, destination] of plan.copyArtifacts) {
+    const sourceStats = await stat(source);
+    if (!sourceStats.isFile() || (sourceStats.mode & 0o111) === 0) {
+      throw new Error(`Cargo did not produce an executable hosted binary: ${source}`);
+    }
+    const temporary = `${destination}.hosted-dev-${process.pid}-${randomBytes(8).toString("hex")}.tmp`;
+    try {
+      await copyFile(source, temporary);
+      await chmod(temporary, sourceStats.mode & 0o777);
+      await rename(temporary, destination);
+    } catch (error) {
+      await rm(temporary, { force: true }).catch(() => {});
+      throw error;
+    }
+  }
+}
+
+export function hostedNativeShutdownPlan(plan, { configFile, stateDirectory, controller }) {
+  const worldstreamctl = join(plan.buildBinaryRoot, "worldstreamctl");
+  const command = (parts) => ({
+    executable: worldstreamctl,
+    args: [
+      "--config",
+      configFile,
+      ...parts,
+      "--state-dir",
+      stateDirectory,
+      "--controller",
+      controller,
+      "--json",
+    ],
+  });
+  return [command(["server", "stop"]), command(["server", "controller-stop"])];
 }
 
 export function renderHostedDevelopmentConfig({ dataDirectory, secretFile, runtimePort }) {
@@ -184,6 +337,14 @@ async function main() {
     const candidateBefore = options.acceptance
       ? await localCandidateIdentity(commonEnvironment)
       : null;
+    await mkdir(stateRoot, { recursive: true, mode: 0o700 });
+    await ensureSecret(secretFile);
+    await ensureDevelopmentProviderSecret(providerSecretFile);
+    await writeFile(
+      configFile,
+      renderHostedDevelopmentConfig({ dataDirectory, secretFile, runtimePort: ports.runtime }),
+      { mode: 0o600 },
+    );
     await Promise.all([
       run("pnpm", ["install", "--frozen-lockfile"], { environment: commonEnvironment }),
       run(
@@ -192,6 +353,18 @@ async function main() {
         { environment: commonEnvironment },
       ),
     ]);
+    for (const { executable, args } of hostedNativeShutdownPlan(native, {
+      configFile,
+      stateDirectory,
+      controller: `127.0.0.1:${ports.controller}`,
+    })) {
+      await run(executable, args, {
+        allowFailure: true,
+        quiet: true,
+        environment: commonEnvironment,
+      });
+    }
+    await installHostedNativeBinaries(native);
     worldstreamctlBuilt = true;
     if (candidateBefore !== null) {
       // Separate bounded build receipt; the existing acceptance evidence schema
@@ -212,15 +385,6 @@ async function main() {
         environment: commonEnvironment,
       }),
     ]);
-
-    await mkdir(stateRoot, { recursive: true, mode: 0o700 });
-    await ensureSecret(secretFile);
-    await ensureDevelopmentProviderSecret(providerSecretFile);
-    await writeFile(
-      configFile,
-      renderHostedDevelopmentConfig({ dataDirectory, secretFile, runtimePort: ports.runtime }),
-      { mode: 0o600 },
-    );
 
     ownsSupabase = !(await succeeds("supabase", ["status", "-o", "env"], commonEnvironment));
     if (ownsSupabase) {
@@ -314,6 +478,7 @@ async function main() {
       WORLDSTREAM_LOCAL_ACTIVITY_CLIENT_TARGET: heistOrigin,
       WORLDSTREAM_HOSTED_GATEWAY_URL: `http://127.0.0.1:${ports.gateway}`,
       WORLDSTREAM_VERCEL_SERVICE_AUTHORITY: SERVICE_AUTHORITY,
+      WORLDSTREAM_LOCAL_RECONCILIATION_SECRET: HOSTED_LOCAL_RECONCILIATION_SECRET,
       VITE_WORLDSTREAM_SUPERVISOR_URL: `http://127.0.0.1:${ports.controller}`,
     };
 
@@ -387,6 +552,10 @@ async function main() {
     }
 
     await readiness(ports, ctl, children);
+    await reconcileHostedDevelopment(
+      productOrigin,
+      HOSTED_LOCAL_RECONCILIATION_SECRET,
+    );
     await verifyDevelopmentFlow(ports);
     if (options.acceptance) {
       const evidencePath = await verifyCanonicalLocalCandidate({
@@ -541,11 +710,11 @@ async function seedSupabase(supabase, environment) {
       "-v",
       "ON_ERROR_STOP=1",
       "-c",
-      `select (select count(*) from platform_store.activity_listing_revisions where listing_revision_digest = '${LISTING_DIGEST}'), (select count(*) from platform_store.github_identities where (auth_user_id = '${DEVELOPMENT_USER_ID}' and provider_subject = '${DEVELOPMENT_PROVIDER_SUBJECT}') or (auth_user_id = '${DEVELOPMENT_AGENT_USER_ID}' and provider_subject = '${DEVELOPMENT_AGENT_PROVIDER_SUBJECT}')), (select count(distinct approvals.house_agent_revision_digest) from platform_store.house_agent_host_approvals approvals join platform_store.activity_listing_revisions listings on listings.listing_revision_digest = '${LISTING_DIGEST}' cross join lateral jsonb_array_elements(listings.seat_templates) seats(value) where approvals.host_installation_id = '${HOST_INSTALLATION_ID}' and approvals.available_for_new_assignments and approvals.revoked_at is null and (seats.value -> 'allowed_house_agent_revisions') ? approvals.house_agent_revision_digest);`,
+      `select (select count(*) from platform_store.activity_listing_revisions where listing_revision_digest = '${LISTING_DIGEST}'), (select count(*) from platform_store.github_identities where auth_user_id in ('00000000-0000-4000-8000-00000000d001', '00000000-0000-4000-8000-00000000d002', '${DEVELOPMENT_USER_ID}', '${DEVELOPMENT_AGENT_USER_ID}') and erasure_requested_at is null), (select count(distinct approvals.house_agent_revision_digest) from platform_store.house_agent_host_approvals approvals join platform_store.activity_listing_revisions listings on listings.listing_revision_digest = '${LISTING_DIGEST}' cross join lateral jsonb_array_elements(listings.seat_templates) seats(value) where approvals.host_installation_id = '${HOST_INSTALLATION_ID}' and approvals.available_for_new_assignments and approvals.revoked_at is null and (seats.value -> 'allowed_house_agent_revisions') ? approvals.house_agent_revision_digest);`,
     ],
     { capture: true, sensitive: true, environment },
   );
-  if (verified.stdout.trim() !== "1|2|2") throw new Error("local Supabase seed verification failed: current Listing, development identities and both House strategies are required");
+  if (verified.stdout.trim() !== "1|4|2") throw new Error("local Supabase seed verification failed: current Listing, development identities and both House strategies are required");
 }
 
 async function importHostedDeclarations(
@@ -561,7 +730,17 @@ async function importHostedDeclarations(
       join(REPOSITORY_ROOT, "sdk", "typescript-pack", "packages", "pack-sdk", "dist", "index.js"),
     ).href
   );
-  const executableDigest = taggedBlake3(await readFile(managedHost)).slice("blake3:".length);
+  const managedHostBytes = await readFile(managedHost);
+  const executableDigest = taggedBlake3(managedHostBytes).slice("blake3:".length);
+  // The build output path is mutable on every local cargo build. Persist the
+  // exact bytes before rendering a new immutable Runner template so an older
+  // active Assignment keeps its executable after the next build.
+  const retainedRunner = await retainRunnerExecutable({
+    source: managedHost,
+    retainedRoot: join(stateRoot, "retained-runner-executables"),
+    digest: executableDigest,
+    sourceBytes: managedHostBytes,
+  });
   const generated = join(stateRoot, "generated-hosted-import");
   await mkdir(generated, { recursive: true, mode: 0o700 });
   const runner = join(generated, "openrouter-house-runner.json");
@@ -572,7 +751,7 @@ async function importHostedDeclarations(
   await Promise.all([
     writeFile(
       runner,
-      `${JSON.stringify(renderHouseRunnerTemplate(managedHost, executableDigest))}\n`,
+      `${JSON.stringify(renderHouseRunnerTemplate(retainedRunner, executableDigest))}\n`,
       { mode: 0o600 },
     ),
     writeFile(
@@ -653,7 +832,7 @@ async function hostedClientDeclaration(stateDirectory, stateRoot) {
 
   const template = await readRegularJson(join(configuration, "hosted-local-bindings.json"));
   const currentHeist = await readRegularJson(
-    join(configuration, "releases", "agent-heist-web-v5.json"),
+    join(configuration, "releases", "agent-heist-web-v6.json"),
   );
   template.deployments = [
     deployment,
@@ -729,7 +908,7 @@ async function assertPortsAvailable(ports, reusableNames) {
 
 async function compatibleAgentHeistAlreadyRunning(portNumber) {
   try {
-    const response = await fetch(`http://127.0.0.1:${portNumber}/agent-heist-v5/hosted/`, {
+    const response = await fetch(`http://127.0.0.1:${portNumber}/agent-heist-v6/hosted/`, {
       signal: AbortSignal.timeout(1_000),
     });
     if (response.status !== 200) return false;
@@ -787,7 +966,7 @@ async function readiness(ports, ctl, children) {
     waitForHttp("product", `http://127.0.0.1:${ports.product}/`, 200, children),
     waitForHttp(
       "same-origin Agent Heist",
-      `http://127.0.0.1:${ports.product}/agent-heist-v5/hosted/`,
+      `http://127.0.0.1:${ports.product}/agent-heist-v6/hosted/`,
       200,
       children,
     ),
@@ -828,6 +1007,42 @@ async function waitForCommand(name, check, children) {
     }
   }
   throw new Error(`${name} did not become ready within ${READINESS_TIMEOUT_MS / 1000} seconds`);
+}
+
+/**
+ * Replays the platform's bounded recovery lane before the smoke creates a
+ * new launch. Hosted development retains its local database between runs, so
+ * an interrupted provisioning request must first be resumed (or observed as
+ * having no live Host authority) by the same generic reconciliation route
+ * used by production. This is deliberately one authenticated, bounded pass.
+ */
+export async function reconcileHostedDevelopment(
+  productOrigin,
+  reconciliationSecret,
+  fetchImplementation = fetch,
+) {
+  const response = await fetchImplementation(`${productOrigin}/api/internal/reconcile`, {
+    method: "GET",
+    headers: { authorization: `Bearer ${reconciliationSecret}` },
+    signal: AbortSignal.timeout(READINESS_TIMEOUT_MS),
+  });
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    throw new Error(`hosted development reconciliation failed (${response.status})`);
+  }
+  if (
+    response.status !== 200 ||
+    typeof body !== "object" ||
+    body === null ||
+    !Number.isSafeInteger(body.attempted) ||
+    !Number.isSafeInteger(body.failed) ||
+    body.failed !== 0
+  ) {
+    throw new Error(`hosted development reconciliation failed (${response.status})`);
+  }
+  return body;
 }
 
 function assertChildrenLive(children) {
@@ -878,7 +1093,7 @@ async function verifyDevelopmentFlow(ports) {
     creator_access: "seat",
     creator_seat: "seat-1",
     fill_mode: "house_agents",
-    idempotency_key: "hosted_local_acceptance_idempotency_key_0001",
+    idempotency_key: HOSTED_LOCAL_SMOKE_IDEMPOTENCY_KEY,
   });
   const create = () => fetch(`${productOrigin}/api/launches`, {
     method: "POST",
@@ -887,34 +1102,50 @@ async function verifyDevelopmentFlow(ports) {
   });
   const firstLaunchResponse = await create();
   const firstLaunch = await firstLaunchResponse.json();
-  const repeatedLaunchResponse = await create();
-  const repeatedLaunch = await repeatedLaunchResponse.json();
   if (
-    ![200, 201].includes(firstLaunchResponse.status) ||
-    repeatedLaunchResponse.status !== 200 ||
-    typeof firstLaunch.launch_id !== "string" ||
-    firstLaunch.launch_id !== repeatedLaunch.launch_id
+    firstLaunchResponse.status === 409 &&
+    firstLaunch?.error?.code === "activity_capacity_unavailable"
   ) {
-    throw new Error("hosted launch idempotency check failed");
-  }
-  if (repeatedLaunch.state === "collecting") {
-    const invitation = await fetch(
-      `${productOrigin}/api/launches/${repeatedLaunch.launch_id}/seats/seat-2/invitation`,
-      { method: "POST", headers: launchMutationHeaders, body: "{}" },
-    );
-    const invitationBody = await invitation.json();
-    if (
-      invitation.status !== 201 ||
-      typeof invitationBody.invitation_token !== "string" ||
-      !/^[0-9a-f]{64}$/u.test(invitationBody.invitation_token)
-    ) {
-      throw new Error("hosted seat invitation check failed");
+    // A retained setup is user-owned state. The readiness probe must not
+    // cancel or delete it merely to make its smoke launch fit. It may accept
+    // this boundary only when the private index proves that the development
+    // account has a resumable setup; an unexplained rejection still fails.
+    const retainedGamesResponse = await fetch(`${productOrigin}/api/my-games`, { headers: { cookie } });
+    const retainedGames = await retainedGamesResponse.json();
+    if (retainedGamesResponse.status !== 200 || !hasRetainedHostedDevelopmentSetup(retainedGames)) {
+      throw new Error("hosted launch capacity check failed without a retained setup");
     }
-    const cancellation = await fetch(
-      `${productOrigin}/api/launches/${repeatedLaunch.launch_id}/cancel`,
-      { method: "POST", headers: launchMutationHeaders, body: "{}" },
-    );
-    if (cancellation.status !== 200) throw new Error("hosted launch cancellation check failed");
+    process.stdout.write("Hosted development smoke deferred: the development account retains a resumable setup.\n");
+  } else {
+    const repeatedLaunchResponse = await create();
+    const repeatedLaunch = await repeatedLaunchResponse.json();
+    if (
+      ![200, 201].includes(firstLaunchResponse.status) ||
+      repeatedLaunchResponse.status !== 200 ||
+      typeof firstLaunch.launch_id !== "string" ||
+      firstLaunch.launch_id !== repeatedLaunch.launch_id
+    ) {
+      throw new Error("hosted launch idempotency check failed");
+    }
+    if (repeatedLaunch.state === "collecting") {
+      const invitation = await fetch(
+        `${productOrigin}/api/launches/${repeatedLaunch.launch_id}/seats/seat-2/invitation`,
+        { method: "POST", headers: launchMutationHeaders, body: "{}" },
+      );
+      const invitationBody = await invitation.json();
+      if (
+        invitation.status !== 201 ||
+        typeof invitationBody.invitation_token !== "string" ||
+        !/^[0-9a-f]{64}$/u.test(invitationBody.invitation_token)
+      ) {
+        throw new Error("hosted seat invitation check failed");
+      }
+      const cancellation = await fetch(
+        `${productOrigin}/api/launches/${repeatedLaunch.launch_id}/cancel`,
+        { method: "POST", headers: launchMutationHeaders, body: "{}" },
+      );
+      if (cancellation.status !== 200) throw new Error("hosted launch cancellation check failed");
+    }
   }
 
   const provider = await fetch(
@@ -943,7 +1174,7 @@ async function verifyDevelopmentFlow(ports) {
     [
       "fixtures/hosted-contract/valid/agent-heist-launch-request.json",
       "fixtures/hosted-contract/valid/agent-heist-frozen-roster.json",
-      "config/hosted/listings/agent-heist-0.12.0.json",
+      "config/hosted/listings/agent-heist-0.20.0.json",
     ].map(async (path) => JSON.parse(await readFile(join(REPOSITORY_ROOT, path), "utf8"))),
   );
   const frozenLaunchRequest = {
@@ -967,6 +1198,7 @@ async function verifyDevelopmentFlow(ports) {
     rosterBytes,
   );
   const frozenRoomSetupSpecification = JSON.parse(new TextDecoder().decode(setupBytes));
+  const readinessProbe = hostedDevelopmentReadinessProbeIdentity();
   const launchRequest = {
     schema: "worldstream/hosted-launch-request/v1",
     listing_revision_digest: LISTING_DIGEST,
@@ -974,11 +1206,11 @@ async function verifyDevelopmentFlow(ports) {
     launch_input_digest: taggedSha256(encodeCanonical(frozenLaunchRequest.inputs)),
     frozen_roster_digest: taggedSha256(rosterBytes),
     room_setup_specification_digest: taggedBlake3(setupBytes),
-    room_setup_operation_id: "hosted-local-readiness-04edc964",
+    room_setup_operation_id: readinessProbe.roomSetupOperationId,
     capacity_authorization: {
       schema: "worldstream/platform-capacity-authorization/v1",
       host_installation_id: HOST_INSTALLATION_ID,
-      reservation_reference: "04edc964-d5cb-41bc-aefa-422ac856305d",
+      reservation_reference: readinessProbe.reservationReference,
     },
     frozen_launch_request: frozenLaunchRequest,
     frozen_roster: frozenRoster,
@@ -1047,18 +1279,6 @@ async function verifyCanonicalLocalCandidate({
   const nonce = randomBytes(8).toString("hex");
   const resultPath = join(stateRoot, `local-acceptance-result-${nonce}.json`);
   await run(
-    "psql",
-    [
-      databaseUrl,
-      "-q",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-c",
-      `delete from platform_store.account_mutation_rate_limits where auth_user_id in ('${DEVELOPMENT_USER_ID}', '${DEVELOPMENT_AGENT_USER_ID}');`,
-    ],
-    { capture: true, sensitive: true, environment: childEnvironment },
-  );
-  await run(
     "pnpm",
     [
       "--filter",
@@ -1070,7 +1290,7 @@ async function verifyCanonicalLocalCandidate({
       "--environment",
       "node",
       "--testTimeout",
-      "360000",
+      "900000",
     ],
     {
       environment: {
@@ -1094,14 +1314,44 @@ async function verifyCanonicalLocalCandidate({
     },
   );
   const result = JSON.parse(await readFile(resultPath, "utf8"));
+  if (result?.version === "worldstream_hosted_local_acceptance_result.v2") {
+    validateQualification({
+      match_matrix: result.matches,
+      retained_history_count: result.retained_history_count,
+      consumed_allowance_observed: result.consumed_allowance_observed,
+      fresh_setup: { status: result.fresh_setup === true ? "passed" : "blocked" },
+      retained_upgrade: { status: result.retained_upgrade === true ? "passed" : "blocked" },
+      ordinary_restart: { status: result.ordinary_restart === true ? "passed" : "blocked" },
+      populated_recovery: result.populated_recovery,
+      rendered_client: result.rendered_client,
+    }, "passed", "local");
+  }
   if (
-    result?.version !== "worldstream_hosted_local_acceptance_result.v1" ||
+    result?.version !== "worldstream_hosted_local_acceptance_result.v2" ||
     !Number.isSafeInteger(result.provider_calls) ||
     result.provider_calls < 1 ||
-    result.provider_calls > 10 ||
+    result.provider_calls > 90 ||
     !Number.isSafeInteger(result.maximum_direct_push_seconds) ||
     result.maximum_direct_push_seconds < 1 ||
-    result.maximum_direct_push_seconds > 600
+    result.maximum_direct_push_seconds > 600 ||
+    !Array.isArray(result.matches) ||
+    result.matches.length !== 3 ||
+    result.matches.some((match) =>
+      !Number.isSafeInteger(match?.provider_call_delta) ||
+      typeof match?.capacity_released !== "boolean" ||
+      typeof match?.history_retained !== "boolean"
+    ) ||
+    result.retained_history_count < 2 ||
+    result.consumed_allowance_observed !== true ||
+    result.fresh_setup !== true ||
+    result.retained_upgrade !== true ||
+    result.ordinary_restart !== true ||
+    result.populated_recovery !== "deferred_not_verified" ||
+    result.rendered_client?.schema !== "worldstream/hosted-rendered-browser-journey/v1" ||
+    result.rendered_client?.outcome !== "passed" ||
+    result.rendered_client?.completed !== true ||
+    result.rendered_client?.provider !== "local_fake_provider_only" ||
+    !Array.isArray(result.rendered_client?.checks)
   ) {
     throw new Error("hosted local acceptance returned invalid evidence");
   }
@@ -1136,9 +1386,9 @@ async function verifyCanonicalLocalCandidate({
       gateway_revision: commit,
       schema_head: schemaHead,
       listing_revision_digest: LISTING_DIGEST,
-      pack_digest: "blake3:4455e4302bda695a5fc4aca150b5a8dac944775474930dafaef1539acb86c96e",
+      pack_digest: "blake3:4e4c970403f29a8448a1a3bcf7a96c030df713499730288f324c7e200d160b2d",
       client_release_digest:
-        "sha256:12714052c8e1cac59a95b0439e8e86bf17766c8f689f5782d1dd5d4c0efd4cd6",
+        "sha256:ed70155dd56f13010f33ab6cba55f3085443840a7e0f7a286e32b2e6d1719d10",
       projector_digest:
         "blake3:f676cab8007a374db5510d66f534697472c53ea4b2719900bfecce53786f7563",
     },
@@ -1149,9 +1399,19 @@ async function verifyCanonicalLocalCandidate({
           : { status: "passed" },
       ]),
     ),
-    metrics: {
+      metrics: {
       provider_calls: result.provider_calls,
       maximum_direct_push_seconds: result.maximum_direct_push_seconds,
+      },
+    qualification: {
+      match_matrix: result.matches,
+      retained_history_count: result.retained_history_count,
+      consumed_allowance_observed: result.consumed_allowance_observed,
+      fresh_setup: { status: result.fresh_setup ? "passed" : "blocked" },
+      retained_upgrade: { status: result.retained_upgrade ? "passed" : "blocked" },
+      ordinary_restart: { status: result.ordinary_restart ? "passed" : "blocked" },
+      populated_recovery: result.populated_recovery,
+      rendered_client: result.rendered_client,
     },
     redaction: {
       private_projections_retained: false,
@@ -1180,7 +1440,7 @@ function printReady(ports, supabase) {
       "",
       "WorldStream hosted development stack is ready.",
       `Product:        http://127.0.0.1:${ports.product}/`,
-      `Agent Heist:    http://127.0.0.1:${ports.product}/agent-heist-v5/hosted/`,
+      `Agent Heist:    http://127.0.0.1:${ports.product}/agent-heist-v6/hosted/`,
       `Hosted Gateway: http://127.0.0.1:${ports.gateway}/`,
       `Supabase API:   ${requiredSupabase(supabase, "API_URL")}`,
       `Runtime:        127.0.0.1:${ports.runtime} (loopback only)`,

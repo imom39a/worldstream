@@ -35,18 +35,20 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
   }, [launchId, session.state]);
 
   useEffect(() => {
-    void refresh();
-    if (session.state !== "authenticated") return undefined;
+    if (session.state !== "authenticated" || (launch !== null && isTerminalLaunchState(launch.state))) {
+      return undefined;
+    }
+    if (launch === null) void refresh();
     const timer = window.setInterval(() => void refresh(), 2_000);
     return () => window.clearInterval(timer);
-  }, [refresh, session.state]);
+  }, [launch?.state, refresh, session.state]);
 
   useEffect(() => {
     if (
       !startRequested ||
       session.state !== "authenticated" ||
       launch === null ||
-      ["run_created", "cancelled", "expired", "failed_pre_genesis"].includes(launch.state) ||
+      isTerminalLaunchState(launch.state) ||
       busy === "start"
     ) return undefined;
     const delay = Math.max(1, launch.retry_after_seconds ?? 1) * 1_000;
@@ -102,7 +104,8 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
     return <MessagePage onNavigate={onNavigate} title="This waiting room is not available" detail="The room service did not supply a safe fallback." />;
   }
 
-  const terminal = ["cancelled", "expired", "failed_pre_genesis"].includes(launch.state);
+  const terminal = isTerminalLaunchState(launch.state);
+  const houseFailure = houseFillFailureDetail(launch.house_fill?.failure_code ?? null);
   return (
     <div className="site-shell hosted-shell">
       <SiteHeader onNavigate={onNavigate} />
@@ -114,6 +117,7 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
             <span className={`formation-state state-${launch.state}`}><i />{stateLabel(launch.state)}</span>
           </div>
           <p>{stateDetail(launch)}</p>
+          {houseFailure === null ? null : <p className="form-error" role="status">{houseFailure}</p>}
         </section>
 
         <section className="roster-card" aria-labelledby="roster-title">
@@ -201,10 +205,14 @@ function MessagePage({ onNavigate, title, detail, actionLabel, onAction }: {
   return <div className="site-shell hosted-shell"><SiteHeader onNavigate={onNavigate} /><main className="hosted-message"><span className="eyebrow">Hosted activity</span><h1>{title}</h1>{detail === undefined ? null : <p>{detail}</p>}{actionLabel === undefined ? null : <button type="button" onClick={onAction}>{actionLabel}</button>}</main><SiteFooter /></div>;
 }
 
-function stateTitle(state: HostedLaunch["state"]): string {
+export function isTerminalLaunchState(state: HostedLaunch["state"]): boolean {
+  return ["cancelled", "expired", "failed_pre_genesis", "abandoned_prestart"].includes(state);
+}
+
+export function stateTitle(state: HostedLaunch["state"]): string {
   if (state === "run_created") return "Your activity is ready";
   if (state === "provisioning" || state === "reconciling") return "Building the live room";
-  if (state === "cancelled" || state === "expired" || state === "failed_pre_genesis") return "This room did not start";
+  if (isTerminalLaunchState(state)) return "This room did not start";
   return "Gather your crew";
 }
 
@@ -212,12 +220,41 @@ function stateLabel(state: HostedLaunch["state"]): string {
   return state.replaceAll("_", " ");
 }
 
-function stateDetail(launch: HostedLaunch): string {
+export function stateDetail(launch: HostedLaunch): string {
   if (launch.state === "run_created") return "WorldStream recorded Genesis. Enter the activity's standalone client.";
+  if (isTerminalLaunchState(launch.state)) {
+    return "This setup ended before Genesis. It is retained in your activity history, but no Room was created.";
+  }
+  if (launch.recovery_state === "genesis_recorded_repairing") {
+    return "Genesis was recorded. WorldStream is restoring entry to this same room.";
+  }
+  if (launch.recovery_state === "genesis_not_proven") {
+    return "WorldStream is checking the original setup. It will not create a replacement room.";
+  }
   if (launch.state === "provisioning") return "The exact roster is frozen. The Host is creating one room.";
   if (launch.state === "reconciling") return "The Host is ready. The platform is confirming the exact Run.";
   if (launch.house_fill?.state === "claim_window_open") return "People have 30 seconds to claim open seats before reviewed House Agents fill them.";
   return "Share seat invitations. A person can join directly or control an external agent.";
+}
+
+/** Maps only reviewed server codes; unknown text is never rendered to users. */
+export function houseFillFailureDetail(failureCode: string | null): string | null {
+  switch (failureCode) {
+    case null:
+      return null;
+    case "house_runner_capacity_exhausted":
+      return "House Agents are busy. Invite a person or external agent, or try again later.";
+    case "house_runner_assignment_conflict":
+      return "A House Agent could not take this seat. Invite a person or external agent instead.";
+    case "house_credential_unavailable":
+    case "house_profile_unavailable":
+    case "house_runner_template_unavailable":
+      return "House Agents are unavailable right now. Invite a person or external agent instead.";
+    case "house_profile_incompatible":
+      return "House Agents cannot join this activity. Invite a person or external agent instead.";
+    default:
+      return "A reviewed House Agent could not join. Invite a person or external agent instead.";
+  }
 }
 
 function seatStatus(seat: HostedLaunchSeat): string {
