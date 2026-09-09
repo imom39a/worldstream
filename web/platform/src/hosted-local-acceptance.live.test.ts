@@ -125,32 +125,20 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     );
     await browserAgent.signIn();
 
-    // A local run may be interrupted after Genesis (for example, while the
-    // rendered browser is booting). Recover that exact owner-authorized Run
-    // before starting the canonical matrix. We never cancel, reset, or create
-    // a replacement for an existing live Run without first proving terminal
-    // result evidence.
-    const retainedLaunchId = retainedHostedLiveLaunchId(await creator.read("/api/my-games"));
+    // A local setup may be interrupted before or after Genesis. Resolve at
+    // most one exact owner-authorized setup before starting the canonical
+    // matrix. We never reset, directly release, or create a replacement for
+    // retained state.
+    const retainedGames = await creator.read("/api/my-games");
+    const retainedSetupId = retainedHostedSetupLaunchId(retainedGames);
+    if (retainedSetupId !== null) {
+      await preflightRetainedHostedSetup(creator, productOrigin, retainedSetupId);
+    }
+    const retainedLaunchId = retainedHostedLiveLaunchId(
+      retainedSetupId === null ? retainedGames : await creator.read("/api/my-games"),
+    );
     if (retainedLaunchId !== null) {
-      const retainedLaunch = await creator.read(`/api/launches/${retainedLaunchId}`);
-      assert.equal(retainedLaunch.state, "run_created");
-      const retainedRun = recordField(retainedLaunch, "run");
-      assert.equal(retainedRun.can_enter, true);
-      const recovered = await renderedBrowserJourney.runHostedRenderedBrowserJourney({
-        productOrigin,
-        existingLaunchId: retainedLaunchId,
-        formationTimeoutMs: 240_000,
-      });
-      assert.equal(recovered.outcome, "passed");
-      assert.equal(recovered.completed, true);
-      const recoveredHistory = await creator.read("/api/my-games");
-      const recoveredItem = arrayField(recoveredHistory, "items")
-        .map((item) => record(item))
-        .find((item) => item.launch_id === retainedLaunchId);
-      assert.equal(recoveredItem?.state, "verified_result");
-      assert.equal(recoveredItem?.action, "view_result");
-      assert.equal(typeof recoveredItem?.result_public_id, "string");
-      console.info("Hosted acceptance: resumed the exact retained rendered Run to a verified result.");
+      await completeRetainedRenderedRun(creator, productOrigin, retainedLaunchId);
     }
 
     const providerBefore = await readProviderMetrics(fakeProviderOrigin);
@@ -1273,6 +1261,36 @@ test("retained live acceptance recovery selects one exact Agent Heist Launch", (
   }), /multiple retained live Agent Heist Runs/u);
 });
 
+test("retained setup preflight selects one setup and rejects ambiguity", () => {
+  const launchId = "10000000-0000-4000-8000-000000000001";
+  assert.equal(retainedHostedSetupLaunchId({
+    version: "platform_my_games.v1",
+    items: [{
+      launch_id: launchId,
+      title: "Agent Heist",
+      state: "setup_pending",
+      action: "continue_setup",
+    }],
+  }), launchId);
+  assert.equal(retainedHostedSetupLaunchId({
+    version: "platform_my_games.v1",
+    items: [{
+      launch_id: launchId,
+      title: "Agent Heist",
+      state: "verified_result",
+      action: "view_result",
+      result_public_id: "a".repeat(32),
+    }],
+  }), null);
+  assert.throws(() => retainedHostedSetupLaunchId({
+    version: "platform_my_games.v1",
+    items: [
+      { launch_id: launchId, state: "setup_pending", action: "continue_setup" },
+      { launch_id: "20000000-0000-4000-8000-000000000002", state: "setup_pending", action: "continue_setup" },
+    ],
+  }), /multiple retained setups/u);
+});
+
 test("allowance evidence advances only from completed retained ledger attempts", () => {
   const before = observeHouseAllowanceLedger({
     schema: HOUSE_ALLOWANCE_LEDGER_SCHEMA,
@@ -1774,6 +1792,85 @@ async function pollPublicResult(
 function firstEntry(run: JsonRecord): { entrySelector: string } {
   const entry = record(arrayField(run, "entries")[0]);
   return { entrySelector: stringField(entry, "entry_selector") };
+}
+
+/**
+ * Select at most one retained pre-start setup from the qualification account.
+ * This is intentionally state-based rather than tied to a launch ID. A
+ * second setup is ambiguous and must stop the acceptance run before any
+ * mutation is attempted.
+ */
+export function retainedHostedSetupLaunchId(value: unknown): string | null {
+  if (!isRecord(value) || value.version !== "platform_my_games.v1" || !Array.isArray(value.items)) {
+    throw new Error("hosted acceptance My Games response is invalid");
+  }
+  const candidates = value.items.filter((item): item is JsonRecord =>
+    isRecord(item) &&
+    item.state === "setup_pending" &&
+    item.action === "continue_setup" &&
+    item.result_public_id === undefined &&
+    typeof item.launch_id === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(item.launch_id),
+  );
+  if (candidates.length > 1) {
+    throw new Error("hosted acceptance found multiple retained setups");
+  }
+  return candidates[0] === undefined ? null : stringField(candidates[0], "launch_id");
+}
+
+async function preflightRetainedHostedSetup(
+  creator: CookieBrowser,
+  productOrigin: string,
+  launchId: string,
+): Promise<void> {
+  const launch = await creator.read(`/api/launches/${launchId}`);
+  const state = stringField(launch, "state");
+  if (state === "collecting") {
+    const cancelled = await creator.mutate(`/api/launches/${launchId}/cancel`, {}, [200]);
+    assert.equal(cancelled.version, "hosted_launch_cancelled.v1");
+    assert.equal(cancelled.cancelled, true);
+    assert.equal((await creator.read(`/api/launches/${launchId}`)).state, "cancelled");
+    console.info("Hosted acceptance: cancelled the one retained collecting setup through the normal API.");
+    return;
+  }
+  if (state !== "provisioning" && state !== "reconciling" && state !== "run_created") {
+    throw new Error(`hosted acceptance retained setup state is not resumable: ${state}`);
+  }
+  if (launch.activity_slug !== "agent-heist") {
+    throw new Error("hosted acceptance cannot resume a retained non-Heist setup in this candidate");
+  }
+  if (state !== "run_created") {
+    const formed = await startLaunch(creator, launchId);
+    assert.equal(formed.state, "run_created");
+  }
+  await completeRetainedRenderedRun(creator, productOrigin, launchId);
+}
+
+async function completeRetainedRenderedRun(
+  creator: CookieBrowser,
+  productOrigin: string,
+  launchId: string,
+): Promise<void> {
+  const retainedLaunch = await creator.read(`/api/launches/${launchId}`);
+  assert.equal(retainedLaunch.activity_slug, "agent-heist");
+  assert.equal(retainedLaunch.state, "run_created");
+  const retainedRun = recordField(retainedLaunch, "run");
+  assert.equal(retainedRun.can_enter, true);
+  const recovered = await renderedBrowserJourney.runHostedRenderedBrowserJourney({
+    productOrigin,
+    existingLaunchId: launchId,
+    formationTimeoutMs: 240_000,
+  });
+  assert.equal(recovered.outcome, "passed");
+  assert.equal(recovered.completed, true);
+  const recoveredHistory = await creator.read("/api/my-games");
+  const recoveredItem = arrayField(recoveredHistory, "items")
+    .map((item) => record(item))
+    .find((item) => item.launch_id === launchId);
+  assert.equal(recoveredItem?.state, "verified_result");
+  assert.equal(recoveredItem?.action, "view_result");
+  assert.equal(typeof recoveredItem?.result_public_id, "string");
+  console.info("Hosted acceptance: resumed the exact retained rendered Run to a verified result.");
 }
 
 /**
