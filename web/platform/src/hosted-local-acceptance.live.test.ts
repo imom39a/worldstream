@@ -69,6 +69,10 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
   () => withSessionCleanup(async (register) => {
     const productOrigin = required("WORLDSTREAM_ACCEPTANCE_PRODUCT_ORIGIN");
     const gatewayOrigin = required("WORLDSTREAM_HOSTED_GATEWAY_URL");
+    const browserStreamOrigin = localBrowserStreamOrigin(
+      gatewayOrigin,
+      required("WORLDSTREAM_LOCAL_BROWSER_STREAM_URL"),
+    );
     const fakeProviderOrigin = required("WORLDSTREAM_ACCEPTANCE_FAKE_PROVIDER_ORIGIN");
     const serviceAuthority = required("WORLDSTREAM_VERCEL_SERVICE_AUTHORITY");
     const supabaseUrl = required("SUPABASE_URL");
@@ -119,7 +123,7 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
         }),
         hostInstallationId: required("WORLDSTREAM_HOSTED_INSTALLATION_ID"),
       },
-      gatewayOrigin,
+      browserStreamOrigin,
     );
     const browserAgent = new CookieBrowser(
       productOrigin,
@@ -209,14 +213,14 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     const agentSockets: WebSocket[] = [];
     const directPush = new DirectPushMeasurement();
     const creatorController = register(controller(
-      gatewayOrigin,
+      browserStreamOrigin,
       productOrigin,
       creatorAuthority,
       creatorSockets,
       directPush,
     ));
     const agentController = register(controller(
-      gatewayOrigin,
+      browserStreamOrigin,
       productOrigin,
       agentAuthority,
       agentSockets,
@@ -784,13 +788,13 @@ async function enter(
 }
 
 function controller(
-  gatewayOrigin: string,
+  browserStreamOrigin: string,
   browserOrigin: string,
   authority: ActivityClientHandoffClient,
   sockets: WebSocket[],
   directPush: DirectPushMeasurement,
 ): HostedLiveSessionController {
-  const stream = new URL(gatewayOrigin);
+  const stream = new URL(browserStreamOrigin);
   stream.protocol = stream.protocol === "https:" ? "wss:" : "ws:";
   stream.pathname = "/v1/hosted/browser-stream";
   return new HostedLiveSessionController({
@@ -966,6 +970,7 @@ async function runHouseBackedMatch(options: {
   register: <T extends { close(): void }>(controller: T) => T;
   productOrigin: string;
   gatewayOrigin: string;
+  browserStreamOrigin: string;
   serviceAuthority: string;
   matchNumber: number;
 }): Promise<{ runId: string; publicId: string; entrySelector: string }> {
@@ -976,6 +981,7 @@ async function runHouseBackedMatch(options: {
     register,
     productOrigin,
     gatewayOrigin,
+    browserStreamOrigin,
     serviceAuthority,
     matchNumber,
   } = options;
@@ -1016,14 +1022,14 @@ async function runHouseBackedMatch(options: {
     { browserOrigin: productOrigin, csrf: browserAgent.csrf },
   );
   const creatorController = register(controller(
-    gatewayOrigin,
+    browserStreamOrigin,
     productOrigin,
     creatorAuthority,
     [],
     directPush,
   ));
   const agentController = register(controller(
-    gatewayOrigin,
+    browserStreamOrigin,
     productOrigin,
     agentAuthority,
     [],
@@ -1274,6 +1280,37 @@ test("direct push evidence measures delivered state on one connection, not setup
   assert.equal(measurement.seconds, 2);
   reconnected(304_250);
   assert.equal(measurement.seconds, 4);
+});
+
+test("local acceptance requires a distinct browser-stream origin", () => {
+  assert.equal(
+    localBrowserStreamOrigin("http://127.0.0.1:8080", "http://localhost:8080"),
+    "http://localhost:8080",
+  );
+  assert.throws(
+    () => localBrowserStreamOrigin("http://127.0.0.1:8080", "http://127.0.0.1:8080"),
+    /topology_invalid/u,
+  );
+  assert.throws(
+    () => localBrowserStreamOrigin("http://127.0.0.1:8080", "http://localhost:8080/stream"),
+    /topology_invalid/u,
+  );
+  assert.throws(
+    () => localBrowserStreamOrigin("http://remote.test:8080", "http://localhost:8080"),
+    /topology_invalid/u,
+  );
+  assert.throws(
+    () => localBrowserStreamOrigin("https://127.0.0.1:8080", "http://localhost:8080"),
+    /topology_invalid/u,
+  );
+  assert.throws(
+    () => localBrowserStreamOrigin("http://127.0.0.1:8080", "http://localhost:8081"),
+    /topology_invalid/u,
+  );
+  assert.throws(
+    () => localBrowserStreamOrigin("http://127.0.0.1:8080/internal", "http://localhost:8080"),
+    /topology_invalid/u,
+  );
 });
 
 test("retained live acceptance recovery selects one exact Agent Heist Launch", () => {
@@ -2159,6 +2196,44 @@ function required(name: string): string {
   const value = process.env[name];
   if (value === undefined || value.length === 0) throw new Error(`${name}_is_required`);
   return value;
+}
+
+/**
+ * The local Gateway HTTP origin and browser-stream origin intentionally use
+ * separate public authorities. Node's WebSocket client has no ambient browser
+ * cookies, but the Gateway still validates the request Host against its
+ * configured public authority. Keep this qualification-only topology exact.
+ */
+function localBrowserStreamOrigin(internalOrigin: string, browserOrigin: string): string {
+  let internal: URL;
+  let browser: URL;
+  try {
+    internal = new URL(internalOrigin);
+    browser = new URL(browserOrigin);
+  } catch {
+    throw new Error("hosted_acceptance_browser_stream_origin_invalid");
+  }
+  if (
+    internal.protocol !== "http:" ||
+    browser.protocol !== "http:" ||
+    internal.hostname !== "127.0.0.1" ||
+    browser.hostname !== "localhost" ||
+    internal.port.length === 0 ||
+    browser.port !== internal.port ||
+    internal.pathname !== "/" ||
+    internal.search !== "" ||
+    internal.hash !== "" ||
+    internal.username !== "" ||
+    internal.password !== "" ||
+    browser.username !== "" ||
+    browser.password !== "" ||
+    browser.pathname !== "/" ||
+    browser.search !== "" ||
+    browser.hash !== ""
+  ) {
+    throw new Error("hosted_acceptance_browser_stream_origin_topology_invalid");
+  }
+  return browser.origin;
 }
 
 function delay(milliseconds: number): Promise<void> {
