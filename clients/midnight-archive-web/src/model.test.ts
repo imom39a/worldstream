@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ELEVEN_TURN_POWERED_AGREEMENT_ROUTE,
+  FIFTEEN_TURN_BOTH_OPTIONALS_ROUTE,
   TEN_TURN_TECHNICAL_ROUTE,
   actionCost,
   actionPayload,
@@ -121,6 +123,63 @@ describe("Midnight Archive strict participant Projection", () => {
       outcome: { kind: "success", score: 100 },
     }))).toBeNull();
   });
+
+  it("fails closed on agreement text, ordering, costs, status, and cross-field drift", () => {
+    const base = rawProjection();
+    const agreement = base.preservation_agreement as Record<string, unknown>;
+    const conditions = agreement.conditions as Array<Record<string, unknown>>;
+    const objectives = base.optional_objectives as Record<string, unknown>;
+    const collection = objectives.collection_preserved as Record<string, unknown>;
+    const source = objectives.source_record_protected as Record<string, unknown>;
+    const terminal = rawProjection({
+      phase: "complete",
+      turns_used: 10,
+      turns_remaining: 6,
+      outcome: { kind: "no_ledger" },
+    });
+    const terminalDebrief = terminal.debrief as Record<string, unknown>;
+    const invalid = [
+      { ...base, preservation_agreement: { ...agreement, speaker: "Curator" } },
+      { ...base, preservation_agreement: { ...agreement, statement: `${String(agreement.statement)} Negotiate freely.` } },
+      { ...base, preservation_agreement: { ...agreement, conditions: [conditions[1], conditions[0], conditions[2]] } },
+      { ...base, preservation_agreement: { ...agreement, conditions: [{ ...conditions[0], power_cost: 1 }, ...conditions.slice(1)] } },
+      { ...base, preservation_agreement: { ...agreement, conditions: [{ ...conditions[0], status: "blocked" }, ...conditions.slice(1)] } },
+      { ...base, gates: { archive_gate: "open", service_hatch: "closed" } },
+      { ...base, optional_objectives: { ...objectives, collection_preserved: { ...collection, status: "complete" } } },
+      { ...base, optional_objectives: { ...objectives, source_record_protected: { ...source, status: "complete" } } },
+      { ...base, carried_candidate: "ledger-amber" },
+      { ...base, staged_action: { action_type: "stage_energize_preservation_equipment", turn_cost: 1, power_cost: 1 }, location: "conservation" },
+      { ...base, staged_action: { action_type: "stage_protect_source_record", turn_cost: 1, power_cost: 1 }, location: "plant" },
+      { ...terminal, debrief: { ...terminalDebrief, message: "No evidence." } },
+      { ...terminal, debrief: { ...terminalDebrief, agreement_commitment: "accepted" } },
+      {
+        ...terminal,
+        debrief: {
+          ...terminalDebrief,
+          optional_objectives: { collection_preserved: true, source_record_protected: false },
+        },
+      },
+    ];
+    for (const value of invalid) expect(readMidnightArchiveProjection(value)).toBeNull();
+  });
+
+  it("accepts coherent accepted and honored agreement states", () => {
+    const accepted = agreementState("accepted", ["complete", "complete", "pending"], "prepared");
+    expect(readMidnightArchiveProjection(accepted)).not.toBeNull();
+    const honored = agreementState("honored", ["complete", "complete", "complete"], "complete", "open");
+    expect(readMidnightArchiveProjection(honored)).not.toBeNull();
+    const base = rawProjection();
+    const objectives = base.optional_objectives as Record<string, unknown>;
+    const source = objectives.source_record_protected as Record<string, unknown>;
+    expect(readMidnightArchiveProjection({
+      ...base,
+      carried_candidate: "ledger-amber",
+      optional_objectives: {
+        ...objectives,
+        source_record_protected: { ...source, status: "available" },
+      },
+    })).not.toBeNull();
+  });
 });
 
 describe("technical route semantics", () => {
@@ -143,6 +202,15 @@ describe("technical route semantics", () => {
       "stage_move",
       "stage_extract",
     ]);
+  });
+
+  it("models the eleven-turn powered agreement route and fifteen-turn route with both optionals", () => {
+    expect(routeCost(ELEVEN_TURN_POWERED_AGREEMENT_ROUTE)).toEqual({ turns: 11, power: 2 });
+    expect(ELEVEN_TURN_POWERED_AGREEMENT_ROUTE.map((intent) => intent.action)).toContain("stage_accept_preservation_agreement");
+    expect(ELEVEN_TURN_POWERED_AGREEMENT_ROUTE.map((intent) => intent.action)).toContain("stage_energize_preservation_equipment");
+
+    expect(routeCost(FIFTEEN_TURN_BOTH_OPTIONALS_ROUTE)).toEqual({ turns: 15, power: 3 });
+    expect(FIFTEEN_TURN_BOTH_OPTIONALS_ROUTE.map((intent) => intent.action)).toContain("stage_protect_source_record");
   });
 
   it("builds exact Pack payloads without mutating projected resources", () => {
@@ -172,3 +240,36 @@ describe("technical route semantics", () => {
     expect(candidateConfidence(current, "ledger-cobalt")).toBe("unverified");
   });
 });
+
+function routeCost(route: readonly { readonly action: Parameters<typeof actionCost>[0] }[]) {
+  return route.reduce((sum, intent) => {
+    const cost = actionCost(intent.action);
+    return { turns: sum.turns + cost.turns, power: sum.power + cost.power };
+  }, { turns: 0, power: 0 });
+}
+
+function agreementState(
+  commitment: "accepted" | "honored",
+  statuses: readonly ["complete", "complete", "pending" | "complete"],
+  collectionStatus: "prepared" | "complete",
+  archiveGate: "closed" | "open" = "closed",
+) {
+  const base = rawProjection();
+  const agreement = base.preservation_agreement as Record<string, unknown>;
+  const conditions = agreement.conditions as Array<Record<string, unknown>>;
+  const objectives = base.optional_objectives as Record<string, unknown>;
+  const collection = objectives.collection_preserved as Record<string, unknown>;
+  return {
+    ...base,
+    gates: { archive_gate: archiveGate, service_hatch: "closed" },
+    preservation_agreement: {
+      ...agreement,
+      commitment,
+      conditions: conditions.map((condition, index) => ({ ...condition, status: statuses[index] })),
+    },
+    optional_objectives: {
+      ...objectives,
+      collection_preserved: { ...collection, status: collectionStatus },
+    },
+  };
+}

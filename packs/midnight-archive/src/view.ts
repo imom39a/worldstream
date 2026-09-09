@@ -103,6 +103,8 @@ export function participantProjection(state: ArchiveState, role: Role): Canonica
     verifier_result: state.verifier_result === "none"
       ? null
       : { candidate_id: state.verifier_result, confidence: "verified" },
+    preservation_agreement: preservationAgreementProjection(state),
+    optional_objectives: optionalObjectivesProjection(state),
     debrief: debriefProjection(state),
     outcome: state.outcome.kind === "pending" ? null : { kind: state.outcome.kind },
   };
@@ -111,14 +113,89 @@ export function participantProjection(state: ArchiveState, role: Role): Canonica
 function debriefProjection(state: ArchiveState): CanonicalJson {
   if (state.outcome.kind === "pending") return null;
   const observed = Object.values(state.evidence).filter((status) => status === "observed").length;
-  if (observed === 0) return { evidence_status: "none", message: "No authored source was inspected." };
-  if (observed === 1) return {
-    evidence_status: "partial",
-    message: "Only one authored source was inspected; it did not uniquely identify a candidate.",
-  };
+  const evidence = observed === 0
+    ? { evidence_status: "none", message: "No authored source was inspected." }
+    : observed === 1
+    ? {
+      evidence_status: "partial",
+      message: "Only one authored source was inspected; it did not uniquely identify a candidate.",
+    }
+    : {
+      evidence_status: "complete",
+      message: "Both authored sources were inspected and their intersection informed the recommendation.",
+    };
   return {
-    evidence_status: "complete",
-    message: "Both authored sources were inspected and their intersection informed the recommendation.",
+    ...evidence,
+    agreement_commitment: agreementCommitment(state),
+    optional_objectives: {
+      collection_preserved: state.collection_preservation === "preserved",
+      source_record_protected: state.source_record_protected,
+    },
+  };
+}
+
+function agreementCommitment(state: ArchiveState): "not_accepted" | "accepted" | "honored" {
+  if (state.preservation_agreement === "offered") return "not_accepted";
+  return state.collection_preservation === "preserved" ? "honored" : "accepted";
+}
+
+function preservationAgreementProjection(state: ArchiveState): CanonicalObject {
+  return {
+    speaker: "Archivist",
+    statement: "Preserve the threatened collection and I will open the Conservation–Vault gate.",
+    commitment: agreementCommitment(state),
+    conditions: [
+      {
+        condition_id: "lead_acceptance",
+        label: "Human lead accepts this fixed agreement",
+        status: state.preservation_agreement === "accepted" ? "complete" : "pending",
+        turn_cost: 1,
+        power_cost: 0,
+      },
+      {
+        condition_id: "collection_preparation",
+        label: "Prepare the threatened collection",
+        status: state.collection_preservation === "unprepared" ? "pending" : "complete",
+        turn_cost: 1,
+        power_cost: 0,
+      },
+      {
+        condition_id: "equipment_energized",
+        label: "Energize the preservation equipment",
+        status: state.collection_preservation === "unprepared"
+          ? "blocked"
+          : state.collection_preservation === "prepared"
+          ? "pending"
+          : "complete",
+        turn_cost: 1,
+        power_cost: 1,
+      },
+    ],
+  };
+}
+
+function optionalObjectivesProjection(state: ArchiveState): CanonicalObject {
+  return {
+    collection_preserved: {
+      label: "Preserve the threatened collection",
+      status: state.collection_preservation === "unprepared"
+        ? "not_started"
+        : state.collection_preservation === "prepared"
+        ? "prepared"
+        : "complete",
+      turn_cost: 2,
+      power_cost: 1,
+    },
+    source_record_protected: {
+      label: "Protect the source's identifying record",
+      status: state.source_record_protected
+        ? "complete"
+        : state.carried_candidate_id === "none"
+        ? "locked"
+        : "available",
+      turn_cost: 1,
+      power_cost: 1,
+    },
   };
 }
 
@@ -163,7 +240,24 @@ function leadActionOffers(state: ArchiveState): PackActionOffer[] {
   if (state.location === "conservation" && state.evidence.conservation === "unknown") {
     offers.push(offer("stage_inspect_conservation"));
   }
-  if (state.location === "records" && state.power_remaining >= 1) {
+  if (state.location === "conservation" && state.preservation_agreement === "offered") {
+    offers.push(offer("stage_accept_preservation_agreement"));
+  }
+  if (state.location === "conservation" && state.collection_preservation === "unprepared") {
+    offers.push(offer("stage_prepare_collection"));
+  }
+  if (
+    state.location === "conservation" &&
+    state.collection_preservation === "prepared" &&
+    state.power_remaining >= 1
+  ) {
+    offers.push(offer("stage_energize_preservation_equipment"));
+  }
+  if (
+    state.location === "records" &&
+    state.verifier_result === "none" &&
+    state.power_remaining >= 1
+  ) {
     offers.push(offer("stage_use_verifier"));
   }
   if (
@@ -174,6 +268,14 @@ function leadActionOffers(state: ArchiveState): PackActionOffer[] {
     offers.push(offer("stage_open_service_hatch"));
   }
   if (state.location === "vault") offers.push(offer("stage_recover_candidate"));
+  if (
+    state.location === "plant" &&
+    state.carried_candidate_id !== "none" &&
+    !state.source_record_protected &&
+    state.power_remaining >= 1
+  ) {
+    offers.push(offer("stage_protect_source_record"));
+  }
   if (state.location === "atrium") offers.push(offer("stage_extract"));
   offers.push(offer("stage_wait"));
   if (state.staged_action.kind !== "none") offers.push(offer("commit_turn"));

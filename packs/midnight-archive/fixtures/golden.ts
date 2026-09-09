@@ -40,20 +40,30 @@ const operator = observer(
   "operator",
 );
 
-export const technicalRouteActions = [
+export const bothObjectivesRouteActions = [
   stage("stage_move", { destination: "records" }),
   stage("commit_turn", {}),
   stage("stage_use_verifier", {}),
   stage("commit_turn", {}),
-  stage("stage_move", { destination: "plant" }),
+  stage("stage_move", { destination: "conservation" }),
   stage("commit_turn", {}),
-  stage("stage_open_service_hatch", {}),
+  stage("stage_accept_preservation_agreement", {}),
+  stage("commit_turn", {}),
+  stage("stage_prepare_collection", {}),
+  stage("commit_turn", {}),
+  stage("stage_energize_preservation_equipment", {}),
   stage("commit_turn", {}),
   stage("stage_move", { destination: "vault" }),
   stage("commit_turn", {}),
   stage("stage_recover_candidate", { candidate_id: "ledger-violet" }),
   stage("commit_turn", {}),
+  stage("stage_move", { destination: "conservation" }),
+  stage("commit_turn", {}),
+  stage("stage_move", { destination: "records" }),
+  stage("commit_turn", {}),
   stage("stage_move", { destination: "plant" }),
+  stage("commit_turn", {}),
+  stage("stage_protect_source_record", {}),
   stage("commit_turn", {}),
   stage("stage_move", { destination: "records" }),
   stage("commit_turn", {}),
@@ -64,7 +74,7 @@ export const technicalRouteActions = [
 ] as const;
 
 export const goldenFixture = {
-  accepted: technicalRouteActions.map((action, index) => ({
+  accepted: bothObjectivesRouteActions.map((action, index) => ({
     ...action,
     admitted_at: `2026-09-09T12:00:${String(index + 2).padStart(2, "0")}Z`,
   })),
@@ -124,9 +134,9 @@ export const goldenFixture = {
   },
 } as const satisfies CanonicalJson;
 
-export function technicalRouteFinalState(): ArchiveState {
+export function bothObjectivesRouteFinalState(): ArchiveState {
   let state = startArchive(initializeArchiveState({ scenario_id: "standard-v1" }));
-  for (const action of technicalRouteActions) {
+  for (const action of bothObjectivesRouteActions) {
     state = applyLeadAction(
       state,
       action.action_type,

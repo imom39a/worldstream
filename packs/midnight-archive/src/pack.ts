@@ -44,7 +44,10 @@ function actionStagedSchema(): CanonicalObject {
       staged_action_type: {
         enum: [
           "stage_move", "stage_use_verifier", "stage_open_service_hatch",
-          "stage_inspect_records", "stage_inspect_conservation", "stage_recover_candidate", "stage_extract", "stage_wait",
+          "stage_inspect_records", "stage_inspect_conservation",
+          "stage_accept_preservation_agreement", "stage_prepare_collection",
+          "stage_energize_preservation_equipment", "stage_recover_candidate",
+          "stage_protect_source_record", "stage_extract", "stage_wait",
         ],
       },
       turn_cost: { const: 1 },
@@ -61,7 +64,10 @@ function turnCommittedSchema(): CanonicalObject {
       committed_action_type: {
         enum: [
           "stage_move", "stage_use_verifier", "stage_open_service_hatch",
-          "stage_inspect_records", "stage_inspect_conservation", "stage_recover_candidate", "stage_extract", "stage_wait",
+          "stage_inspect_records", "stage_inspect_conservation",
+          "stage_accept_preservation_agreement", "stage_prepare_collection",
+          "stage_energize_preservation_equipment", "stage_recover_candidate",
+          "stage_protect_source_record", "stage_extract", "stage_wait",
         ],
       },
       event_type: { const: "turn_committed" },
@@ -248,6 +254,9 @@ export default defineActivityPack({
       { actionType: "stage_inspect_records", payloadSchema: emptyPayloadSchema() },
       { actionType: "stage_inspect_conservation", payloadSchema: emptyPayloadSchema() },
       { actionType: "stage_use_verifier", payloadSchema: emptyPayloadSchema() },
+      { actionType: "stage_accept_preservation_agreement", payloadSchema: emptyPayloadSchema() },
+      { actionType: "stage_prepare_collection", payloadSchema: emptyPayloadSchema() },
+      { actionType: "stage_energize_preservation_equipment", payloadSchema: emptyPayloadSchema() },
       { actionType: "stage_open_service_hatch", payloadSchema: emptyPayloadSchema() },
       {
         actionType: "stage_recover_candidate",
@@ -260,6 +269,7 @@ export default defineActivityPack({
           type: "object",
         },
       },
+      { actionType: "stage_protect_source_record", payloadSchema: emptyPayloadSchema() },
       { actionType: "stage_extract", payloadSchema: emptyPayloadSchema() },
       { actionType: "stage_wait", payloadSchema: emptyPayloadSchema() },
       { actionType: "commit_turn", payloadSchema: emptyPayloadSchema() },

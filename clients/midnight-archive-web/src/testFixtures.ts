@@ -15,6 +15,7 @@ import {
 export const digest = (character: string) => `blake3:${character.repeat(64)}`;
 
 export function rawProjection(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const carriedCandidate = overrides.carried_candidate ?? null;
   return {
     phase: "active",
     objective: "Recover the authentic ledger and return to the Atrium before the archive seals.",
@@ -75,11 +76,61 @@ export function rawProjection(overrides: Record<string, unknown> = {}): Record<s
         ],
       },
     ],
+    preservation_agreement: {
+      speaker: "Archivist",
+      statement: "Preserve the threatened collection and I will open the Conservation–Vault gate.",
+      commitment: "not_accepted",
+      conditions: [
+        {
+          condition_id: "lead_acceptance",
+          label: "Human lead accepts this fixed agreement",
+          status: "pending",
+          turn_cost: 1,
+          power_cost: 0,
+        },
+        {
+          condition_id: "collection_preparation",
+          label: "Prepare the threatened collection",
+          status: "pending",
+          turn_cost: 1,
+          power_cost: 0,
+        },
+        {
+          condition_id: "equipment_energized",
+          label: "Energize the preservation equipment",
+          status: "blocked",
+          turn_cost: 1,
+          power_cost: 1,
+        },
+      ],
+    },
+    optional_objectives: {
+      collection_preserved: {
+        label: "Preserve the threatened collection",
+        status: "not_started",
+        turn_cost: 2,
+        power_cost: 1,
+      },
+      source_record_protected: {
+        label: "Protect the source's identifying record",
+        status: carriedCandidate === null ? "locked" : "available",
+        turn_cost: 1,
+        power_cost: 1,
+      },
+    },
     debrief: overrides.phase === "complete"
-      ? { evidence_status: "none", message: "No authored source was inspected." }
+      ? {
+        evidence_status: "none",
+        message: "No authored source was inspected.",
+        agreement_commitment: "not_accepted",
+        optional_objectives: {
+          collection_preserved: false,
+          source_record_protected: false,
+        },
+      }
       : null,
     staged_action: null,
-    carried_candidate: null,
+    carried_candidate: carriedCandidate,
     verifier_result: null,
     outcome: null,
     ...overrides,

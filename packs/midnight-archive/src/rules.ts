@@ -131,6 +131,9 @@ export function initializeArchiveState(configuration: CanonicalObject): ArchiveS
     },
     candidates: scenario.candidates,
     evidence: { records: "unknown", conservation: "unknown" },
+    preservation_agreement: "offered",
+    collection_preservation: "unprepared",
+    source_record_protected: false,
     truth_marker: scenario.authentic_candidate_id,
     verifier_result: "none",
     carried_candidate_id: "none",
@@ -199,6 +202,9 @@ function stagedAction(
   if (actionType === "stage_use_verifier") {
     exactKeys(payload, []);
     if (state.location !== "records") reject("illegal_action", "the verifier is in Records");
+    if (state.verifier_result !== "none") {
+      reject("illegal_action", "the catalog verifier result is already recorded");
+    }
     requirePower(state, 1);
     return {
       kind: "use_verifier",
@@ -219,6 +225,55 @@ function stagedAction(
     if (state.location !== "conservation") reject("illegal_action", "the restoration evidence is in Conservation");
     if (state.evidence.conservation === "observed") reject("illegal_action", "the Conservation source has already been inspected");
     return { kind: "inspect_conservation", destination: "none", candidate_id: "none", turn_cost: 1, power_cost: 0 };
+  }
+  if (actionType === "stage_accept_preservation_agreement") {
+    exactKeys(payload, []);
+    if (state.location !== "conservation") {
+      reject("illegal_action", "the archivist offers the preservation agreement in Conservation");
+    }
+    if (state.preservation_agreement === "accepted") {
+      reject("illegal_action", "the preservation agreement is already accepted");
+    }
+    return {
+      kind: "accept_preservation_agreement",
+      destination: "none",
+      candidate_id: "none",
+      turn_cost: 1,
+      power_cost: 0,
+    };
+  }
+  if (actionType === "stage_prepare_collection") {
+    exactKeys(payload, []);
+    if (state.location !== "conservation") {
+      reject("illegal_action", "the threatened collection is in Conservation");
+    }
+    if (state.collection_preservation !== "unprepared") {
+      reject("illegal_action", "the collection is already prepared or preserved");
+    }
+    return {
+      kind: "prepare_collection",
+      destination: "none",
+      candidate_id: "none",
+      turn_cost: 1,
+      power_cost: 0,
+    };
+  }
+  if (actionType === "stage_energize_preservation_equipment") {
+    exactKeys(payload, []);
+    if (state.location !== "conservation") {
+      reject("illegal_action", "the preservation equipment is in Conservation");
+    }
+    if (state.collection_preservation !== "prepared") {
+      reject("illegal_action", "the collection must be prepared before energizing the equipment");
+    }
+    requirePower(state, 1);
+    return {
+      kind: "energize_preservation_equipment",
+      destination: "none",
+      candidate_id: "none",
+      turn_cost: 1,
+      power_cost: 1,
+    };
   }
   if (actionType === "stage_open_service_hatch") {
     exactKeys(payload, []);
@@ -246,6 +301,26 @@ function stagedAction(
       candidate_id: candidateId,
       turn_cost: 1,
       power_cost: 0,
+    };
+  }
+  if (actionType === "stage_protect_source_record") {
+    exactKeys(payload, []);
+    if (state.location !== "plant") {
+      reject("illegal_action", "the source record controls are in Plant");
+    }
+    if (state.carried_candidate_id === "none") {
+      reject("illegal_action", "a ledger must be recovered before protecting its source record");
+    }
+    if (state.source_record_protected) {
+      reject("illegal_action", "the source record is already protected");
+    }
+    requirePower(state, 1);
+    return {
+      kind: "protect_source_record",
+      destination: "none",
+      candidate_id: "none",
+      turn_cost: 1,
+      power_cost: 1,
     };
   }
   if (actionType === "stage_extract") {
@@ -295,6 +370,13 @@ function commitTurn(current: ArchiveState, payload: CanonicalObject): AppliedLea
     next.evidence = { ...next.evidence, records: "observed" };
   } else if (kind === "inspect_conservation") {
     next.evidence = { ...next.evidence, conservation: "observed" };
+  } else if (kind === "accept_preservation_agreement") {
+    next.preservation_agreement = "accepted";
+  } else if (kind === "prepare_collection") {
+    next.collection_preservation = "prepared";
+  } else if (kind === "energize_preservation_equipment") {
+    next.power_remaining -= 1;
+    next.collection_preservation = "preserved";
   } else if (kind === "open_service_hatch") {
     next.power_remaining -= 2;
     next.gates = { ...next.gates, plant_vault_open: true };
@@ -303,7 +385,16 @@ function commitTurn(current: ArchiveState, payload: CanonicalObject): AppliedLea
     next.carried_confidence = staged.candidate_id === next.verifier_result
       ? "verified"
       : "unverified";
+  } else if (kind === "protect_source_record") {
+    next.power_remaining -= 1;
+    next.source_record_protected = true;
   }
+
+  next.gates = {
+    ...next.gates,
+    conservation_vault_open: next.preservation_agreement === "accepted" &&
+      next.collection_preservation === "preserved",
+  };
 
   next.turns_used += 1;
   next.staged_action = emptyStage();
@@ -340,7 +431,9 @@ function validateStagedAtTurnStart(state: ArchiveState, staged: StagedAction): v
       reject("illegal_action", "the staged destination is no longer adjacent");
     }
   } else if (staged.kind === "use_verifier") {
-    if (state.location !== "records") reject("illegal_action", "the verifier is no longer reachable");
+    if (state.location !== "records" || state.verifier_result !== "none") {
+      reject("illegal_action", "the verifier is no longer eligible");
+    }
     requirePower(state, 1);
   } else if (staged.kind === "inspect_records") {
     if (state.location !== "records" || state.evidence.records === "observed") {
@@ -350,6 +443,19 @@ function validateStagedAtTurnStart(state: ArchiveState, staged: StagedAction): v
     if (state.location !== "conservation" || state.evidence.conservation === "observed") {
       reject("illegal_action", "the Conservation evidence is no longer eligible");
     }
+  } else if (staged.kind === "accept_preservation_agreement") {
+    if (state.location !== "conservation" || state.preservation_agreement === "accepted") {
+      reject("illegal_action", "the preservation agreement is no longer eligible for acceptance");
+    }
+  } else if (staged.kind === "prepare_collection") {
+    if (state.location !== "conservation" || state.collection_preservation !== "unprepared") {
+      reject("illegal_action", "the collection can no longer be prepared by this action");
+    }
+  } else if (staged.kind === "energize_preservation_equipment") {
+    if (state.location !== "conservation" || state.collection_preservation !== "prepared") {
+      reject("illegal_action", "the preservation equipment is no longer eligible to run");
+    }
+    requirePower(state, 1);
   } else if (staged.kind === "open_service_hatch") {
     if (state.location !== "plant" || state.gates.plant_vault_open) {
       reject("illegal_action", "the service hatch action is no longer eligible");
@@ -358,6 +464,15 @@ function validateStagedAtTurnStart(state: ArchiveState, staged: StagedAction): v
   } else if (staged.kind === "recover_candidate") {
     if (state.location !== "vault") reject("illegal_action", "the Vault is no longer occupied");
     if (!isCandidateId(staged.candidate_id)) reject("unknown_candidate", "the staged candidate is absent");
+  } else if (staged.kind === "protect_source_record") {
+    if (
+      state.location !== "plant" ||
+      state.carried_candidate_id === "none" ||
+      state.source_record_protected
+    ) {
+      reject("illegal_action", "the source record protection action is no longer eligible");
+    }
+    requirePower(state, 1);
   } else if (staged.kind === "extract" && state.location !== "atrium") {
     reject("illegal_action", "the crew is no longer at the Atrium");
   }
@@ -429,8 +544,12 @@ function publicActionType(staged: StagedAction): string {
   if (staged.kind === "inspect_records") return "stage_inspect_records";
   if (staged.kind === "inspect_conservation") return "stage_inspect_conservation";
   if (staged.kind === "use_verifier") return "stage_use_verifier";
+  if (staged.kind === "accept_preservation_agreement") return "stage_accept_preservation_agreement";
+  if (staged.kind === "prepare_collection") return "stage_prepare_collection";
+  if (staged.kind === "energize_preservation_equipment") return "stage_energize_preservation_equipment";
   if (staged.kind === "open_service_hatch") return "stage_open_service_hatch";
   if (staged.kind === "recover_candidate") return "stage_recover_candidate";
+  if (staged.kind === "protect_source_record") return "stage_protect_source_record";
   if (staged.kind === "extract") return "stage_extract";
   if (staged.kind === "wait") return "stage_wait";
   return "none";

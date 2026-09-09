@@ -23,6 +23,41 @@ export type ArchiveOutcomeKind =
   | "wrong_ledger"
   | "no_ledger"
   | "exhausted_inside";
+export type AgreementCommitment = "not_accepted" | "accepted" | "honored";
+export type AgreementConditionId =
+  | "lead_acceptance"
+  | "collection_preparation"
+  | "equipment_energized";
+
+export interface PreservationAgreementCondition {
+  readonly conditionId: AgreementConditionId;
+  readonly label: string;
+  readonly status: "blocked" | "pending" | "complete";
+  readonly turnCost: 1;
+  readonly powerCost: 0 | 1;
+}
+
+export interface PreservationAgreement {
+  readonly speaker: "Archivist";
+  readonly statement: "Preserve the threatened collection and I will open the Conservation–Vault gate.";
+  readonly commitment: AgreementCommitment;
+  readonly conditions: readonly PreservationAgreementCondition[];
+}
+
+export interface ArchiveOptionalObjectives {
+  readonly collectionPreserved: {
+    readonly label: "Preserve the threatened collection";
+    readonly status: "not_started" | "prepared" | "complete";
+    readonly turnCost: 2;
+    readonly powerCost: 1;
+  };
+  readonly sourceRecordProtected: {
+    readonly label: "Protect the source's identifying record";
+    readonly status: "locked" | "available" | "complete";
+    readonly turnCost: 1;
+    readonly powerCost: 1;
+  };
+}
 
 export interface ArchiveMapLocation {
   readonly id: ArchiveLocation;
@@ -72,6 +107,20 @@ export type ArchiveStagedAction =
       readonly powerCost: 1;
     }
   | {
+      readonly actionType:
+        | "stage_accept_preservation_agreement"
+        | "stage_prepare_collection";
+      readonly turnCost: 1;
+      readonly powerCost: 0;
+    }
+  | {
+      readonly actionType:
+        | "stage_energize_preservation_equipment"
+        | "stage_protect_source_record";
+      readonly turnCost: 1;
+      readonly powerCost: 1;
+    }
+  | {
       readonly actionType: "stage_open_service_hatch";
       readonly turnCost: 1;
       readonly powerCost: 2;
@@ -101,9 +150,16 @@ export interface MidnightArchiveProjection {
     readonly connections: readonly ArchiveMapConnection[];
   };
   readonly candidates: readonly ArchiveCandidate[];
+  readonly preservationAgreement: PreservationAgreement;
+  readonly optionalObjectives: ArchiveOptionalObjectives;
   readonly debrief: null | {
     readonly evidenceStatus: "none" | "partial" | "complete";
     readonly message: string;
+    readonly agreementCommitment: AgreementCommitment;
+    readonly optionalObjectives: {
+      readonly collectionPreserved: boolean;
+      readonly sourceRecordProtected: boolean;
+    };
   };
   readonly stagedAction: ArchiveStagedAction | null;
   readonly carriedCandidate: ArchiveCandidateId | null;
@@ -119,8 +175,12 @@ export type MidnightArchiveActionIntent =
   | { readonly action: "stage_inspect_records" }
   | { readonly action: "stage_inspect_conservation" }
   | { readonly action: "stage_use_verifier" }
+  | { readonly action: "stage_accept_preservation_agreement" }
+  | { readonly action: "stage_prepare_collection" }
+  | { readonly action: "stage_energize_preservation_equipment" }
   | { readonly action: "stage_open_service_hatch" }
   | { readonly action: "stage_recover_candidate"; readonly candidate_id: ArchiveCandidateId }
+  | { readonly action: "stage_protect_source_record" }
   | { readonly action: "stage_extract" }
   | { readonly action: "stage_wait" }
   | { readonly action: "commit_turn" };
@@ -148,8 +208,10 @@ const ROOT_KEYS = [
   "map",
   "objective",
   "outcome",
+  "optional_objectives",
   "phase",
   "power",
+  "preservation_agreement",
   "staged_action",
   "turns_remaining",
   "turns_used",
@@ -177,6 +239,38 @@ export const TEN_TURN_TECHNICAL_ROUTE: readonly MidnightArchiveActionIntent[] = 
   { action: "stage_extract" },
 ];
 
+export const ELEVEN_TURN_POWERED_AGREEMENT_ROUTE: readonly MidnightArchiveActionIntent[] = [
+  { action: "stage_move", destination: "records" },
+  { action: "stage_use_verifier" },
+  { action: "stage_move", destination: "conservation" },
+  { action: "stage_accept_preservation_agreement" },
+  { action: "stage_prepare_collection" },
+  { action: "stage_energize_preservation_equipment" },
+  { action: "stage_move", destination: "vault" },
+  { action: "stage_recover_candidate", candidate_id: "ledger-violet" },
+  { action: "stage_move", destination: "conservation" },
+  { action: "stage_move", destination: "atrium" },
+  { action: "stage_extract" },
+];
+
+export const FIFTEEN_TURN_BOTH_OPTIONALS_ROUTE: readonly MidnightArchiveActionIntent[] = [
+  { action: "stage_move", destination: "records" },
+  { action: "stage_use_verifier" },
+  { action: "stage_move", destination: "conservation" },
+  { action: "stage_accept_preservation_agreement" },
+  { action: "stage_prepare_collection" },
+  { action: "stage_energize_preservation_equipment" },
+  { action: "stage_move", destination: "vault" },
+  { action: "stage_recover_candidate", candidate_id: "ledger-violet" },
+  { action: "stage_move", destination: "conservation" },
+  { action: "stage_move", destination: "records" },
+  { action: "stage_move", destination: "plant" },
+  { action: "stage_protect_source_record" },
+  { action: "stage_move", destination: "records" },
+  { action: "stage_move", destination: "atrium" },
+  { action: "stage_extract" },
+];
+
 /** Reads the complete authorized participant Projection and rejects any drift. */
 export function readMidnightArchiveProjection(
   value: unknown,
@@ -193,6 +287,8 @@ export function readMidnightArchiveProjection(
   const gates = readGates(source.gates);
   const map = readMap(source.map);
   const candidates = readCandidates(source.candidates);
+  const preservationAgreement = readPreservationAgreement(source.preservation_agreement);
+  const optionalObjectives = readOptionalObjectives(source.optional_objectives);
   const debrief = readDebrief(source.debrief);
   const stagedAction = readStagedAction(source.staged_action);
   const carriedCandidate = source.carried_candidate === null
@@ -204,7 +300,9 @@ export function readMidnightArchiveProjection(
   if (
     phase === null || objective === null || location === null
     || turnsUsed === null || turnsRemaining === null || power === null
-    || gates === null || map === null || candidates === null || debrief === undefined
+    || gates === null || map === null || candidates === null
+    || preservationAgreement === null || optionalObjectives === null
+    || debrief === undefined
     || stagedAction === undefined || carriedCandidate === undefined
     || verifierResult === undefined || outcome === undefined
     || turnsUsed + turnsRemaining !== 16
@@ -219,11 +317,31 @@ export function readMidnightArchiveProjection(
     || (verifierResult !== null && !candidateIds.has(verifierResult.candidateId))
     || (stagedAction?.actionType === "stage_recover_candidate"
       && !candidateIds.has(stagedAction.candidateId))
-    || !stagedActionFitsProjection(stagedAction, location, power, gates, map)
+    || !agreementStateIsConsistent(preservationAgreement, optionalObjectives, gates)
+    || !stagedActionFitsProjection(
+      stagedAction,
+      location,
+      power,
+      gates,
+      map,
+      preservationAgreement,
+      optionalObjectives,
+      verifierResult,
+      carriedCandidate,
+    )
     || (phase === "briefing" && (turnsUsed !== 0 || stagedAction !== null || outcome !== null))
     || (phase === "active" && (outcome !== null || debrief !== null))
     || (phase === "complete" && (outcome === null || debrief === null))
     || (phase === "complete" && debrief?.evidenceStatus !== expectedDebriefStatus)
+    || (optionalObjectives.sourceRecordProtected.status !== "locked" && carriedCandidate === null)
+    || (optionalObjectives.sourceRecordProtected.status === "locked" && carriedCandidate !== null)
+    || (debrief !== null && (
+      debrief.agreementCommitment !== preservationAgreement.commitment
+      || debrief.optionalObjectives.collectionPreserved !==
+        (optionalObjectives.collectionPreserved.status === "complete")
+      || debrief.optionalObjectives.sourceRecordProtected !==
+        (optionalObjectives.sourceRecordProtected.status === "complete")
+    ))
     || (outcome?.kind === "exhausted_inside" && turnsRemaining !== 0)
   ) return null;
 
@@ -237,6 +355,8 @@ export function readMidnightArchiveProjection(
     gates,
     map,
     candidates,
+    preservationAgreement,
+    optionalObjectives,
     debrief,
     stagedAction,
     carriedCandidate,
@@ -248,6 +368,8 @@ export function readMidnightArchiveProjection(
 export function actionCost(action: MidnightArchiveActionType): ArchiveActionCost {
   switch (action) {
     case "stage_use_verifier": return { turns: 1, power: 1 };
+    case "stage_energize_preservation_equipment": return { turns: 1, power: 1 };
+    case "stage_protect_source_record": return { turns: 1, power: 1 };
     case "stage_open_service_hatch": return { turns: 1, power: 2 };
     case "commit_turn": return { turns: 0, power: 0 };
     default: return { turns: 1, power: 0 };
@@ -435,6 +557,102 @@ function readCandidates(value: unknown): readonly ArchiveCandidate[] | null {
   return result;
 }
 
+function readPreservationAgreement(value: unknown): PreservationAgreement | null {
+  const source = exactRecord(value, ["commitment", "conditions", "speaker", "statement"]);
+  if (
+    source === null
+    || source.speaker !== "Archivist"
+    || source.statement !== "Preserve the threatened collection and I will open the Conservation–Vault gate."
+    || !isAgreementCommitment(source.commitment)
+    || !Array.isArray(source.conditions)
+    || source.conditions.length !== 3
+  ) return null;
+  const expected = [
+    {
+      conditionId: "lead_acceptance",
+      label: "Human lead accepts this fixed agreement",
+      turnCost: 1,
+      powerCost: 0,
+      statuses: ["pending", "complete"],
+    },
+    {
+      conditionId: "collection_preparation",
+      label: "Prepare the threatened collection",
+      turnCost: 1,
+      powerCost: 0,
+      statuses: ["pending", "complete"],
+    },
+    {
+      conditionId: "equipment_energized",
+      label: "Energize the preservation equipment",
+      turnCost: 1,
+      powerCost: 1,
+      statuses: ["blocked", "pending", "complete"],
+    },
+  ] as const;
+  const conditions: PreservationAgreementCondition[] = [];
+  for (let index = 0; index < expected.length; index += 1) {
+    const definition = expected[index]!;
+    const item = exactRecord(source.conditions[index], [
+      "condition_id", "label", "power_cost", "status", "turn_cost",
+    ]);
+    if (
+      item === null
+      || item.condition_id !== definition.conditionId
+      || item.label !== definition.label
+      || item.turn_cost !== definition.turnCost
+      || item.power_cost !== definition.powerCost
+      || !definition.statuses.includes(item.status as never)
+    ) return null;
+    conditions.push({
+      conditionId: definition.conditionId,
+      label: definition.label,
+      status: item.status as PreservationAgreementCondition["status"],
+      turnCost: definition.turnCost,
+      powerCost: definition.powerCost,
+    });
+  }
+  return {
+    speaker: "Archivist",
+    statement: "Preserve the threatened collection and I will open the Conservation–Vault gate.",
+    commitment: source.commitment,
+    conditions,
+  };
+}
+
+function readOptionalObjectives(value: unknown): ArchiveOptionalObjectives | null {
+  const source = exactRecord(value, ["collection_preserved", "source_record_protected"]);
+  if (source === null) return null;
+  const collection = exactRecord(source.collection_preserved, ["label", "power_cost", "status", "turn_cost"]);
+  const sourceRecord = exactRecord(source.source_record_protected, ["label", "power_cost", "status", "turn_cost"]);
+  if (
+    collection === null
+    || collection.label !== "Preserve the threatened collection"
+    || collection.turn_cost !== 2
+    || collection.power_cost !== 1
+    || (collection.status !== "not_started" && collection.status !== "prepared" && collection.status !== "complete")
+    || sourceRecord === null
+    || sourceRecord.label !== "Protect the source's identifying record"
+    || sourceRecord.turn_cost !== 1
+    || sourceRecord.power_cost !== 1
+    || (sourceRecord.status !== "locked" && sourceRecord.status !== "available" && sourceRecord.status !== "complete")
+  ) return null;
+  return {
+    collectionPreserved: {
+      label: "Preserve the threatened collection",
+      status: collection.status,
+      turnCost: 2,
+      powerCost: 1,
+    },
+    sourceRecordProtected: {
+      label: "Protect the source's identifying record",
+      status: sourceRecord.status,
+      turnCost: 1,
+      powerCost: 1,
+    },
+  };
+}
+
 function readStagedAction(value: unknown): ArchiveStagedAction | null | undefined {
   if (value === null) return null;
   if (!isRecord(value) || !isMidnightArchiveActionType(value.action_type) || value.action_type === "commit_turn") {
@@ -469,6 +687,12 @@ function readStagedAction(value: unknown): ArchiveStagedAction | null | undefine
   if (value.action_type === "stage_open_service_hatch") {
     return { actionType: value.action_type, turnCost: 1, powerCost: 2 };
   }
+  if (
+    value.action_type === "stage_energize_preservation_equipment"
+    || value.action_type === "stage_protect_source_record"
+  ) {
+    return { actionType: value.action_type, turnCost: 1, powerCost: 1 };
+  }
   if (value.action_type === "stage_inspect_records" || value.action_type === "stage_inspect_conservation") {
     return { actionType: value.action_type, turnCost: 1, powerCost: 0 };
   }
@@ -494,10 +718,33 @@ function readOutcome(value: unknown): MidnightArchiveProjection["outcome"] | und
 
 function readDebrief(value: unknown): MidnightArchiveProjection["debrief"] | undefined {
   if (value === null) return null;
-  const source = exactRecord(value, ["evidence_status", "message"]);
-  if (source === null || (source.evidence_status !== "none" && source.evidence_status !== "partial" && source.evidence_status !== "complete")) return undefined;
-  const message = boundedText(source.message, MAX_OBJECTIVE_BYTES);
-  return message === null ? undefined : { evidenceStatus: source.evidence_status, message };
+  const source = exactRecord(value, [
+    "agreement_commitment", "evidence_status", "message", "optional_objectives",
+  ]);
+  if (
+    source === null
+    || (source.evidence_status !== "none" && source.evidence_status !== "partial" && source.evidence_status !== "complete")
+    || !isAgreementCommitment(source.agreement_commitment)
+  ) return undefined;
+  const expectedMessage = source.evidence_status === "none"
+    ? "No authored source was inspected."
+    : source.evidence_status === "partial"
+      ? "Only one authored source was inspected; it did not uniquely identify a candidate."
+      : "Both authored sources were inspected and their intersection informed the recommendation.";
+  const objectives = exactRecord(source.optional_objectives, ["collection_preserved", "source_record_protected"]);
+  return source.message !== expectedMessage || objectives === null
+    || typeof objectives.collection_preserved !== "boolean"
+    || typeof objectives.source_record_protected !== "boolean"
+    ? undefined
+    : {
+      evidenceStatus: source.evidence_status,
+      message: expectedMessage,
+      agreementCommitment: source.agreement_commitment,
+      optionalObjectives: {
+        collectionPreserved: objectives.collection_preserved,
+        sourceRecordProtected: objectives.source_record_protected,
+      },
+    };
 }
 
 function stagedActionFitsProjection(
@@ -506,6 +753,10 @@ function stagedActionFitsProjection(
   power: number,
   gates: Readonly<Record<ArchiveGate, GateState>>,
   map: MidnightArchiveProjection["map"],
+  agreement: PreservationAgreement,
+  optionalObjectives: ArchiveOptionalObjectives,
+  verifierResult: MidnightArchiveProjection["verifierResult"],
+  carriedCandidate: ArchiveCandidateId | null,
 ): boolean {
   if (staged === null) return true;
   if (staged.powerCost > power) return false;
@@ -520,12 +771,44 @@ function stagedActionFitsProjection(
     }
     case "stage_inspect_records": return location === "records";
     case "stage_inspect_conservation": return location === "conservation";
-    case "stage_use_verifier": return location === "records";
-    case "stage_open_service_hatch": return location === "plant";
+    case "stage_use_verifier": return location === "records" && verifierResult === null;
+    case "stage_accept_preservation_agreement":
+      return location === "conservation" && agreement.commitment === "not_accepted";
+    case "stage_prepare_collection":
+      return location === "conservation" && optionalObjectives.collectionPreserved.status === "not_started";
+    case "stage_energize_preservation_equipment":
+      return location === "conservation" && optionalObjectives.collectionPreserved.status === "prepared";
+    case "stage_open_service_hatch": return location === "plant" && gates.service_hatch === "closed";
     case "stage_recover_candidate": return location === "vault";
+    case "stage_protect_source_record":
+      return location === "plant"
+        && carriedCandidate !== null
+        && optionalObjectives.sourceRecordProtected.status === "available";
     case "stage_extract": return location === "atrium";
     case "stage_wait": return true;
   }
+}
+
+function agreementStateIsConsistent(
+  agreement: PreservationAgreement,
+  objectives: ArchiveOptionalObjectives,
+  gates: Readonly<Record<ArchiveGate, GateState>>,
+): boolean {
+  const [acceptance, preparation, equipment] = agreement.conditions;
+  if (acceptance === undefined || preparation === undefined || equipment === undefined) return false;
+  const acceptanceComplete = acceptance.status === "complete";
+  const collectionStatus = objectives.collectionPreserved.status;
+  const expectedPreparation = collectionStatus === "not_started" ? "pending" : "complete";
+  const expectedEquipment = collectionStatus === "not_started"
+    ? "blocked"
+    : collectionStatus === "prepared" ? "pending" : "complete";
+  const expectedCommitment: AgreementCommitment = !acceptanceComplete
+    ? "not_accepted"
+    : collectionStatus === "complete" ? "honored" : "accepted";
+  return preparation.status === expectedPreparation
+    && equipment.status === expectedEquipment
+    && agreement.commitment === expectedCommitment
+    && (gates.archive_gate === "open") === (expectedCommitment === "honored");
 }
 
 function readPhase(value: unknown): ArchivePhase | null {
@@ -549,6 +832,10 @@ function readGateState(value: unknown): GateState | null {
 function isOutcomeKind(value: unknown): value is ArchiveOutcomeKind {
   return value === "success" || value === "wrong_ledger"
     || value === "no_ledger" || value === "exhausted_inside";
+}
+
+function isAgreementCommitment(value: unknown): value is AgreementCommitment {
+  return value === "not_accepted" || value === "accepted" || value === "honored";
 }
 
 function candidateId(value: unknown): ArchiveCandidateId | undefined {

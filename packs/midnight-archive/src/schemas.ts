@@ -1,5 +1,38 @@
 import type { CanonicalObject } from "@worldstream/pack-sdk";
 
+function debriefValues(): unknown[] {
+  const evidence = [
+    { evidence_status: "none", message: "No authored source was inspected." },
+    {
+      evidence_status: "partial",
+      message: "Only one authored source was inspected; it did not uniquely identify a candidate.",
+    },
+    {
+      evidence_status: "complete",
+      message: "Both authored sources were inspected and their intersection informed the recommendation.",
+    },
+  ] as const;
+  const commitments = ["not_accepted", "accepted", "honored"] as const;
+  const values: unknown[] = [null];
+  for (const evidenceDebrief of evidence) {
+    for (const agreementCommitment of commitments) {
+      for (const collectionPreserved of [false, true]) {
+        for (const sourceRecordProtected of [false, true]) {
+          values.push({
+            ...evidenceDebrief,
+            agreement_commitment: agreementCommitment,
+            optional_objectives: {
+              collection_preserved: collectionPreserved,
+              source_record_protected: sourceRecordProtected,
+            },
+          });
+        }
+      }
+    }
+  }
+  return values;
+}
+
 function schemaParts() {
   const location = { enum: ["atrium", "records", "conservation", "plant", "vault"] };
   const locationOrNone = { enum: ["none", "atrium", "records", "conservation", "plant", "vault"] };
@@ -11,7 +44,11 @@ function schemaParts() {
     properties: {
       candidate_id: candidateOrNone,
       destination: locationOrNone,
-      kind: { enum: ["none", "move", "inspect_records", "inspect_conservation", "use_verifier", "open_service_hatch", "recover_candidate", "extract", "wait"] },
+      kind: { enum: [
+        "none", "move", "inspect_records", "inspect_conservation", "use_verifier",
+        "accept_preservation_agreement", "prepare_collection", "energize_preservation_equipment",
+        "open_service_hatch", "recover_candidate", "protect_source_record", "extract", "wait",
+      ] },
       power_cost: { maximum: 2, minimum: 0, type: "integer" },
       turn_cost: { maximum: 1, minimum: 0, type: "integer" },
     },
@@ -29,10 +66,14 @@ function schemaParts() {
       { action_type: "stage_inspect_records", turn_cost: 1, power_cost: 0 },
       { action_type: "stage_inspect_conservation", turn_cost: 1, power_cost: 0 },
       { action_type: "stage_use_verifier", turn_cost: 1, power_cost: 1 },
+      { action_type: "stage_accept_preservation_agreement", turn_cost: 1, power_cost: 0 },
+      { action_type: "stage_prepare_collection", turn_cost: 1, power_cost: 0 },
+      { action_type: "stage_energize_preservation_equipment", turn_cost: 1, power_cost: 1 },
       { action_type: "stage_open_service_hatch", turn_cost: 1, power_cost: 2 },
       { action_type: "stage_recover_candidate", candidate_id: "ledger-amber", turn_cost: 1, power_cost: 0 },
       { action_type: "stage_recover_candidate", candidate_id: "ledger-cobalt", turn_cost: 1, power_cost: 0 },
       { action_type: "stage_recover_candidate", candidate_id: "ledger-violet", turn_cost: 1, power_cost: 0 },
+      { action_type: "stage_protect_source_record", turn_cost: 1, power_cost: 1 },
       { action_type: "stage_extract", turn_cost: 1, power_cost: 0 },
       { action_type: "stage_wait", turn_cost: 1, power_cost: 0 },
     ],
@@ -55,12 +96,59 @@ function schemaParts() {
     ],
   };
   const debriefProjection = {
-    enum: [
-      null,
-      { evidence_status: "none", message: "No authored source was inspected." },
-      { evidence_status: "partial", message: "Only one authored source was inspected; it did not uniquely identify a candidate." },
-      { evidence_status: "complete", message: "Both authored sources were inspected and their intersection informed the recommendation." },
-    ],
+    enum: debriefValues(),
+  };
+  const agreementCondition = {
+    additionalProperties: false,
+    properties: {
+      condition_id: { enum: ["lead_acceptance", "collection_preparation", "equipment_energized"] },
+      label: { maxLength: 96, type: "string" },
+      power_cost: { maximum: 1, minimum: 0, type: "integer" },
+      status: { enum: ["blocked", "pending", "complete"] },
+      turn_cost: { const: 1 },
+    },
+    required: ["condition_id", "label", "status", "turn_cost", "power_cost"],
+    type: "object",
+  };
+  const preservationAgreementProjection = {
+    additionalProperties: false,
+    properties: {
+      commitment: { enum: ["not_accepted", "accepted", "honored"] },
+      conditions: { items: agreementCondition, maxItems: 3, minItems: 3, type: "array" },
+      speaker: { const: "Archivist" },
+      statement: { const: "Preserve the threatened collection and I will open the Conservation–Vault gate." },
+    },
+    required: ["speaker", "statement", "commitment", "conditions"],
+    type: "object",
+  };
+  const optionalObjectivesProjection = {
+    additionalProperties: false,
+    properties: {
+      collection_preserved: {
+        additionalProperties: false,
+        properties: {
+          label: { const: "Preserve the threatened collection" },
+          power_cost: { const: 1 },
+          status: { enum: ["not_started", "prepared", "complete"] },
+          turn_cost: { const: 2 },
+        },
+        required: ["label", "status", "turn_cost", "power_cost"],
+        type: "object",
+      },
+      source_record_protected: {
+        additionalProperties: false,
+        properties: {
+          label: { const: "Protect the source's identifying record" },
+          power_cost: { const: 1 },
+          status: { enum: ["locked", "available", "complete"] },
+          turn_cost: { const: 1 },
+        },
+        required: ["label", "status", "turn_cost", "power_cost"],
+        type: "object",
+      },
+    },
+    required: ["collection_preserved", "source_record_protected"],
+    type: "object",
   };
   const outcome = {
     additionalProperties: false,
@@ -156,6 +244,8 @@ function schemaParts() {
     outcome,
     outcomeProjection,
     observedEvidence,
+    optionalObjectivesProjection,
+    preservationAgreementProjection,
     roleNotes,
     stagedAction,
     stagedActionProjection,
@@ -173,15 +263,18 @@ export function stateSchema(): CanonicalObject {
       carried_candidate_id: { enum: ["none", "ledger-amber", "ledger-cobalt", "ledger-violet"] },
       carried_confidence: { enum: ["none", "unverified", "verified"] },
       evidence: part.evidence,
+      collection_preservation: { enum: ["unprepared", "prepared", "preserved"] },
       gates: part.gates,
       location: part.location,
       objective: { maxLength: 256, minLength: 1, type: "string" },
       outcome: part.outcome,
       phase: { enum: ["briefing", "active", "complete"] },
       power_remaining: { maximum: 3, minimum: 0, type: "integer" },
+      preservation_agreement: { enum: ["offered", "accepted"] },
       role_notes: part.roleNotes,
       scenario_id: { const: "standard-v1" },
       staged_action: part.stagedAction,
+      source_record_protected: { type: "boolean" },
       turn_limit: { const: 16 },
       turns_used: { maximum: 16, minimum: 0, type: "integer" },
       verifier_result: { enum: ["none", "ledger-amber", "ledger-cobalt", "ledger-violet"] },
@@ -189,7 +282,8 @@ export function stateSchema(): CanonicalObject {
     },
     required: [
       "phase", "scenario_id", "objective", "location", "turn_limit", "turns_used",
-      "power_remaining", "gates", "candidates", "evidence", "truth_marker", "verifier_result",
+      "power_remaining", "gates", "candidates", "evidence", "preservation_agreement",
+      "collection_preservation", "source_record_protected", "truth_marker", "verifier_result",
       "carried_candidate_id", "carried_confidence", "staged_action", "outcome", "role_notes",
     ],
     type: "object",
@@ -232,6 +326,8 @@ export function participantProjectionSchema(): CanonicalObject {
         type: "array",
       },
       debrief: part.debriefProjection,
+      optional_objectives: part.optionalObjectivesProjection,
+      preservation_agreement: part.preservationAgreementProjection,
       carried_candidate: part.candidateOrNull,
       gates: {
         additionalProperties: false,
@@ -264,6 +360,7 @@ export function participantProjectionSchema(): CanonicalObject {
     required: [
       "phase", "objective", "location", "turns_used", "turns_remaining", "power",
       "gates", "map", "candidates", "staged_action", "carried_candidate", "debrief",
+      "preservation_agreement", "optional_objectives",
       "verifier_result", "outcome",
     ],
     type: "object",

@@ -18,6 +18,7 @@ const workspace = resolve(import.meta.dirname, "..");
 const binaries = ["worldstreamctl", "worldstreamd", "worldstream-studio-supervisor", "worldstream-assignment-mcp"];
 const forbidden = ["authentic_candidate_id", "is_authentic", "truth_marker"];
 const recoveryCandidateId = "ledger-violet";
+const authorizedProjectionTimeoutMs = 45_000;
 const technicalRoute = [
   ["stage_move", { destination: "records" }], ["commit_turn", {}],
   ["stage_use_verifier", {}], ["commit_turn", {}],
@@ -44,12 +45,38 @@ const evidenceServiceRoute = [
   ["stage_move", { destination: "atrium" }], ["commit_turn", {}],
   ["stage_extract", {}], ["commit_turn", {}],
 ];
-const proofMode = process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_PROOF_MODE ?? "technical";
+const agreementRoute = [
+  ["stage_move", { destination: "records" }], ["commit_turn", {}],
+  ["stage_use_verifier", {}], ["commit_turn", {}],
+  ["stage_move", { destination: "conservation" }], ["commit_turn", {}],
+  ["stage_accept_preservation_agreement", {}], ["commit_turn", {}],
+  ["stage_prepare_collection", {}], ["commit_turn", {}],
+  ["stage_energize_preservation_equipment", {}], ["commit_turn", {}],
+  ["stage_move", { destination: "vault" }], ["commit_turn", {}],
+  ["stage_recover_candidate", { candidate_id: recoveryCandidateId }], ["commit_turn", {}],
+  ["stage_move", { destination: "conservation" }], ["commit_turn", {}],
+  ["stage_move", { destination: "atrium" }], ["commit_turn", {}],
+  ["stage_extract", {}], ["commit_turn", {}],
+];
+const bothObjectivesRoute = [
+  ...agreementRoute.slice(0, 18),
+  ["stage_move", { destination: "records" }], ["commit_turn", {}],
+  ["stage_move", { destination: "plant" }], ["commit_turn", {}],
+  ["stage_protect_source_record", {}], ["commit_turn", {}],
+  ["stage_move", { destination: "records" }], ["commit_turn", {}],
+  ["stage_move", { destination: "atrium" }], ["commit_turn", {}],
+  ["stage_extract", {}], ["commit_turn", {}],
+];
+const proofMode = process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_PROOF_MODE ?? "agreement";
 const witness = proofMode === "technical"
   ? { route: technicalRoute, turns: 10, turnsRemaining: 6, powerRemaining: 0, candidate: "Violet Ledger", checks: ["ten_turn_phone_witness", "verifier_selected_candidate"] }
   : proofMode === "evidence-service"
     ? { route: evidenceServiceRoute, turns: 12, turnsRemaining: 4, powerRemaining: 1, candidate: "Violet Ledger", checks: ["twelve_turn_evidence_service_witness", "sourced_evidence_disclosure"] }
-    : (() => { throw new Error(`unknown Midnight Archive proof mode: ${proofMode}`); })();
+    : proofMode === "agreement"
+      ? { route: agreementRoute, turns: 11, turnsRemaining: 5, powerRemaining: 1, candidate: "Violet Ledger", checks: ["eleven_turn_powered_agreement_witness", "authored_agreement_honored", "collection_preserved"] }
+      : proofMode === "both-objectives"
+        ? { route: bothObjectivesRoute, turns: 15, turnsRemaining: 1, powerRemaining: 0, candidate: "Violet Ledger", checks: ["fifteen_turn_both_objectives_witness", "authored_agreement_honored", "collection_preserved", "source_record_protected"] }
+        : (() => { throw new Error(`unknown Midnight Archive proof mode: ${proofMode}`); })();
 const acceptanceStartedAt = Date.now();
 
 const root = resolve(await realpath(await mkdtemp(join(tmpdir(), "worldstream-midnight-archive-proof-"))));
@@ -76,7 +103,7 @@ try {
   const bundleIdentity = await inspectBundle(bundle);
   debug("binary preflight and bundle inspection complete");
 
-  const releasePath = join(workspace, "config/activity-clients/releases/midnight-archive-web-v2.json");
+  const releasePath = join(workspace, "config/activity-clients/releases/midnight-archive-web-v3.json");
   const release = JSON.parse(await readFile(releasePath, "utf8"));
   const standaloneSurface = release.surfaces.find((surface) => surface.surface_id === "midnight-archive-web");
   assert.ok(standaloneSurface, "current Archive standalone Client Surface missing");
@@ -94,7 +121,7 @@ try {
   for (const deployment of bootstrap.deployments) for (const surface of deployment.surfaces) surface.launch_url = `${host.origin}${new URL(surface.launch_url).pathname}`;
   const archiveDeployment = {
     schema: "worldstream/client-deployment/v1",
-    deployment_id: "first-party-midnight-archive-web-v2",
+    deployment_id: "first-party-midnight-archive-web-v3",
     client_id: release.client_id,
     release_digest: release.release_digest,
     trust_level: "externally_trusted",
@@ -104,7 +131,7 @@ try {
   bootstrap.bindings = bootstrap.bindings.filter((binding) => binding.deployment_id === "first-party-inspector-web-v2");
   bootstrap.bindings.push({
     schema: "worldstream/client-binding/v1",
-    binding_id: "midnight-archive-0-1-lead-web-v2",
+    binding_id: "midnight-archive-0-1-lead-web-v3",
     pack: { id: "worldstream.midnight-archive", version: "0.1.0", digest: bundleIdentity.revision_digest },
     client_contract: "worldstream/activity-client-protocol/v1",
     access_mode: "participant",
@@ -199,28 +226,33 @@ try {
   }));
   await page.goto(handoff.client_url, { waitUntil: "domcontentloaded" });
   await waitForText(page, /Preparing the archive/i, "briefing");
-  await page.getByText(/The Room is synchronized for readiness/i).first().waitFor({ timeout: 15_000 });
+  await page.getByText(/The Room is synchronized for readiness/i).first().waitFor({ timeout: authorizedProjectionTimeoutMs });
   debug("briefing Projection synchronized");
   await assertActionControlsDisabled(page);
   await assertViewportFits(page, "desktop briefing");
   await startActivity(room);
-  await page.getByText("Projection current", { exact: true }).waitFor({ timeout: 15_000 });
+  await page.getByText("Projection current", { exact: true }).waitFor({ timeout: authorizedProjectionTimeoutMs });
   debug("Activity Start committed");
   await page.setViewportSize({ width: 390, height: 844 });
   await assertViewportFits(page, "phone mission");
   await assertPhoneControls(page);
   await runRoute(page);
-  await page.getByRole("heading", { name: "The authentic ledger is out", exact: true }).waitFor({ timeout: 15_000 });
+  await page.getByRole("heading", { name: "The authentic ledger is out", exact: true }).waitFor({ timeout: authorizedProjectionTimeoutMs });
   assert.deepEqual(submittedRecoveryPayload, { candidate_id: recoveryCandidateId }, "Recovery must submit the canonical candidate payload");
   const body = await page.locator("body").innerText();
   assert.match(body, new RegExp(`Turns remaining\\s*${witness.turnsRemaining}`, "i"));
   assert.match(body, new RegExp(`Power reserve\\s*${witness.powerRemaining}`, "i"));
+  if (proofMode === "agreement" || proofMode === "both-objectives") {
+    assert.match(body, /Agreement\s*honored/i);
+    assert.match(body, /Collection preserved\s*Yes/i);
+  }
+  if (proofMode === "both-objectives") assert.match(body, /Source record protected\s*Yes/i);
   const replayButton = page.getByRole("button", { name: /replay/i });
   assert.equal(await replayButton.count(), 1, "Replay acceptance blocked: the Archive client exposes no Replay control or authorized replay endpoint seam");
   await replayButton.click();
-  await page.getByText(/verified.*replay|replay.*verified|canonical history/i).waitFor({ timeout: 10_000 });
+  await page.getByText(/verified.*replay|replay.*verified|canonical history/i).waitFor({ timeout: authorizedProjectionTimeoutMs });
   if (bridgeFailure) throw bridgeFailure;
-  receipt = { status: "passed", pack: "worldstream.midnight-archive@0.1.0", bundle_digest: bundleIdentity.bundle_digest, revision_digest: bundleIdentity.revision_digest, room, turns: witness.turns, turns_remaining: witness.turnsRemaining, power_remaining: witness.powerRemaining, provider_calls: 0, checks: ["briefing_projection_before_activity_start", "actions_disabled_until_sync", "desktop_and_phone_layouts", ...witness.checks, "canonical_recovery_payload", "service_gate_boundary", "terminal_success", "authorized_replay", "private_authenticity_non_leakage"] };
+  receipt = { status: "passed", pack: "worldstream.midnight-archive@0.1.0", bundle_digest: bundleIdentity.bundle_digest, revision_digest: bundleIdentity.revision_digest, room, turns: witness.turns, turns_remaining: witness.turnsRemaining, power_remaining: witness.powerRemaining, provider_calls: 0, checks: ["briefing_projection_before_activity_start", "actions_disabled_until_sync", "desktop_and_phone_layouts", ...witness.checks, "canonical_recovery_payload", "beginning_of_turn_gate_boundary", "terminal_success", "authorized_replay", "private_authenticity_non_leakage"] };
 } catch (error) {
   failure = error;
 } finally {
@@ -242,7 +274,7 @@ async function archiveBundle() {
   if (process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE) return process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE;
   const proof = JSON.parse(await readFile(join(
     workspace,
-    "packs/midnight-archive/evidence/production-proof-0.1.0-evidence-route.json",
+    "packs/midnight-archive/evidence/production-proof-0.1.0-agreement-route.json",
   ), "utf8"));
   assert.equal(proof.status, "passed");
   assert.match(proof.bundleDigest, /^blake3:[0-9a-f]{64}$/u);
@@ -432,8 +464,12 @@ async function runRoute(page) {
           stage_use_verifier: /^Stage Run the catalog verifier; costs 1 turn and 1 power$/i,
           stage_inspect_records: /^Stage Inspect the intake evidence; costs 1 turn and 0 power$/i,
           stage_inspect_conservation: /^Stage Inspect the restoration evidence; costs 1 turn and 0 power$/i,
+          stage_accept_preservation_agreement: /^Stage Accept the preservation agreement; costs 1 turn and 0 power$/i,
+          stage_prepare_collection: /^Stage Prepare the threatened collection; costs 1 turn and 0 power$/i,
+          stage_energize_preservation_equipment: /^Stage Energize preservation equipment; costs 1 turn and 1 power$/i,
           stage_open_service_hatch: /^Stage Open the service hatch; costs 1 turn and 2 power$/i,
           stage_recover_candidate: new RegExp(`^Stage recovery of ${witness.candidate}; costs 1 turn and 0 power$`, "i"),
+          stage_protect_source_record: /^Stage Protect the source's identifying record; costs 1 turn and 1 power$/i,
           stage_extract: /^Stage Extract from the archive; costs 1 turn and 0 power$/i,
         };
         const button = actionType === "stage_recover_candidate"
@@ -442,7 +478,7 @@ async function runRoute(page) {
         if (actionType === "stage_recover_candidate") {
           const card = page.locator(".candidate-card").filter({ hasText: new RegExp(witness.candidate, "i") });
           assert.equal(await card.count(), 1, "Recovery must target the evidence-supported candidate");
-          if (proofMode === "technical") assert.equal(await card.filter({ hasText: /Verified by the catalog instrument/i }).count(), 1, "Recovery must target the verifier-selected candidate");
+          if (proofMode !== "evidence-service") assert.equal(await card.filter({ hasText: /Verified by the catalog instrument/i }).count(), 1, "Recovery must target the verifier-selected candidate");
           if (proofMode === "evidence-service") assert.equal(await card.filter({ hasText: /Evidence recommendation/i }).count(), 1, "Recovery must target the source-evidence recommendation");
         }
         if (await button.count()) await button.click();
@@ -452,6 +488,10 @@ async function runRoute(page) {
       await waitForEnabled(page, page.getByRole("button", { name: /commit turn/i }).first(), `${actionType} staged Action`);
       const afterStage = readMetric(await page.locator("body").innerText(), "Turns remaining");
       assert.equal(afterStage, turns, `${actionType} consumed a turn before Commit`);
+      if (actionType === "stage_energize_preservation_equipment") {
+        const vault = page.getByRole("button", { name: /Move to Vault/i });
+        assert.equal(await vault.isDisabled(), true, "staged preservation opened the Conservation gate before Commit Turn");
+      }
     } else {
       await page.getByRole("button", { name: /commit turn/i }).first().click();
       const afterCommit = await waitForMetric(page, "Turns remaining", (value) => value === turns - 1, "Commit Turn");
@@ -469,7 +509,7 @@ function debug(message) {
 }
 
 async function waitForEnabled(page, locator, description) {
-  for (let attempt = 0; attempt < 150; attempt += 1) {
+  for (let attempt = 0; attempt < authorizedProjectionTimeoutMs / 100; attempt += 1) {
     if (bridgeFailure) throw bridgeFailure;
     if (await locator.isEnabled()) return;
     await page.waitForTimeout(100);
@@ -479,7 +519,7 @@ async function waitForEnabled(page, locator, description) {
 }
 
 async function waitForMetric(page, label, predicate, description) {
-  for (let attempt = 0; attempt < 150; attempt += 1) {
+  for (let attempt = 0; attempt < authorizedProjectionTimeoutMs / 100; attempt += 1) {
     if (bridgeFailure) throw bridgeFailure;
     const text = await page.locator("body").innerText();
     try {
@@ -499,7 +539,7 @@ function readMetric(text, label) {
 
 async function waitForText(page, pattern, description) {
   try {
-    await page.getByText(pattern).first().waitFor({ timeout: 15_000 });
+    await page.getByText(pattern).first().waitFor({ timeout: authorizedProjectionTimeoutMs });
   } catch (error) {
     if (bridgeFailure) throw bridgeFailure;
     const body = (await page.locator("body").innerText()).slice(0, 2_000);

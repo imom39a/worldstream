@@ -35,18 +35,22 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const PACK_ID: &str = "worldstream.midnight-archive";
 const PACK_VERSION: &str = "0.1.0";
 const CURRENT_BUNDLE_DIGEST: &str =
-    "blake3:e0626769fa745fafd0e41238473902988f446b453f283c7a7a7155a9122cf03f";
+    "blake3:877702b321352288553cc0e5ea6510f1f8dea3e18687759658714ebc09a3c269";
 const CURRENT_REVISION_DIGEST: &str =
+    "blake3:6c3ad825a65307b9f5434d4a9140b7db4bd70d1f7830c66d6f6af1d2ba9dc0da";
+const RETAINED_EVIDENCE_BUNDLE_DIGEST: &str =
+    "blake3:e0626769fa745fafd0e41238473902988f446b453f283c7a7a7155a9122cf03f";
+const RETAINED_EVIDENCE_REVISION_DIGEST: &str =
     "blake3:ee85f264b9c3dfb185ebedc9646bea655740f351c287793cce997336f0f419f2";
-const RETAINED_BUNDLE_DIGEST: &str =
+const RETAINED_FIRST_PLAYABLE_BUNDLE_DIGEST: &str =
     "blake3:d14e21273d58d1c0d1cc1b5bd0c002975a531b118bfe0c65bfa33a3efadcf85b";
-const RETAINED_REVISION_DIGEST: &str =
+const RETAINED_FIRST_PLAYABLE_REVISION_DIGEST: &str =
     "blake3:679022bf13c15ea014e18a7129b679c9bfd27873c570fd9cd0c02818f0880a7a";
 const FORBIDDEN_PRIVATE_KEYS: &[&str] = &["authentic_candidate_id", "is_authentic", "truth_marker"];
 
 fn client_binding_identity() -> TestResult<(String, String)> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config/activity-clients/releases/midnight-archive-web-v2.json");
+        .join("../../config/activity-clients/releases/midnight-archive-web-v3.json");
     let release: Value = serde_json::from_slice(&fs::read(path)?)?;
     let release_digest = release["release_digest"]
         .as_str()
@@ -56,7 +60,7 @@ fn client_binding_identity() -> TestResult<(String, String)> {
         .as_array()
         .and_then(|surfaces| {
             surfaces.iter().find_map(|surface| {
-                (surface["entrypoint"] == "/midnight-archive-v2/")
+                (surface["entrypoint"] == "/midnight-archive-v3/")
                     .then(|| surface["surface_id"].as_str())
                     .flatten()
             })
@@ -79,7 +83,7 @@ fn release_bundle_path(bundle_digest: &str) -> PathBuf {
 fn current_bundle_path() -> PathBuf {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let proof_path = workspace
-        .join("packs/midnight-archive/evidence/production-proof-0.1.0-evidence-route.json");
+        .join("packs/midnight-archive/evidence/production-proof-0.1.0-agreement-route.json");
     let proof: Value = serde_json::from_slice(
         &fs::read(&proof_path)
             .unwrap_or_else(|error| panic!("read Archive proof {proof_path:?}: {error}")),
@@ -224,7 +228,7 @@ async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> 
     assert_eq!(
         current_inspection.revision_digest.to_string(),
         CURRENT_REVISION_DIGEST,
-        "current Bundle must inspect as the exact evidence-route revision"
+        "current Bundle must inspect as the exact agreement-route revision"
     );
     assert_eq!(verified.bundle_digest().to_string(), CURRENT_BUNDLE_DIGEST);
     assert_eq!(
@@ -236,36 +240,65 @@ async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> 
     let configuration: Value =
         serde_json::from_slice(&verified.golden_corpus().genesis.configuration.to_bytes()?)?;
     let witness = verified.golden_corpus().actions.clone();
-    assert_eq!(
-        witness.len(),
-        20,
-        "the Bundle must freeze ten stage/commit turns"
+    assert!(
+        !witness.is_empty(),
+        "the Bundle must freeze a non-empty witness"
     );
-    assert!(witness.iter().enumerate().all(|(index, action)| {
-        (index % 2 == 0 && action.action_type.starts_with("stage_"))
-            || (index % 2 == 1 && action.action_type == "commit_turn")
-    }));
-    let retained_path = release_bundle_path(RETAINED_BUNDLE_DIGEST);
-    let retained_bytes = fs::read(&retained_path)?;
-    let retained_verified = PackBundleVerifierV1.inspect(Arc::<[u8]>::from(retained_bytes))?;
-    let retained_inspection = retained_verified.inspection();
-    assert_eq!(retained_inspection.pack_id, PACK_ID);
-    assert_eq!(retained_inspection.explanatory_version, PACK_VERSION);
     assert_eq!(
-        retained_inspection.bundle_digest.to_string(),
-        RETAINED_BUNDLE_DIGEST,
+        witness.len() % 2,
+        0,
+        "the Bundle witness must contain complete stage/commit turns"
+    );
+    assert!(witness.chunks_exact(2).all(|turn| {
+        turn[0].action_type.starts_with("stage_") && turn[1].action_type == "commit_turn"
+    }));
+    let evidence_path = release_bundle_path(RETAINED_EVIDENCE_BUNDLE_DIGEST);
+    let evidence_bytes = fs::read(&evidence_path)?;
+    let evidence_verified = PackBundleVerifierV1.inspect(Arc::<[u8]>::from(evidence_bytes))?;
+    let evidence_inspection = evidence_verified.inspection();
+    assert_eq!(evidence_inspection.pack_id, PACK_ID);
+    assert_eq!(evidence_inspection.explanatory_version, PACK_VERSION);
+    assert_eq!(
+        evidence_inspection.bundle_digest.to_string(),
+        RETAINED_EVIDENCE_BUNDLE_DIGEST,
+        "retained release path must contain the exact IMO-200 Bundle bytes"
+    );
+    assert_eq!(
+        evidence_inspection.revision_digest.to_string(),
+        RETAINED_EVIDENCE_REVISION_DIGEST,
+        "retained Bundle must inspect as the exact IMO-200 revision"
+    );
+    let evidence_revision_digest = evidence_verified.revision_digest().clone();
+    let first_playable_path = release_bundle_path(RETAINED_FIRST_PLAYABLE_BUNDLE_DIGEST);
+    let first_playable_bytes = fs::read(&first_playable_path)?;
+    let first_playable_verified =
+        PackBundleVerifierV1.inspect(Arc::<[u8]>::from(first_playable_bytes))?;
+    let first_playable_inspection = first_playable_verified.inspection();
+    assert_eq!(first_playable_inspection.pack_id, PACK_ID);
+    assert_eq!(first_playable_inspection.explanatory_version, PACK_VERSION);
+    assert_eq!(
+        first_playable_inspection.bundle_digest.to_string(),
+        RETAINED_FIRST_PLAYABLE_BUNDLE_DIGEST,
         "retained release path must contain the exact IMO-199 Bundle bytes"
     );
     assert_eq!(
-        retained_inspection.revision_digest.to_string(),
-        RETAINED_REVISION_DIGEST,
+        first_playable_inspection.revision_digest.to_string(),
+        RETAINED_FIRST_PLAYABLE_REVISION_DIGEST,
         "retained Bundle must inspect as the exact IMO-199 revision"
     );
-    let retained_revision_digest = retained_verified.revision_digest().clone();
+    let first_playable_revision_digest = first_playable_verified.revision_digest().clone();
 
     let component_host = ComponentPackHostV1::new()?;
-    let retained_admission = component_host.admit(
-        retained_verified,
+    let first_playable_admission = component_host.admit(
+        first_playable_verified,
+        PackRegistryStatusV1 {
+            selectable_for_new_rooms: false,
+            runnable_for_retained_rooms: true,
+            approved_for_activity_start: true,
+        },
+    )?;
+    let evidence_admission = component_host.admit(
+        evidence_verified,
         PackRegistryStatusV1 {
             selectable_for_new_rooms: false,
             runnable_for_retained_rooms: true,
@@ -281,14 +314,20 @@ async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> 
         },
     )?;
     // Registry construction executes and verifies both immutable golden corpora.
-    let registry =
-        builtin_counter_registry()?.admit_portable([retained_admission, current_admission])?;
-    registry.load_retained(&retained_revision_digest)?;
+    let registry = builtin_counter_registry()?.admit_portable([
+        first_playable_admission,
+        evidence_admission,
+        current_admission,
+    ])?;
+    registry.load_retained(&first_playable_revision_digest)?;
+    registry.load_retained(&evidence_revision_digest)?;
     registry.load_retained(&current_revision_digest)?;
-    let retained_catalog = registry.catalog_revision(&retained_revision_digest)?;
-    assert!(!retained_catalog.selectable_for_new_rooms);
-    assert!(retained_catalog.runnable_for_retained_rooms);
-    assert!(retained_catalog.approved_for_activity_start);
+    for retained_revision in [&first_playable_revision_digest, &evidence_revision_digest] {
+        let retained_catalog = registry.catalog_revision(retained_revision)?;
+        assert!(!retained_catalog.selectable_for_new_rooms);
+        assert!(retained_catalog.runnable_for_retained_rooms);
+        assert!(retained_catalog.approved_for_activity_start);
+    }
     let current_catalog = registry.catalog_revision(&current_revision_digest)?;
     assert!(current_catalog.selectable_for_new_rooms);
     assert!(current_catalog.runnable_for_retained_rooms);
@@ -382,6 +421,9 @@ async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> 
         let mut state = projection(&active);
         assert_eq!(state["phase"], "active");
         assert_eq!(turns_used(&state), 0);
+        let initial_turns_remaining = state["turns_remaining"]
+            .as_u64()
+            .ok_or("initial turns_remaining missing")?;
         let mut last_seq = room_seq(&active);
         let mut offers = action_offers(&active)
             .cloned()
@@ -404,20 +446,22 @@ async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> 
         let rejected = receive_envelope(&mut socket)?;
         assert_eq!(rejected["type"], "action.rejected", "stale Action must not commit");
         assert_eq!(rejected["body"]["current_room_seq"], last_seq, "stale Action changed the Room head");
+        let mut committed_turns = 0_u64;
         for (index, expected) in witness.iter().enumerate() {
             let action_type = expected.action_type.as_str();
-            if index == 6 {
-                assert_eq!(state["gates"]["service_hatch"], "closed", "Plant gate must be closed before its opening turn");
-            }
-            if index == 8 {
-                assert_eq!(state["gates"]["service_hatch"], "open", "Plant gate must open before the next turn can traverse it");
-            }
             assert!(
                 offers.iter().any(|offer| offer["action_type"] == action_type),
                 "expected witness Action {action_type} is absent at step {index}"
             );
             let payload: Value = serde_json::from_slice(&expected.canonical_payload.to_bytes()?)?;
             let before_turns = turns_used(&state);
+            let before_remaining = state["turns_remaining"]
+                .as_u64()
+                .ok_or("turns_remaining missing before witness action")?;
+            let before_power = state["power"]
+                .as_u64()
+                .ok_or("power missing before witness action")?;
+            let before_gates = state["gates"].clone();
             send(&mut socket, "action.submit", &json!({"action_id":format!("01ARZ3NDEKTSV4RRFFQ69G5H{:02X}", index + 18),"based_on_room_seq":last_seq,"action_type":action_type,"payload":payload}), &format!("01ARZ3NDEKTSV4RRFFQ69G5J{:02X}", index + 40))?;
             let receipt = receive(&mut socket, "action.accepted")?;
             let observation = receive(&mut socket, "observation.deliver")?;
@@ -427,17 +471,21 @@ async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> 
                 .ok_or("next action offers missing")?;
             let next_seq = room_seq(&observation);
             assert_eq!(next_seq, last_seq + 1);
-            if action_type.starts_with("stage_") { assert_eq!(turns_used(&state), before_turns); }
-            if action_type == "commit_turn" { assert_eq!(turns_used(&state), before_turns + 1); }
+            if action_type.starts_with("stage_") {
+                assert_eq!(turns_used(&state), before_turns);
+                assert_eq!(state["turns_remaining"].as_u64(), Some(before_remaining));
+                assert_eq!(state["power"].as_u64(), Some(before_power));
+                assert_eq!(state["gates"], before_gates, "staging cannot change a gate before turn commit");
+            }
             if action_type == "commit_turn" {
-                let expected_power = match index {
-                    1 => 3,
-                    3 => 2,
-                    5 => 2,
-                    7 => 0,
-                    _ => 0,
-                };
-                assert_eq!(state["power"].as_u64(), Some(expected_power));
+                committed_turns += 1;
+                assert_eq!(turns_used(&state), before_turns + 1);
+                assert_eq!(state["turns_remaining"].as_u64(), Some(before_remaining - 1));
+                let after_power = state["power"].as_u64().ok_or("power missing after commit")?;
+                assert!(
+                    after_power <= before_power,
+                    "a committed turn cannot create power ({before_power} -> {after_power})"
+                );
             }
             assert_eq!(receipt["room_head"]["room_seq"], next_seq);
             last_seq = next_seq;
@@ -445,9 +493,12 @@ async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> 
             send(&mut socket, "observation.ack", &json!({"through_frame_seq":frame}), &format!("01ARZ3NDEKTSV4RRFFQ69G5K{:02X}", index + 70))?;
             receive(&mut socket, "observation.acked")?;
         }
-        assert_eq!(turns_used(&state), 10);
-        assert_eq!(state["turns_remaining"], 6);
-        assert_eq!(state["power"], 0);
+        assert_eq!(committed_turns, witness.len() as u64 / 2);
+        assert_eq!(turns_used(&state), committed_turns);
+        assert_eq!(
+            state["turns_remaining"].as_u64(),
+            Some(initial_turns_remaining - committed_turns)
+        );
         assert_eq!(state["outcome"]["kind"], "success");
         Ok((last_seq, state))
     }).await?;

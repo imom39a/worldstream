@@ -170,6 +170,22 @@ export function ArchiveOutcomePanel({ projection }: { readonly projection: Midni
           <Fact label="Power left" value={`${projection.power} charges`} />
           <Fact label="Ledger carried" value={ledger?.label ?? "None"} />
           <Fact label="Final location" value={locationName(projection, projection.location)} />
+          {projection.debrief === null ? null : (
+            <>
+              <Fact
+                label="Agreement"
+                value={projection.debrief.agreementCommitment.replace("_", " ")}
+              />
+              <Fact
+                label="Collection preserved"
+                value={projection.debrief.optionalObjectives.collectionPreserved ? "Yes" : "No"}
+              />
+              <Fact
+                label="Source record protected"
+                value={projection.debrief.optionalObjectives.sourceRecordProtected ? "Yes" : "No"}
+              />
+            </>
+          )}
         </dl>
       </div>
     </section>

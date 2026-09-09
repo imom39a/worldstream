@@ -106,6 +106,106 @@ describe("Midnight Archive mission surface", () => {
     }
   });
 
+  it("shows the Archivist's fixed agreement and contextual preservation controls", () => {
+    const current = projection({ location: "conservation" });
+    const markup = renderToStaticMarkup(
+      <MidnightArchiveClientView
+        state={readyState(current, [
+          "stage_move",
+          "stage_inspect_conservation",
+          "stage_accept_preservation_agreement",
+          "stage_prepare_collection",
+          "stage_wait",
+        ])}
+        connection="live"
+        actionsEnabled
+        onAction={vi.fn()}
+      />,
+    );
+    expect(markup).toContain("Authored offer · Archivist");
+    expect(markup).toContain("Preserve the threatened collection and I will open the Conservation–Vault gate.");
+    expect(markup).toContain("Accept the preservation agreement");
+    expect(markup).toContain("Prepare the threatened collection");
+    expect(markup).toContain("Prepare the collection first.");
+    expect(markup).toContain("cannot be rewritten in free text");
+    expect(markup).not.toContain("<textarea");
+  });
+
+  it("submits the fixed agreement as a typed empty-payload intent", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const onAction = vi.fn().mockResolvedValue(undefined);
+    await act(async () => {
+      root.render(
+        <MidnightArchiveClientView
+          state={readyState(projection({ location: "conservation" }), [
+            "stage_accept_preservation_agreement",
+            "stage_wait",
+          ])}
+          connection="live"
+          actionsEnabled
+          onAction={onAction}
+        />,
+      );
+    });
+    const accept = [...host.querySelectorAll("button")].find((button) => (
+      button.getAttribute("aria-label")?.startsWith("Stage Accept the preservation agreement")
+    ));
+    expect(accept).toBeDefined();
+    await act(async () => accept?.click());
+    expect(onAction).toHaveBeenCalledExactlyOnceWith({
+      action: "stage_accept_preservation_agreement",
+    });
+    await act(async () => root.unmount());
+  });
+
+  it("explains insufficient power and locked source-protection controls", () => {
+    const raw = rawProjection();
+    const agreement = raw.preservation_agreement as Record<string, unknown>;
+    const conditions = agreement.conditions as Array<Record<string, unknown>>;
+    const objectives = raw.optional_objectives as Record<string, unknown>;
+    const collection = objectives.collection_preserved as Record<string, unknown>;
+    const conservation = projection({
+      location: "conservation",
+      power: 0,
+      preservation_agreement: {
+        ...agreement,
+        commitment: "accepted",
+        conditions: conditions.map((condition, index) => ({
+          ...condition,
+          status: index < 2 ? "complete" : "pending",
+        })),
+      },
+      optional_objectives: {
+        ...objectives,
+        collection_preserved: { ...collection, status: "prepared" },
+      },
+    });
+    const conservationMarkup = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState(conservation, ["stage_move", "stage_wait"])} connection="live" actionsEnabled onAction={vi.fn()} />,
+    );
+    expect(conservationMarkup).toContain("Energize preservation equipment");
+    expect(conservationMarkup).toContain("One power charge is required.");
+
+    const plant = projection({ location: "plant", power: 1 });
+    const plantMarkup = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState(plant, ["stage_move", "stage_wait"])} connection="live" actionsEnabled onAction={vi.fn()} />,
+    );
+    expect(plantMarkup).toContain("Protect the source&#x27;s identifying record");
+    expect(plantMarkup).toContain("Recover a ledger before protecting the source record.");
+  });
+
+  it("renders a committed wait as an authoritative one-turn setback", () => {
+    const current = projection({ turns_used: 2, turns_remaining: 14, staged_action: null });
+    const markup = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState(current, ["stage_wait"])} connection="live" actionsEnabled onAction={vi.fn()} />,
+    );
+    expect(markup).toContain("14<small> / 16</small>");
+    expect(markup).toContain("No Action staged");
+    expect(markup).toContain("Wait for one turn");
+  });
+
   it("renders observed source evidence beside attributes and keeps unknown, observed, and recommended separate", () => {
     const raw = rawProjection();
     const candidates = raw.candidates as Array<Record<string, unknown>>;
@@ -239,6 +339,11 @@ describe("Midnight Archive mission surface", () => {
       debrief: {
         evidence_status: "partial",
         message: "Only one authored source was inspected; it did not uniquely identify a candidate.",
+        agreement_commitment: "not_accepted",
+        optional_objectives: {
+          collection_preserved: false,
+          source_record_protected: false,
+        },
       },
     });
     const markup = renderToStaticMarkup(
@@ -247,6 +352,48 @@ describe("Midnight Archive mission surface", () => {
     expect(markup).toContain("Evidence debrief:");
     expect(markup).toContain("Only one authored source was inspected");
     expect(markup).not.toContain("truth_marker");
+  });
+
+  it("renders terminal agreement and optional-objective facts", () => {
+    const raw = rawProjection();
+    const agreement = raw.preservation_agreement as Record<string, unknown>;
+    const conditions = agreement.conditions as Array<Record<string, unknown>>;
+    const objectives = raw.optional_objectives as Record<string, unknown>;
+    const collection = objectives.collection_preserved as Record<string, unknown>;
+    const source = objectives.source_record_protected as Record<string, unknown>;
+    const current = projection({
+      phase: "complete",
+      location: "atrium",
+      turns_used: 15,
+      turns_remaining: 1,
+      carried_candidate: "ledger-violet",
+      outcome: { kind: "success" },
+      gates: { archive_gate: "open", service_hatch: "closed" },
+      preservation_agreement: {
+        ...agreement,
+        commitment: "honored",
+        conditions: conditions.map((condition) => ({ ...condition, status: "complete" })),
+      },
+      optional_objectives: {
+        collection_preserved: { ...collection, status: "complete" },
+        source_record_protected: { ...source, status: "complete" },
+      },
+      debrief: {
+        evidence_status: "none",
+        message: "No authored source was inspected.",
+        agreement_commitment: "honored",
+        optional_objectives: {
+          collection_preserved: true,
+          source_record_protected: true,
+        },
+      },
+    });
+    const markup = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState(current, [])} connection="live" actionsEnabled={false} onAction={vi.fn()} />,
+    );
+    expect(markup).toContain("Agreement</dt><dd>honored");
+    expect(markup).toContain("Collection preserved</dt><dd>Yes");
+    expect(markup).toContain("Source record protected</dt><dd>Yes");
   });
 
   it("renders a clear exact-head Replay verification status", () => {

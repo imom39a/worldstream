@@ -4,10 +4,10 @@ import {
   JONAH_MEMBER_ID,
   LEAD_MEMBER_ID,
   MIRA_MEMBER_ID,
-  technicalRouteFinalState,
+  bothObjectivesRouteFinalState,
 } from "./golden.js";
 
-const finalState = technicalRouteFinalState();
+const finalState = bothObjectivesRouteFinalState();
 const mutatedState = {
   ...finalState,
   role_notes: {

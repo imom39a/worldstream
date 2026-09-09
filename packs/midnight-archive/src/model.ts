@@ -19,10 +19,17 @@ export type StagedKind =
   | "inspect_records"
   | "inspect_conservation"
   | "use_verifier"
+  | "accept_preservation_agreement"
+  | "prepare_collection"
+  | "energize_preservation_equipment"
   | "open_service_hatch"
   | "recover_candidate"
+  | "protect_source_record"
   | "extract"
   | "wait";
+
+export type PreservationAgreementStatus = "offered" | "accepted";
+export type CollectionPreservationStatus = "unprepared" | "prepared" | "preserved";
 
 export interface VisibleCandidate {
   readonly candidate_id: CandidateId;
@@ -59,6 +66,9 @@ export interface ArchiveState {
   };
   readonly candidates: readonly VisibleCandidate[];
   readonly evidence: Readonly<Record<EvidenceSourceId, "unknown" | "observed">>;
+  readonly preservation_agreement: PreservationAgreementStatus;
+  readonly collection_preservation: CollectionPreservationStatus;
+  readonly source_record_protected: boolean;
   readonly truth_marker: CandidateId;
   readonly verifier_result: CandidateReference;
   readonly carried_candidate_id: CandidateReference;

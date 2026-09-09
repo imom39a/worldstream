@@ -7,11 +7,14 @@ turn ends. The optional `mira` and `jonah` Roles are declared for later
 companion work; they can observe their own private projection but cannot act
 in version 0.1.0.
 
-The current revision adds two authored evidence sources. A committed Records
-inspection reveals a binding clue, and a committed Conservation inspection
-reveals a marking clue. Each clue alone leaves two candidates possible; their
-intersection recommends one candidate without exposing the hidden truth
-marker. Players can still spend power on the catalog verifier instead.
+The current source adds two authored evidence sources and the archivist's
+fixed preservation agreement. A committed Records inspection reveals a
+binding clue, and a committed Conservation inspection reveals a marking clue.
+Each clue alone leaves two candidates possible; their intersection recommends
+one candidate without exposing the hidden truth marker. Players can still
+spend power on the catalog verifier instead. The collection can be preserved
+whether or not the lead accepts the agreement; the Conservation–Vault gate
+opens only after the lead accepts it and the preservation work is complete.
 
 The Pack has no imports, clock, entropy, filesystem, network, model, tool, or
 process authority. Its hidden `truth_marker` exists only in Activity State.
@@ -39,16 +42,22 @@ then sends `commit_turn` to spend one turn. The declared actions are:
 | `stage_inspect_records` | `{}` | Spend one turn to disclose the authored Records source |
 | `stage_inspect_conservation` | `{}` | Spend one turn to disclose the authored Conservation source |
 | `stage_use_verifier` | `{}` | Spend 1 power in Records and identify the instrument's candidate |
+| `stage_accept_preservation_agreement` | `{}` | Record the human lead's acceptance of the archivist's fixed agreement |
+| `stage_prepare_collection` | `{}` | Spend one turn preparing the threatened collection in Conservation |
+| `stage_energize_preservation_equipment` | `{}` | Spend 1 power and one turn completing preservation after preparation |
 | `stage_open_service_hatch` | `{}` | Spend 2 power in Plant and open the Plant–Vault edge |
 | `stage_recover_candidate` | `{"candidate_id":"<candidate>"}` | Carry or exchange a candidate in the Vault |
+| `stage_protect_source_record` | `{}` | Spend 1 power and one turn in Plant after recovering a ledger |
 | `stage_extract` | `{}` | Resolve extraction in the Atrium |
 | `stage_wait` | `{}` | Spend a turn without moving |
 | `commit_turn` | `{}` | Commit the currently staged action |
 
 The locations are `atrium`, `records`, `conservation`, `plant`, and `vault`.
 Open edges connect Atrium–Records, Atrium–Conservation,
-Records–Conservation, and Records–Plant. Conservation–Vault is closed in this
-scenario. Plant–Vault opens after a committed service-hatch action.
+Records–Conservation, and Records–Plant. Conservation–Vault opens after both
+the agreement and collection work are committed. Plant–Vault opens after a
+committed service-hatch action. A gate opened during a commit can be traversed
+starting with the next turn.
 
 Extraction on turn 16 resolves before exhaustion. Its factual outcome is one
 of `success`, `wrong_ledger`, or `no_ledger`; any other sixteenth committed
@@ -62,7 +71,7 @@ briefing:
 ```text
 phase, objective, location, turns_used, turns_remaining, power,
 gates, map, candidates, staged_action, carried_candidate, debrief,
-verifier_result, outcome
+verifier_result, preservation_agreement, optional_objectives, outcome
 ```
 
 `staged_action` is `null` or an exact staged action object with
@@ -73,8 +82,9 @@ object naming one of the four terminal outcomes. Candidate IDs and visible
 attributes do not identify the authentic ledger by themselves. Every candidate
 also carries a bounded `observed_evidence` list plus an `unknown`, `observed`,
 or `recommended` assessment. Terminal `debrief` reports whether zero, one, or
-both authored sources were inspected. Recovery or exchange always costs a
-committed turn and does not reveal hidden authenticity.
+both authored sources were inspected, whether the agreement was accepted or
+honored, and the two optional-objective outcomes. Recovery or exchange always
+costs a committed turn and does not reveal hidden authenticity.
 
 ## Build and proof
 
@@ -89,21 +99,35 @@ WORLDSTREAM_PACK_HOST="$PWD/target/debug/worldstreamctl" \
   pnpm --filter @worldstream/midnight-archive pack:prove
 ```
 
-The golden corpus executes the documented ten-turn powered route as 20
-stage/commit Actions. Focused tests also cover briefing and exact start,
-restaging, closed-gate traversal, replay, malformed and illegal actions,
-companion rejection, wrong/no-ledger extraction, exhaustion, turn-16
-extraction, and projection privacy.
+The golden corpus executes the documented fifteen-turn powered-verification
+and agreement route as 30 stage/commit Actions. It preserves the collection,
+protects the source record, and extracts with zero power left. Focused tests
+also cover the eleven-turn agreement route, independent preservation,
+insufficient power, a recoverable committed wait, exact authored terms,
+human-only acceptance, briefing and exact start, restaging, closed-gate
+traversal, replay, malformed and illegal actions, wrong/no-ledger extraction,
+exhaustion, turn-16 extraction, and projection privacy.
 
-The current evidence-route 0.1.0 bundle is
+The current agreement-route 0.1.0 bundle is
+[`worldstream-midnight-archive-877702b321352288553cc0e5ea6510f1f8dea3e18687759658714ebc09a3c269.wspack`](releases/0.1.0/worldstream-midnight-archive-877702b321352288553cc0e5ea6510f1f8dea3e18687759658714ebc09a3c269.wspack).
+Its physical bundle digest is
+`blake3:877702b321352288553cc0e5ea6510f1f8dea3e18687759658714ebc09a3c269`,
+its semantic revision is
+`blake3:6c3ad825a65307b9f5434d4a9140b7db4bd70d1f7830c66d6f6af1d2ba9dc0da`,
+its Component digest is
+`blake3:e41912be5a4fd3117fddf07a583cf7f42f559c708b0eeef234e88d9043ae8ba5`,
+and its production proof is retained in
+[`evidence/production-proof-0.1.0-agreement-route.json`](evidence/production-proof-0.1.0-agreement-route.json).
+
+The connected-evidence 0.1.0 revision remains retained at
 [`worldstream-midnight-archive-e0626769fa745fafd0e41238473902988f446b453f283c7a7a7155a9122cf03f.wspack`](releases/0.1.0/worldstream-midnight-archive-e0626769fa745fafd0e41238473902988f446b453f283c7a7a7155a9122cf03f.wspack).
 Its physical bundle digest is
 `blake3:e0626769fa745fafd0e41238473902988f446b453f283c7a7a7155a9122cf03f`,
 its semantic revision is
 `blake3:ee85f264b9c3dfb185ebedc9646bea655740f351c287793cce997336f0f419f2`,
-its Component digest is
-`blake3:b5464e19490b558e798c0e3b58f65cb8cc0fe17053e7d2a8fca8938e4fdcdd8e`,
-and its production proof is retained in
+and its Component digest is
+`blake3:b5464e19490b558e798c0e3b58f65cb8cc0fe17053e7d2a8fca8938e4fdcdd8e`.
+Its production proof is retained in
 [`evidence/production-proof-0.1.0-evidence-route.json`](evidence/production-proof-0.1.0-evidence-route.json).
 
 The first-playable 0.1.0 revision remains retained at

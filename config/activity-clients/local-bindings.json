@@ -118,6 +118,19 @@
           "launch_url": "http://127.0.0.1:5173/midnight-archive-v2/"
         }
       ]
+    },
+    {
+      "schema": "worldstream/client-deployment/v1",
+      "deployment_id": "first-party-midnight-archive-web-v3",
+      "client_id": "worldstream.midnight-archive.web",
+      "release_digest": "sha256:3f045f46122d3664fdfd5ca9e288537f7fe4a41f88fe5ab8d3ac9952e2de0b98",
+      "trust_level": "externally_trusted",
+      "surfaces": [
+        {
+          "surface_id": "midnight-archive-web",
+          "launch_url": "http://127.0.0.1:5173/midnight-archive-v3/"
+        }
+      ]
     }
   ],
   "bindings": [
@@ -411,6 +424,23 @@
         "lead"
       ],
       "deployment_id": "first-party-midnight-archive-web-v2",
+      "surface_id": "midnight-archive-web",
+      "preference": "default"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "midnight-archive-0-1-lead-web-v3",
+      "pack": {
+        "id": "worldstream.midnight-archive",
+        "version": "0.1.0",
+        "digest": "blake3:6c3ad825a65307b9f5434d4a9140b7db4bd70d1f7830c66d6f6af1d2ba9dc0da"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "participant",
+      "roles": [
+        "lead"
+      ],
+      "deployment_id": "first-party-midnight-archive-web-v3",
       "surface_id": "midnight-archive-web",
       "preference": "default"
     }

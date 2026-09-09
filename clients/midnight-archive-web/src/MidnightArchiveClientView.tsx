@@ -8,6 +8,7 @@ import type {
 import {
   candidateById,
   candidateConfidence,
+  type MidnightArchiveProjection,
   type ArchiveStagedAction,
   type MidnightArchiveActionIntent,
 } from "./model";
@@ -181,6 +182,10 @@ function ReadyArchive({
 
         <aside className="archive-turn-column" id="archive-actions" aria-label="Turn controls">
           <CarriedLedgerCard projection={projection} />
+          <OptionalObjectivesPanel projection={projection} />
+          {projection.location === "conservation" ? (
+            <ArchivistAgreementCard projection={projection} />
+          ) : null}
           {projection.verifierResult === null ? null : (
             <section className="verifier-result" role="status">
               <span aria-hidden="true">✓</span>
@@ -347,6 +352,7 @@ function ContextActions({
     turns: number;
     power: number;
     available: boolean;
+    unavailableReason?: string;
   }> = [];
   if (projection.location === "records") actions.push({
     intent: { action: "stage_inspect_records" },
@@ -375,6 +381,49 @@ function ContextActions({
     power: 0,
     available: !projection.candidates.some((candidate) => candidate.observedEvidence.some((evidence) => evidence.sourceId === "conservation")),
   });
+  if (projection.location === "conservation") actions.push({
+    intent: { action: "stage_accept_preservation_agreement" },
+    eyebrow: "Archivist agreement",
+    title: projection.preservationAgreement.commitment === "not_accepted"
+      ? "Accept the preservation agreement"
+      : "Preservation agreement accepted",
+    description: "Accept the Archivist's fixed terms. No free-text terms or hidden conditions are added.",
+    turns: 1,
+    power: 0,
+    available: projection.preservationAgreement.commitment === "not_accepted",
+    unavailableReason: "The lead has already accepted this agreement.",
+  });
+  if (projection.location === "conservation") actions.push({
+    intent: { action: "stage_prepare_collection" },
+    eyebrow: "Optional objective",
+    title: projection.optionalObjectives.collectionPreserved.status === "not_started"
+      ? "Prepare the threatened collection"
+      : "Collection preparation recorded",
+    description: "Stabilize the collection before the preservation equipment can be energized.",
+    turns: 1,
+    power: 0,
+    available: projection.optionalObjectives.collectionPreserved.status === "not_started",
+    unavailableReason: "The collection has already been prepared.",
+  });
+  if (projection.location === "conservation") {
+    const collectionStatus = projection.optionalObjectives.collectionPreserved.status;
+    actions.push({
+      intent: { action: "stage_energize_preservation_equipment" },
+      eyebrow: "Optional objective",
+      title: collectionStatus === "complete"
+        ? "Preservation equipment energized"
+        : "Energize preservation equipment",
+      description: "Spend one charge to preserve the prepared collection and honor the agreement when accepted.",
+      turns: 1,
+      power: 1,
+      available: collectionStatus === "prepared" && projection.power >= 1,
+      unavailableReason: collectionStatus === "not_started"
+        ? "Prepare the collection first."
+        : collectionStatus === "complete"
+          ? "The collection is already preserved."
+          : "One power charge is required.",
+    });
+  }
   if (projection.location === "plant") actions.push({
     intent: { action: "stage_open_service_hatch" },
     eyebrow: "Service controls",
@@ -383,7 +432,29 @@ function ContextActions({
     turns: 1,
     power: 2,
     available: projection.gates.service_hatch === "closed" && projection.power >= 2,
+    unavailableReason: projection.gates.service_hatch === "open"
+      ? "The service hatch is already open."
+      : "Two power charges are required.",
   });
+  if (projection.location === "plant") {
+    const sourceStatus = projection.optionalObjectives.sourceRecordProtected.status;
+    actions.push({
+      intent: { action: "stage_protect_source_record" },
+      eyebrow: "Optional objective",
+      title: sourceStatus === "complete"
+        ? "Source record protected"
+        : "Protect the source's identifying record",
+      description: "Spend one charge after recovering a ledger to protect the source record.",
+      turns: 1,
+      power: 1,
+      available: sourceStatus === "available" && projection.power >= 1,
+      unavailableReason: sourceStatus === "locked"
+        ? "Recover a ledger before protecting the source record."
+        : sourceStatus === "complete"
+          ? "The source record is already protected."
+          : "One power charge is required.",
+    });
+  }
   if (projection.location === "atrium") actions.push({
     intent: { action: "stage_extract" },
     eyebrow: "Atrium exit",
@@ -419,6 +490,11 @@ function ContextActions({
                 <p>{item.description}</p>
               </div>
               <CostPills turns={item.turns} power={item.power} />
+              {item.available ? null : (
+                <p className="unavailable-reason" role="note">
+                  {item.unavailableReason ?? "This action is not currently available."}
+                </p>
+              )}
               <button
                 disabled={!enabled || !offered || !item.available}
                 onClick={() => onAction(item.intent)}
@@ -483,8 +559,12 @@ function stagedActionTitle(state: MidnightArchiveReadyState, staged: ArchiveStag
     case "stage_inspect_records": return "Inspect the Records intake evidence";
     case "stage_inspect_conservation": return "Inspect the Conservation restoration evidence";
     case "stage_use_verifier": return "Run the catalog verifier";
+    case "stage_accept_preservation_agreement": return "Accept the preservation agreement";
+    case "stage_prepare_collection": return "Prepare the threatened collection";
+    case "stage_energize_preservation_equipment": return "Energize preservation equipment";
     case "stage_open_service_hatch": return "Open the service hatch";
     case "stage_recover_candidate": return `Recover ${candidateById(state.projection, staged.candidateId)?.label ?? "candidate ledger"}`;
+    case "stage_protect_source_record": return "Protect the source's identifying record";
     case "stage_extract": return "Extract through the Atrium";
     case "stage_wait": return "Wait in place";
   }
@@ -493,11 +573,63 @@ function stagedActionTitle(state: MidnightArchiveReadyState, staged: ArchiveStag
 function stagedActionDetail(staged: ArchiveStagedAction): string {
   return staged.actionType === "stage_inspect_records" || staged.actionType === "stage_inspect_conservation"
     ? "The source is disclosed only when this committed turn completes."
+    : staged.actionType === "stage_accept_preservation_agreement"
+      ? "The lead accepts only the fixed terms shown on the Archivist card."
+      : staged.actionType === "stage_prepare_collection"
+        ? "Preparation completes before the equipment can be energized."
+        : staged.actionType === "stage_energize_preservation_equipment"
+          ? "Preservation completes this turn and opens the archive gate only if the agreement was accepted."
     : staged.actionType === "stage_open_service_hatch"
     ? "The gate opens this turn; movement through it begins on a later turn."
     : staged.actionType === "stage_recover_candidate"
       ? "Recovery changes what you carry without revealing hidden authenticity."
       : "Review the known cost, then commit when ready.";
+}
+
+function ArchivistAgreementCard({ projection }: { readonly projection: MidnightArchiveProjection }) {
+  const agreement = projection.preservationAgreement;
+  return (
+    <section className="agreement-card" aria-labelledby="archivist-agreement-title">
+      <p className="archive-kicker">Authored offer · {agreement.speaker}</p>
+      <h2 id="archivist-agreement-title">Preservation agreement</h2>
+      <blockquote>“{agreement.statement}”</blockquote>
+      <p className={`commitment-state commitment-${agreement.commitment}`}>
+        Commitment: {agreement.commitment.replace("_", " ")}
+      </p>
+      <ol>
+        {agreement.conditions.map((condition) => (
+          <li className={`condition-${condition.status}`} key={condition.conditionId}>
+            <span aria-hidden="true">{condition.status === "complete" ? "✓" : condition.status === "blocked" ? "×" : "○"}</span>
+            <div><strong>{condition.label}</strong><small>{condition.status}</small></div>
+            <CostPills turns={condition.turnCost} power={condition.powerCost} />
+          </li>
+        ))}
+      </ol>
+      <p className="fixed-terms-note">These terms are fixed by the Activity Pack and cannot be rewritten in free text.</p>
+    </section>
+  );
+}
+
+function OptionalObjectivesPanel({ projection }: { readonly projection: MidnightArchiveProjection }) {
+  const objectives = [
+    projection.optionalObjectives.collectionPreserved,
+    projection.optionalObjectives.sourceRecordProtected,
+  ];
+  return (
+    <section className="optional-objectives" aria-labelledby="optional-objectives-title">
+      <p className="archive-kicker">Persistent mission status</p>
+      <h2 id="optional-objectives-title">Optional objectives</h2>
+      <div>
+        {objectives.map((objective) => (
+          <article key={objective.label}>
+            <span className={`objective-status status-${objective.status}`}>{objective.status.replace("_", " ")}</span>
+            <strong>{objective.label}</strong>
+            <CostPills turns={objective.turnCost} power={objective.powerCost} />
+          </article>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function locationLabel(state: MidnightArchiveReadyState, location: string): string {
