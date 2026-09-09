@@ -73,11 +73,11 @@ independent public viewer surface at `/agent-heist-v6/hosted/`. A new Listing
 revision changes discovery only; it does not rewrite Listing `0.13.0` or any
 existing Run.
 
-Listing `0.20.0` is the current discovery profile. It keeps the frozen Heist
+Listing `0.21.0` is the current discovery profile. It keeps the frozen Heist
 `0.3.0` Pack, Client v6 release, result projector, public policy, and limits
 unchanged. It advances only the House Agent references to the Runner template
-`12` compatibility chain after the managed Host executable changed. Listings
-`0.19.0` and earlier remain retained for existing Rooms and Assignments; no
+`13` compatibility chain after the managed Host executable changed. Listings
+`0.20.0` and earlier remain retained for existing Rooms and Assignments; no
 existing Runner executable path or House approval is rebound.
 
 The launch request is intentionally small:

@@ -193,6 +193,23 @@ test("r12 successor advances the executable chain without rebinding r11", async 
   assert.doesNotMatch(migration, /house_agent_host_approvals|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
 });
 
+test("r13 successor advances the executable chain without rebinding r12", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260909130000_retained_runner_r13_successor.sql", import.meta.url), "utf8");
+  const houses = [...migration.matchAll(/\$house\$([\s\S]*?)\$house\$/gu)].map((match) => Buffer.from(match[1]));
+  const planner = JSON.parse(await readFile(new URL("../config/hosted/house-agents/cooperative-planner-14.json", import.meta.url), "utf8"));
+  const skeptic = JSON.parse(await readFile(new URL("../config/hosted/house-agents/skeptical-auditor-13.json", import.meta.url), "utf8"));
+  const listing = JSON.parse(await readFile(new URL("../config/hosted/listings/agent-heist-0.21.0.json", import.meta.url), "utf8"));
+  const artifact = Buffer.from(migration.match(/\$artifact\$([\s\S]*?)\$artifact\$/u)?.[1] ?? "");
+  assert.deepEqual(houses, [canonicalBytes(planner), canonicalBytes(skeptic)]);
+  assert.deepEqual(artifact, canonicalBytes(listing));
+  assert.equal(`blake3:${hash(houses[0])}`, "blake3:bb9c56ffe925a130fe64c61386ca9f3d0638967719cc3dfed98d6ba06eead7fe");
+  assert.equal(`blake3:${hash(houses[1])}`, "blake3:5f718a17c4de50e72c67e441dec37c628582b2bf6d6bad2a6e10b6ef356a4a4d");
+  assert.equal(`blake3:${hash(artifact)}`, "blake3:3cdaaa7b2402b816ded0b36d5419f405b1be1428b37c89155a805d39bf826069");
+  assert.equal(planner.runner_template.revision, "13");
+  assert.equal(skeptic.runner_template.revision, "13");
+  assert.doesNotMatch(migration, /house_agent_host_approvals|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
+});
+
 test("clock-safe migration retains exact metadata and grants no operating authority", async () => {
   const migration = await readFile(new URL("../supabase/migrations/20260908040223_hosted_clock_safe_heist_revision.sql", import.meta.url), "utf8");
   const houseDocuments = [...migration.matchAll(/\$house\$([\s\S]*?)\$house\$/gu)].map((match) => Buffer.from(match[1]));

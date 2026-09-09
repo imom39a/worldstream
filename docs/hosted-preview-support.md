@@ -277,11 +277,11 @@ executable paths and are not safe to carry through an active executable
 upgrade; do not claim that this new rule repairs them. Drain or fence those
 legacy assignments before changing their image.
 
-The current fresh-assignment chain is Runner template r12, Cooperative Planner
-profile 13, Skeptical Auditor profile 12, and Agent Heist Listing 0.20.0. It
-exists because the recovery-read fix changed the managed Host executable. The
+The current fresh-assignment chain is Runner template r13, Cooperative Planner
+profile 14, Skeptical Auditor profile 13, and Agent Heist Listing 0.21.0. It
+exists because the release image changed the managed Host executable. The
 chain changes no Pack, client, model route, allowance, projector, or gameplay
-rule; r11/0.19 and earlier remain retained immutable identities.
+rule; r12/0.20 and earlier remain retained immutable identities.
 A failed match retains its state and capacity
 reservation for diagnosis; the command does not silently delete it or create a
 replacement authority. Keep a private copy of the local Runtime and database

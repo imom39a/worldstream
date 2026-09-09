@@ -1825,13 +1825,13 @@ mod tests {
     const HOUSE_LISTING: &[u8] =
         include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json");
     const CURRENT_LISTING: &[u8] =
-        include_bytes!("../../../config/hosted/listings/agent-heist-0.20.0.json");
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.21.0.json");
     const HOUSE_AGENT: &[u8] =
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json");
     const CURRENT_PLANNER: &[u8] =
-        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-13.json");
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-14.json");
     const CURRENT_AUDITOR: &[u8] =
-        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-12.json");
+        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-13.json");
     const LAUNCH: &[u8] =
         include_bytes!("../../../fixtures/hosted-contract/valid/agent-heist-launch-request.json");
     const ROSTER: &[u8] =

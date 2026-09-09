@@ -44,8 +44,9 @@ const HOSTED_NATIVE_BINARY_NAMES = [
 ];
 export const HOSTED_LOCAL_RECONCILIATION_SECRET =
   "worldstream-local-reconciliation-secret-000000000000";
-const LISTING_DIGEST = "blake3:1cf75abcb30d77fdbe0abc5e39813a315bea6900c61e9b49c51b84d995335d74";
+const LISTING_DIGEST = "blake3:3cdaaa7b2402b816ded0b36d5419f405b1be1428b37c89155a805d39bf826069";
 const RETAINED_LISTING_DIGESTS = [
+  "blake3:1cf75abcb30d77fdbe0abc5e39813a315bea6900c61e9b49c51b84d995335d74",
   "blake3:21d7d5439208df0b1dbb18f7f42f3a3687d248a523b03fb5b4184b2dd0dcb626",
   "blake3:5b0993de4c858771cce34b16cb25e03b2bf509cbe16cd1ce7249a789ea8c426f",
   "blake3:350beff2dbb28d495a5355ac19a7580f8494589bc0d5c6fec1c521be86a7cf38",
@@ -1256,7 +1257,7 @@ async function verifyDevelopmentFlow(ports) {
     [
       "fixtures/hosted-contract/valid/agent-heist-launch-request.json",
       "fixtures/hosted-contract/valid/agent-heist-frozen-roster.json",
-      "config/hosted/listings/agent-heist-0.20.0.json",
+      "config/hosted/listings/agent-heist-0.21.0.json",
     ].map(async (path) => JSON.parse(await readFile(join(REPOSITORY_ROOT, path), "utf8"))),
   );
   const frozenLaunchRequest = {

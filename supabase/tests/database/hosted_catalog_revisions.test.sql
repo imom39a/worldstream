@@ -1,21 +1,28 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
-select plan(22);
+select plan(23);
 
 select is(
   (select encode(extensions.digest(canonical_document, 'sha256'), 'hex')
    from platform_store.activity_listing_revisions
-   where listing_revision_digest = 'blake3:1cf75abcb30d77fdbe0abc5e39813a315bea6900c61e9b49c51b84d995335d74'),
-  '817ae13d04f6f3527a3f8bcec8b8d3d01b00721525cacf0cc03c740b270a4370',
-  'the r12 successor Listing stores the checked canonical artifact bytes'
+   where listing_revision_digest = 'blake3:3cdaaa7b2402b816ded0b36d5419f405b1be1428b37c89155a805d39bf826069'),
+  '25994354df316bf56b85a57da9ad6b4ee96510bab3fd16945a8616fbaced7c00',
+  'the r13 successor Listing stores the checked canonical artifact bytes'
+);
+select is(
+  (select convert_from(canonical_document, 'utf8')::jsonb ->> 'version'
+   from platform_store.activity_listing_revisions
+   where listing_revision_digest = 'blake3:3cdaaa7b2402b816ded0b36d5419f405b1be1428b37c89155a805d39bf826069'),
+  '0.21.0',
+  'the r13 successor Listing is the current immutable revision'
 );
 select is(
   (select convert_from(canonical_document, 'utf8')::jsonb ->> 'version'
    from platform_store.activity_listing_revisions
    where listing_revision_digest = 'blake3:1cf75abcb30d77fdbe0abc5e39813a315bea6900c61e9b49c51b84d995335d74'),
   '0.20.0',
-  'the r12 successor Listing is the current immutable revision'
+  'the r12 Listing remains retained after current discovery advances'
 );
 select is(
   (select convert_from(canonical_document, 'utf8')::jsonb ->> 'version'
