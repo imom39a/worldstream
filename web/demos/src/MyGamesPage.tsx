@@ -44,7 +44,10 @@ export function MyGamesPage({ onNavigate }: { onNavigate: Navigate }) {
       {index !== null && index.items.length === 0 ? <p>No activities yet. Choose one from Discover when you are ready.</p> : null}
       {index !== null ? <ul className="my-games-list">
         {[...index.items, ...older].map((item) => <li key={item.launch_id}>
-          <article>
+          <article
+            data-launch-id={item.launch_id}
+            data-result-public-id={item.result_public_id}
+          >
             <span className="section-label">{historyStatusLabel(item.state)}</span>
             <h2>{item.title}</h2>
             <p>{historyStatusDetail(item.state, item.participation)}</p>

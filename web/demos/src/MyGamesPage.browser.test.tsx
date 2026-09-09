@@ -27,15 +27,23 @@ it("moves a mounted personal-history page from publication pending to a verified
   vi.useFakeTimers();
   const launchId = "10000000-0000-4000-8000-000000000004";
   const publicId = "b".repeat(32);
+  const unrelatedLaunchId = "10000000-0000-4000-8000-000000000005";
+  const unrelatedPublicId = "c".repeat(32);
   mocks.readMyGames
     .mockResolvedValueOnce({
       version: "platform_my_games.v1",
-      items: [{ launch_id: launchId, title: "Schema-neutral result", state: "publication_pending", updated_at: "2026-09-08T00:00:00Z", participation: "human", action: "none" }],
+      items: [
+        { launch_id: launchId, title: "Schema-neutral result", state: "publication_pending", updated_at: "2026-09-08T00:00:00Z", participation: "human", action: "none" },
+        { launch_id: unrelatedLaunchId, title: "Older result", state: "publication_pending", updated_at: "2026-09-08T00:00:00Z", participation: "human", action: "none" },
+      ],
       next: null,
     })
     .mockResolvedValueOnce({
       version: "platform_my_games.v1",
-      items: [{ launch_id: launchId, title: "Schema-neutral result", state: "verified_result", updated_at: "2026-09-08T00:00:01Z", participation: "human", action: "view_result", result_public_id: publicId }],
+      items: [
+        { launch_id: unrelatedLaunchId, title: "Older result", state: "verified_result", updated_at: "2026-09-08T00:00:01Z", participation: "human", action: "view_result", result_public_id: unrelatedPublicId },
+        { launch_id: launchId, title: "Schema-neutral result", state: "verified_result", updated_at: "2026-09-08T00:00:01Z", participation: "human", action: "view_result", result_public_id: publicId },
+      ],
       next: null,
     });
   const container = document.createElement("div");
@@ -52,8 +60,12 @@ it("moves a mounted personal-history page from publication pending to a verified
     await vi.advanceTimersByTimeAsync(5_000);
   });
   expect(container.textContent).toContain("Replay-verified result is ready to view");
-  const result = Array.from(container.querySelectorAll("button"))
-    .find((element) => element.textContent === "View result") as HTMLButtonElement;
+  const resultCard = container.querySelector(
+    `article[data-launch-id="${launchId}"][data-result-public-id="${publicId}"]`,
+  );
+  expect(resultCard).toBeTruthy();
+  const result = resultCard?.querySelector("button") as HTMLButtonElement;
+  expect(result?.textContent).toBe("View result");
   await act(async () => result.click());
   expect(navigate).toHaveBeenCalledWith(`/runs/${publicId}`);
   await act(async () => root.unmount());

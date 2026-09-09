@@ -179,10 +179,14 @@ export async function runHostedRenderedBrowserJourney({
     await participant.waitForURL(`${origin}/`, { timeout: timeouts.action });
     await participant.getByRole("button", { name: "My games" }).click();
     await participant.getByRole("heading", { name: "My games" }).waitFor({ timeout: timeouts.action });
-    await participant.getByRole("button", { name: "View result" }).waitFor({
+    const exactResultCard = participant.locator(
+      `article[data-launch-id="${launchId}"][data-result-public-id="${publicId}"]`,
+    );
+    await exactResultCard.waitFor({ state: "attached", timeout: timeouts.formation });
+    await exactResultCard.getByRole("button", { name: "View result", exact: true }).waitFor({
       timeout: timeouts.formation,
     });
-    await participant.getByRole("button", { name: "View result" }).click();
+    await exactResultCard.getByRole("button", { name: "View result", exact: true }).click();
     await participant.getByRole("heading", { name: "Activity complete" }).waitFor({
       timeout: timeouts.formation,
     });
