@@ -585,7 +585,12 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
       {},
       [200],
     );
-    assert.equal(freshCancellation.state, "cancelled");
+    assert.equal(freshCancellation.version, "hosted_launch_cancelled.v1");
+    assert.equal(freshCancellation.cancelled, true);
+    assert.equal(
+      (await creator.read(`/api/launches/${stringField(fresh, "launch_id")}`)).state,
+      "cancelled",
+    );
     // This is an extra repeat-admission check. Each Match's capacity evidence
     // below comes from its own exact retirement lane, not this later probe.
     const finalHouseCapacityProbe = await formAndAbandonHouseCapacityProbe({
