@@ -218,7 +218,10 @@ export async function readCatalog(): Promise<readonly HostedActivitySummary[]> {
 }
 
 export async function readPublicRun(publicId: string, signal?: AbortSignal): Promise<PublicRun> {
-  const response = await fetch(`/api/runs/${encodeURIComponent(publicId)}`, { signal });
+  const response = await fetch(`/api/runs/${encodeURIComponent(publicId)}`, {
+    signal,
+    cache: "no-store",
+  });
   const value = await safeJson(response);
   if (!response.ok || value.version !== "public_run.v1") {
     throw new Error("public_run_unavailable");

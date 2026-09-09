@@ -99,6 +99,52 @@ it("reconciles a live public Run into its verified result without a reload", asy
   await act(async () => root.unmount());
 });
 
+it("continues live reconciliation until publication, beyond the old bounded poll window", async () => {
+  vi.useFakeTimers();
+  const publicId = "7".repeat(32);
+  const live = {
+    version: "public_run.v1" as const,
+    state: "live" as const,
+    public_id: publicId,
+    activity: {
+      title: "Slow result", description: "A delayed publication fixture.",
+      listing_key: "fixture", listing_revision: "blake3:fixture", pack: { id: "fixture", version: "1", revision: "fixture" },
+    },
+    started_at: "2026-09-08T00:00:00Z",
+    evidence: { class: "unranked" as const, label: "Unranked activity" },
+    participants: [],
+    live: { available: true as const, stream_url: "wss://stream.example/public" },
+  };
+  const result = {
+    ...live,
+    state: "result" as const,
+    completed_at: "2026-09-08T00:04:00Z",
+    result: { summary: { schema: "fixture/result/v1", verdict: "accepted" } },
+  };
+  for (let poll = 0; poll < 13; poll += 1) mocks.readPublicRun.mockResolvedValueOnce(live);
+  mocks.readPublicRun.mockResolvedValueOnce(result);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<RunPage publicId={publicId} onNavigate={vi.fn()} />);
+    await Promise.resolve();
+  });
+  for (let poll = 0; poll < 12; poll += 1) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+  }
+  expect(container.textContent).toContain("Open the reviewed Activity Client");
+  expect(mocks.readPublicRun).toHaveBeenCalledTimes(13);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(30_000);
+  });
+  expect(container.textContent).toContain("Activity complete");
+  expect(mocks.readPublicRun).toHaveBeenCalledTimes(14);
+  await act(async () => root.unmount());
+});
+
 it("does not poll a terminal public Run or keep polling after unmount", async () => {
   vi.useFakeTimers();
   const publicId = "e".repeat(32);

@@ -9,14 +9,15 @@ import {
 import { SiteFooter, SiteHeader, type Navigate } from "./siteChrome";
 
 const PUBLIC_RUN_RECONCILIATION_INTERVAL_MS = 5_000;
-const PUBLIC_RUN_RECONCILIATION_MAX_POLLS = 12;
+const PUBLIC_RUN_RECONCILIATION_SLOW_INTERVAL_MS = 30_000;
+const PUBLIC_RUN_RECONCILIATION_FAST_POLLS = 12;
 
 export function RunPage({ publicId, onNavigate }: { publicId: string; onNavigate: Navigate }) {
   const [run, setRun] = useState<PublicRun | null>(null);
 
   useEffect(() => {
     let active = true;
-    let polls = 0;
+    let livePolls = 0;
     let timer: number | null = null;
     const controller = new AbortController();
 
@@ -25,12 +26,15 @@ export function RunPage({ publicId, onNavigate }: { publicId: string; onNavigate
         const value = await readPublicRun(publicId, controller.signal);
         if (!active) return;
         setRun(value);
-        if (value.state === "live" && polls < PUBLIC_RUN_RECONCILIATION_MAX_POLLS) {
-          polls += 1;
+        if (value.state === "live") {
+          livePolls += 1;
+          const interval = livePolls <= PUBLIC_RUN_RECONCILIATION_FAST_POLLS
+            ? PUBLIC_RUN_RECONCILIATION_INTERVAL_MS
+            : PUBLIC_RUN_RECONCILIATION_SLOW_INTERVAL_MS;
           timer = window.setTimeout(() => {
             timer = null;
             void read();
-          }, PUBLIC_RUN_RECONCILIATION_INTERVAL_MS);
+          }, interval);
         }
       } catch {
         if (active && !controller.signal.aborted) {
