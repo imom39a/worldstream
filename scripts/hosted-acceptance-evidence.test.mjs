@@ -99,29 +99,78 @@ test("passed evidence requires the complete rendered-browser proof", () => {
   assert.throws(() => validateHostedAcceptanceEvidence(evidence), /rendered_client_checks_incomplete/u);
 });
 
-test("passed evidence rejects template identity even when every check is green", () => {
+function deployedEvidence() {
   const evidence = localEvidence();
   evidence.candidate_kind = "deployed";
   evidence.checks = Object.fromEntries(DEPLOYED_ACCEPTANCE_CHECKS.map((name) => [name, { status: "passed" }]));
-  evidence.metrics.maximum_direct_push_seconds = 301;
+  evidence.metrics = { provider_calls: 1, maximum_direct_push_seconds: 301 };
+  evidence.deployment.platform_revision = "dpl_fixture123";
+  evidence.deployment.gateway_revision = evidence.commit;
+  evidence.qualification.match_matrix = [{
+    match: 1,
+    mode: "house_backed",
+    outcome: "success",
+    provider_call_delta: 1,
+    capacity_released: true,
+    history_retained: true,
+    disconnect_and_catch_up: true,
+    restart_and_reentry: true,
+    no_actions: false,
+  }];
+  evidence.qualification.retained_history_count = 1;
+  evidence.qualification.rendered_client.provider = "openrouter/openai/gpt-4o";
+  return evidence;
+}
+
+test("passed deployed evidence requires one capped real-provider House match", () => {
+  assert.doesNotThrow(() => validateHostedAcceptanceEvidence(deployedEvidence(), "deployed"));
+
+  const threeMatches = deployedEvidence();
+  threeMatches.qualification.match_matrix.push({
+    ...threeMatches.qualification.match_matrix[0],
+    match: 2,
+  });
+  assert.throws(() => validateHostedAcceptanceEvidence(threeMatches), /match_matrix_invalid/u);
+
+  const twoProviderCalls = deployedEvidence();
+  twoProviderCalls.metrics.provider_calls = 2;
+  assert.throws(() => validateHostedAcceptanceEvidence(twoProviderCalls), /deployed_metrics_invalid/u);
+
+  const twoMatchCalls = deployedEvidence();
+  twoMatchCalls.qualification.match_matrix[0].provider_call_delta = 2;
+  twoMatchCalls.metrics.provider_calls = 2;
+  assert.doesNotThrow(() => validateHostedAcceptanceEvidence(twoMatchCalls));
+
+  const overCeiling = deployedEvidence();
+  overCeiling.qualification.match_matrix[0].provider_call_delta = 21;
+  overCeiling.metrics.provider_calls = 21;
+  assert.throws(() => validateHostedAcceptanceEvidence(overCeiling), /deployed_metrics_invalid/u);
+
+  const localProvider = deployedEvidence();
+  localProvider.qualification.rendered_client.provider = "local_fake_provider_only";
+  assert.throws(() => validateHostedAcceptanceEvidence(localProvider), /rendered_client_provider_invalid/u);
+
+  const placeholderProvider = deployedEvidence();
+  placeholderProvider.qualification.rendered_client.provider = "replace-with-openrouter-model";
+  assert.throws(() => validateHostedAcceptanceEvidence(placeholderProvider), /rendered_client_provider_invalid/u);
+});
+
+test("passed evidence rejects template identity even when every check is green", () => {
+  const evidence = deployedEvidence();
   evidence.outcome = "blocked";
+  evidence.checks = Object.fromEntries(DEPLOYED_ACCEPTANCE_CHECKS.map((name) => [name, { status: "blocked" }]));
   evidence.qualification.fresh_setup.status = "blocked";
   evidence.qualification.retained_upgrade.status = "blocked";
   evidence.qualification.ordinary_restart.status = "blocked";
-  evidence.checks = Object.fromEntries(DEPLOYED_ACCEPTANCE_CHECKS.map((name) => [name, { status: "blocked" }]));
-  evidence.deployment.platform_revision = "dpl_fixture123";
-  evidence.deployment.gateway_revision = evidence.commit;
-  evidence.qualification.rendered_client.provider = "openrouter/production";
   assert.doesNotThrow(() => validateHostedAcceptanceEvidence(evidence));
   evidence.outcome = "passed";
-  evidence.metrics.provider_calls = 1;
   evidence.qualification.fresh_setup.status = "passed";
   evidence.qualification.retained_upgrade.status = "passed";
   evidence.qualification.ordinary_restart.status = "passed";
   evidence.checks = Object.fromEntries(DEPLOYED_ACCEPTANCE_CHECKS.map((name) => [name, { status: "passed" }]));
   evidence.qualification.rendered_client.provider = "local_fake_provider_only";
   assert.throws(() => validateHostedAcceptanceEvidence(evidence), /rendered_client_provider_invalid/u);
-  evidence.qualification.rendered_client.provider = "openrouter/production";
+  evidence.qualification.rendered_client.provider = "openrouter/openai/gpt-4o";
   assert.doesNotThrow(() => validateHostedAcceptanceEvidence(evidence));
   const exactlyFiveMinutes = structuredClone(evidence);
   exactlyFiveMinutes.metrics.maximum_direct_push_seconds = 300;
