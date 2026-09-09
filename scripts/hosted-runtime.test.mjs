@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 
 import {
+  hostedGatewayConfiguration,
   hostedRuntimeLayout,
   hostedStatusReady,
   renderHostedRuntimeConfig,
@@ -64,6 +65,28 @@ test("production runtime accepts only fixed public and secret-file bindings", ()
     () => hostedRuntimeLayout(environment({ WORLDSTREAM_OPENROUTER_API_KEY_FILE: "relative" })),
     /must_be_absolute/u,
   );
+});
+
+test("the local appliance can move its Gateway without changing Fly's port contract", () => {
+  assert.deepEqual(hostedGatewayConfiguration({}), {
+    port: 8080,
+    bind: "0.0.0.0:8080",
+    loopbackOrigin: "http://127.0.0.1:8080",
+    publicAuthority: "127.0.0.1:8080",
+  });
+  assert.deepEqual(hostedGatewayConfiguration({ WORLDSTREAM_HOSTED_GATEWAY_PORT: "18080" }), {
+    port: 18080,
+    bind: "0.0.0.0:18080",
+    loopbackOrigin: "http://127.0.0.1:18080",
+    publicAuthority: "127.0.0.1:18080",
+  });
+  for (const value of ["0", "65536", "8080x", "9410", "9420"]) {
+    assert.throws(() => hostedGatewayConfiguration({ WORLDSTREAM_HOSTED_GATEWAY_PORT: value }));
+  }
+  assert.throws(() => hostedGatewayConfiguration({
+    FLY_APP_NAME: "worldstream-preview",
+    WORLDSTREAM_HOSTED_GATEWAY_PORT: "18080",
+  }), /fly_gateway_port_override_forbidden/u);
 });
 
 test("runtime configuration fixes internal listeners and persistent children", () => {

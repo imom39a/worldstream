@@ -21,6 +21,24 @@ const MAX_CAPTURE_BYTES = 1_048_576;
 const DEFAULT_FATAL_READINESS_MS = 300_000;
 const MONITOR_INTERVAL_MS = 2_000;
 
+export function hostedGatewayConfiguration(environment = process.env) {
+  const raw = environment.WORLDSTREAM_HOSTED_GATEWAY_PORT ?? "8080";
+  if (!/^[1-9][0-9]{0,4}$/u.test(raw)) throw new Error("invalid_hosted_gateway_port");
+  const port = Number(raw);
+  if (!Number.isSafeInteger(port) || port > 65_535 || port === 9410 || port === 9420) {
+    throw new Error("invalid_hosted_gateway_port");
+  }
+  if (port !== 8080 && (environment.FLY_APP_NAME !== undefined || environment.FLY_MACHINE_ID !== undefined)) {
+    throw new Error("fly_gateway_port_override_forbidden");
+  }
+  return Object.freeze({
+    port,
+    bind: `0.0.0.0:${port}`,
+    loopbackOrigin: `http://127.0.0.1:${port}`,
+    publicAuthority: `127.0.0.1:${port}`,
+  });
+}
+
 export function hostedRuntimeLayout(environment = process.env) {
   const volumeRoot = resolve(environment.WORLDSTREAM_HOSTED_VOLUME_ROOT ?? DEFAULT_VOLUME_ROOT);
   const assetRoot = resolve(environment.WORLDSTREAM_HOSTED_ASSET_ROOT ?? DEFAULT_ASSET_ROOT);
@@ -219,6 +237,7 @@ export function hostedStatusReady(value) {
 
 async function main() {
   validateHostedRuntimeEnvironment();
+  const gatewayConfiguration = hostedGatewayConfiguration();
   const layout = hostedRuntimeLayout();
   await prepareLayout(layout);
   const controllerAuthority = await readProtectedSecret(layout.controllerAuthority);
@@ -239,7 +258,7 @@ async function main() {
     await startManaged(layout, controllerAuthority);
     managedStarted = true;
   }
-  const gateway = startGateway(layout);
+  const gateway = startGateway(layout, gatewayConfiguration);
   const signal = shutdownSignal();
 
   try {
@@ -273,7 +292,7 @@ async function main() {
         managedStarted = true;
         maintenance = false;
       }
-      const ready = await requiredServicesReady(layout, controllerAuthority);
+      const ready = await requiredServicesReady(layout, controllerAuthority, gatewayConfiguration);
       if (ready) {
         readinessFailedAt = null;
       } else {
@@ -497,12 +516,12 @@ async function stopManaged(layout, controllerAuthority) {
   await ctl(layout, ["server", "controller-stop"], controllerAuthority, true);
 }
 
-function startGateway(layout) {
+function startGateway(layout, configuration) {
   const environment = { ...process.env };
   delete environment.WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY;
   delete environment.WORLDSTREAM_VERCEL_SERVICE_AUTHORITY;
   Object.assign(environment, {
-    HOSTED_GATEWAY_BIND: "0.0.0.0:8080",
+    HOSTED_GATEWAY_BIND: configuration.bind,
     WORLDSTREAM_HOST_ADAPTER_UPSTREAM: "127.0.0.1:9420",
     WORLDSTREAM_RUNTIME_UPSTREAM: "127.0.0.1:9410",
     WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY_FILE: layout.controllerAuthority,
@@ -513,7 +532,7 @@ function startGateway(layout) {
     child.once("error", resolvePromise);
     child.once("exit", resolvePromise);
   });
-  return { child, exited };
+  return { child, exited, configuration };
 }
 
 async function waitForGatewayLiveness(gateway) {
@@ -523,7 +542,7 @@ async function waitForGatewayLiveness(gateway) {
       throw new Error("required_gateway_exited");
     }
     try {
-      const response = await fetch("http://127.0.0.1:8080/healthz", {
+      const response = await fetch(`${gateway.configuration.loopbackOrigin}/healthz`, {
         signal: AbortSignal.timeout(2_000),
       });
       if (response.status === 200) return;
@@ -535,11 +554,11 @@ async function waitForGatewayLiveness(gateway) {
   throw new Error("gateway_liveness_timeout");
 }
 
-async function requiredServicesReady(layout, controllerAuthority) {
+async function requiredServicesReady(layout, controllerAuthority, gatewayConfiguration) {
   try {
     const [status, ready] = await Promise.all([
       ctl(layout, ["server", "status"], controllerAuthority),
-      fetch("http://127.0.0.1:8080/readyz", { signal: AbortSignal.timeout(2_000) }),
+      fetch(`${gatewayConfiguration.loopbackOrigin}/readyz`, { signal: AbortSignal.timeout(2_000) }),
     ]);
     return hostedStatusReady(status) && ready.status === 200;
   } catch {
