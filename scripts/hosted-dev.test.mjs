@@ -3,9 +3,12 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "n
 import { test } from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:net";
 
 import {
   assertHostedDevelopmentAllowed,
+  assertHostedDevelopmentBrowserAddressUnused,
+  assertHostedDevelopmentPortsAvailable,
   hostedDevelopmentGatewayConfiguration,
   hostedDevelopmentPorts,
   hostedDevelopmentListingAllowlist,
@@ -22,6 +25,61 @@ import {
   installHostedNativeBinaries,
   renderHostedDevelopmentConfig,
 } from "./hosted-dev.mjs";
+
+test("the browser-visible Gateway port must also be unused on IPv6 localhost", async (context) => {
+  const blocker = createServer();
+  try {
+    await new Promise((resolvePromise, rejectPromise) => {
+      blocker.once("error", rejectPromise);
+      blocker.listen({ host: "::1", port: 0, ipv6Only: true }, resolvePromise);
+    });
+  } catch (error) {
+    if (error?.code === "EADDRNOTAVAIL" || error?.code === "EAFNOSUPPORT") {
+      context.skip("IPv6 loopback is unavailable on this host");
+      return;
+    }
+    throw error;
+  }
+  try {
+    const address = blocker.address();
+    assert.equal(typeof address, "object");
+    await assert.rejects(
+      () => assertHostedDevelopmentPortsAvailable(
+        { gateway: address.port },
+        new Set(),
+      ),
+      /Gateway browser loopback port .* is already serving another process/u,
+    );
+  } finally {
+    await new Promise((resolvePromise) => blocker.close(resolvePromise));
+  }
+});
+
+test("the browser-visible Gateway rejects an already serving IPv6 endpoint", async (context) => {
+  const blocker = createServer();
+  try {
+    await new Promise((resolvePromise, rejectPromise) => {
+      blocker.once("error", rejectPromise);
+      blocker.listen({ host: "::1", port: 0, ipv6Only: true }, resolvePromise);
+    });
+  } catch (error) {
+    if (error?.code === "EADDRNOTAVAIL" || error?.code === "EAFNOSUPPORT") {
+      context.skip("IPv6 loopback is unavailable on this host");
+      return;
+    }
+    throw error;
+  }
+  try {
+    const address = blocker.address();
+    assert.equal(typeof address, "object");
+    await assert.rejects(
+      () => assertHostedDevelopmentBrowserAddressUnused(address.port),
+      /Gateway browser loopback port .* is already serving another process/u,
+    );
+  } finally {
+    await new Promise((resolvePromise) => blocker.close(resolvePromise));
+  }
+});
 
 test("hosted smoke uses a deterministic key derived from its exact request intent", () => {
   assert.match(HOSTED_LOCAL_SMOKE_IDEMPOTENCY_KEY, /^hosted_local_[0-9a-f]{32}$/u);

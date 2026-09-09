@@ -15,7 +15,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -432,7 +432,10 @@ async function main() {
         `[Agent Heist] Reusing the compatible approved client already on port ${ports.heist}.\n`,
       );
     }
-    await assertPortsAvailable(ports, reuseHeist ? new Set(["heist"]) : new Set());
+    await assertHostedDevelopmentPortsAvailable(
+      ports,
+      reuseHeist ? new Set(["heist"]) : new Set(),
+    );
     if (options.acceptance) {
       process.stdout.write("[Acceptance] Running negative/security prerequisites before pinning the Runner.\n");
       await runHostedAcceptancePrerequisites((command, args) => run(command, args, {
@@ -909,22 +912,80 @@ function requiredJsonString(value, label) {
   return value;
 }
 
-async function assertPortsAvailable(ports, reusableNames) {
+export async function assertHostedDevelopmentPortsAvailable(ports, reusableNames) {
   for (const [name, selected] of Object.entries(ports)) {
     if (reusableNames.has(name)) continue;
-    await new Promise((resolvePromise, rejectPromise) => {
-      const probe = createServer();
-      probe.unref();
-      probe.once("error", () => {
-        rejectPromise(
-          new Error(
-            `${name} port ${selected} is already in use. Stop that process or configure an identity-safe alternate port.`,
-          ),
-        );
-      });
-      probe.listen(selected, "127.0.0.1", () => probe.close(resolvePromise));
-    });
+    await assertLoopbackPortAvailable(
+      selected,
+      "127.0.0.1",
+      `${name} port ${selected} is already in use. ` +
+        "Stop that process or configure an identity-safe alternate port.",
+    );
+    if (name === "gateway") {
+      await assertHostedDevelopmentBrowserAddressUnused(selected);
+      await assertLoopbackPortAvailable(
+        selected,
+        "::1",
+        `Gateway browser loopback port ${selected} is already in use. ` +
+          "Configure WORLDSTREAM_HOSTED_GATEWAY_PORT to an unused port.",
+        true,
+      );
+    }
   }
+}
+
+export async function assertHostedDevelopmentBrowserAddressUnused(portNumber) {
+  const message = `Gateway browser loopback port ${portNumber} is already serving another process. ` +
+    "Configure WORLDSTREAM_HOSTED_GATEWAY_PORT to an unused port.";
+  await new Promise((resolvePromise, rejectPromise) => {
+    const socket = createConnection({ host: "::1", port: portNumber });
+    const timeout = setTimeout(() => {
+      socket.destroy();
+      rejectPromise(new Error(message));
+    }, 500);
+    socket.unref();
+    socket.once("connect", () => {
+      clearTimeout(timeout);
+      socket.destroy();
+      rejectPromise(new Error(message));
+    });
+    socket.once("error", (error) => {
+      clearTimeout(timeout);
+      socket.destroy();
+      if ([
+        "EADDRNOTAVAIL",
+        "EAFNOSUPPORT",
+        "ECONNREFUSED",
+        "EHOSTUNREACH",
+        "ENETUNREACH",
+      ].includes(error?.code)) {
+        resolvePromise();
+        return;
+      }
+      rejectPromise(new Error(message, { cause: error }));
+    });
+  });
+}
+
+async function assertLoopbackPortAvailable(portNumber, host, message, allowUnsupported = false) {
+  await new Promise((resolvePromise, rejectPromise) => {
+    const probe = createServer();
+    probe.unref();
+    probe.once("error", (error) => {
+      if (
+        allowUnsupported &&
+        (error?.code === "EADDRNOTAVAIL" || error?.code === "EAFNOSUPPORT")
+      ) {
+        resolvePromise();
+        return;
+      }
+      rejectPromise(new Error(message, { cause: error }));
+    });
+    probe.listen(
+      { port: portNumber, host, ...(host === "::1" ? { ipv6Only: true } : {}) },
+      () => probe.close(resolvePromise),
+    );
+  });
 }
 
 async function compatibleAgentHeistAlreadyRunning(portNumber) {
