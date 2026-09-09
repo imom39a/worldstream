@@ -4,14 +4,18 @@ import test from "node:test";
 import {
   HOSTED_RENDERED_BROWSER_JOURNEY_SCHEMA,
   activityClientBootstrapDiagnostic,
+  ensureRenderedNavigatorRouteClaim,
   launchIdFromUrl,
   localProductOrigin,
   navigatorPlanForRouteClaim,
   publicRunPath,
+  renderedNavigatorPlan,
   runHostedRenderedBrowserJourney,
   sameOriginBrowserResponseFailure,
+  submitRenderedForm,
   validateLaunchId,
   validateTimeouts,
+  waitForRenderedResultAcknowledgementOpportunity,
 } from "./hosted-rendered-browser-journey.mjs";
 
 test("rendered-browser journey accepts only exact local product origins", () => {
@@ -119,4 +123,117 @@ test("rendered Navigator completion uses only the authorized Route claim", () =>
   });
   assert.throws(() => navigatorPlanForRouteClaim("route_unknown"), /no reviewed completion plan/u);
   assert.throws(() => navigatorPlanForRouteClaim("not-a-claim"), /no reviewed completion plan/u);
+});
+
+test("rendered Action acceptance follows a durable Projection after its form is removed", async () => {
+  let clicked = false;
+  const form = {
+    locator(selector) {
+      assert.equal(selector, 'button[type="submit"]');
+      return {
+        async waitFor(options) {
+          assert.deepEqual(options, { state: "visible", timeout: 1_000 });
+        },
+        async isEnabled() { return true; },
+        async click() { clicked = true; },
+      };
+    },
+  };
+  await submitRenderedForm(form, "Inspect clue", 1_000, async () => {
+    assert.equal(clicked, true);
+    // The fake intentionally has no getByRole/status API: a committed frame
+    // may already have unmounted its local form before React writes a notice.
+  });
+});
+
+test("rendered Action acceptance requires a durable Projection postcondition", async () => {
+  await assert.rejects(
+    () => submitRenderedForm({}, "Inspect clue", 1_000),
+    /lacks a durable postcondition/u,
+  );
+});
+
+test("rendered Action acceptance fails closed when no durable Projection arrives", async () => {
+  const form = {
+    locator() {
+      return {
+        async waitFor() {},
+        async isEnabled() { return true; },
+        async click() {},
+      };
+    },
+  };
+  await assert.rejects(
+    () => submitRenderedForm(form, "Inspect clue", 1_000, async () => {
+      throw new Error("transport rejected");
+    }),
+    /did not produce its durable authorized Projection\/result postcondition/u,
+  );
+});
+
+test("resumed rendered journey reads its existing authorized Route claim without replaying Inspect", async () => {
+  const existingClue = {
+    filter() { return this; },
+    async count() { return 1; },
+    locator(selector) {
+      assert.equal(selector, "code");
+      return { async innerText() { return "route_canal"; } };
+    },
+  };
+  const page = {
+    locator(selector) {
+      if (selector === ".private-clue-list article") return existingClue;
+      throw new Error("a resumed Route claim must not recreate an Inspect Action form");
+    },
+    getByText() { return {}; },
+  };
+  assert.equal(await ensureRenderedNavigatorRouteClaim(page, 1_000), "route_canal");
+});
+
+test("rendered journey waits for a delayed result acknowledgement offer", async () => {
+  let observedResult = false;
+  const acknowledgement = {
+    async count() { return observedResult ? 1 : 0; },
+  };
+  const complete = {
+    async count() {
+      observedResult = true;
+      return 0;
+    },
+  };
+  const page = {
+    locator(selector) {
+      if (selector === "form.live-action-form") {
+        return { filter() { return acknowledgement; } };
+      }
+      if (selector === ".phase-window") {
+        return { filter() { return { filter() { return complete; } }; } };
+      }
+      throw new Error(`unexpected locator ${selector}`);
+    },
+    getByText() { return {}; },
+  };
+  assert.equal(await waitForRenderedResultAcknowledgementOpportunity(page, 1_000), acknowledgement);
+});
+
+test("rendered Navigator plan postcondition requires the Navigator proposer", () => {
+  const expectedTexts = [];
+  const locator = {
+    filter(options) {
+      expectedTexts.push(options.has.value);
+      return this;
+    },
+  };
+  const page = {
+    locator(selector) {
+      assert.equal(selector, ".plan-grid article");
+      return locator;
+    },
+    getByText(value, options) {
+      assert.deepEqual(options, { exact: true });
+      return { value };
+    },
+  };
+  assert.equal(renderedNavigatorPlan(page, navigatorPlanForRouteClaim("route_canal")), locator);
+  assert.deepEqual(expectedTexts, ["navigator", "canal · late", "disguise → van"]);
 });
