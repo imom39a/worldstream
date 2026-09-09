@@ -4,7 +4,7 @@
 // and Component Host own every state transition.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readFile, realpath, readdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
@@ -17,18 +17,39 @@ const execute = promisify(execFile);
 const workspace = resolve(import.meta.dirname, "..");
 const binaries = ["worldstreamctl", "worldstreamd", "worldstream-studio-supervisor", "worldstream-assignment-mcp"];
 const forbidden = ["authentic_candidate_id", "is_authentic", "truth_marker"];
-const route = [
+const recoveryCandidateId = "ledger-violet";
+const technicalRoute = [
   ["stage_move", { destination: "records" }], ["commit_turn", {}],
   ["stage_use_verifier", {}], ["commit_turn", {}],
   ["stage_move", { destination: "plant" }], ["commit_turn", {}],
   ["stage_open_service_hatch", {}], ["commit_turn", {}],
   ["stage_move", { destination: "vault" }], ["commit_turn", {}],
-  ["stage_recover_candidate", {}], ["commit_turn", {}],
+  ["stage_recover_candidate", { candidate_id: recoveryCandidateId }], ["commit_turn", {}],
   ["stage_move", { destination: "plant" }], ["commit_turn", {}],
   ["stage_move", { destination: "records" }], ["commit_turn", {}],
   ["stage_move", { destination: "atrium" }], ["commit_turn", {}],
   ["stage_extract", {}], ["commit_turn", {}],
 ];
+const evidenceServiceRoute = [
+  ["stage_move", { destination: "conservation" }], ["commit_turn", {}],
+  ["stage_inspect_conservation", {}], ["commit_turn", {}],
+  ["stage_move", { destination: "records" }], ["commit_turn", {}],
+  ["stage_inspect_records", {}], ["commit_turn", {}],
+  ["stage_move", { destination: "plant" }], ["commit_turn", {}],
+  ["stage_open_service_hatch", {}], ["commit_turn", {}],
+  ["stage_move", { destination: "vault" }], ["commit_turn", {}],
+  ["stage_recover_candidate", { candidate_id: recoveryCandidateId }], ["commit_turn", {}],
+  ["stage_move", { destination: "plant" }], ["commit_turn", {}],
+  ["stage_move", { destination: "records" }], ["commit_turn", {}],
+  ["stage_move", { destination: "atrium" }], ["commit_turn", {}],
+  ["stage_extract", {}], ["commit_turn", {}],
+];
+const proofMode = process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_PROOF_MODE ?? "technical";
+const witness = proofMode === "technical"
+  ? { route: technicalRoute, turns: 10, turnsRemaining: 6, powerRemaining: 0, candidate: "Violet Ledger", checks: ["ten_turn_phone_witness", "verifier_selected_candidate"] }
+  : proofMode === "evidence-service"
+    ? { route: evidenceServiceRoute, turns: 12, turnsRemaining: 4, powerRemaining: 1, candidate: "Violet Ledger", checks: ["twelve_turn_evidence_service_witness", "sourced_evidence_disclosure"] }
+    : (() => { throw new Error(`unknown Midnight Archive proof mode: ${proofMode}`); })();
 const acceptanceStartedAt = Date.now();
 
 const root = resolve(await realpath(await mkdtemp(join(tmpdir(), "worldstream-midnight-archive-proof-"))));
@@ -43,6 +64,7 @@ let bridgeFailure;
 let started = false;
 let failure;
 let receipt;
+let submittedRecoveryPayload;
 
 try {
   const bundle = await archiveBundle();
@@ -54,8 +76,10 @@ try {
   const bundleIdentity = await inspectBundle(bundle);
   debug("binary preflight and bundle inspection complete");
 
-  const releasePath = join(workspace, "config/activity-clients/releases/midnight-archive-web-v1.json");
+  const releasePath = join(workspace, "config/activity-clients/releases/midnight-archive-web-v2.json");
   const release = JSON.parse(await readFile(releasePath, "utf8"));
+  const standaloneSurface = release.surfaces.find((surface) => surface.surface_id === "midnight-archive-web");
+  assert.ok(standaloneSurface, "current Archive standalone Client Surface missing");
   assert.equal(await activityClientBuildDigest(join(workspace, "clients/midnight-archive-web/dist")), release.artifacts[0].digest);
   host = await startActivityClientHost({ port: 0 });
   browser = await chromium.launch({
@@ -70,17 +94,17 @@ try {
   for (const deployment of bootstrap.deployments) for (const surface of deployment.surfaces) surface.launch_url = `${host.origin}${new URL(surface.launch_url).pathname}`;
   const archiveDeployment = {
     schema: "worldstream/client-deployment/v1",
-    deployment_id: "first-party-midnight-archive-web-v1",
+    deployment_id: "first-party-midnight-archive-web-v2",
     client_id: release.client_id,
     release_digest: release.release_digest,
     trust_level: "externally_trusted",
-    surfaces: [{ surface_id: "midnight-archive-web", launch_url: `${host.origin}/midnight-archive-v1/` }],
+    surfaces: [{ surface_id: standaloneSurface.surface_id, launch_url: `${host.origin}${standaloneSurface.entrypoint}` }],
   };
   bootstrap.deployments.push(archiveDeployment);
   bootstrap.bindings = bootstrap.bindings.filter((binding) => binding.deployment_id === "first-party-inspector-web-v2");
   bootstrap.bindings.push({
     schema: "worldstream/client-binding/v1",
-    binding_id: "midnight-archive-0-1-lead-web-v1",
+    binding_id: "midnight-archive-0-1-lead-web-v2",
     pack: { id: "worldstream.midnight-archive", version: "0.1.0", digest: bundleIdentity.revision_digest },
     client_contract: "worldstream/activity-client-protocol/v1",
     access_mode: "participant",
@@ -136,7 +160,7 @@ try {
   const room = created.room_operation.room_id;
   const credential = await readFile(join(state, "control-access.v1"));
   const handoff = await issueClientHandoff(operation, credential);
-  assert.equal(new URL(handoff.client_url).pathname, "/midnight-archive-v1/");
+  assert.equal(new URL(handoff.client_url).pathname, standaloneSurface.entrypoint);
   debug("solo Room and client handoff ready");
 
   page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
@@ -146,9 +170,14 @@ try {
   page.on("pageerror", (error) => debug(`browser page error: ${error.message.slice(0, 500)}`));
   page.on("requestfailed", (request) => debug(`browser request failed: ${new URL(request.url()).pathname} (${request.failure()?.errorText ?? "unknown"})`));
   await page.route("http://127.0.0.1:9420/**", async (requestRoute) => {
-    const target = new URL(requestRoute.request().url());
+    const browserRequest = requestRoute.request();
+    const target = new URL(browserRequest.url());
     target.port = String(controllerPort);
     try {
+      if (target.pathname.endsWith("/session:act")) {
+        const action = JSON.parse(browserRequest.postData() ?? "null");
+        if (action?.action_type === "stage_recover_candidate") submittedRecoveryPayload = action.payload;
+      }
       const response = await requestRoute.fetch({ url: target.href });
       const body = await response.body();
       assertPrivatePayload(body.toString("utf8"), "controller response");
@@ -182,15 +211,16 @@ try {
   await assertPhoneControls(page);
   await runRoute(page);
   await page.getByRole("heading", { name: "The authentic ledger is out", exact: true }).waitFor({ timeout: 15_000 });
+  assert.deepEqual(submittedRecoveryPayload, { candidate_id: recoveryCandidateId }, "Recovery must submit the canonical candidate payload");
   const body = await page.locator("body").innerText();
-  assert.match(body, /Turns remaining\s*6/i);
-  assert.match(body, /Power reserve\s*0/i);
+  assert.match(body, new RegExp(`Turns remaining\\s*${witness.turnsRemaining}`, "i"));
+  assert.match(body, new RegExp(`Power reserve\\s*${witness.powerRemaining}`, "i"));
   const replayButton = page.getByRole("button", { name: /replay/i });
   assert.equal(await replayButton.count(), 1, "Replay acceptance blocked: the Archive client exposes no Replay control or authorized replay endpoint seam");
   await replayButton.click();
   await page.getByText(/verified.*replay|replay.*verified|canonical history/i).waitFor({ timeout: 10_000 });
   if (bridgeFailure) throw bridgeFailure;
-  receipt = { status: "passed", pack: "worldstream.midnight-archive@0.1.0", room, turns: 10, turns_remaining: 6, power_remaining: 0, provider_calls: 0, checks: ["briefing_projection_before_activity_start", "actions_disabled_until_sync", "desktop_and_phone_layouts", "ten_turn_phone_witness", "service_gate_boundary", "terminal_success", "authorized_replay", "private_authenticity_non_leakage"] };
+  receipt = { status: "passed", pack: "worldstream.midnight-archive@0.1.0", bundle_digest: bundleIdentity.bundle_digest, revision_digest: bundleIdentity.revision_digest, room, turns: witness.turns, turns_remaining: witness.turnsRemaining, power_remaining: witness.powerRemaining, provider_calls: 0, checks: ["briefing_projection_before_activity_start", "actions_disabled_until_sync", "desktop_and_phone_layouts", ...witness.checks, "canonical_recovery_payload", "service_gate_boundary", "terminal_success", "authorized_replay", "private_authenticity_non_leakage"] };
 } catch (error) {
   failure = error;
 } finally {
@@ -210,10 +240,17 @@ console.log(JSON.stringify(receipt));
 
 async function archiveBundle() {
   if (process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE) return process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE;
-  const directory = join(workspace, "packs/midnight-archive/releases/0.1.0");
-  const files = (await readdir(directory)).filter((file) => file.endsWith(".wspack") && !file.includes("candidate")).sort();
-  assert.ok(files[0], `no immutable Archive Bundle in ${directory}`);
-  return join(directory, files[0]);
+  const proof = JSON.parse(await readFile(join(
+    workspace,
+    "packs/midnight-archive/evidence/production-proof-0.1.0-evidence-route.json",
+  ), "utf8"));
+  assert.equal(proof.status, "passed");
+  assert.match(proof.bundleDigest, /^blake3:[0-9a-f]{64}$/u);
+  return join(
+    workspace,
+    "packs/midnight-archive/releases/0.1.0",
+    `worldstream-midnight-archive-${proof.bundleDigest.slice("blake3:".length)}.wspack`,
+  );
 }
 
 async function inspectBundle(bundle) {
@@ -383,7 +420,7 @@ async function startActivity(room) {
 
 async function runRoute(page) {
   let turns = readMetric(await page.locator("body").innerText(), "Turns remaining");
-  for (const [actionType, payload] of route) {
+  for (const [actionType, payload] of witness.route) {
     debug(`route action ${actionType}`);
     const action = page.locator(`[data-action-type="${actionType}"]`).first();
     if (actionType.startsWith("stage_")) {
@@ -393,14 +430,21 @@ async function runRoute(page) {
       } else {
         const labels = {
           stage_use_verifier: /^Stage Run the catalog verifier; costs 1 turn and 1 power$/i,
+          stage_inspect_records: /^Stage Inspect the intake evidence; costs 1 turn and 0 power$/i,
+          stage_inspect_conservation: /^Stage Inspect the restoration evidence; costs 1 turn and 0 power$/i,
           stage_open_service_hatch: /^Stage Open the service hatch; costs 1 turn and 2 power$/i,
-          stage_recover_candidate: /^Stage recovery of Cobalt Ledger; costs 1 turn and 0 power$/i,
+          stage_recover_candidate: new RegExp(`^Stage recovery of ${witness.candidate}; costs 1 turn and 0 power$`, "i"),
           stage_extract: /^Stage Extract from the archive; costs 1 turn and 0 power$/i,
         };
         const button = actionType === "stage_recover_candidate"
-          ? page.locator(".candidate-card").filter({ hasText: /Cobalt Ledger/i }).filter({ hasText: /Verified by the catalog instrument/i }).getByRole("button", { name: labels[actionType] }).first()
+          ? page.locator(".candidate-card").filter({ hasText: new RegExp(witness.candidate, "i") }).getByRole("button", { name: labels[actionType] }).first()
           : page.locator(".context-actions").getByRole("button", { name: labels[actionType] }).first();
-        if (actionType === "stage_recover_candidate") assert.equal(await page.locator(".candidate-card").filter({ hasText: /Cobalt Ledger/i }).filter({ hasText: /Verified by the catalog instrument/i }).count(), 1, "Recovery must target the verifier-selected Cobalt Ledger");
+        if (actionType === "stage_recover_candidate") {
+          const card = page.locator(".candidate-card").filter({ hasText: new RegExp(witness.candidate, "i") });
+          assert.equal(await card.count(), 1, "Recovery must target the evidence-supported candidate");
+          if (proofMode === "technical") assert.equal(await card.filter({ hasText: /Verified by the catalog instrument/i }).count(), 1, "Recovery must target the verifier-selected candidate");
+          if (proofMode === "evidence-service") assert.equal(await card.filter({ hasText: /Evidence recommendation/i }).count(), 1, "Recovery must target the source-evidence recommendation");
+        }
         if (await button.count()) await button.click();
         else if (await action.count()) await action.click();
         else throw new Error(`Action control missing for ${actionType}`);

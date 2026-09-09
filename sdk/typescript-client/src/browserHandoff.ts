@@ -5,6 +5,13 @@ export const PARTICIPANT_STREAM_TICKET_VERSION =
 
 const HANDOFF_PATTERN = /^wsh1:[0-9a-f]{64}$/;
 const STREAM_TICKET_PATTERN = /^wst1:[0-9a-f]{64}$/;
+const RETRYABLE_UPSTREAM_PATHS = new Set([
+  "/api/v1/participant-console/session:observe",
+  "/api/v1/participant-console/session:acknowledge",
+  "/api/v1/participant-console/session:act",
+  "/api/v1/participant-console/session:replay",
+]);
+const UPSTREAM_RETRY_DELAYS_MS = [250, 500] as const;
 const PROHIBITED_KEYS = new Set([
   "bearer",
   "token_hash",
@@ -412,41 +419,58 @@ export class ActivityClientHandoffClient {
     init: RequestInit,
     allowExactStreamTicket = false,
   ): Promise<{ value: unknown; headers: Headers }> {
-    let response: Response;
-    try {
-      response = await this.fetch(`${this.endpoint}${path}`, init);
-    } catch {
-      throw new ActivityClientHandoffError(
-        "participant_session_unavailable",
-        "Activity Client could not reach the local Supervisor.",
-        "reconnect",
-        true,
-      );
+    for (let attempt = 0; ; attempt += 1) {
+      let response: Response;
+      try {
+        response = await this.fetch(`${this.endpoint}${path}`, init);
+      } catch {
+        throw new ActivityClientHandoffError(
+          "participant_session_unavailable",
+          "Activity Client could not reach the local Supervisor.",
+          "reconnect",
+          true,
+        );
+      }
+      let value: unknown;
+      try {
+        value = await response.json();
+      } catch {
+        throw new ActivityClientHandoffError(
+          "participant_session_invalid_response",
+          "Activity Client received an invalid response.",
+          "return_to_task_setup",
+          false,
+        );
+      }
+      if (!response.ok) {
+        const error = readSafeError(value);
+        const retryDelay = UPSTREAM_RETRY_DELAYS_MS[attempt];
+        if (
+          retryDelay !== undefined
+          && RETRYABLE_UPSTREAM_PATHS.has(path)
+          && response.status === 502
+          && error.code === "participant_session_unavailable"
+          && error.nextAction === "reconnect"
+          && error.retryable
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, retryDelay));
+          continue;
+        }
+        throw error;
+      }
+      if (
+        containsProhibitedMaterial(value) &&
+        !(allowExactStreamTicket && isRawStreamTicketResponse(value))
+      ) {
+        throw new ActivityClientHandoffError(
+          "participant_session_invalid_response",
+          "Activity Client received unsafe routing or authority material.",
+          "return_to_task_setup",
+          false,
+        );
+      }
+      return { value, headers: response.headers };
     }
-    let value: unknown;
-    try {
-      value = await response.json();
-    } catch {
-      throw new ActivityClientHandoffError(
-        "participant_session_invalid_response",
-        "Activity Client received an invalid response.",
-        "return_to_task_setup",
-        false,
-      );
-    }
-    if (!response.ok) throw readSafeError(value);
-    if (
-      containsProhibitedMaterial(value) &&
-      !(allowExactStreamTicket && isRawStreamTicketResponse(value))
-    ) {
-      throw new ActivityClientHandoffError(
-        "participant_session_invalid_response",
-        "Activity Client received unsafe routing or authority material.",
-        "return_to_task_setup",
-        false,
-      );
-    }
-    return { value, headers: response.headers };
   }
 }
 

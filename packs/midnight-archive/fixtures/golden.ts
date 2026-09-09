@@ -51,7 +51,7 @@ export const technicalRouteActions = [
   stage("commit_turn", {}),
   stage("stage_move", { destination: "vault" }),
   stage("commit_turn", {}),
-  stage("stage_recover_candidate", { candidate_id: "ledger-cobalt" }),
+  stage("stage_recover_candidate", { candidate_id: "ledger-violet" }),
   stage("commit_turn", {}),
   stage("stage_move", { destination: "plant" }),
   stage("commit_turn", {}),

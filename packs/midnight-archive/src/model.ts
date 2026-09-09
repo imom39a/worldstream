@@ -8,6 +8,7 @@ export type Location = "atrium" | "records" | "conservation" | "plant" | "vault"
 
 export type CandidateId = "ledger-amber" | "ledger-cobalt" | "ledger-violet";
 export type CandidateReference = CandidateId | "none";
+export type EvidenceSourceId = "records" | "conservation";
 
 export type Role = "lead" | "mira" | "jonah";
 export type Phase = "briefing" | "active" | "complete";
@@ -15,6 +16,8 @@ export type OutcomeKind = "pending" | "success" | "wrong_ledger" | "no_ledger" |
 export type StagedKind =
   | "none"
   | "move"
+  | "inspect_records"
+  | "inspect_conservation"
   | "use_verifier"
   | "open_service_hatch"
   | "recover_candidate"
@@ -55,6 +58,7 @@ export interface ArchiveState {
     readonly plant_vault_open: boolean;
   };
   readonly candidates: readonly VisibleCandidate[];
+  readonly evidence: Readonly<Record<EvidenceSourceId, "unknown" | "observed">>;
   readonly truth_marker: CandidateId;
   readonly verifier_result: CandidateReference;
   readonly carried_candidate_id: CandidateReference;

@@ -250,6 +250,18 @@ code { font-family: var(--ws-mono-font); }
   background: rgba(14, 25, 29, .94);
 }
 .archive-map-panel, .candidate-board, .context-actions, .commit-panel { padding: 24px; }
+.candidate-evidence {
+  display: grid;
+  gap: 5px;
+  margin-top: 14px;
+  padding: 10px;
+  border-left: 3px solid #506264;
+  background: #121e21;
+}
+.candidate-evidence small { color: var(--archive-muted); font: 700 .65rem/1 var(--ws-ui-font); letter-spacing: .08em; text-transform: uppercase; }
+.candidate-evidence p { margin: 0; color: #c7d2ce; font-size: .75rem; }
+.candidate-evidence.evidence-recommended { border-left-color: var(--archive-gold); background: #25251d; }
+.candidate-evidence.evidence-observed { border-left-color: var(--archive-cyan); }
 .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
 .section-heading h2 { color: #f2eee3; font-size: clamp(1.45rem, 2.3vw, 2rem); }
 .current-location-chip, .uncertainty-note {

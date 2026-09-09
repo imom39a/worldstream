@@ -43,32 +43,41 @@ export function rawProjection(overrides: Record<string, unknown> = {}): Record<s
     candidates: [
       {
         candidate_id: "ledger-amber",
+        evidence_assessment: "unknown",
+        observed_evidence: [],
         label: "Amber Folio",
         visible_attributes: [
-          { label: "Binding", value: "Oxidized brass" },
-          { label: "Index mark", value: "Aster / 4" },
+          { label: "Binding", value: "calfskin" },
+          { label: "Marking", value: "compass_rose" },
           { label: "Year", value: "1891" },
         ],
       },
       {
         candidate_id: "ledger-cobalt",
+        evidence_assessment: "unknown",
+        observed_evidence: [],
         label: "Cobalt Register",
         visible_attributes: [
-          { label: "Binding", value: "Blue linen" },
-          { label: "Index mark", value: "Meridian / 9" },
-          { label: "Year", value: "1904" },
+          { label: "Binding", value: "linen" },
+          { label: "Marking", value: "split_star" },
+          { label: "Year", value: "1891" },
         ],
       },
       {
         candidate_id: "ledger-violet",
+        evidence_assessment: "unknown",
+        observed_evidence: [],
         label: "Violet Ledger",
         visible_attributes: [
-          { label: "Binding", value: "Pale vellum" },
-          { label: "Index mark", value: "Aster / 9" },
+          { label: "Binding", value: "calfskin" },
+          { label: "Marking", value: "split_star" },
           { label: "Year", value: "1904" },
         ],
       },
     ],
+    debrief: overrides.phase === "complete"
+      ? { evidence_status: "none", message: "No authored source was inspected." }
+      : null,
     staged_action: null,
     carried_candidate: null,
     verifier_result: null,

@@ -293,6 +293,20 @@ function CandidateBoard({
                   <div key={`${attribute.label}:${attribute.value}`}><dt>{attribute.label}</dt><dd>{attribute.value}</dd></div>
                 ))}
               </dl>
+              <div className={`candidate-evidence evidence-${candidate.evidenceAssessment}`}>
+                <small>{candidate.evidenceAssessment === "recommended"
+                  ? "Evidence recommendation"
+                  : candidate.evidenceAssessment === "observed"
+                    ? "Observed source evidence"
+                    : "Source evidence"}</small>
+                {candidate.observedEvidence.length === 0 ? (
+                  <p>Unknown until Records or Conservation is inspected.</p>
+                ) : candidate.observedEvidence.map((evidence) => (
+                  <p key={evidence.sourceId}>
+                    <strong>{evidence.sourceLabel}:</strong> observed {evidence.attributeLabel.toLowerCase()} {evidence.observedValue}; this ledger {evidence.relation === "matches" ? "matches" : "does not match"} ({evidence.candidateValue}).
+                  </p>
+                ))}
+              </div>
               <div className={`candidate-confidence confidence-${confidence}`}>
                 {confidence === "verified" ? "✓ Verified by the catalog instrument" : "? Authenticity remains uncertain"}
               </div>
@@ -335,6 +349,15 @@ function ContextActions({
     available: boolean;
   }> = [];
   if (projection.location === "records") actions.push({
+    intent: { action: "stage_inspect_records" },
+    eyebrow: "Records source",
+    title: "Inspect the intake evidence",
+    description: "Disclose the authored Records source. This costs one turn and no power.",
+    turns: 1,
+    power: 0,
+    available: !projection.candidates.some((candidate) => candidate.observedEvidence.some((evidence) => evidence.sourceId === "records")),
+  });
+  if (projection.location === "records") actions.push({
     intent: { action: "stage_use_verifier" },
     eyebrow: "Records instrument",
     title: projection.verifierResult === null ? "Run the catalog verifier" : "Verifier result recorded",
@@ -342,6 +365,15 @@ function ContextActions({
     turns: 1,
     power: 1,
     available: projection.verifierResult === null && projection.power >= 1,
+  });
+  if (projection.location === "conservation") actions.push({
+    intent: { action: "stage_inspect_conservation" },
+    eyebrow: "Conservation source",
+    title: "Inspect the restoration evidence",
+    description: "Disclose the authored Conservation source. This costs one turn and no power.",
+    turns: 1,
+    power: 0,
+    available: !projection.candidates.some((candidate) => candidate.observedEvidence.some((evidence) => evidence.sourceId === "conservation")),
   });
   if (projection.location === "plant") actions.push({
     intent: { action: "stage_open_service_hatch" },
@@ -448,6 +480,8 @@ function TurnCommitPanel({
 function stagedActionTitle(state: MidnightArchiveReadyState, staged: ArchiveStagedAction): string {
   switch (staged.actionType) {
     case "stage_move": return `Move to ${locationLabel(state, staged.destination)}`;
+    case "stage_inspect_records": return "Inspect the Records intake evidence";
+    case "stage_inspect_conservation": return "Inspect the Conservation restoration evidence";
     case "stage_use_verifier": return "Run the catalog verifier";
     case "stage_open_service_hatch": return "Open the service hatch";
     case "stage_recover_candidate": return `Recover ${candidateById(state.projection, staged.candidateId)?.label ?? "candidate ledger"}`;
@@ -457,7 +491,9 @@ function stagedActionTitle(state: MidnightArchiveReadyState, staged: ArchiveStag
 }
 
 function stagedActionDetail(staged: ArchiveStagedAction): string {
-  return staged.actionType === "stage_open_service_hatch"
+  return staged.actionType === "stage_inspect_records" || staged.actionType === "stage_inspect_conservation"
+    ? "The source is disclosed only when this committed turn completes."
+    : staged.actionType === "stage_open_service_hatch"
     ? "The gate opens this turn; movement through it begins on a later turn."
     : staged.actionType === "stage_recover_candidate"
       ? "Recovery changes what you carry without revealing hidden authenticity."

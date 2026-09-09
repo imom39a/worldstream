@@ -4,8 +4,10 @@ import {
   type ArchiveOutcome,
   type ArchiveState,
   type CandidateId,
+  type EvidenceSourceId,
   type Location,
   type StagedAction,
+  type VisibleCandidate,
   asCanonical,
   cloneState,
   isCandidateId,
@@ -18,12 +20,74 @@ import {
 export const OBJECTIVE =
   "Recover the authentic ledger, return to the Atrium, and extract before turn 16 ends.";
 
-function visibleCandidates() {
-  return [
-    { candidate_id: "ledger-amber", binding: "calfskin", marking: "compass_rose", year: 1891 },
-    { candidate_id: "ledger-cobalt", binding: "linen", marking: "split_star", year: 1891 },
-    { candidate_id: "ledger-violet", binding: "calfskin", marking: "split_star", year: 1904 },
-  ] as const;
+export interface AuthoredEvidenceSource {
+  readonly source_id: EvidenceSourceId;
+  readonly source_label: string;
+  readonly attribute: "binding" | "marking" | "year";
+  readonly value: string | number;
+}
+
+export interface AuthoredScenario {
+  readonly scenario_id: "standard-v1";
+  readonly candidates: readonly VisibleCandidate[];
+  readonly authentic_candidate_id: CandidateId;
+  readonly evidence_sources: readonly AuthoredEvidenceSource[];
+}
+
+function standardScenario(): AuthoredScenario {
+  return {
+    scenario_id: "standard-v1",
+    candidates: [
+      { candidate_id: "ledger-amber", binding: "calfskin", marking: "compass_rose", year: 1891 },
+      { candidate_id: "ledger-cobalt", binding: "linen", marking: "split_star", year: 1891 },
+      { candidate_id: "ledger-violet", binding: "calfskin", marking: "split_star", year: 1904 },
+    ],
+    authentic_candidate_id: "ledger-violet",
+    evidence_sources: [
+      { source_id: "records", source_label: "Records intake card", attribute: "binding", value: "calfskin" },
+      { source_id: "conservation", source_label: "Conservation restoration note", attribute: "marking", value: "split_star" },
+    ],
+  };
+}
+
+export function validateAuthoredScenario(scenario: AuthoredScenario): void {
+  const ids = new Set(scenario.candidates.map((candidate) => candidate.candidate_id));
+  const expectedIds = ["ledger-amber", "ledger-cobalt", "ledger-violet"] as const;
+  if (
+    scenario.scenario_id !== "standard-v1" ||
+    scenario.candidates.length !== expectedIds.length ||
+    ids.size !== scenario.candidates.length ||
+    expectedIds.some((candidateId) => !ids.has(candidateId))
+  ) {
+    throw new TypeError("an authored scenario requires exactly three distinct candidates");
+  }
+  if (!ids.has(scenario.authentic_candidate_id)) {
+    throw new TypeError("an authored scenario requires exactly one authentic candidate");
+  }
+  const sourceIds = new Set(scenario.evidence_sources.map((source) => source.source_id));
+  if (
+    scenario.evidence_sources.length !== 2 ||
+    sourceIds.size !== 2 ||
+    !sourceIds.has("records") ||
+    !sourceIds.has("conservation")
+  ) {
+    throw new TypeError("an authored scenario requires Records and Conservation sources");
+  }
+  const matches = scenario.evidence_sources.map((source) => {
+    const compatible = scenario.candidates.filter((candidate) => candidate[source.attribute] === source.value);
+    if (compatible.length <= 1) {
+      throw new TypeError(`${source.source_id} evidence must leave more than one candidate possible`);
+    }
+    return compatible;
+  });
+  const intersection = matches[0]!.filter((candidate) => matches[1]!.some((other) => other.candidate_id === candidate.candidate_id));
+  if (intersection.length !== 1 || intersection[0]!.candidate_id !== scenario.authentic_candidate_id) {
+    throw new TypeError("authored evidence must have one authentic candidate at its unique intersection");
+  }
+}
+
+export function authoredEvidenceSources(): readonly AuthoredEvidenceSource[] {
+  return standardScenario().evidence_sources;
 }
 
 function emptyStage(): StagedAction {
@@ -51,6 +115,8 @@ export function initializeArchiveState(configuration: CanonicalObject): ArchiveS
   ) {
     throw new TypeError("configuration must select the exact standard-v1 scenario");
   }
+  const scenario = standardScenario();
+  validateAuthoredScenario(scenario);
   return {
     phase: "briefing",
     scenario_id: "standard-v1",
@@ -63,8 +129,9 @@ export function initializeArchiveState(configuration: CanonicalObject): ArchiveS
       conservation_vault_open: false,
       plant_vault_open: false,
     },
-    candidates: visibleCandidates(),
-    truth_marker: "ledger-cobalt",
+    candidates: scenario.candidates,
+    evidence: { records: "unknown", conservation: "unknown" },
+    truth_marker: scenario.authentic_candidate_id,
     verifier_result: "none",
     carried_candidate_id: "none",
     carried_confidence: "none",
@@ -141,6 +208,18 @@ function stagedAction(
       power_cost: 1,
     };
   }
+  if (actionType === "stage_inspect_records") {
+    exactKeys(payload, []);
+    if (state.location !== "records") reject("illegal_action", "the intake evidence is in Records");
+    if (state.evidence.records === "observed") reject("illegal_action", "the Records source has already been inspected");
+    return { kind: "inspect_records", destination: "none", candidate_id: "none", turn_cost: 1, power_cost: 0 };
+  }
+  if (actionType === "stage_inspect_conservation") {
+    exactKeys(payload, []);
+    if (state.location !== "conservation") reject("illegal_action", "the restoration evidence is in Conservation");
+    if (state.evidence.conservation === "observed") reject("illegal_action", "the Conservation source has already been inspected");
+    return { kind: "inspect_conservation", destination: "none", candidate_id: "none", turn_cost: 1, power_cost: 0 };
+  }
   if (actionType === "stage_open_service_hatch") {
     exactKeys(payload, []);
     if (state.location !== "plant") reject("illegal_action", "the service hatch controls are in Plant");
@@ -212,6 +291,10 @@ function commitTurn(current: ArchiveState, payload: CanonicalObject): AppliedLea
         ? "verified"
         : "unverified";
     }
+  } else if (kind === "inspect_records") {
+    next.evidence = { ...next.evidence, records: "observed" };
+  } else if (kind === "inspect_conservation") {
+    next.evidence = { ...next.evidence, conservation: "observed" };
   } else if (kind === "open_service_hatch") {
     next.power_remaining -= 2;
     next.gates = { ...next.gates, plant_vault_open: true };
@@ -259,6 +342,14 @@ function validateStagedAtTurnStart(state: ArchiveState, staged: StagedAction): v
   } else if (staged.kind === "use_verifier") {
     if (state.location !== "records") reject("illegal_action", "the verifier is no longer reachable");
     requirePower(state, 1);
+  } else if (staged.kind === "inspect_records") {
+    if (state.location !== "records" || state.evidence.records === "observed") {
+      reject("illegal_action", "the Records evidence is no longer eligible");
+    }
+  } else if (staged.kind === "inspect_conservation") {
+    if (state.location !== "conservation" || state.evidence.conservation === "observed") {
+      reject("illegal_action", "the Conservation evidence is no longer eligible");
+    }
   } else if (staged.kind === "open_service_hatch") {
     if (state.location !== "plant" || state.gates.plant_vault_open) {
       reject("illegal_action", "the service hatch action is no longer eligible");
@@ -335,6 +426,8 @@ function exactKeys(payload: CanonicalObject, expected: readonly string[]): void 
 
 function publicActionType(staged: StagedAction): string {
   if (staged.kind === "move") return "stage_move";
+  if (staged.kind === "inspect_records") return "stage_inspect_records";
+  if (staged.kind === "inspect_conservation") return "stage_inspect_conservation";
   if (staged.kind === "use_verifier") return "stage_use_verifier";
   if (staged.kind === "open_service_hatch") return "stage_open_service_hatch";
   if (staged.kind === "recover_candidate") return "stage_recover_candidate";

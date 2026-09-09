@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MidnightArchiveClientView } from "./MidnightArchiveClientView";
-import { projection, readyState } from "./testFixtures";
+import { projection, rawProjection, readyState } from "./testFixtures";
 
 afterEach(() => {
   document.body.innerHTML = "";
@@ -106,6 +106,40 @@ describe("Midnight Archive mission surface", () => {
     }
   });
 
+  it("renders observed source evidence beside attributes and keeps unknown, observed, and recommended separate", () => {
+    const raw = rawProjection();
+    const candidates = raw.candidates as Array<Record<string, unknown>>;
+    const current = projection({
+      candidates: candidates.map((candidate) => ({
+        ...candidate,
+        evidence_assessment: candidate.candidate_id === "ledger-violet" ? "recommended" : "observed",
+        observed_evidence: [{
+          source_id: "records",
+          source_label: "Records intake card",
+          attribute_label: "Binding",
+          observed_value: "calfskin",
+          candidate_value: candidate.candidate_id === "ledger-cobalt" ? "linen" : "calfskin",
+          relation: candidate.candidate_id === "ledger-cobalt" ? "does_not_match" : "matches",
+        }, {
+          source_id: "conservation",
+          source_label: "Conservation restoration note",
+          attribute_label: "Marking",
+          observed_value: "split_star",
+          candidate_value: candidate.candidate_id === "ledger-amber" ? "compass_rose" : "split_star",
+          relation: candidate.candidate_id === "ledger-amber" ? "does_not_match" : "matches",
+        }],
+      })),
+    });
+    const markup = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState(current, ["stage_move", "stage_inspect_records", "stage_wait"])} connection="live" actionsEnabled onAction={vi.fn()} />,
+    );
+    expect(markup).toContain("Observed source evidence");
+    expect(markup).toContain("Records intake card");
+    expect(markup).toContain("Evidence recommendation");
+    expect(markup).toContain("Inspect the intake evidence");
+    expect(markup).not.toContain("truth_marker");
+  });
+
   it("lets the player exchange a carried ledger for another Vault candidate", async () => {
     const host = document.createElement("div");
     document.body.append(host);
@@ -177,6 +211,42 @@ describe("Midnight Archive mission surface", () => {
       expect(markup).toContain(title);
       expect(markup).toContain("Replay this expedition");
     }
+  });
+
+  it("renders an honest partial-evidence debrief only from the authorized terminal Projection", () => {
+    const candidates = (rawProjection().candidates as Array<Record<string, unknown>>).map((candidate) => {
+      const visibleAttributes = candidate.visible_attributes as Array<{ label: string; value: string }>;
+      const candidateValue = visibleAttributes.find((attribute) => attribute.label === "Binding")?.value;
+      return {
+        ...candidate,
+        evidence_assessment: "observed",
+        observed_evidence: [{
+          source_id: "records",
+          source_label: "Records intake card",
+          attribute_label: "Binding",
+          observed_value: "calfskin",
+          candidate_value: candidateValue,
+          relation: candidateValue === "calfskin" ? "matches" : "does_not_match",
+        }],
+      };
+    });
+    const current = projection({
+      phase: "complete",
+      turns_used: 5,
+      turns_remaining: 11,
+      outcome: { kind: "no_ledger" },
+      candidates,
+      debrief: {
+        evidence_status: "partial",
+        message: "Only one authored source was inspected; it did not uniquely identify a candidate.",
+      },
+    });
+    const markup = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState(current, [])} connection="live" actionsEnabled={false} onAction={vi.fn()} />,
+    );
+    expect(markup).toContain("Evidence debrief:");
+    expect(markup).toContain("Only one authored source was inspected");
+    expect(markup).not.toContain("truth_marker");
   });
 
   it("renders a clear exact-head Replay verification status", () => {

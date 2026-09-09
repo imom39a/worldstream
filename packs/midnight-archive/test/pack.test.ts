@@ -16,6 +16,7 @@ import {
   applyLeadAction,
   initializeArchiveState,
   startArchive,
+  validateAuthoredScenario,
 } from "../src/rules.js";
 import { authorizedView, participantProjection } from "../src/view.js";
 
@@ -41,7 +42,7 @@ test("briefing is a complete safe projection with no Action offers", () => {
   assert.equal(view.schema, "participant");
   assert.deepEqual(view.actionOffers, []);
   assert.deepEqual(Object.keys(view.projection).sort(), [
-    "candidates", "carried_candidate", "gates", "location", "map", "objective",
+    "candidates", "carried_candidate", "debrief", "gates", "location", "map", "objective",
     "outcome", "phase", "power", "staged_action", "turns_remaining", "turns_used",
     "verifier_result",
   ]);
@@ -50,6 +51,7 @@ test("briefing is a complete safe projection with no Action offers", () => {
   assert.equal(view.projection.carried_candidate, null);
   assert.equal(view.projection.verifier_result, null);
   assert.equal(view.projection.outcome, null);
+  assert.equal(view.projection.debrief, null);
   assertNoTruth(view.projection);
 });
 
@@ -124,7 +126,7 @@ test("the documented ten-turn technical route succeeds and replays byte-for-byte
   assert.equal(first.turns_used, 10);
   assert.equal(first.power_remaining, 0);
   assert.equal(first.outcome.kind, "success");
-  assert.equal(first.carried_candidate_id, "ledger-cobalt");
+  assert.equal(first.carried_candidate_id, "ledger-violet");
   assert.equal(first.carried_confidence, "verified");
   assert.equal(
     canonicalStringify(first as unknown as CanonicalJson),
@@ -208,9 +210,129 @@ test("participant, public, operator, and final views never serialize private tru
   }
   const lead = authorizedView(state, core(), { viewer_type: "participant", member_id: "lead-1" });
   assert.deepEqual(lead.projection.verifier_result, {
-    candidate_id: "ledger-cobalt",
+    candidate_id: "ledger-violet",
     confidence: "verified",
   });
+});
+
+test("authored sources validate ambiguity alone and a unique authentic intersection", () => {
+  const scenario = {
+    scenario_id: "standard-v1" as const,
+    candidates: freshActive().candidates,
+    authentic_candidate_id: "ledger-violet" as const,
+    evidence_sources: [
+      { source_id: "records" as const, source_label: "Records", attribute: "binding" as const, value: "calfskin" },
+      { source_id: "conservation" as const, source_label: "Conservation", attribute: "marking" as const, value: "split_star" },
+    ],
+  };
+  assert.doesNotThrow(() => validateAuthoredScenario(scenario));
+  assert.throws(() => validateAuthoredScenario({
+    ...scenario,
+    evidence_sources: [
+      { source_id: "records", source_label: "Records", attribute: "binding", value: "linen" },
+      { source_id: "conservation", source_label: "Conservation", attribute: "marking", value: "split_star" },
+    ],
+  }), /more than one candidate possible/);
+  assert.throws(() => validateAuthoredScenario({
+    ...scenario,
+    evidence_sources: [scenario.evidence_sources[0]!, scenario.evidence_sources[0]!],
+  }), /Records and Conservation/);
+  assert.throws(() => validateAuthoredScenario({
+    ...scenario,
+    authentic_candidate_id: "ledger-amber",
+  }), /unique intersection/);
+  assert.throws(() => validateAuthoredScenario({
+    ...scenario,
+    evidence_sources: [
+      { source_id: "records", source_label: "Records", attribute: "binding", value: "calfskin" },
+      { source_id: "conservation", source_label: "Conservation", attribute: "year", value: 1891 },
+    ],
+  }), /unique intersection/);
+});
+
+test("Records and Conservation inspections disclose sourced evidence only after committed turns", () => {
+  let state = freshActive();
+  state = commit(state, "stage_move", { destination: "records" });
+  const before = participantProjection(state, "lead");
+  assert.equal((before.candidates as { observed_evidence: unknown[] }[])[0]!.observed_evidence.length, 0);
+  state = applyLeadAction(state, "stage_inspect_records", {}).state;
+  assert.equal(state.turns_used, 1);
+  state = applyLeadAction(state, "commit_turn", {}).state;
+  assert.equal(state.turns_used, 2);
+  const afterRecords = participantProjection(state, "lead");
+  assert.equal((afterRecords.candidates as { observed_evidence: unknown[] }[])[0]!.observed_evidence.length, 1);
+  assertNoTruth(afterRecords);
+  state = commit(state, "stage_move", { destination: "conservation" });
+  state = commit(state, "stage_inspect_conservation", {});
+  const afterConservation = participantProjection(state, "lead");
+  const violet = (afterConservation.candidates as { candidate_id: string; evidence_assessment: string }[])
+    .find((candidate) => candidate.candidate_id === "ledger-violet");
+  assert.equal(violet?.evidence_assessment, "recommended");
+  assert.equal(state.gates.conservation_vault_open, false);
+  assertNoTruth(afterConservation);
+});
+
+test("the twelve-turn solo evidence and service witness succeeds without the verifier", () => {
+  const route = [
+    ["stage_move", { destination: "conservation" }], ["stage_inspect_conservation", {}],
+    ["stage_move", { destination: "records" }], ["stage_inspect_records", {}],
+    ["stage_move", { destination: "plant" }], ["stage_open_service_hatch", {}],
+    ["stage_move", { destination: "vault" }],
+    ["stage_recover_candidate", { candidate_id: "ledger-violet" }],
+    ["stage_move", { destination: "plant" }], ["stage_move", { destination: "records" }],
+    ["stage_move", { destination: "atrium" }], ["stage_extract", {}],
+  ] as const;
+  let state = freshActive();
+  for (const [actionType, actionPayload] of route) state = commit(state, actionType, actionPayload);
+  assert.equal(state.turns_used, 12);
+  assert.equal(state.outcome.kind, "success");
+  assert.equal(state.carried_candidate_id, "ledger-violet");
+  assert.equal(state.carried_confidence, "unverified");
+  assert.equal(state.gates.conservation_vault_open, false);
+  assert.equal(state.gates.plant_vault_open, true);
+});
+
+test("an unverified mistaken recovery can be exchanged later for another paid turn", () => {
+  let state = freshActive();
+  for (const [actionType, actionPayload] of [
+    ["stage_move", { destination: "records" }], ["stage_inspect_records", {}],
+    ["stage_move", { destination: "plant" }], ["stage_open_service_hatch", {}],
+    ["stage_move", { destination: "vault" }], ["stage_recover_candidate", { candidate_id: "ledger-amber" }],
+  ] as const) state = commit(state, actionType, actionPayload);
+  assert.equal(state.carried_confidence, "unverified");
+  const mistakenRecovery = state;
+  const beforeExchange = state.turns_used;
+  const powerBeforeExchange = state.power_remaining;
+  state = commit(state, "stage_recover_candidate", { candidate_id: "ledger-violet" });
+  assert.equal(state.turns_used, beforeExchange + 1);
+  assert.equal(state.power_remaining, powerBeforeExchange);
+  assert.equal(state.carried_candidate_id, "ledger-violet");
+  assert.equal(state.carried_confidence, "unverified");
+
+  let partial = mistakenRecovery;
+  partial = commit(partial, "stage_move", { destination: "plant" });
+  partial = commit(partial, "stage_move", { destination: "records" });
+  partial = commit(partial, "stage_move", { destination: "atrium" });
+  partial = commit(partial, "stage_extract", {});
+  assert.equal(partial.outcome.kind, "wrong_ledger");
+  assert.deepEqual(participantProjection(partial, "lead").debrief, {
+    evidence_status: "partial",
+    message: "Only one authored source was inspected; it did not uniquely identify a candidate.",
+  });
+});
+
+test("terminal debrief reports partial evidence without claiming a hidden verification", () => {
+  let state = freshActive();
+  state = commit(state, "stage_move", { destination: "records" });
+  state = commit(state, "stage_inspect_records", {});
+  state = commit(state, "stage_move", { destination: "atrium" });
+  state = commit(state, "stage_extract", {});
+  const projection = participantProjection(state, "lead");
+  assert.deepEqual(projection.debrief, {
+    evidence_status: "partial",
+    message: "Only one authored source was inspected; it did not uniquely identify a candidate.",
+  });
+  assertNoTruth(projection);
 });
 
 function freshBriefing(): ArchiveState {

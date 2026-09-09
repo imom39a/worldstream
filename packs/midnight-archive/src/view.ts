@@ -4,9 +4,9 @@ import type {
   PackActionOffer,
 } from "@worldstream/pack-sdk";
 
-import type { ArchiveState, Role, StagedAction } from "./model.js";
+import type { ArchiveState, Role, StagedAction, VisibleCandidate } from "./model.js";
 import { record, stringValue } from "./model.js";
-import { legalDestinations } from "./rules.js";
+import { authoredEvidenceSources, legalDestinations } from "./rules.js";
 
 export type AudienceSchema =
   | "public"
@@ -94,6 +94,7 @@ export function participantProjection(state: ArchiveState, role: Role): Canonica
         { label: "Marking", value: candidate.marking },
         { label: "Year", value: String(candidate.year) },
       ],
+      ...candidateEvidence(state, candidate),
     })),
     staged_action: stagedProjection(state.staged_action),
     carried_candidate: state.carried_candidate_id === "none"
@@ -102,7 +103,39 @@ export function participantProjection(state: ArchiveState, role: Role): Canonica
     verifier_result: state.verifier_result === "none"
       ? null
       : { candidate_id: state.verifier_result, confidence: "verified" },
+    debrief: debriefProjection(state),
     outcome: state.outcome.kind === "pending" ? null : { kind: state.outcome.kind },
+  };
+}
+
+function debriefProjection(state: ArchiveState): CanonicalJson {
+  if (state.outcome.kind === "pending") return null;
+  const observed = Object.values(state.evidence).filter((status) => status === "observed").length;
+  if (observed === 0) return { evidence_status: "none", message: "No authored source was inspected." };
+  if (observed === 1) return {
+    evidence_status: "partial",
+    message: "Only one authored source was inspected; it did not uniquely identify a candidate.",
+  };
+  return {
+    evidence_status: "complete",
+    message: "Both authored sources were inspected and their intersection informed the recommendation.",
+  };
+}
+
+function candidateEvidence(state: ArchiveState, candidate: VisibleCandidate): CanonicalObject {
+  const observed = authoredEvidenceSources().filter((source) => state.evidence[source.source_id] === "observed");
+  const observedEvidence = observed.map((source) => ({
+    source_id: source.source_id,
+    source_label: source.source_label,
+    attribute_label: source.attribute === "binding" ? "Binding" : source.attribute === "marking" ? "Marking" : "Year",
+    observed_value: String(source.value),
+    candidate_value: String(candidate[source.attribute]),
+    relation: candidate[source.attribute] === source.value ? "matches" : "does_not_match",
+  }));
+  const recommendation = observedEvidence.length === 2 && observedEvidence.every((evidence) => evidence.relation === "matches");
+  return {
+    evidence_assessment: recommendation ? "recommended" : observedEvidence.length > 0 ? "observed" : "unknown",
+    observed_evidence: observedEvidence,
   };
 }
 
@@ -124,6 +157,12 @@ function leadActionOffers(state: ArchiveState): PackActionOffer[] {
   if (state.phase !== "active") return [];
   const offers: PackActionOffer[] = [];
   if (legalDestinations(state).length > 0) offers.push(offer("stage_move"));
+  if (state.location === "records" && state.evidence.records === "unknown") {
+    offers.push(offer("stage_inspect_records"));
+  }
+  if (state.location === "conservation" && state.evidence.conservation === "unknown") {
+    offers.push(offer("stage_inspect_conservation"));
+  }
   if (state.location === "records" && state.power_remaining >= 1) {
     offers.push(offer("stage_use_verifier"));
   }

@@ -11,7 +11,7 @@ function schemaParts() {
     properties: {
       candidate_id: candidateOrNone,
       destination: locationOrNone,
-      kind: { enum: ["none", "move", "use_verifier", "open_service_hatch", "recover_candidate", "extract", "wait"] },
+      kind: { enum: ["none", "move", "inspect_records", "inspect_conservation", "use_verifier", "open_service_hatch", "recover_candidate", "extract", "wait"] },
       power_cost: { maximum: 2, minimum: 0, type: "integer" },
       turn_cost: { maximum: 1, minimum: 0, type: "integer" },
     },
@@ -26,6 +26,8 @@ function schemaParts() {
       { action_type: "stage_move", destination: "conservation", turn_cost: 1, power_cost: 0 },
       { action_type: "stage_move", destination: "plant", turn_cost: 1, power_cost: 0 },
       { action_type: "stage_move", destination: "vault", turn_cost: 1, power_cost: 0 },
+      { action_type: "stage_inspect_records", turn_cost: 1, power_cost: 0 },
+      { action_type: "stage_inspect_conservation", turn_cost: 1, power_cost: 0 },
       { action_type: "stage_use_verifier", turn_cost: 1, power_cost: 1 },
       { action_type: "stage_open_service_hatch", turn_cost: 1, power_cost: 2 },
       { action_type: "stage_recover_candidate", candidate_id: "ledger-amber", turn_cost: 1, power_cost: 0 },
@@ -50,6 +52,14 @@ function schemaParts() {
       { kind: "wrong_ledger" },
       { kind: "no_ledger" },
       { kind: "exhausted_inside" },
+    ],
+  };
+  const debriefProjection = {
+    enum: [
+      null,
+      { evidence_status: "none", message: "No authored source was inspected." },
+      { evidence_status: "partial", message: "Only one authored source was inspected; it did not uniquely identify a candidate." },
+      { evidence_status: "complete", message: "Both authored sources were inspected and their intersection informed the recommendation." },
     ],
   };
   const outcome = {
@@ -80,6 +90,28 @@ function schemaParts() {
       plant_vault_open: { type: "boolean" },
     },
     required: ["conservation_vault_open", "plant_vault_open"],
+    type: "object",
+  };
+  const evidence = {
+    additionalProperties: false,
+    properties: {
+      conservation: { enum: ["unknown", "observed"] },
+      records: { enum: ["unknown", "observed"] },
+    },
+    required: ["records", "conservation"],
+    type: "object",
+  };
+  const observedEvidence = {
+    additionalProperties: false,
+    properties: {
+      attribute_label: { enum: ["Binding", "Marking", "Year"] },
+      candidate_value: { maxLength: 64, type: "string" },
+      observed_value: { maxLength: 64, type: "string" },
+      relation: { enum: ["matches", "does_not_match"] },
+      source_id: { enum: ["records", "conservation"] },
+      source_label: { maxLength: 64, type: "string" },
+    },
+    required: ["source_id", "source_label", "attribute_label", "observed_value", "candidate_value", "relation"],
     type: "object",
   };
   const roleNotes = {
@@ -115,12 +147,15 @@ function schemaParts() {
   return {
     candidate,
     candidateOrNull,
+    debriefProjection,
+    evidence,
     gates,
     location,
     mapEdge,
     mapLocation,
     outcome,
     outcomeProjection,
+    observedEvidence,
     roleNotes,
     stagedAction,
     stagedActionProjection,
@@ -137,6 +172,7 @@ export function stateSchema(): CanonicalObject {
       candidates: { items: part.visibleCandidate, maxItems: 3, minItems: 3, type: "array" },
       carried_candidate_id: { enum: ["none", "ledger-amber", "ledger-cobalt", "ledger-violet"] },
       carried_confidence: { enum: ["none", "unverified", "verified"] },
+      evidence: part.evidence,
       gates: part.gates,
       location: part.location,
       objective: { maxLength: 256, minLength: 1, type: "string" },
@@ -153,7 +189,7 @@ export function stateSchema(): CanonicalObject {
     },
     required: [
       "phase", "scenario_id", "objective", "location", "turn_limit", "turns_used",
-      "power_remaining", "gates", "candidates", "truth_marker", "verifier_result",
+      "power_remaining", "gates", "candidates", "evidence", "truth_marker", "verifier_result",
       "carried_candidate_id", "carried_confidence", "staged_action", "outcome", "role_notes",
     ],
     type: "object",
@@ -170,6 +206,8 @@ export function participantProjectionSchema(): CanonicalObject {
           additionalProperties: false,
           properties: {
             candidate_id: part.candidate,
+            evidence_assessment: { enum: ["unknown", "observed", "recommended"] },
+            observed_evidence: { items: part.observedEvidence, maxItems: 2, minItems: 0, type: "array" },
             label: { maxLength: 64, type: "string" },
             visible_attributes: {
               items: {
@@ -186,13 +224,14 @@ export function participantProjectionSchema(): CanonicalObject {
               type: "array",
             },
           },
-          required: ["candidate_id", "label", "visible_attributes"],
+          required: ["candidate_id", "label", "visible_attributes", "evidence_assessment", "observed_evidence"],
           type: "object",
         },
         maxItems: 3,
         minItems: 3,
         type: "array",
       },
+      debrief: part.debriefProjection,
       carried_candidate: part.candidateOrNull,
       gates: {
         additionalProperties: false,
@@ -224,7 +263,7 @@ export function participantProjectionSchema(): CanonicalObject {
     },
     required: [
       "phase", "objective", "location", "turns_used", "turns_remaining", "power",
-      "gates", "map", "candidates", "staged_action", "carried_candidate",
+      "gates", "map", "candidates", "staged_action", "carried_candidate", "debrief",
       "verifier_result", "outcome",
     ],
     type: "object",

@@ -33,10 +33,13 @@ try {
     const body = await page.locator("body").innerText();
     reject(body, /fixture|sample offer|demo negotiation/i, "Negotiate 0.2 live client exposed recorded data");
   });
-  await verifySurface("Midnight Archive 0.1", "/midnight-archive-v1/", "Midnight Archive · WorldStream Activity Client", async (page) => {
+  await verifySurface("Midnight Archive current", "/midnight-archive-v2/", "Midnight Archive · WorldStream Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
     const body = await page.locator("body").innerText();
     reject(body, /authentic_candidate_id|is_authentic|truth_marker|fixture/i, "Midnight Archive live client exposed private or recorded data");
+  });
+  await verifySurface("Midnight Archive retained v1", "/midnight-archive-v1/", "Midnight Archive · WorldStream Activity Client", async (page) => {
+    await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
   });
   await verifySurface("Inspector", "/inspector-v2/", "WorldStream Client Host", async (page) => {
     await page.getByText("This participant client session is missing or expired.", { exact: true }).waitFor();
@@ -45,7 +48,7 @@ try {
       { exact: true },
     ).waitFor();
   });
-  console.log("Activity Client browser acceptance passed for exact Heist, Negotiate 0.1/0.2, Midnight Archive 0.1, and Inspector artifacts.");
+  console.log("Activity Client browser acceptance passed for exact Heist, Negotiate 0.1/0.2, current and retained Midnight Archive, and Inspector artifacts.");
 } finally {
   await browser.close();
   await host.close();

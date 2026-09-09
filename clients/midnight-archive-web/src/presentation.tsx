@@ -164,6 +164,7 @@ export function ArchiveOutcomePanel({ projection }: { readonly projection: Midni
         <p className="archive-kicker">Expedition complete</p>
         <h2 id="outcome-title">{copy.title}</h2>
         <p>{copy.description}</p>
+        {projection.debrief === null ? null : <p className={`evidence-debrief debrief-${projection.debrief.evidenceStatus}`}><strong>Evidence debrief:</strong> {projection.debrief.message}</p>}
         <dl>
           <Fact label="Turns used" value={`${projection.turnsUsed} of 16`} />
           <Fact label="Power left" value={`${projection.power} charges`} />

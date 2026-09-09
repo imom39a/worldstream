@@ -363,6 +363,33 @@ fn loads_the_repository_client_host_configuration_without_pack_specific_code() {
             if candidate.launch_url == "http://127.0.0.1:5173/negotiate/"
     ));
 
+    for (digest, expected_url) in [
+        (
+            "blake3:679022bf13c15ea014e18a7129b679c9bfd27873c570fd9cd0c02818f0880a7a",
+            "http://127.0.0.1:5173/midnight-archive-v1/",
+        ),
+        (
+            "blake3:ee85f264b9c3dfb185ebedc9646bea655740f351c287793cce997336f0f419f2",
+            "http://127.0.0.1:5173/midnight-archive-v2/",
+        ),
+    ] {
+        let archive_participant = ClientSelectionRequestV1 {
+            pack: ExactPackReferenceV1 {
+                id: "worldstream.midnight-archive".to_owned(),
+                version: "0.1.0".to_owned(),
+                digest: digest.to_owned(),
+            },
+            client_contract: "worldstream/activity-client-protocol/v1".to_owned(),
+            access_mode: AccessMode::Participant,
+            role: Some("lead".to_owned()),
+        };
+        assert!(matches!(
+            store.select(&archive_participant, None),
+            Ok(ClientSelectionV1::Selected { candidate })
+                if candidate.launch_url == expected_url
+        ));
+    }
+
     let unknown_pack = ClientSelectionRequestV1 {
         pack: ExactPackReferenceV1 {
             id: "example.unknown".to_owned(),

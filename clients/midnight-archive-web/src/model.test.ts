@@ -39,6 +39,73 @@ describe("Midnight Archive strict participant Projection", () => {
     for (const value of invalid) expect(readMidnightArchiveProjection(value)).toBeNull();
   });
 
+  it("accepts only Pack-sourced observed evidence and a supported recommendation", () => {
+    const base = rawProjection();
+    const candidates = base.candidates as Array<Record<string, unknown>>;
+    const observed = candidates.map((candidate) => ({
+      ...candidate,
+      evidence_assessment: candidate.candidate_id === "ledger-violet" ? "recommended" : "observed",
+      observed_evidence: [
+        {
+          source_id: "records",
+          source_label: "Records intake card",
+          attribute_label: "Binding",
+          observed_value: "calfskin",
+          candidate_value: candidate.candidate_id === "ledger-cobalt" ? "linen" : "calfskin",
+          relation: candidate.candidate_id === "ledger-cobalt" ? "does_not_match" : "matches",
+        },
+        {
+          source_id: "conservation",
+          source_label: "Conservation restoration note",
+          attribute_label: "Marking",
+          observed_value: "split_star",
+          candidate_value: candidate.candidate_id === "ledger-amber" ? "compass_rose" : "split_star",
+          relation: candidate.candidate_id === "ledger-amber" ? "does_not_match" : "matches",
+        },
+      ],
+    }));
+    expect(readMidnightArchiveProjection({ ...base, candidates: observed })).not.toBeNull();
+    expect(readMidnightArchiveProjection({
+      ...base,
+      candidates: [{ ...observed[0], evidence_assessment: "recommended" }, ...observed.slice(1)],
+    })).toBeNull();
+    expect(readMidnightArchiveProjection({
+      ...base,
+      candidates: observed.map((candidate, index) => index === 0 ? {
+        ...candidate,
+        observed_evidence: [
+          (candidate.observed_evidence as unknown[])[0],
+          (candidate.observed_evidence as unknown[])[0],
+        ],
+      } : candidate),
+    })).toBeNull();
+    expect(readMidnightArchiveProjection({
+      ...base,
+      candidates: observed.map((candidate, index) => index === 0 ? {
+        ...candidate,
+        observed_evidence: (candidate.observed_evidence as Array<Record<string, unknown>>).map((evidence, evidenceIndex) => (
+          evidenceIndex === 0 ? { ...evidence, relation: "does_not_match" } : evidence
+        )),
+      } : candidate),
+    })).toBeNull();
+    expect(readMidnightArchiveProjection({
+      ...base,
+      candidates: observed.map((candidate, index) => index === 1 ? {
+        ...candidate,
+        observed_evidence: (candidate.observed_evidence as Array<Record<string, unknown>>).map((evidence, evidenceIndex) => (
+          evidenceIndex === 0 ? { ...evidence, observed_value: "linen", relation: "matches" } : evidence
+        )),
+      } : candidate),
+    })).toBeNull();
+    expect(readMidnightArchiveProjection({
+      ...base,
+      phase: "complete",
+      candidates: observed,
+      debrief: { evidence_status: "partial", message: "Incomplete evidence." },
+      outcome: { kind: "success" },
+    })).toBeNull();
+  });
+
   it("accepts only the four exact factual outcomes", () => {
     for (const kind of ["success", "wrong_ledger", "no_ledger", "exhausted_inside"]) {
       const remaining = kind === "exhausted_inside" ? 0 : 6;

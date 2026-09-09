@@ -34,11 +34,19 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 const PACK_ID: &str = "worldstream.midnight-archive";
 const PACK_VERSION: &str = "0.1.0";
+const CURRENT_BUNDLE_DIGEST: &str =
+    "blake3:e0626769fa745fafd0e41238473902988f446b453f283c7a7a7155a9122cf03f";
+const CURRENT_REVISION_DIGEST: &str =
+    "blake3:ee85f264b9c3dfb185ebedc9646bea655740f351c287793cce997336f0f419f2";
+const RETAINED_BUNDLE_DIGEST: &str =
+    "blake3:d14e21273d58d1c0d1cc1b5bd0c002975a531b118bfe0c65bfa33a3efadcf85b";
+const RETAINED_REVISION_DIGEST: &str =
+    "blake3:679022bf13c15ea014e18a7129b679c9bfd27873c570fd9cd0c02818f0880a7a";
 const FORBIDDEN_PRIVATE_KEYS: &[&str] = &["authentic_candidate_id", "is_authentic", "truth_marker"];
 
 fn client_binding_identity() -> TestResult<(String, String)> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config/activity-clients/releases/midnight-archive-web-v1.json");
+        .join("../../config/activity-clients/releases/midnight-archive-web-v2.json");
     let release: Value = serde_json::from_slice(&fs::read(path)?)?;
     let release_digest = release["release_digest"]
         .as_str()
@@ -48,7 +56,7 @@ fn client_binding_identity() -> TestResult<(String, String)> {
         .as_array()
         .and_then(|surfaces| {
             surfaces.iter().find_map(|surface| {
-                (surface["entrypoint"] == "/midnight-archive-v1/")
+                (surface["entrypoint"] == "/midnight-archive-v2/")
                     .then(|| surface["surface_id"].as_str())
                     .flatten()
             })
@@ -58,27 +66,38 @@ fn client_binding_identity() -> TestResult<(String, String)> {
     Ok((release_digest, surface_id))
 }
 
-fn bundle_path() -> PathBuf {
-    if let Some(path) = env::var_os("WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE") {
-        return PathBuf::from(path);
-    }
-    let release =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packs/midnight-archive/releases/0.1.0");
-    let mut candidates = fs::read_dir(&release)
-        .unwrap_or_else(|error| panic!("read Archive release directory {release:?}: {error}"))
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "wspack")
-        })
-        .filter(|path| !path.to_string_lossy().contains("candidate"))
-        .collect::<Vec<_>>();
-    candidates.sort();
-    candidates
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| panic!("no immutable Archive Bundle in {release:?}"))
+fn release_bundle_path(bundle_digest: &str) -> PathBuf {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let file_digest = bundle_digest
+        .strip_prefix("blake3:")
+        .unwrap_or_else(|| panic!("Archive Bundle digest has no blake3 prefix: {bundle_digest}"));
+    workspace.join(format!(
+        "packs/midnight-archive/releases/0.1.0/worldstream-midnight-archive-{file_digest}.wspack"
+    ))
+}
+
+fn current_bundle_path() -> PathBuf {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let proof_path = workspace
+        .join("packs/midnight-archive/evidence/production-proof-0.1.0-evidence-route.json");
+    let proof: Value = serde_json::from_slice(
+        &fs::read(&proof_path)
+            .unwrap_or_else(|error| panic!("read Archive proof {proof_path:?}: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("parse Archive proof {proof_path:?}: {error}"));
+    assert_eq!(proof["status"], "passed", "current Archive proof must pass");
+    assert_eq!(proof["packId"], PACK_ID, "Archive proof Pack ID drifted");
+    assert_eq!(
+        proof["bundleDigest"], CURRENT_BUNDLE_DIGEST,
+        "Archive proof physical Bundle digest drifted"
+    );
+    assert_eq!(
+        proof["revisionDigest"], CURRENT_REVISION_DIGEST,
+        "Archive proof semantic revision digest drifted"
+    );
+    env::var_os("WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| release_bundle_path(CURRENT_BUNDLE_DIGEST))
 }
 
 fn reject_private(value: &Value) {
@@ -191,11 +210,29 @@ async fn post(routes: &Router, authority: &str, path: &str, body: Value) -> Test
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> TestResult {
     let (client_release_digest, client_surface_id) = client_binding_identity()?;
-    let bytes = fs::read(bundle_path())?;
-    let verified = PackBundleVerifierV1.inspect(Arc::<[u8]>::from(bytes))?;
-    assert_eq!(verified.descriptor().pack_id, PACK_ID);
-    assert_eq!(verified.descriptor().explanatory_version, PACK_VERSION);
-    let digest = verified.revision_digest().to_string();
+    let current_path = current_bundle_path();
+    let current_bytes = fs::read(&current_path)?;
+    let verified = PackBundleVerifierV1.inspect(Arc::<[u8]>::from(current_bytes))?;
+    let current_inspection = verified.inspection();
+    assert_eq!(current_inspection.pack_id, PACK_ID);
+    assert_eq!(current_inspection.explanatory_version, PACK_VERSION);
+    assert_eq!(
+        current_inspection.bundle_digest.to_string(),
+        CURRENT_BUNDLE_DIGEST,
+        "current release path must contain the exact proof-bound Bundle bytes"
+    );
+    assert_eq!(
+        current_inspection.revision_digest.to_string(),
+        CURRENT_REVISION_DIGEST,
+        "current Bundle must inspect as the exact evidence-route revision"
+    );
+    assert_eq!(verified.bundle_digest().to_string(), CURRENT_BUNDLE_DIGEST);
+    assert_eq!(
+        verified.revision_digest().to_string(),
+        CURRENT_REVISION_DIGEST
+    );
+    let current_revision_digest = verified.revision_digest().clone();
+    let digest = current_revision_digest.to_string();
     let configuration: Value =
         serde_json::from_slice(&verified.golden_corpus().genesis.configuration.to_bytes()?)?;
     let witness = verified.golden_corpus().actions.clone();
@@ -208,7 +245,34 @@ async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> 
         (index % 2 == 0 && action.action_type.starts_with("stage_"))
             || (index % 2 == 1 && action.action_type == "commit_turn")
     }));
-    let admission = ComponentPackHostV1::new()?.admit(
+    let retained_path = release_bundle_path(RETAINED_BUNDLE_DIGEST);
+    let retained_bytes = fs::read(&retained_path)?;
+    let retained_verified = PackBundleVerifierV1.inspect(Arc::<[u8]>::from(retained_bytes))?;
+    let retained_inspection = retained_verified.inspection();
+    assert_eq!(retained_inspection.pack_id, PACK_ID);
+    assert_eq!(retained_inspection.explanatory_version, PACK_VERSION);
+    assert_eq!(
+        retained_inspection.bundle_digest.to_string(),
+        RETAINED_BUNDLE_DIGEST,
+        "retained release path must contain the exact IMO-199 Bundle bytes"
+    );
+    assert_eq!(
+        retained_inspection.revision_digest.to_string(),
+        RETAINED_REVISION_DIGEST,
+        "retained Bundle must inspect as the exact IMO-199 revision"
+    );
+    let retained_revision_digest = retained_verified.revision_digest().clone();
+
+    let component_host = ComponentPackHostV1::new()?;
+    let retained_admission = component_host.admit(
+        retained_verified,
+        PackRegistryStatusV1 {
+            selectable_for_new_rooms: false,
+            runnable_for_retained_rooms: true,
+            approved_for_activity_start: true,
+        },
+    )?;
+    let current_admission = component_host.admit(
         verified,
         PackRegistryStatusV1 {
             selectable_for_new_rooms: true,
@@ -216,7 +280,19 @@ async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> 
             approved_for_activity_start: true,
         },
     )?;
-    let registry = builtin_counter_registry()?.admit_portable([admission])?;
+    // Registry construction executes and verifies both immutable golden corpora.
+    let registry =
+        builtin_counter_registry()?.admit_portable([retained_admission, current_admission])?;
+    registry.load_retained(&retained_revision_digest)?;
+    registry.load_retained(&current_revision_digest)?;
+    let retained_catalog = registry.catalog_revision(&retained_revision_digest)?;
+    assert!(!retained_catalog.selectable_for_new_rooms);
+    assert!(retained_catalog.runnable_for_retained_rooms);
+    assert!(retained_catalog.approved_for_activity_start);
+    let current_catalog = registry.catalog_revision(&current_revision_digest)?;
+    assert!(current_catalog.selectable_for_new_rooms);
+    assert!(current_catalog.runnable_for_retained_rooms);
+    assert!(current_catalog.approved_for_activity_start);
 
     let directory = tempfile::tempdir()?;
     let file = tempfile::NamedTempFile::new_in(directory.path())?;

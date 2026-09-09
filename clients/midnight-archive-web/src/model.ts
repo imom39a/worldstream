@@ -43,9 +43,23 @@ export interface ArchiveCandidate {
     readonly label: string;
     readonly value: string;
   }[];
+  readonly evidenceAssessment: "unknown" | "observed" | "recommended";
+  readonly observedEvidence: readonly {
+    readonly sourceId: "records" | "conservation";
+    readonly sourceLabel: string;
+    readonly attributeLabel: "Binding" | "Marking" | "Year";
+    readonly observedValue: string;
+    readonly candidateValue: string;
+    readonly relation: "matches" | "does_not_match";
+  }[];
 }
 
 export type ArchiveStagedAction =
+  | {
+      readonly actionType: "stage_inspect_records" | "stage_inspect_conservation";
+      readonly turnCost: 1;
+      readonly powerCost: 0;
+    }
   | {
       readonly actionType: "stage_move";
       readonly destination: ArchiveLocation;
@@ -87,6 +101,10 @@ export interface MidnightArchiveProjection {
     readonly connections: readonly ArchiveMapConnection[];
   };
   readonly candidates: readonly ArchiveCandidate[];
+  readonly debrief: null | {
+    readonly evidenceStatus: "none" | "partial" | "complete";
+    readonly message: string;
+  };
   readonly stagedAction: ArchiveStagedAction | null;
   readonly carriedCandidate: ArchiveCandidateId | null;
   readonly verifierResult: null | {
@@ -98,6 +116,8 @@ export interface MidnightArchiveProjection {
 
 export type MidnightArchiveActionIntent =
   | { readonly action: "stage_move"; readonly destination: ArchiveLocation }
+  | { readonly action: "stage_inspect_records" }
+  | { readonly action: "stage_inspect_conservation" }
   | { readonly action: "stage_use_verifier" }
   | { readonly action: "stage_open_service_hatch" }
   | { readonly action: "stage_recover_candidate"; readonly candidate_id: ArchiveCandidateId }
@@ -121,6 +141,7 @@ const MAX_LABEL_BYTES = 64;
 const MAX_DESCRIPTION_BYTES = 256;
 const ROOT_KEYS = [
   "candidates",
+  "debrief",
   "carried_candidate",
   "gates",
   "location",
@@ -149,7 +170,7 @@ export const TEN_TURN_TECHNICAL_ROUTE: readonly MidnightArchiveActionIntent[] = 
   { action: "stage_move", destination: "plant" },
   { action: "stage_open_service_hatch" },
   { action: "stage_move", destination: "vault" },
-  { action: "stage_recover_candidate", candidate_id: "ledger-amber" },
+  { action: "stage_recover_candidate", candidate_id: "ledger-violet" },
   { action: "stage_move", destination: "plant" },
   { action: "stage_move", destination: "records" },
   { action: "stage_move", destination: "atrium" },
@@ -172,6 +193,7 @@ export function readMidnightArchiveProjection(
   const gates = readGates(source.gates);
   const map = readMap(source.map);
   const candidates = readCandidates(source.candidates);
+  const debrief = readDebrief(source.debrief);
   const stagedAction = readStagedAction(source.staged_action);
   const carriedCandidate = source.carried_candidate === null
     ? null
@@ -182,13 +204,16 @@ export function readMidnightArchiveProjection(
   if (
     phase === null || objective === null || location === null
     || turnsUsed === null || turnsRemaining === null || power === null
-    || gates === null || map === null || candidates === null
+    || gates === null || map === null || candidates === null || debrief === undefined
     || stagedAction === undefined || carriedCandidate === undefined
     || verifierResult === undefined || outcome === undefined
     || turnsUsed + turnsRemaining !== 16
   ) return null;
 
   const candidateIds = new Set(candidates.map((candidate) => candidate.candidateId));
+  const expectedDebriefStatus = (["none", "partial", "complete"] as const)[
+    candidates[0]!.observedEvidence.length
+  ];
   if (
     (carriedCandidate !== null && !candidateIds.has(carriedCandidate))
     || (verifierResult !== null && !candidateIds.has(verifierResult.candidateId))
@@ -196,8 +221,9 @@ export function readMidnightArchiveProjection(
       && !candidateIds.has(stagedAction.candidateId))
     || !stagedActionFitsProjection(stagedAction, location, power, gates, map)
     || (phase === "briefing" && (turnsUsed !== 0 || stagedAction !== null || outcome !== null))
-    || (phase === "active" && outcome !== null)
-    || (phase === "complete" && outcome === null)
+    || (phase === "active" && (outcome !== null || debrief !== null))
+    || (phase === "complete" && (outcome === null || debrief === null))
+    || (phase === "complete" && debrief?.evidenceStatus !== expectedDebriefStatus)
     || (outcome?.kind === "exhausted_inside" && turnsRemaining !== 0)
   ) return null;
 
@@ -211,6 +237,7 @@ export function readMidnightArchiveProjection(
     gates,
     map,
     candidates,
+    debrief,
     stagedAction,
     carriedCandidate,
     verifierResult,
@@ -328,25 +355,83 @@ function readCandidates(value: unknown): readonly ArchiveCandidate[] | null {
   if (!Array.isArray(value) || value.length !== 3) return null;
   const result: ArchiveCandidate[] = [];
   const seen = new Set<string>();
+  const evidenceDefinitions = new Map<string, string>();
+  let expectedEvidenceSources: string | null = null;
   for (const candidateValue of value) {
-    const item = exactRecord(candidateValue, ["candidate_id", "label", "visible_attributes"]);
+    const item = exactRecord(candidateValue, ["candidate_id", "evidence_assessment", "label", "observed_evidence", "visible_attributes"]);
     if (item === null || !Array.isArray(item.visible_attributes)
-      || item.visible_attributes.length !== 3) return null;
+      || item.visible_attributes.length !== 3 || !Array.isArray(item.observed_evidence)
+      || item.observed_evidence.length > 2) return null;
     const id = candidateId(item.candidate_id);
     const label = boundedText(item.label, MAX_LABEL_BYTES);
     if (id === undefined || label === null || seen.has(id)) return null;
     const visibleAttributes: Array<{ label: string; value: string }> = [];
+    const visibleAttributeValues = new Map<string, string>();
     for (const value of item.visible_attributes) {
       const attribute = exactRecord(value, ["label", "value"]);
       if (attribute === null) return null;
       const attributeLabel = boundedText(attribute.label, MAX_LABEL_BYTES);
       const attributeValue = boundedText(attribute.value, MAX_LABEL_BYTES);
-      if (attributeLabel === null || attributeValue === null) return null;
+      if (
+        attributeLabel === null || attributeValue === null ||
+        !["Binding", "Marking", "Year"].includes(attributeLabel) ||
+        visibleAttributeValues.has(attributeLabel)
+      ) return null;
+      visibleAttributeValues.set(attributeLabel, attributeValue);
       visibleAttributes.push({ label: attributeLabel, value: attributeValue });
     }
+    const evidenceAssessment = item.evidence_assessment;
+    if (evidenceAssessment !== "unknown" && evidenceAssessment !== "observed" && evidenceAssessment !== "recommended") return null;
+    const observedEvidence: Array<ArchiveCandidate["observedEvidence"][number]> = [];
+    const seenEvidenceSources = new Set<string>();
+    for (const value of item.observed_evidence) {
+      const evidence = exactRecord(value, ["attribute_label", "candidate_value", "observed_value", "relation", "source_id", "source_label"]);
+      if (evidence === null || (evidence.source_id !== "records" && evidence.source_id !== "conservation")
+        || (evidence.attribute_label !== "Binding" && evidence.attribute_label !== "Marking" && evidence.attribute_label !== "Year")
+        || (evidence.relation !== "matches" && evidence.relation !== "does_not_match")) return null;
+      const sourceLabel = boundedText(evidence.source_label, MAX_LABEL_BYTES);
+      const observedValue = boundedText(evidence.observed_value, MAX_LABEL_BYTES);
+      const candidateValue = boundedText(evidence.candidate_value, MAX_LABEL_BYTES);
+      const expectedSource = evidence.source_id === "records"
+        ? { label: "Records intake card", attribute: "Binding" as const }
+        : { label: "Conservation restoration note", attribute: "Marking" as const };
+      if (
+        sourceLabel === null || observedValue === null || candidateValue === null ||
+        seenEvidenceSources.has(evidence.source_id) ||
+        sourceLabel !== expectedSource.label ||
+        evidence.attribute_label !== expectedSource.attribute ||
+        visibleAttributeValues.get(evidence.attribute_label) !== candidateValue ||
+        (evidence.relation === "matches") !== (candidateValue === observedValue)
+      ) return null;
+      seenEvidenceSources.add(evidence.source_id);
+      const definition = [sourceLabel, evidence.attribute_label, observedValue].join("\u0000");
+      const retainedDefinition = evidenceDefinitions.get(evidence.source_id);
+      if (retainedDefinition !== undefined && retainedDefinition !== definition) return null;
+      evidenceDefinitions.set(evidence.source_id, definition);
+      observedEvidence.push({
+        sourceId: evidence.source_id,
+        sourceLabel,
+        attributeLabel: evidence.attribute_label,
+        observedValue,
+        candidateValue,
+        relation: evidence.relation,
+      });
+    }
+    const evidenceSources = [...seenEvidenceSources].sort().join("|");
+    expectedEvidenceSources ??= evidenceSources;
+    const shouldRecommend = observedEvidence.length === 2
+      && observedEvidence.every((evidence) => evidence.relation === "matches");
+    const expectedAssessment = observedEvidence.length === 0
+      ? "unknown"
+      : shouldRecommend ? "recommended" : "observed";
+    if (evidenceSources !== expectedEvidenceSources || evidenceAssessment !== expectedAssessment) return null;
     seen.add(id);
-    result.push({ candidateId: id, label, visibleAttributes });
+    result.push({ candidateId: id, label, visibleAttributes, evidenceAssessment, observedEvidence });
   }
+  if (
+    expectedEvidenceSources === "conservation|records" &&
+    result.filter((candidate) => candidate.evidenceAssessment === "recommended").length !== 1
+  ) return null;
   return result;
 }
 
@@ -384,6 +469,9 @@ function readStagedAction(value: unknown): ArchiveStagedAction | null | undefine
   if (value.action_type === "stage_open_service_hatch") {
     return { actionType: value.action_type, turnCost: 1, powerCost: 2 };
   }
+  if (value.action_type === "stage_inspect_records" || value.action_type === "stage_inspect_conservation") {
+    return { actionType: value.action_type, turnCost: 1, powerCost: 0 };
+  }
   return { actionType: value.action_type, turnCost: 1, powerCost: 0 };
 }
 
@@ -404,6 +492,14 @@ function readOutcome(value: unknown): MidnightArchiveProjection["outcome"] | und
   return { kind: source.kind };
 }
 
+function readDebrief(value: unknown): MidnightArchiveProjection["debrief"] | undefined {
+  if (value === null) return null;
+  const source = exactRecord(value, ["evidence_status", "message"]);
+  if (source === null || (source.evidence_status !== "none" && source.evidence_status !== "partial" && source.evidence_status !== "complete")) return undefined;
+  const message = boundedText(source.message, MAX_OBJECTIVE_BYTES);
+  return message === null ? undefined : { evidenceStatus: source.evidence_status, message };
+}
+
 function stagedActionFitsProjection(
   staged: ArchiveStagedAction | null,
   location: ArchiveLocation,
@@ -422,6 +518,8 @@ function stagedActionFitsProjection(
       return connection !== undefined
         && (connection.gate === null || gates[connection.gate] === "open");
     }
+    case "stage_inspect_records": return location === "records";
+    case "stage_inspect_conservation": return location === "conservation";
     case "stage_use_verifier": return location === "records";
     case "stage_open_service_hatch": return location === "plant";
     case "stage_recover_candidate": return location === "vault";

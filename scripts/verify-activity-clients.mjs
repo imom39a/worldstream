@@ -18,13 +18,13 @@ const buildRoots = new Map([
 const currentReleaseFiles = new Map([
   ["worldstream.agent-heist.web", "agent-heist-web-v6.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
-  ["worldstream.midnight-archive.web", "midnight-archive-web-v1.json"],
+  ["worldstream.midnight-archive.web", "midnight-archive-web-v2.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const currentEvidenceFiles = new Map([
   ["worldstream.agent-heist.web", "agent-heist-web-v6.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
-  ["worldstream.midnight-archive.web", "midnight-archive-web-v1.json"],
+  ["worldstream.midnight-archive.web", "midnight-archive-web-v2.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const expectedChecks = new Map([
@@ -100,6 +100,7 @@ for (const { name, value: evidence } of evidenceDocuments) {
         "deployment-owned-stream-bootstrap-and-recovery",
         "separate-local-kernel-and-hosted-entrypoints-without-auth-fallback",
       ] : []),
+      ...(name === "midnight-archive-web-v2.json" ? ["bounded-idempotent-upstream-retry"] : []),
     ]),
     `${evidence.subject.client_id} conformance checks do not match the exercised canonical lane`,
   );
@@ -309,7 +310,8 @@ async function verifySourceBoundaries() {
     ["/negotiate-v3/", "clients/negotiate-web/dist"],
     ["/negotiate-v2/", "config/activity-clients/artifacts/negotiate-web-v2"],
     ["/negotiate/", "config/activity-clients/artifacts/negotiate-web-v1"],
-    ["/midnight-archive-v1/", "clients/midnight-archive-web/dist"],
+    ["/midnight-archive-v2/", "clients/midnight-archive-web/dist"],
+    ["/midnight-archive-v1/", "config/activity-clients/artifacts/midnight-archive-web-v1"],
     ["/inspector-v2/", "web/console/dist"],
     ["/inspector/", "config/activity-clients/artifacts/inspector-web-v1"],
     ["/", "config/activity-clients/artifacts/inspector-web-v1"],
