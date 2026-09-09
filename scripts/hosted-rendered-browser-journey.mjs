@@ -471,7 +471,7 @@ export async function ensureRenderedNavigatorRouteClaim(page, timeoutMs) {
 
 async function renderedRouteClaim(page, timeoutMs) {
   const clue = page.locator(".private-clue-list article").filter({
-    has: page.getByText("Route", { exact: true }),
+    has: page.getByText("route", { exact: true }),
   });
   if (timeoutMs === undefined) {
     if (await clue.count() === 0) return null;
@@ -596,7 +596,7 @@ function renderedPublishedRouteClaim(page, routeClaim) {
   return page.locator(".live-board-grid section").filter({
     has: page.getByRole("heading", { name: "Clue board", exact: true }),
   }).locator("li").filter({
-    has: page.getByText("Route", { exact: true }),
+    has: page.getByText("route", { exact: true }),
   }).filter({
     has: page.getByText(humanizeRenderedValue(routeClaim), { exact: true }),
   });

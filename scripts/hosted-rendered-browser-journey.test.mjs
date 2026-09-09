@@ -185,7 +185,11 @@ test("resumed rendered journey reads its existing authorized Route claim without
       if (selector === ".private-clue-list article") return existingClue;
       throw new Error("a resumed Route claim must not recreate an Inspect Action form");
     },
-    getByText() { return {}; },
+    getByText(value, options) {
+      assert.equal(value, "route");
+      assert.deepEqual(options, { exact: true });
+      return {};
+    },
   };
   assert.equal(await ensureRenderedNavigatorRouteClaim(page, 1_000), "route_canal");
 });
