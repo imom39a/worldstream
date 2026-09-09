@@ -160,8 +160,11 @@ select ok(
   'the exact evidence retry is idempotent after an interrupted caller restart'
 );
 select is(
-  (select count(*)::integer from platform_store.prestart_abandonments), 1,
-  'an idempotent retry does not create another abandonment receipt'
+  (select count(*)::integer
+   from platform_store.prestart_abandonments abandonments
+   where abandonments.launch_request_id = '93000000-0000-4000-8000-000000000101'),
+  1,
+  'an idempotent retry does not create another receipt for the exact Launch Request'
 );
 
 select pg_temp.insert_prestart_run(
