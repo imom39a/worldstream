@@ -1,14 +1,20 @@
 #![allow(clippy::panic, reason = "test fixture failures require diagnostics")]
 
 use std::{
+    env,
     fmt::Debug,
+    fs,
+    str::FromStr,
+    sync::Arc,
     sync::{Mutex, MutexGuard},
 };
 
 use worldstream_core::{
-    CanonicalJsonV1, CanonicalPackOperationCodecV1, PackFaultV1, PackRevisionDescriptorV1,
-    builtin_counter_registry,
+    ActionAdmissionErrorV1, ActionId, CanonicalJsonV1, CanonicalPackOperationCodecV1, CoreTraceV1,
+    PackFaultV1, PackRegistryStatusV1, PackRevisionDescriptorV1, ParticipantActionV1,
+    RecordedStimulusV1, TraceErrorV1, builtin_counter_registry,
 };
+use worldstream_pack_bundle::PackBundleVerifierV1;
 
 use super::{
     CALLBACK_CONCURRENCY_LIMIT, CALLBACK_FUEL, CALLBACK_NATIVE_STACK_BYTES,
@@ -174,6 +180,183 @@ fn component(
 fn adapter(bytes: &[u8]) -> Result<ComponentPackAdapterV1, ComponentHostErrorV1> {
     let host = ComponentPackHostV1::new()?;
     ComponentPackAdapterV1::compile(&host.engine, bytes, descriptor())
+}
+
+fn parsed<T>(value: &str) -> T
+where
+    T: FromStr,
+    T::Err: Debug,
+{
+    value
+        .parse()
+        .unwrap_or_else(|error| panic!("test fixture must parse {value:?}: {error:?}"))
+}
+
+fn canonical(bytes: &[u8]) -> CanonicalJsonV1 {
+    CanonicalJsonV1::parse(bytes)
+        .unwrap_or_else(|error| panic!("test fixture must be canonical JSON: {error}"))
+}
+
+fn archive_action(
+    trace: &CoreTraceV1,
+    corpus: &worldstream_core::PackGoldenCorpusV1,
+    action_id: &str,
+    admitted_at: &str,
+    canonical_payload: CanonicalJsonV1,
+) -> RecordedStimulusV1 {
+    let action = corpus
+        .actions
+        .first()
+        .unwrap_or_else(|| panic!("archive fixture must declare one accepted Action"));
+    RecordedStimulusV1::ParticipantAction(ParticipantActionV1 {
+        member_id: action.member_id.clone(),
+        action_id: parsed::<ActionId>(action_id),
+        action_type: action.action_type.clone(),
+        payload_schema_digest: action.payload_schema_digest.clone(),
+        canonical_payload,
+        exact_basis_head: trace.head().clone(),
+        admitted_at: parsed(admitted_at),
+    })
+}
+
+#[test]
+#[ignore = "requires WORLDSTREAM_ARCHIVE_CONTRACT_BUNDLE from the TypeScript fixture build"]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the qualification proof keeps its rejected and accepted boundary cases together"
+)]
+fn archive_contract_bundle_rejects_invalid_payload_and_offer_boundaries_before_callbacks() {
+    let path = env::var("WORLDSTREAM_ARCHIVE_CONTRACT_BUNDLE").unwrap_or_else(|error| {
+        panic!(
+            "set WORLDSTREAM_ARCHIVE_CONTRACT_BUNDLE to the built archive-contract.wspack fixture: {error}"
+        )
+    });
+    let bytes = fs::read(&path).unwrap_or_else(|error| {
+        panic!("read WORLDSTREAM_ARCHIVE_CONTRACT_BUNDLE {path:?}: {error}")
+    });
+    let bundle = PackBundleVerifierV1
+        .inspect(Arc::<[u8]>::from(bytes))
+        .unwrap_or_else(|error| panic!("archive fixture bundle must verify: {error}"));
+    let revision_digest = bundle.revision_digest().clone();
+    let corpus = bundle.golden_corpus().clone();
+    let host = must(ComponentPackHostV1::new());
+    let admission = must(host.admit(
+        bundle,
+        PackRegistryStatusV1 {
+            selectable_for_new_rooms: true,
+            runnable_for_retained_rooms: true,
+        },
+    ));
+    let registry = must(must(builtin_counter_registry()).admit_portable([admission]));
+    assert_eq!(corpus.genesis.pack_digest, revision_digest);
+    let active_trace = || {
+        let genesis = must(registry.prepare_genesis_for_new_room(&corpus.genesis));
+        let mut trace = must(CoreTraceV1::create_from_retained_for_conformance(genesis));
+        let external = corpus
+            .external_inputs
+            .first()
+            .unwrap_or_else(|| panic!("archive fixture must declare one ExternalInput"));
+        let prepared =
+            must(trace.prepare(RecordedStimulusV1::ExternalInput(external.input.clone())));
+        must(trace.install_prepared_for_conformance(prepared));
+        trace
+    };
+
+    for (action_id, admitted_at, payload, expected) in [
+        (
+            "01ARZ3NDEKTSV4RRFFQ69G5F11",
+            "2026-08-30T12:00:01Z",
+            canonical(br#"{"target":4}"#),
+            ActionAdmissionErrorV1::InvalidPayload(String::new()),
+        ),
+        (
+            "01ARZ3NDEKTSV4RRFFQ69G5F14",
+            "2026-08-30T12:00:01Z",
+            canonical(br"{}"),
+            ActionAdmissionErrorV1::InvalidPayload(String::new()),
+        ),
+        (
+            "01ARZ3NDEKTSV4RRFFQ69G5F15",
+            "2026-08-30T12:00:01Z",
+            canonical(br#"{"extra":true,"target":"records"}"#),
+            ActionAdmissionErrorV1::InvalidPayload(String::new()),
+        ),
+        (
+            "01ARZ3NDEKTSV4RRFFQ69G5F12",
+            "2026-08-30T11:59:59Z",
+            canonical(br#"{"target":"records"}"#),
+            ActionAdmissionErrorV1::NotOpen,
+        ),
+        (
+            "01ARZ3NDEKTSV4RRFFQ69G5F13",
+            "2026-08-30T12:10:00Z",
+            canonical(br#"{"target":"records"}"#),
+            ActionAdmissionErrorV1::DeadlinePassed,
+        ),
+    ] {
+        let trace = active_trace();
+        let head = trace.head().clone();
+        let state = trace.activity_state().clone();
+        let transitions = trace.transition_count();
+        let callbacks = trace.activity_callback_count();
+        let result = trace.prepare(archive_action(
+            &trace,
+            &corpus,
+            action_id,
+            admitted_at,
+            payload,
+        ));
+        let Err(error) = result else {
+            panic!("admission boundary must reject before the Pack callback");
+        };
+        match (error, expected) {
+            (
+                TraceErrorV1::ActionAdmission(ActionAdmissionErrorV1::InvalidPayload(_)),
+                ActionAdmissionErrorV1::InvalidPayload(_),
+            )
+            | (
+                TraceErrorV1::ActionAdmission(ActionAdmissionErrorV1::NotOpen),
+                ActionAdmissionErrorV1::NotOpen,
+            )
+            | (
+                TraceErrorV1::ActionAdmission(ActionAdmissionErrorV1::DeadlinePassed),
+                ActionAdmissionErrorV1::DeadlinePassed,
+            ) => {}
+            (actual, expected) => {
+                panic!("unexpected Action admission error {actual:?}, expected {expected:?}")
+            }
+        }
+        assert_eq!(trace.head(), &head);
+        assert_eq!(trace.activity_state(), &state);
+        assert_eq!(trace.transition_count(), transitions);
+        assert_eq!(trace.activity_callback_count(), callbacks);
+    }
+
+    for (action_id, admitted_at) in [
+        ("01ARZ3NDEKTSV4RRFFQ69G5F16", "2026-08-30T12:00:00Z"),
+        ("01ARZ3NDEKTSV4RRFFQ69G5F17", "2026-08-30T12:09:59Z"),
+    ] {
+        let trace = active_trace();
+        let head = trace.head().clone();
+        let state = trace.activity_state().clone();
+        let transitions = trace.transition_count();
+        let callbacks = trace.activity_callback_count();
+        let prepared = trace.prepare(archive_action(
+            &trace,
+            &corpus,
+            action_id,
+            admitted_at,
+            canonical(br#"{"target":"records"}"#),
+        ));
+        assert!(
+            prepared.is_ok(),
+            "offer must be eligible inside its half-open interval"
+        );
+        assert_eq!(trace.head(), &head);
+        assert_eq!(trace.activity_state(), &state);
+        assert_eq!(trace.transition_count(), transitions);
+        assert_eq!(trace.activity_callback_count(), callbacks + 1);
+    }
 }
 
 #[test]

@@ -18,6 +18,7 @@ worldstream-pack-bundle = { path = "../worldstream-pack-bundle" }
 
 [dev-dependencies]
 wat.workspace = true
+worldstream-core = { path = "../worldstream-core", features = ["conformance-tracer"] }
 
 [lints]
 workspace = true
