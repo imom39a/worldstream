@@ -55,3 +55,27 @@ makes no provider calls. The component tests also cover input/focus retention,
 reconnect, background-tab catch-up, invalid deadlines, and timer cleanup.
 This regression is not a substitute for live gameplay or the broader IMO-184
 platform qualification.
+
+## Hosted verification — September 10
+
+The production website deployed source
+`23325dff0c6dcbee832a907d6e49ba369220d5e6` as
+`dpl_4HRmawQWVDU3pR4N6ZmdekCcdReJ` (Ready). `/api/deployment` reported the
+expected Listing, client release, unchanged Pack/projector, and migration head
+`20260910092539`. All eight files in each of the hosted v8 and retained v7
+artifacts were fetched from the public website and matched the reviewed local
+bytes. Fly readiness passed after the same-image restart.
+
+Focused checks passed: 50 Heist tests, 33 demo tests, 152 platform tests
+(one skipped), and 54 hosted development/runtime/approval tests (three
+environment-dependent skips). TypeScript lint, the production demo build,
+generated-artifact check, and client-identity checks passed. The broader native
+`hosted-dev --check` build was stopped; it is not claimed as passed.
+
+The signed-in Chrome create-room attempt was blocked by the one-waiting-room
+per-account capacity rule. An existing collecting-roster Launch already pinned
+Listing 0.25 and v8. It was left untouched. Therefore this update does **not**
+claim a newly completed paid live-match acceptance. Desktop/mobile countdown
+behavior was verified through the built-client mocked-stream browser test.
+Open the existing new waiting room from **My games** to play with v8; historical
+v7 rooms are intentionally not upgraded in place.
