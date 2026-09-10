@@ -35,14 +35,8 @@ async function main() {
     mkdir(secretRoot, { recursive: true, mode: 0o700 }),
   ]);
   await Promise.all([
-    copyFile(
-      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "agent-heist-web-v8.json"),
-      join(assetRoot, "agent-heist-web.json"),
-    ),
-    copyFile(
-      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "agent-heist-web-v7.json"),
-      join(assetRoot, "agent-heist-web-v7.json"),
-    ),
+    ...hostedSmokeClientAssets(REPOSITORY_ROOT, assetRoot).map(({ source, destination }) =>
+      copyFile(source, destination)),
     copyFile(
       join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "inspector-web-v2.json"),
       join(assetRoot, "inspector-web.json"),
@@ -154,6 +148,17 @@ async function main() {
     if (appliance !== null) await stopAppliance(appliance);
     await rm(temporary, { recursive: true, force: true });
   }
+}
+
+export function hostedSmokeClientAssets(repositoryRoot, assetRoot) {
+  return [
+    ["agent-heist-web-v9.json", "agent-heist-web.json"],
+    ["agent-heist-web-v8.json", "agent-heist-web-v8.json"],
+    ["agent-heist-web-v7.json", "agent-heist-web-v7.json"],
+  ].map(([release, installed]) => ({
+    source: join(repositoryRoot, "config", "activity-clients", "releases", release),
+    destination: join(assetRoot, installed),
+  }));
 }
 
 // `hosted:package:smoke` builds debug binaries. Honor Cargo's standard target
