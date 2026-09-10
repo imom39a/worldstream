@@ -442,6 +442,27 @@ export function closeMiraAtTerminal(state: ArchiveState, companionRole: Companio
   };
 }
 
+/** Prepare an edit against a new Head without retaining an old reply window.
+ * The reducer publishes this cancellation only if the entire edit is accepted.
+ * Accepted standing plans and prepared/deferred work remain untouched.
+ */
+export function cancelPendingOpportunities(
+  current: ArchiveState,
+  scheduled: CanonicalObject,
+): { readonly state: ArchiveState; readonly scheduled: CanonicalObject; readonly timerRequests: readonly CanonicalJson[] } {
+  let state = current;
+  const remaining = { ...scheduled };
+  const timerRequests: CanonicalJson[] = [];
+  for (const role of ["mira", "jonah"] as const) {
+    const opportunity = state[role].opportunity;
+    if (opportunity.status !== "open") continue;
+    state = { ...state, [role]: { ...state[role], opportunity: { ...emptyOpportunity(), revision: opportunity.revision } } };
+    timerRequests.push(...cancelMiraPlanningTimer(scheduled, role));
+    delete remaining[role === "mira" ? MIRA_PLAN_TIMER_ID : JONAH_PLAN_TIMER_ID];
+  }
+  return { state, scheduled: remaining, timerRequests };
+}
+
 export function prepareMiraResolution(
   state: ArchiveState,
   staged: StagedAction,
@@ -909,13 +930,19 @@ function exactTypeKeys(payload: CanonicalObject, expected: readonly string[]): v
 }
 
 function compareTimestamps(left: string, right: string): number {
-  return semanticMillisecond(left) - semanticMillisecond(right);
+  // Validate the calendar text, then compare the complete fractional precision.
+  // Epoch nanoseconds exceed safe JS integers for contemporary dates.
+  semanticMillisecond(left);
+  semanticMillisecond(right);
+  const key = (value: string) => value.slice(0, 19) + timestampFraction(value).padEnd(9, "0");
+  const leftKey = key(left);
+  const rightKey = key(right);
+  return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
 }
 
 function addSecondsToTimestamp(value: string, seconds: number): string {
   const next = semanticMillisecond(value) + seconds * 1_000;
   const wholeSeconds = Math.floor(next / 1_000);
-  const millisecond = next - wholeSeconds * 1_000;
   const days = Math.floor(wholeSeconds / 86_400);
   const secondOfDay = wholeSeconds - days * 86_400;
   const z = days + 719_468;
@@ -936,7 +963,14 @@ function addSecondsToTimestamp(value: string, seconds: number): string {
   const hour = Math.floor(secondOfDay / 3_600);
   const minute = Math.floor((secondOfDay % 3_600) / 60);
   const second = secondOfDay % 60;
-  return `${pad(year, 4)}-${pad(month, 2)}-${pad(day, 2)}T${pad(hour, 2)}:${pad(minute, 2)}:${pad(second, 2)}.${pad(millisecond, 3)}Z`;
+  // Adding whole seconds preserves every admitted fractional digit. Core
+  // timestamps require minimal precision, so zero/trailing zeroes are omitted.
+  const fraction = timestampFraction(value).replace(/0+$/u, "");
+  return `${pad(year, 4)}-${pad(month, 2)}-${pad(day, 2)}T${pad(hour, 2)}:${pad(minute, 2)}:${pad(second, 2)}${fraction === "" ? "" : `.${fraction}`}Z`;
+}
+
+function timestampFraction(value: string): string {
+  return value[19] === "." ? value.slice(20, -1) : "";
 }
 
 function semanticMillisecond(value: string): number {

@@ -1,0 +1,16 @@
+{
+  "acceptedAction": true,
+  "bundleDigest": "blake3:0ddcd385d0b250f9ec5a285df1783fbae45a685a90fcf69703026787959b540f",
+  "command": "prove",
+  "conformancePassed": true,
+  "declaredRejection": true,
+  "packId": "worldstream.midnight-archive",
+  "privateViews": 3,
+  "productionHost": "verified",
+  "retainedOldRevision": true,
+  "revisionDigest": "blake3:d398d13df28f50edcc271aa8f6ffa75f1c26eca1851ac78215aa8e0f6017d8e5",
+  "roles": 3,
+  "roomId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "status": "passed",
+  "transcriptDigest": "blake3:79a44a569a6fb050202b6f21668cc87139868d80eaa0cd66bad44206fc8cb256"
+}

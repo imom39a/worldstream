@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import "./specialists.test.js";
+import "./unavailable.test.js";
 
 import {
   ACTIVITY_START_SOURCE_ID,
@@ -838,7 +839,7 @@ test("an exhausted short plan preserves its standing task and enables a bounded 
 });
 
 test("terminal turns close Mira planning and cancel its one-shot timer", () => {
-  let state = freshActiveWithMira();
+  let state = { ...freshActiveWithMira(), turns_used: 15 };
   state = miraControl(state, "assign_mira_task", {
     task_kind: "investigate_records",
     power_allowance: 0,
@@ -846,9 +847,8 @@ test("terminal turns close Mira planning and cancel its one-shot timer", () => {
   state = applyMiraLeadControl(
     state, "request_mira_plan", {}, core(), "2026-09-09T12:00:00.000Z", {},
   ).state;
-  state = applyLeadAction(state, "stage_extract", {}, core()).state;
+  state = applyLeadAction(state, "stage_wait", {}, core()).state;
   state = miraControl(state, "defer_mira_contribution", {});
-  state = acknowledgeCurrentExtraction(state, core());
   const input = {
     ...reduceInput(state, {
       stimulus_type: "participant_action",
@@ -863,7 +863,7 @@ test("terminal turns close Mira planning and cancel its one-shot timer", () => {
   if (terminal.activity_disposition_type !== "apply") throw new Error("terminal commit did not apply");
   const finished = terminal.next_activity_state as unknown as ArchiveState;
   assert.equal(finished.phase, "complete");
-  assert.equal(finished.mira.opportunity.status, "expired");
+  assert.notEqual(finished.mira.opportunity.status, "open");
   assert.equal(finished.mira.preparation.status, "none");
   assert.deepEqual(terminal.timer_requests, [{
     timer_request_type: "cancel_current",

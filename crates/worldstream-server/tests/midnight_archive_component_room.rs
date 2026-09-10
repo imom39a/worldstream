@@ -9,7 +9,7 @@ use std::{
     env, fs,
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -20,8 +20,8 @@ use tower::ServiceExt as _;
 use tungstenite::{Message, WebSocket, client::IntoClientRequest as _};
 use worldstream_component_host::ComponentPackHostV1;
 use worldstream_core::{
-    AuthorityBootstrapV1, AuthorityV1, CapabilityBearerV1, PackRegistryStatusV1, PrincipalKindV1,
-    builtin_counter_registry,
+    AuthorityBootstrapV1, AuthorityV1, CapabilityBearerV1, HostClockErrorV1, HostClockSampleV1,
+    HostClockV1, PackRegistryStatusV1, PrincipalKindV1, builtin_counter_registry,
 };
 use worldstream_pack_bundle::PackBundleVerifierV1;
 use worldstream_protocol::{BearerWireV1, CreateRoomResponse};
@@ -36,11 +36,15 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const PACK_ID: &str = "worldstream.midnight-archive";
 const PACK_VERSION: &str = "0.1.0";
 const CURRENT_BUNDLE_DIGEST: &str =
-    "blake3:b82e0d5df065af1b31252a06e06a3bbd685a5ba63c3d2bfeb71a0d6dd06ebbab";
+    "blake3:0ddcd385d0b250f9ec5a285df1783fbae45a685a90fcf69703026787959b540f";
 const CURRENT_REVISION_DIGEST: &str =
-    "blake3:59bb814b920b0eb6f8b8886f2d368052189c0f9263d6c36c91894f639c8e19f5";
+    "blake3:d398d13df28f50edcc271aa8f6ffa75f1c26eca1851ac78215aa8e0f6017d8e5";
 const CURRENT_COMPONENT_DIGEST: &str =
-    "blake3:1c127958464352e324ddb450e0df398cbcc9867bbcb1834cb972df4595f3a87b";
+    "blake3:326eaf7db7474a9484f8e53a6398f111077e8bf4f41d0b4fc79590a2a0ac6d0d";
+const RETAINED_CONSECUTIVE_BUNDLE_DIGEST: &str =
+    "blake3:b82e0d5df065af1b31252a06e06a3bbd685a5ba63c3d2bfeb71a0d6dd06ebbab";
+const RETAINED_CONSECUTIVE_REVISION_DIGEST: &str =
+    "blake3:59bb814b920b0eb6f8b8886f2d368052189c0f9263d6c36c91894f639c8e19f5";
 const RETAINED_SPECIALIST_BUNDLE_DIGEST: &str =
     "blake3:309721db5290e9f2daf8c092ed97528d8cf7dc2bdcf577edef737f26e14157ea";
 const RETAINED_SPECIALIST_REVISION_DIGEST: &str =
@@ -97,9 +101,8 @@ fn release_bundle_path(bundle_digest: &str) -> PathBuf {
 
 fn current_bundle_path() -> PathBuf {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let proof_path = workspace.join(
-        "packs/midnight-archive/evidence/production-proof-0.1.0-specialist-crew-consecutive.json",
-    );
+    let proof_path = workspace
+        .join("packs/midnight-archive/evidence/production-proof-0.1.0-unavailable-companions.json");
     let proof: Value = serde_json::from_slice(
         &fs::read(&proof_path)
             .unwrap_or_else(|error| panic!("read Archive proof {proof_path:?}: {error}")),
@@ -231,27 +234,62 @@ async fn post(routes: &Router, authority: &str, path: &str, body: Value) -> Test
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> TestResult {
-    run_archive_witness(&[], false).await
+    run_archive_witness(&[], Scenario::Complete).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mira_assay_and_ordinary_hatch_complete_with_the_starting_crew() -> TestResult {
-    run_archive_witness(&["mira"], false).await
+    run_archive_witness(&["mira"], Scenario::Complete).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn jonah_specialist_hatch_completes_with_the_starting_crew() -> TestResult {
-    run_archive_witness(&["jonah"], false).await
+    run_archive_witness(&["jonah"], Scenario::Complete).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn full_crew_resolves_reservations_assay_and_extraction_before_replay() -> TestResult {
-    run_archive_witness(&["mira", "jonah"], false).await
+    run_archive_witness(&["mira", "jonah"], Scenario::Complete).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn partial_extraction_retains_missing_starting_crew_and_executed_work() -> TestResult {
-    run_archive_witness(&["mira", "jonah"], true).await
+    run_archive_witness(&["mira", "jonah"], Scenario::Partial).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unavailable_companions_expire_reconnect_and_allow_explicit_partial_extraction()
+-> TestResult {
+    run_archive_witness(&["mira", "jonah"], Scenario::Unavailable).await
+}
+
+#[derive(Clone, Copy)]
+enum Scenario {
+    Complete,
+    Partial,
+    Unavailable,
+}
+
+struct QualificationClock(Mutex<HostClockSampleV1>);
+
+impl HostClockV1 for QualificationClock {
+    fn sample(&self) -> Result<HostClockSampleV1, HostClockErrorV1> {
+        self.0
+            .lock()
+            .map(|sample| sample.clone())
+            .map_err(|_| HostClockErrorV1::Unavailable)
+    }
+}
+
+impl QualificationClock {
+    fn advance_to(&self, timestamp: &str) -> TestResult {
+        *self
+            .0
+            .lock()
+            .map_err(|_| "qualification clock unavailable")? =
+            HostClockSampleV1::new(timestamp.to_owned())?;
+        Ok(())
+    }
 }
 
 struct LiveWitness {
@@ -259,6 +297,7 @@ struct LiveWitness {
     agents: BTreeMap<String, WebSocket<TcpStream>>,
     room: String,
     agent_members: BTreeMap<String, String>,
+    agent_objectives: BTreeMap<String, Value>,
     state: Value,
     offers: Vec<Value>,
     sequence: u64,
@@ -304,14 +343,18 @@ impl LiveWitness {
         let receipt = receive(actor, "action.accepted")
             .map_err(|error| format!("{role}/{action} at Head {sequence}: {error}"))?;
         let observation = receive(&mut self.lead, "observation.deliver")?;
+        assert_eq!(receipt["room_head"]["room_seq"], sequence + 1);
+        self.install_observation(observation, sequence + 1)
+    }
+
+    fn install_observation(&mut self, observation: Value, sequence: u64) -> TestResult {
         self.state = projection(&observation);
         // Delta delivery omits unchanged offers; retain the last authorized set.
         if let Some(offers) = action_offers(&observation) {
             self.offers = offers.clone();
         }
         self.sequence = room_seq(&observation);
-        assert_eq!(self.sequence, sequence + 1);
-        assert_eq!(receipt["room_head"]["room_seq"], self.sequence);
+        assert_eq!(self.sequence, sequence);
         let indices = self
             .offers
             .iter()
@@ -334,6 +377,106 @@ impl LiveWitness {
             &ack_id,
         )?;
         receive(&mut self.lead, "observation.acked")?;
+        Ok(())
+    }
+
+    fn reject_agent(
+        &mut self,
+        role: &str,
+        payload: Value,
+        based_on: u64,
+        code: &str,
+    ) -> TestResult {
+        let action_id = self.id();
+        let message_id = self.id();
+        let body = json!({"room_id":self.room,"member_id":self.agent_members[role],"action_id":action_id,
+            "based_on_room_seq":based_on,"action_type":"submit_companion_plan","payload":payload});
+        let socket = self.agents.get_mut(role).ok_or("agent missing")?;
+        send(socket, "action.submit", &body, &message_id)?;
+        let rejection = receive(socket, "action.rejected")?;
+        assert_eq!(rejection["current_room_seq"], self.sequence);
+        if code == "stale_plan" {
+            assert_eq!(rejection["code"], "activity_domain_rejection");
+            assert_eq!(rejection["details"]["declared_code"], code);
+        } else {
+            assert_eq!(rejection["code"], code);
+        }
+        Ok(())
+    }
+
+    fn reconnect_agent(&mut self, address: SocketAddr, role: &str, bearer: &str) -> TestResult {
+        self.agents
+            .remove(role)
+            .ok_or("old agent stream missing")?
+            .close(None)?;
+        let stream = TcpStream::connect(address)?;
+        stream.set_read_timeout(Some(Duration::from_secs(15)))?;
+        let mut request = format!("ws://{address}/v1/stream").into_client_request()?;
+        request
+            .headers_mut()
+            .insert("authorization", format!("Bearer {bearer}").parse()?);
+        request.headers_mut().insert(
+            "sec-websocket-protocol",
+            worldstream_protocol::WEBSOCKET_SUBPROTOCOL.parse()?,
+        );
+        let (mut socket, _) = tungstenite::client(request, stream)?;
+        let hello_id = self.id();
+        send(
+            &mut socket,
+            "client.hello",
+            &json!({"client_name":"archive-reconnect-proof","client_version":"1","mode":"participant",
+            "supported_protocols":[worldstream_protocol::PROTOCOL_VERSION],"capabilities":["cursor_ack","projection_reset"]}),
+            &hello_id,
+        )?;
+        let welcome = receive(&mut socket, "server.welcome")?;
+        assert_eq!(welcome["authenticated_principal"]["kind"], "agent");
+        let attach_id = self.id();
+        send(
+            &mut socket,
+            "room.attach",
+            &json!({"room_id":self.room,"member_id":self.agent_members[role],"after_frame_seq":null}),
+            &attach_id,
+        )?;
+        let attached = receive(&mut socket, "room.attached")?;
+        assert_eq!(attached["member_id"], self.agent_members[role]);
+        assert_eq!(attached["room_head"]["room_seq"], self.sequence);
+        let reset = receive(&mut socket, "projection.reset")?;
+        let mut actual = projection(&reset);
+        let mut expected = self.state.clone();
+        // The role note is personalized even before either agent investigates.
+        expected["objective"] = self.agent_objectives[role].clone();
+        actual
+            .as_object_mut()
+            .ok_or("reconnect projection missing")?
+            .remove("action_offers");
+        expected
+            .as_object_mut()
+            .ok_or("lead projection missing")?
+            .remove("action_offers");
+        for (field, value) in expected.as_object().ok_or("expected projection missing")? {
+            assert_eq!(
+                &actual[field], value,
+                "{role} reconnect changed authorized {field}"
+            );
+        }
+        assert_eq!(
+            actual.as_object().map(serde_json::Map::len),
+            expected.as_object().map(serde_json::Map::len)
+        );
+        assert!(
+            action_offers(&reset).is_some_and(Vec::is_empty),
+            "an expired or cancelled opportunity must not reappear on reconnect"
+        );
+        let sync_id = self.id();
+        send(
+            &mut socket,
+            "room.sync_ack",
+            &json!({"room_id":self.room,"member_id":self.agent_members[role],
+            "through_frame_head":attached["frame_head"],"sync_token":attached["sync_token"]}),
+            &sync_id,
+        )?;
+        receive(&mut socket, "room.sync_acked")?;
+        self.agents.insert(role.to_owned(), socket);
         Ok(())
     }
 
@@ -414,6 +557,128 @@ impl LiveWitness {
 
 fn plan_step(kind: &str, destination: &str, source: &str, power: u64) -> Value {
     json!({"step_type":kind,"destination":destination,"source_id":source,"power_cost":power})
+}
+
+fn unavailable_route(live: &mut LiveWitness, clock: &QualificationClock) -> TestResult {
+    let admitted_at = time::OffsetDateTime::parse(
+        clock.sample()?.as_str(),
+        &time::format_description::well_known::Rfc3339,
+    )?;
+    live.personal("stage_move", json!({"destination":"records"}))?;
+    for role in ["mira", "jonah"] {
+        live.act(
+            "lead",
+            &format!("assign_{role}_task"),
+            json!({"task_kind":"investigate_records","power_allowance":0}),
+        )?;
+    }
+    live.act("lead", "request_mira_plan", json!({}))?;
+    let mira_head = live.sequence;
+    let mira_payload = json!({"task_revision":live.state["mira"]["task"]["revision"],
+        "opportunity_revision":live.state["mira"]["planning"]["opportunity_revision"],
+        "steps":[plan_step("inspect_source","none","records",0)]});
+    let deadline = live.state["mira"]["planning"]["deadline"]
+        .as_str()
+        .ok_or("Mira deadline missing")?
+        .to_owned();
+    assert_eq!(
+        time::OffsetDateTime::parse(&deadline, &time::format_description::well_known::Rfc3339)?
+            - admitted_at,
+        time::Duration::seconds(15)
+    );
+    live.reject("request_jonah_plan", json!({}), false)?;
+    // A deliberate edit cancels the old opportunity. Neither rebasing the old
+    // payload nor resubmitting it at its original Head can resurrect it.
+    live.act("lead", "stage_wait", json!({}))?;
+    assert_eq!(live.state["mira"]["planning"]["status"], "not_requested");
+    live.reject_agent("mira", mira_payload.clone(), mira_head, "stale_room_state")?;
+    live.reject_agent("mira", mira_payload, live.sequence, "action_not_allowed")?;
+    live.act("lead", "request_jonah_plan", json!({}))?;
+    let jonah_head = live.sequence;
+    let jonah_payload = json!({"task_revision":live.state["jonah"]["task"]["revision"],
+        "opportunity_revision":live.state["jonah"]["planning"]["opportunity_revision"],
+        "steps":[plan_step("inspect_source","none","records",0)]});
+    let mut wrong_task = jonah_payload.clone();
+    wrong_task["task_revision"] = json!(999);
+    live.reject_agent("jonah", wrong_task, live.sequence, "stale_plan")?;
+    assert_eq!(live.state["jonah"]["planning"]["deadline"], deadline);
+    let before = live.state.clone();
+    clock.advance_to(&deadline)?;
+    // The real Runtime scheduler commits the one due timer at the injected
+    // semantic time. No sleep is used to infer whether a reply has expired.
+    let expired = receive(&mut live.lead, "observation.deliver")
+        .map_err(|error| format!("scheduler expiry observation at Head {jonah_head}: {error}"))?;
+    live.install_observation(expired, jonah_head + 1)?;
+    assert_eq!(live.state["jonah"]["planning"]["status"], "expired");
+    for field in [
+        "turns_used",
+        "turns_remaining",
+        "power",
+        "location",
+        "staged_action",
+        "crew_debrief",
+    ] {
+        assert_eq!(live.state[field], before[field], "expiry changed {field}");
+    }
+    for role in ["mira", "jonah"] {
+        assert_eq!(live.state[role]["location"], "records");
+        assert_eq!(live.state[role]["planning"]["steps_completed"], 0);
+    }
+    live.reject_agent(
+        "jonah",
+        jonah_payload.clone(),
+        jonah_head,
+        "stale_room_state",
+    )?;
+    live.reject_agent("jonah", jonah_payload, live.sequence, "action_not_allowed")?;
+    Ok(())
+}
+
+fn finish_unavailable_route(live: &mut LiveWitness) -> TestResult {
+    for role in ["mira", "jonah"] {
+        live.act("lead", &format!("defer_{role}_contribution"), json!({}))?;
+    }
+    live.act("lead", "set_jonah_regroup", json!({}))?;
+    live.personal("stage_use_verifier", json!({}))?;
+    for (action, payload) in [
+        ("stage_move", json!({"destination":"plant"})),
+        ("stage_open_service_hatch", json!({})),
+        ("stage_move", json!({"destination":"vault"})),
+        (
+            "stage_recover_candidate",
+            json!({"candidate_id":"ledger-violet"}),
+        ),
+        ("stage_move", json!({"destination":"plant"})),
+        ("stage_move", json!({"destination":"records"})),
+        ("stage_move", json!({"destination":"atrium"})),
+    ] {
+        live.personal(action, payload)?;
+    }
+    live.extract()?;
+    assert_eq!(live.state["outcome"]["kind"], "partial_extraction");
+    assert_eq!(live.state["turns_used"], 10);
+    assert_eq!(live.state["power"], 0);
+    assert_eq!(
+        live.state["crew_debrief"]["starting_roles"],
+        json!(["lead", "mira", "jonah"])
+    );
+    assert_eq!(
+        live.state["crew_debrief"]["extracted_roles"],
+        json!(["lead", "jonah"])
+    );
+    assert_eq!(
+        live.state["crew_debrief"]["left_behind_roles"],
+        json!(["mira"])
+    );
+    assert!(
+        live.state["crew_debrief"]["completed_work"]
+            .as_array()
+            .ok_or("work debrief missing")?
+            .iter()
+            .all(|work| work["kind"] == "follow_move" || work["kind"] == "regroup_move"),
+        "missing replies must not be attributed fabricated specialist work"
+    );
+    Ok(())
 }
 
 fn specialist_route(live: &mut LiveWitness, roles: &[&str], partial: bool) -> TestResult {
@@ -618,7 +883,7 @@ fn specialist_route(live: &mut LiveWitness, roles: &[&str], partial: bool) -> Te
     Ok(())
 }
 
-async fn run_archive_witness(roles: &[&str], partial: bool) -> TestResult {
+async fn run_archive_witness(roles: &[&str], scenario: Scenario) -> TestResult {
     let (client_release_digest, client_surface_id) = client_binding_identity()?;
     let verified =
         PackBundleVerifierV1.inspect(Arc::<[u8]>::from(fs::read(current_bundle_path())?))?;
@@ -672,6 +937,10 @@ async fn run_archive_witness(roles: &[&str], partial: bool) -> TestResult {
             (
                 RETAINED_SPECIALIST_BUNDLE_DIGEST,
                 RETAINED_SPECIALIST_REVISION_DIGEST,
+            ),
+            (
+                RETAINED_CONSECUTIVE_BUNDLE_DIGEST,
+                RETAINED_CONSECUTIVE_REVISION_DIGEST,
             ),
         ] {
             let old = PackBundleVerifierV1
@@ -733,9 +1002,25 @@ async fn run_archive_witness(roles: &[&str], partial: bool) -> TestResult {
         )?,
         "2026-08-15T12:00:00Z".parse()?,
     )?;
-    let backend = Arc::new(SqliteGatewayBackend::new(store, Arc::new(registry)));
-    let routes =
-        operator_router(OperatorState::new(EffectiveConfig::default())?.with_backend(backend));
+    // Activity Start currently uses authority wall time. Start the injected
+    // Action/Timer clock beyond it, then advance only when the witness directs.
+    let clock_anchor =
+        (time::OffsetDateTime::now_utc() + time::Duration::days(1)).replace_nanosecond(0)?;
+    let clock = Arc::new(QualificationClock(Mutex::new(HostClockSampleV1::new(
+        clock_anchor.format(&time::format_description::well_known::Rfc3339)?,
+    )?)));
+    let backend = Arc::new(if matches!(scenario, Scenario::Unavailable) {
+        SqliteGatewayBackend::with_host_clock(store, Arc::new(registry), clock.clone())
+            .with_timer_authority(host_bearer)?
+    } else {
+        SqliteGatewayBackend::new(store, Arc::new(registry))
+    });
+    let state = OperatorState::new(EffectiveConfig::default())?.with_backend(backend);
+    let routes = operator_router(if matches!(scenario, Scenario::Unavailable) {
+        state.with_scheduler()?
+    } else {
+        state
+    });
     let host_header = format!("Bearer {}", BearerWireV1::from_bytes([0xc1; 32]).to_wire());
     let roster = std::iter::once("lead")
         .chain(roles.iter().copied())
@@ -822,6 +1107,7 @@ async fn run_archive_witness(roles: &[&str], partial: bool) -> TestResult {
         assert_eq!(state["power"], 3);
         assert_eq!(state["location"], "atrium");
         let mut agents = BTreeMap::new();
+        let mut agent_objectives = BTreeMap::new();
         for role in &owned_roles {
             assert_eq!(state[role]["presence"], "active");
             assert_eq!(state[role]["location"], "atrium");
@@ -838,14 +1124,15 @@ async fn run_archive_witness(roles: &[&str], partial: bool) -> TestResult {
             assert_eq!(welcome["authenticated_principal"]["kind"], "agent");
             send(&mut agent, "room.attach", &json!({"room_id":room,"member_id":member,"after_frame_seq":null}), "00000000000000000000000403")?;
             let attached = receive(&mut agent, "room.attached")?;
-            receive(&mut agent, "projection.reset")?;
+            let reset = receive(&mut agent, "projection.reset")?;
+            agent_objectives.insert(role.clone(), projection(&reset)["objective"].clone());
             send(&mut agent, "room.sync_ack", &json!({"room_id":room,"member_id":member,"through_frame_head":attached["frame_head"],"sync_token":attached["sync_token"]}), "00000000000000000000000404")?;
             receive(&mut agent, "room.sync_acked")?;
             agents.insert(role.clone(), agent);
         }
         let agent_members = capabilities.iter().filter(|(role, _)| role.as_str() != "lead")
             .map(|(role, (member, _))| (role.clone(), member.to_string())).collect();
-        let mut live = LiveWitness { lead: socket, agents, room: room.to_string(), agent_members, state,
+        let mut live = LiveWitness { lead: socket, agents, room: room.to_string(), agent_members, agent_objectives, state,
             offers: action_offers(&active).cloned().ok_or("initial offers missing")?, sequence: room_seq(&active), next_id: 1000, descriptor_actions };
         live.reject("stage_move", json!({"destination":"vault"}), false)?;
         live.reject("stage_wait", json!({}), true)?;
@@ -867,8 +1154,14 @@ async fn run_archive_witness(roles: &[&str], partial: bool) -> TestResult {
             assert_eq!(live.state["turns_used"], 15);
             assert_eq!(live.state["power"], 0);
             assert_eq!(live.state["crew_debrief"]["extracted_roles"], json!(["lead"]));
+        } else if matches!(scenario, Scenario::Unavailable) {
+            unavailable_route(&mut live, &clock)?;
+            for role in ["mira", "jonah"] {
+                live.reconnect_agent(address, role, &capabilities.get(role).ok_or("original agent capability missing")?.1)?;
+            }
+            finish_unavailable_route(&mut live)?;
         } else {
-            specialist_route(&mut live, &owned_roles.iter().map(String::as_str).collect::<Vec<_>>(), partial)?;
+            specialist_route(&mut live, &owned_roles.iter().map(String::as_str).collect::<Vec<_>>(), matches!(scenario, Scenario::Partial))?;
         }
         Ok((live.sequence, live.state))
     }).await?;

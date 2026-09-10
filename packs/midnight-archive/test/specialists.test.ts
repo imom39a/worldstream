@@ -310,12 +310,16 @@ test("extraction offers expose only the current preview, acknowledgement and com
   assert.deepEqual((participantProjection(state, "lead", core()).crew_debrief as CanonicalObject).extracted_roles, ["lead", "mira", "jonah"]);
 });
 
-test("accepted agent plans and planning expiry invalidate acknowledged extraction without advancing a turn", () => {
+test("extraction cancels an old reply window and an explicit new request invalidates its acknowledgement", () => {
   let state = action(fresh(), "lead", "assign_mira_task", { task_kind: "investigate_records", power_allowance: 0 });
   state = action(state, "lead", "request_mira_plan");
   state = action(state, "lead", "stage_extract");
   state = action(state, "lead", "prepare_extraction");
   state = action(state, "lead", "acknowledge_extraction", { preview_revision: state.extraction.revision, left_behind_roles: [] });
+  rejectAction(state, "mira", "submit_companion_plan", "stale_plan", { task_revision: state.mira.task.revision, opportunity_revision: state.mira.opportunity.revision,
+    steps: [step("move", "records")] });
+  state = action(state, "lead", "request_mira_plan");
+  assert.equal(state.extraction.status, "none");
   const accepted = action(state, "mira", "submit_companion_plan", { task_revision: state.mira.task.revision, opportunity_revision: state.mira.opportunity.revision,
     steps: [step("move", "records")] });
   assert.equal(accepted.extraction.status, "none");

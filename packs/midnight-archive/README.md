@@ -90,6 +90,23 @@ interactions; disclosed conflicts require restaging or explicit deferral.
 Independent effects resolve in lead–Mira–Jonah order from beginning-of-turn
 prerequisites, so a new gate cannot enable another contribution in that turn.
 
+Each explicit planning request opens one fifteen-second Pack opportunity.
+The window uses recorded admission time and a one-shot Timer, independently
+of a provider's timeout. Its canonical deadline preserves all admitted
+fractional precision, including nanoseconds; a reply at the exact deadline is
+late. Any accepted personal edit, task/order/preparation
+edit or Core proposal cancels an outstanding window before applying the edit.
+A rejected edit leaves it unchanged. A new planning request still rejects
+while another window is open, and a proposal must match its exact current
+Head, task and opportunity. An accepted standing plan survives ordinary turns;
+only its next eligible prepared step can execute.
+
+Expiry advances no Activity Turn, spends no power, executes no staged work,
+and emits no new Attention Signal. The lead can defer, wait, follow, regroup
+or explicitly extract with crew left behind. The Pack neither accepts a
+browser's provider-health assertion nor owns provider attempts or concurrency;
+those remain Runner responsibilities.
+
 Extraction requires prepare, acknowledgement and commit. Its preview includes
 companions returning to Atrium on that turn. Orders, plans, preparations,
 staged work, planning expiry and Core reconciliation invalidate an old preview.
@@ -167,8 +184,27 @@ also cover authenticated one-shot planning, standing-task replanning, one
 prepared step per committed turn, private inspection and explicit sharing,
 allowance and shared-power checks, replacement/suspension invalidation,
 terminal timer cancellation, following and one-edge regrouping.
+Unavailable-companion tests cover both Roles' cancellation and expiry races,
+accepted standing-plan retention, canonical nanosecond deadline boundaries,
+no-allowance continuation, restored Membership eligibility, and explicit
+partial extraction with attribution only for executed work. Hosted Room
+qualification uses an injected HostClock and the real Runtime scheduler to
+expire a missing reply, reconnects the original agent capabilities, and
+compares the completed mission with authorized Replay.
 
-The current consecutive-assay specialist-crew 0.1.0 bundle is
+The current unavailable-companion 0.1.0 bundle is
+[`worldstream-midnight-archive-0ddcd385d0b250f9ec5a285df1783fbae45a685a90fcf69703026787959b540f.wspack`](releases/0.1.0/worldstream-midnight-archive-0ddcd385d0b250f9ec5a285df1783fbae45a685a90fcf69703026787959b540f.wspack).
+Its physical bundle digest is
+`blake3:0ddcd385d0b250f9ec5a285df1783fbae45a685a90fcf69703026787959b540f`,
+its semantic revision is
+`blake3:d398d13df28f50edcc271aa8f6ffa75f1c26eca1851ac78215aa8e0f6017d8e5`,
+its Component digest is
+`blake3:326eaf7db7474a9484f8e53a6398f111077e8bf4f41d0b4fc79590a2a0ac6d0d`,
+and its production proof is retained in
+[`evidence/production-proof-0.1.0-unavailable-companions.json`](evidence/production-proof-0.1.0-unavailable-companions.json).
+
+The earlier consecutive-assay specialist-crew 0.1.0 bundle remains retained
+for exact reproducibility:
 [`worldstream-midnight-archive-b82e0d5df065af1b31252a06e06a3bbd685a5ba63c3d2bfeb71a0d6dd06ebbab.wspack`](releases/0.1.0/worldstream-midnight-archive-b82e0d5df065af1b31252a06e06a3bbd685a5ba63c3d2bfeb71a0d6dd06ebbab.wspack).
 Its physical bundle digest is
 `blake3:b82e0d5df065af1b31252a06e06a3bbd685a5ba63c3d2bfeb71a0d6dd06ebbab`,

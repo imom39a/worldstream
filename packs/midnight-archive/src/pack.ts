@@ -34,6 +34,7 @@ import { authorizedView } from "./view.js";
 import {
   MIRA_PLAN_ATTENTION_REASON,
   applyMiraLeadControl,
+  cancelPendingOpportunities,
   expireMiraOpportunity,
   initialCompanionFromCore,
   isMiraLeadControl,
@@ -160,10 +161,15 @@ export function reduceArchive(input: CanonicalObject): PackReduceOutput {
       const role = roleForMember(coreBefore, memberId);
       const actionPayload = payload(stimulus.canonical_payload);
       const admittedAt = stringValue(stimulus.admitted_at, "admitted_at");
+      // A request must still reject while another window is open. A proposal
+      // consumes its own exact window. Every other accepted edit supersedes it.
+      const editing = actionType === "request_mira_plan" || actionType === "request_jonah_plan" || actionType === "submit_companion_plan"
+        ? { state: current, scheduled, timerRequests: [] }
+        : cancelPendingOpportunities(current, scheduled);
       const applied = role === "lead"
         ? isMiraLeadControl(actionType)
-          ? applyMiraLeadControl(current, actionType, actionPayload, coreBefore, admittedAt, scheduled, actionType.includes("_jonah_") ? "jonah" : "mira")
-          : applyLeadAction(current, actionType, actionPayload, coreBefore, scheduled)
+          ? applyMiraLeadControl(editing.state, actionType, actionPayload, coreBefore, admittedAt, editing.scheduled, actionType.includes("_jonah_") ? "jonah" : "mira")
+          : applyLeadAction(editing.state, actionType, actionPayload, coreBefore, editing.scheduled)
         : (role === "mira" || role === "jonah") && actionType === "submit_companion_plan"
         ? submitMiraPlan(current, actionPayload, coreBefore, memberId, admittedAt, scheduled, role)
         : (() => { throw new RuleRejection("role_violation", "the acting Role cannot perform this Action"); })();
@@ -171,9 +177,9 @@ export function reduceArchive(input: CanonicalObject): PackReduceOutput {
         activity_disposition_type: "apply",
         next_activity_state: stateAsCanonical(isMiraLeadControl(actionType) || actionType === "submit_companion_plan" ? invalidateExtraction(applied.state) : applied.state),
         ordered_domain_events: [applied.event],
-        timer_requests: "timerRequests" in applied
+        timer_requests: [...("timerRequests" in applied
           ? applied.timerRequests as readonly CanonicalJson[]
-          : [],
+          : []), ...editing.timerRequests],
         ordered_attention_signals: "attentionSignals" in applied
           ? applied.attentionSignals as readonly CanonicalJson[]
           : [],
@@ -190,13 +196,14 @@ export function reduceArchive(input: CanonicalObject): PackReduceOutput {
       };
     }
     if (stimulusType === "core_proposed") {
-      const reconciled = reconcileMira(current, coreAfter, scheduled);
-      const jonah = reconcileMira(reconciled.state, coreAfter, scheduled, "jonah");
+      const editing = cancelPendingOpportunities(current, scheduled);
+      const reconciled = reconcileMira(editing.state, coreAfter, editing.scheduled);
+      const jonah = reconcileMira(reconciled.state, coreAfter, editing.scheduled, "jonah");
       return {
         activity_disposition_type: "apply",
         next_activity_state: stateAsCanonical(invalidateExtraction(jonah.state)),
         ordered_domain_events: [],
-        timer_requests: [...reconciled.timerRequests, ...jonah.timerRequests],
+        timer_requests: [...reconciled.timerRequests, ...jonah.timerRequests, ...editing.timerRequests],
         ordered_attention_signals: [],
       };
     }
