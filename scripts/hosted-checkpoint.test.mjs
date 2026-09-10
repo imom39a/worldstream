@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { chmod, copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -153,6 +153,16 @@ test("a failed repeat drill preserves its captured identity and refuses verifica
     const retry = join(root, "retry");
     await mkdir(retry, { mode: 0o700 });
     await Promise.all(files.map((name) => copyFile(join(root, name), join(retry, name))));
+    // The original drill admitted a legacy two-root archive. Exercise the
+    // complete retry/verification path with the new retained executable root.
+    await mkdir(join(root, "retained-runner-executables"), { mode: 0o700 });
+    await writeFile(join(root, "retained-runner-executables", "runner"), "retained runner", { mode: 0o700 });
+    const retryControllerArchive = join(retry, "worldstream-controller.tar");
+    execFileSync("tar", ["-cf", retryControllerArchive, "-C", root, "studio", "maintenance", "retained-runner-executables"]);
+    await writeFile(join(retry, "manifest.json"), JSON.stringify({
+      ...manifest, controller_archive_digest: digest(await readFile(retryControllerArchive)),
+    }), { mode: 0o600 });
+    const retryBefore = await Promise.all(files.map((name) => readFile(join(retry, name))));
     await writeFile(join(retry, "verification.json"), "retained-insufficient-v2-proof", { mode: 0o600 });
     const platformFixture = { installation_id: "fly-primary", launches_open: false, house_fill_open: false,
       maintenance_mode: true, recovery_fenced: false, counts: Object.fromEntries(EMPTY_PLATFORM_TABLES.map((table) => [table, 0])) };
@@ -185,7 +195,7 @@ test("a failed repeat drill preserves its captured identity and refuses verifica
       assert.equal(proof.prelaunch_correspondence.platform_activity_records, 0);
       assert.equal(proof.populated_recovery, "not_verified_requires_complete_correspondence_verifier");
       assert.equal(await readFile(join(retry, "verification.json"), "utf8"), "retained-insufficient-v2-proof");
-      assert.deepEqual(await Promise.all(files.map((name) => readFile(join(retry, name)))), before);
+      assert.deepEqual(await Promise.all(files.map((name) => readFile(join(retry, name)))), retryBefore);
     } finally {
       server.closeAllConnections();
       await new Promise((done) => server.close(done));
@@ -304,6 +314,24 @@ test("archive inventory cannot escape its retained volume children", () => {
   );
 });
 
+test("Controller archive inventory accepts legacy v1 roots and retained executables", () => {
+  const required = ["studio", "maintenance"];
+  const allowed = [...required, "retained-runner-executables"];
+  assert.deepEqual(validateTarEntries("studio/\nmaintenance/\n", allowed, required), required);
+  assert.deepEqual(validateTarEntries(
+    "studio/\nmaintenance/\nretained-runner-executables/runner\n", allowed, required,
+  ), [...required, "retained-runner-executables/runner"]);
+  for (const missing of required) {
+    const entries = allowed.filter((root) => root !== missing).join("\n");
+    assert.throws(() => validateTarEntries(entries, allowed, required), /checkpoint_archive_root_missing/u);
+  }
+  assert.throws(() => validateTarEntries("studio/\nmaintenance/\ncheckpoints/\n", allowed, required),
+    /checkpoint_archive_scope_invalid/u);
+  assert.throws(() => validateTarEntries(
+    "studio/\nmaintenance/\nretained-runner-executables/../secret\n", allowed, required,
+  ), /checkpoint_archive_path_invalid/u);
+});
+
 test("volume capture is no-clobber and requires an offline fence", async () => {
   const root = await mkdtemp(join(tmpdir(), "worldstream-volume-capture-test-"));
   try {
@@ -311,11 +339,16 @@ test("volume capture is no-clobber and requires an offline fence", async () => {
       mkdir(join(root, "runtime"), { mode: 0o700 }),
       mkdir(join(root, "studio"), { mode: 0o700 }),
       mkdir(join(root, "maintenance"), { mode: 0o700 }),
+      mkdir(join(root, "retained-runner-executables"), { mode: 0o700 }),
       mkdir(join(root, "checkpoints"), { mode: 0o700 }),
     ]);
+    const runnerBytes = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x00, 0xff, 0x0a]);
+    const runnerPath = "retained-runner-executables/0123456789abcdef/house-runner";
+    await mkdir(join(root, "retained-runner-executables", "0123456789abcdef"), { mode: 0o700 });
     await Promise.all([
       writeFile(join(root, "runtime", "worldstream.sqlite3"), "runtime", { mode: 0o600 }),
       writeFile(join(root, "studio", "retained.json"), "{}\n", { mode: 0o600 }),
+      writeFile(join(root, runnerPath), runnerBytes, { mode: 0o700 }),
     ]);
     const input = {
       volumeRoot: root,
@@ -331,7 +364,47 @@ test("volume capture is no-clobber and requires an offline fence", async () => {
       JSON.parse(await readFile(join(captured.destination, "capture.json"), "utf8")).checkpoint_id,
       input.checkpointId,
     );
+    const controllerArchive = join(captured.destination, captured.receipt.controller_archive);
+    const inventory = execFileSync("tar", ["-tf", controllerArchive], { encoding: "utf8" });
+    const entries = validateTarEntries(inventory, ["studio", "maintenance", "retained-runner-executables"]);
+    assert.ok(entries.includes("studio/retained.json"));
+    assert.ok(entries.includes("maintenance/closed"));
+    assert.ok(entries.includes(runnerPath));
+    assert.deepEqual(execFileSync("tar", ["-xOf", controllerArchive, runnerPath]), runnerBytes);
+    const runtimeInventory = execFileSync("tar", ["-tf", join(captured.destination, captured.receipt.runtime_archive)],
+      { encoding: "utf8" });
+    assert.ok(validateTarEntries(runtimeInventory, ["runtime"]).includes("runtime/worldstream.sqlite3"));
     await assert.rejects(() => captureHostedVolume(input), /checkpoint_already_exists/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("new volume captures require a real owner-only retained executable directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "worldstream-capture-runner-safety-test-"));
+  try {
+    for (const child of ["runtime", "studio", "maintenance", "checkpoints"]) {
+      await mkdir(join(root, child), { mode: 0o700 });
+    }
+    await writeFile(join(root, "maintenance", "closed"), "maintenance\n", { mode: 0o600 });
+    const input = {
+      volumeRoot: root,
+      checkpointId: "82000000-0000-4000-8000-000000000002",
+      deploymentVersion: "a".repeat(40),
+      waitForClosed: async () => { assert.fail("unsafe directories must be rejected before capture starts"); },
+    };
+    const retained = join(root, "retained-runner-executables");
+    await assert.rejects(() => captureHostedVolume(input), { code: "ENOENT" });
+    await symlink(join(root, "studio"), retained);
+    await assert.rejects(() => captureHostedVolume(input), /unsafe_hosted_volume_directory/u);
+    await rm(retained);
+    await writeFile(retained, "not a directory", { mode: 0o600 });
+    await assert.rejects(() => captureHostedVolume(input), /unsafe_hosted_volume_directory/u);
+    await rm(retained);
+    await mkdir(retained, { mode: 0o700 });
+    await chmod(retained, 0o750);
+    await assert.rejects(() => captureHostedVolume(input), /unsafe_hosted_volume_directory/u);
+    assert.equal(existsSync(join(root, "checkpoints", input.checkpointId)), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -26,6 +26,9 @@ const MIGRATION_HEAD = /^[0-9]{14}$/u;
 const SERVICE_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,62}$/u;
 const CHECKPOINT_CONFIRMATION = "worldstream-disposable-restore-target";
 const VERIFICATION_FILE = "verification-prelaunch-v1.json";
+const CONTROLLER_REQUIRED_ROOTS = ["studio", "maintenance"];
+// Older v1 captures predate retained executables; new captures include them.
+const CONTROLLER_ALLOWED_ROOTS = [...CONTROLLER_REQUIRED_ROOTS, "retained-runner-executables"];
 
 export function createDeploymentRevision({
   sourceRevision,
@@ -88,7 +91,7 @@ export function deploymentRevisionBytes(value) {
   return Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
 }
 
-export function validateTarEntries(entries, allowedRoots) {
+export function validateTarEntries(entries, allowedRoots, requiredRoots = allowedRoots) {
   const roots = new Set(allowedRoots);
   const normalized = entries
     .split("\n")
@@ -102,7 +105,7 @@ export function validateTarEntries(entries, allowedRoots) {
     const root = entry.split("/")[0];
     if (!roots.has(root)) throw new Error("checkpoint_archive_scope_invalid");
   }
-  for (const root of roots) {
+  for (const root of requiredRoots) {
     if (!normalized.some((entry) => entry === root || entry.startsWith(`${root}/`))) {
       throw new Error("checkpoint_archive_root_missing");
     }
@@ -256,7 +259,7 @@ async function pairCheckpointCommand(options) {
     throw new Error("volume_capture_digest_mismatch");
   }
   await verifyTar(runtimeSource, ["runtime"]);
-  await verifyTar(controllerSource, ["studio", "maintenance"]);
+  await verifyTar(controllerSource, CONTROLLER_ALLOWED_ROOTS, CONTROLLER_REQUIRED_ROOTS);
 
   const deploymentBytes = await readProtectedFile(deploymentPath, 65_536);
   const deployment = parseDeploymentRevision(deploymentBytes);
@@ -584,16 +587,16 @@ async function verifyCheckpointDirectory(directoryValue) {
   const deployment = parseDeploymentRevision(deploymentBytes);
   const checks = [
     [manifest.runtime_archive, manifest.runtime_archive_digest, ["runtime"]],
-    [manifest.controller_archive, manifest.controller_archive_digest, ["studio", "maintenance"]],
+    [manifest.controller_archive, manifest.controller_archive_digest, CONTROLLER_ALLOWED_ROOTS, CONTROLLER_REQUIRED_ROOTS],
     [manifest.supabase_dump, manifest.supabase_dump_digest, null],
   ];
-  for (const [name, digest, roots] of checks) {
+  for (const [name, digest, roots, requiredRoots] of checks) {
     if (basename(name) !== name || !SHA256.test(digest)) {
       throw new Error("invalid_hosted_checkpoint_manifest");
     }
     const path = join(directory, name);
     if (await sha256File(path) !== digest) throw new Error("checkpoint_digest_mismatch");
-    if (roots !== null) await verifyTar(path, roots);
+    if (roots !== null) await verifyTar(path, roots, requiredRoots);
   }
   await runDatabaseTool(pgTool("WORLDSTREAM_PG_RESTORE", "pg_restore"), [
     "--list",
@@ -709,9 +712,9 @@ function run(command, args, capture = false, environment = process.env) {
   });
 }
 
-async function verifyTar(path, roots) {
+async function verifyTar(path, roots, requiredRoots = roots) {
   const result = await run("tar", ["--list", "--file", path], true);
-  validateTarEntries(result.stdout, roots);
+  validateTarEntries(result.stdout, roots, requiredRoots);
 }
 
 async function copyExclusive(source, destination) {

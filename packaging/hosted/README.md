@@ -12,6 +12,7 @@ Studio UI. The retained volume has these explicit children:
 /var/lib/worldstream/
   runtime/       # Runtime database and exact Pack inventory
   studio/        # Controller state; the legacy kernel path name is retained
+  retained-runner-executables/ # Exact executable bytes pinned by Runner Templates
   maintenance/   # closed and recovery-fence markers
   checkpoints/   # no-clobber volume captures awaiting operator download
 ```
@@ -140,6 +141,13 @@ authority and does not reopen the platform until all required services agree.
 3. Wait until loopback ports 9410 and 9420 are closed.
 4. Run the image's `/opt/worldstream/hosted/hosted-volume-capture.mjs`. It writes
    two no-clobber archives and `capture.json` below `checkpoints/{uuid}`.
+   The Runtime archive contains `runtime/`; the Controller archive contains
+   `studio/`, `maintenance/`, and `retained-runner-executables/`, including the
+   exact executable bytes required by installed immutable Runner Templates.
+   New captures require all these source directories to be real, owner-only
+   directories. Older v1 Controller archives containing only `studio/` and
+   `maintenance/` remain verifiable, but cannot prove that retained Runner
+   executables were captured.
 5. Download that complete directory with `fly sftp get`. Use a private directory
    outside Git. Set the directory to mode 0700 and its downloaded files to 0600;
    SFTP may not preserve the source permissions.

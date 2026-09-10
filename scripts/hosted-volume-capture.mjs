@@ -28,7 +28,7 @@ export async function captureHostedVolume({
   if (!(await exists(closed)) && !(await exists(recoveryFence))) {
     throw new Error("maintenance_required_before_capture");
   }
-  for (const child of ["runtime", "studio", "maintenance", "checkpoints"]) {
+  for (const child of ["runtime", "studio", "maintenance", "retained-runner-executables", "checkpoints"]) {
     await requireSafeDirectory(join(root, child));
   }
   await waitForClosed();
@@ -53,6 +53,7 @@ export async function captureHostedVolume({
       root,
       "studio",
       "maintenance",
+      "retained-runner-executables",
     ]);
     await Promise.all([chmod(runtimeArchive, 0o600), chmod(controllerArchive, 0o600)]);
     const [runtimeDigest, controllerDigest] = await Promise.all([
