@@ -9,6 +9,8 @@ select has_table('platform_store', 'capacity_gates', 'capacity gate exists');
 select has_table('platform_store', 'capacity_reservations', 'capacity reservations exist');
 select has_table('platform_store', 'seat_invitations', 'Seat Invitations exist');
 select has_table('platform_store', 'seat_claims', 'Seat Claims exist');
+select has_table('platform_store', 'launch_closure_intents', 'Launch Closure intents exist');
+select has_table('platform_store', 'launch_closures', 'Launch Closure evidence exists');
 
 select ok(
   (select bool_and(classes.relrowsecurity)
@@ -21,7 +23,9 @@ select ok(
        'capacity_gates',
        'capacity_reservations',
        'seat_invitations',
-       'seat_claims'
+       'seat_claims',
+       'launch_closure_intents',
+       'launch_closures'
      )),
   'every formation table has RLS enabled'
 );
@@ -29,7 +33,11 @@ select ok(
   not has_table_privilege('anon', 'platform_store.launch_requests', 'select')
   and not has_table_privilege('authenticated', 'platform_store.launch_requests', 'select')
   and not has_table_privilege('anon', 'platform_store.seat_claims', 'select')
-  and not has_table_privilege('authenticated', 'platform_store.seat_claims', 'select'),
+  and not has_table_privilege('authenticated', 'platform_store.seat_claims', 'select')
+  and not has_table_privilege('anon', 'platform_store.launch_closure_intents', 'select')
+  and not has_table_privilege('authenticated', 'platform_store.launch_closure_intents', 'select')
+  and not has_table_privilege('anon', 'platform_store.launch_closures', 'select')
+  and not has_table_privilege('authenticated', 'platform_store.launch_closures', 'select'),
   'browser roles cannot read formation tables'
 );
 
@@ -54,6 +62,21 @@ select has_function(
   'platform_api',
   'authorize_host_mutation_v1',
   array['uuid', 'uuid', 'text', 'text']
+);
+select has_function(
+  'platform_api',
+  'request_launch_closure_v1',
+  array['uuid', 'uuid', 'text', 'bytea', 'bytea']
+);
+select has_function(
+  'platform_api',
+  'record_launch_closure_v1',
+  array['uuid', 'bytea', 'bytea']
+);
+select has_function(
+  'platform_api',
+  'list_pending_launch_closures_v1',
+  array['integer']
 );
 select ok(
   not exists (
@@ -81,6 +104,27 @@ select ok(
     'execute'
   ),
   'only the server role can execute launch creation'
+);
+select ok(
+  not has_function_privilege(
+    'anon', 'platform_api.request_launch_closure_v1(uuid,uuid,text,bytea,bytea)', 'execute'
+  )
+  and not has_function_privilege(
+    'authenticated', 'platform_api.request_launch_closure_v1(uuid,uuid,text,bytea,bytea)', 'execute'
+  )
+  and has_function_privilege(
+    'service_role', 'platform_api.request_launch_closure_v1(uuid,uuid,text,bytea,bytea)', 'execute'
+  )
+  and not has_function_privilege(
+    'anon', 'platform_api.record_launch_closure_v1(uuid,bytea,bytea)', 'execute'
+  )
+  and not has_function_privilege(
+    'authenticated', 'platform_api.record_launch_closure_v1(uuid,bytea,bytea)', 'execute'
+  )
+  and has_function_privilege(
+    'service_role', 'platform_api.record_launch_closure_v1(uuid,bytea,bytea)', 'execute'
+  ),
+  'only the server role can request or complete creator closure'
 );
 select is(
   (select hard_limit from platform_store.capacity_gates where gate_kind = 'active_run'),
@@ -649,6 +693,139 @@ select throws_ok(
   'an ambiguous Host mutation cannot release capacity through cancellation'
 );
 
+create temporary table creator_closure_request as
+select
+  convert_to(jsonb_build_object(
+    'schema', 'worldstream/hosted-launch-closure-request/v1',
+    'launch_request_id', launches.launch_request_id,
+    'listing_revision_digest', launches.listing_revision_digest,
+    'launch_request_digest', 'blake3:' || repeat('a', 64),
+    'room_setup_operation_id', launches.room_setup_operation_id
+  )::text, 'utf8') as body
+from platform_store.launch_requests launches
+where launches.launch_request_id = (select launch_request_id from first_launch);
+
+select ok(
+  platform_api.request_launch_closure_v1(
+    '10000000-0000-4000-8000-000000000001',
+    (select launch_request_id from first_launch),
+    'host-local',
+    (select body from creator_closure_request),
+    extensions.digest((select body from creator_closure_request), 'sha256')
+  ),
+  'the creator can durably request closure after Host mutation began'
+);
+select is(
+  (select state from platform_store.launch_requests
+   where launch_request_id = (select launch_request_id from first_launch)),
+  'closing',
+  'closure first moves the launch into its monotonic closing state'
+);
+select is(
+  (select count(*)::integer from platform_api.list_pending_launch_closures_v1(10)
+   where launch_request_id = (select launch_request_id from first_launch)),
+  1,
+  'the recovery lane retains a creator close until Host evidence arrives'
+);
+select isnt(
+  platform_api.read_hosted_recovery_material_v1((select launch_request_id from first_launch)),
+  null::jsonb,
+  'closing remains recoverable without granting new browser authority'
+);
+select is(
+  (platform_api.list_my_games_v1(
+    '10000000-0000-4000-8000-000000000001', null, null, 20
+  ) #> array['items', '0', 'state']),
+  '"activity_closing"'::jsonb,
+  'My Games distinguishes a retained close from resumable setup'
+);
+select is(
+  (platform_api.list_my_games_v1(
+    '10000000-0000-4000-8000-000000000001', null, null, 20
+  ) #> array['items', '0', 'action']),
+  '"finish_closing"'::jsonb,
+  'My Games lets the creator retry retained closure instead of continuing setup'
+);
+
+create temporary table creator_closure_evidence as
+select convert_to(jsonb_build_object(
+  'schema', 'worldstream/hosted-launch-closure-evidence/v1',
+  'host_installation_id', 'host-local',
+  'launch_request_id', launches.launch_request_id,
+  'listing_revision_digest', launches.listing_revision_digest,
+  'launch_request_digest', 'blake3:' || repeat('a', 64),
+  'room_setup_operation_id', launches.room_setup_operation_id,
+  'disposition', 'cancelled_before_genesis',
+  'room_id', null,
+  'room_head', null,
+  'closure_fence_digest', 'blake3:' || repeat('b', 64),
+  'authentication_tag', repeat('c', 64)
+)::text, 'utf8') as body
+from platform_store.launch_requests launches
+where launches.launch_request_id = (select launch_request_id from first_launch);
+
+select ok(
+  platform_api.record_launch_closure_v1(
+    (select launch_request_id from first_launch),
+    (select body from creator_closure_evidence),
+    extensions.digest((select body from creator_closure_evidence), 'sha256')
+  ),
+  'exact Host no-Genesis evidence completes creator closure'
+);
+select ok(
+  (select launches.state = 'closed_by_creator'
+     and bool_and(reservations.released_at is not null)
+     and bool_and(reservations.release_reason = 'creator_closed')
+   from platform_store.launch_requests launches
+   join platform_store.capacity_reservations reservations using (launch_request_id)
+   where launches.launch_request_id = (select launch_request_id from first_launch)
+   group by launches.state),
+  'only retained closure evidence releases all launch capacity'
+);
+select is(
+  (platform_api.list_my_games_v1(
+    '10000000-0000-4000-8000-000000000001', null, null, 20
+  ) #> array['items', '0', 'state']),
+  '"activity_closed"'::jsonb,
+  'My Games distinguishes a completed creator close from no-Room abandonment'
+);
+select ok(
+  platform_api.record_launch_closure_v1(
+    (select launch_request_id from first_launch),
+    (select body from creator_closure_evidence),
+    extensions.digest((select body from creator_closure_evidence), 'sha256')
+  ),
+  'an exact closure evidence retry is idempotent'
+);
+select is(
+  (select count(*)::integer from platform_store.launch_closures
+   where launch_request_id = (select launch_request_id from first_launch)),
+  1,
+  'closure retries cannot create a second retained decision'
+);
+select ok(
+  (select not was_created and launch_state = 'closed_by_creator'
+   from platform_api.create_launch_request_v1(
+     '10000000-0000-4000-8000-000000000001',
+     'blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1',
+     'formation-test', decode(repeat('11', 32), 'hex'), convert_to('{}', 'utf8'),
+     extensions.digest(convert_to('{}', 'utf8'), 'sha256'),
+     'worldstream/canonical-json/v1', 'disabled', 'seat', 'navigator', 'account_human'
+   )),
+  'a stale browser key resolves the closed lineage instead of creating a duplicate'
+);
+select ok(
+  (select was_created
+   from platform_api.create_launch_request_v1(
+     '10000000-0000-4000-8000-000000000001',
+     'blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1',
+     'formation-test', decode(repeat('12', 32), 'hex'), convert_to('{}', 'utf8'),
+     extensions.digest(convert_to('{}', 'utf8'), 'sha256'),
+     'worldstream/canonical-json/v1', 'disabled', 'seat', 'navigator', 'account_human'
+   )),
+  'terminal Host evidence lets the creator immediately start a fresh launch'
+);
+
 create temporary table cancelled_launch as
 select * from platform_api.create_launch_request_v1(
   '10000000-0000-4000-8000-000000000004',
@@ -758,7 +935,7 @@ where gates.gate_kind = 'active_run';
 alter table platform_store.capacity_gates enable trigger protect_capacity_gate_v1;
 insert into platform_store.platform_accounts(account_id)
 select ('30000000-0000-4000-8000-' || lpad(series::text, 12, '0'))::uuid
-from generate_series(1, 10) series;
+from generate_series(1, 11) series;
 create temporary table global_capacity_candidate(launch_request_id uuid primary key);
 grant select, insert on global_capacity_candidate to service_role;
 set local role service_role;
@@ -770,7 +947,7 @@ declare
   roster bytea;
   setup bytea;
 begin
-  for series in 1..10 loop
+  for series in 1..11 loop
     account_id := ('30000000-0000-4000-8000-' || lpad(series::text, 12, '0'))::uuid;
     select created.launch_request_id
     into launch_id
@@ -815,7 +992,7 @@ begin
       'host-local',
       'gate-operation-' || series::text
     );
-    if series <= 9 then
+    if series <= 10 then
       perform platform_api.authorize_host_mutation_v1(
         account_id,
         launch_id,
@@ -838,8 +1015,8 @@ select is(
 select throws_ok(
   format(
     $query$select platform_api.authorize_host_mutation_v1(
-      '30000000-0000-4000-8000-000000000010', %L,
-      'host-local', 'gate-operation-10')$query$,
+      '30000000-0000-4000-8000-000000000011', %L,
+      'host-local', 'gate-operation-11')$query$,
     (select launch_request_id from global_capacity_candidate)
   ),
   '55000',

@@ -20,10 +20,12 @@ use serde_json::{Value, json};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use worldstream_core::{
     AccessModeV1, ActivationIntentStateV1, ActivationOperationRequestV1, ActivationResultCodeV1,
-    AdmissionLaneErrorV1, AuthorityChangeId, AuthorityChangeV1, AuthorityCheckedAt,
-    AuthorityErrorV1, AuthorityStoreV1, AuthorityV1, AuthorizedReceiptResolverV1,
-    AuthorizedRunnerControlV1, CREATE_ROOM_OPERATION_KIND, CanonicalJsonV1, CapabilityBearerV1,
-    CapabilityExpiresAt, CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1,
+    AdministrationOperationIdentityV1, AdmissionLaneErrorV1, AuthorityChangeId, AuthorityChangeV1,
+    AuthorityCheckedAt, AuthorityErrorV1, AuthorityStoreV1, AuthorityV1,
+    AuthorizedReceiptResolverV1, AuthorizedRunnerControlV1, CORE_OPERATION_KIND,
+    CREATE_ROOM_OPERATION_KIND, CanonicalJsonV1, CapabilityBearerV1, CapabilityExpiresAt,
+    CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1, CoreAdministrationIngressV1,
+    CoreAdministrationRequestV1, CoreChangeSetV1, CoreProposedKindV1, CoreRecordedAt,
     CreationRecordedAt, DiagnosticOperationV1, DiagnosticTargetV1, ExternalInputRecordedAt,
     HistoricalReplayErrorV1, HostClockErrorV1, HostClockSampleV1, HostClockV1,
     InitialMembershipProposalV1, MemberReadOperationV1, MembershipStandingV1, MembershipV1,
@@ -34,8 +36,9 @@ use worldstream_core::{
     RoomCreationRequestV1, RoomId, RoomMembershipKeyV1, RoomSeedV1, RoomSequenceV1,
     RunnerControlOperationV1, RunnerId, RunnerMembershipSetV1, SemanticResultV1, SessionErrorV1,
     SessionFrameV1, SessionSyncTokenV1, SessionV1, StoredSemanticResultV1, TimerFiredRequestV1,
-    TimerGenerationV1, TimerId, TransitionId, authorize_participant_action_operation,
-    authorize_room_creation_operation, commit_room_creation,
+    TimerGenerationV1, TimerId, TransitionId, authorize_core_administration_operation,
+    authorize_participant_action_operation, authorize_room_creation_operation,
+    commit_room_creation,
 };
 use worldstream_postgres::{
     PostgresActivationError, PostgresAuthorityAuthenticationError,
@@ -57,9 +60,10 @@ use worldstream_protocol::{
     OperatorLiveBackupStatus, OperatorRoomIntegrity, OperatorRoomIntegrityStatus,
     OperatorRoomInventoryPage, OperatorRoomInventoryRequest, OperatorRoomSummary, PROTOCOL_VERSION,
     PackReference, Principal, PrincipalKind, Projection, ProjectionReset, ProjectionResponse,
-    ReplayResponse, RoomAttach, RoomAttached, RoomHead, RoomSyncAck,
-    RunnerCapabilityProvisionRequestV1, RunnerCapabilityProvisionResponseV1, RunnerHello,
-    RunnerReady, ServerWelcome, SyncBranch, TimerFireRequest, TimerFireResponse,
+    ROOM_ARCHIVE_RESPONSE_SCHEMA_V1, ReplayResponse, RoomArchiveRequestV1, RoomArchiveResponseV1,
+    RoomAttach, RoomAttached, RoomHead, RoomSyncAck, RunnerCapabilityProvisionRequestV1,
+    RunnerCapabilityProvisionResponseV1, RunnerHello, RunnerReady, ServerWelcome, SyncBranch,
+    TimerFireRequest, TimerFireResponse,
 };
 use worldstream_runtime::SecretSource;
 
@@ -1998,6 +2002,90 @@ impl GatewayBackend for PostgresGatewayBackend {
         }
     }
 
+    fn archive_room(
+        &self,
+        session: &GatewaySession,
+        room_id: &str,
+        request: RoomArchiveRequestV1,
+    ) -> Result<RoomArchiveResponseV1, BackendError> {
+        request
+            .validate_bounds()
+            .map_err(|_| BackendError::Rejected)?;
+        let room_id = RoomId::from_str(room_id).map_err(|_| BackendError::Rejected)?;
+        let authenticated = self.authenticate(session)?;
+        let principal_id = authenticated.principal_id().clone();
+        let presented = authenticated.into_presented();
+        let (trace, _) = self.verified_trace(&room_id)?;
+        let fallback_head = trace.head().clone();
+        let current_status = trace.core_state().room_status();
+        let checked_at = self.checked_at()?;
+        let recorded_at = CoreRecordedAt::from_str(checked_at.as_str())
+            .map_err(|_| BackendError::StorageUnavailable)?;
+        let core_request = CoreAdministrationRequestV1::new(
+            room_id.clone(),
+            AdministrationOperationIdentityV1 {
+                authenticated_principal: principal_id,
+                versioned_operation_kind: CORE_OPERATION_KIND.to_owned(),
+                idempotency_key: request.idempotency_key,
+            },
+            CoreProposedKindV1::Archive,
+            fallback_head.room_seq(),
+            "hosted_creator_close",
+            CoreChangeSetV1::archive(current_status),
+        )
+        .map_err(|_| BackendError::Rejected)?;
+        let ingress = authorize_core_administration_operation(
+            &self.authority(),
+            self.store.as_ref(),
+            &presented,
+            &core_request,
+            checked_at,
+        )
+        .map_err(map_room_operation_error)?;
+        if current_status == worldstream_core::RoomStatusV1::Archived {
+            // Still pass the retry through Core's receipt/admin authority
+            // boundary. The original archive request necessarily differs
+            // from this current-state proposal, so either an authorized
+            // request or the same principal's retained identity conflict is
+            // sufficient before reporting the already-achieved outcome.
+            return match ingress {
+                CoreAdministrationIngressV1::Existing(result) => {
+                    archive_response_from_result(&core_request, &result, &fallback_head, true)
+                }
+                CoreAdministrationIngressV1::Conflict { .. }
+                | CoreAdministrationIngressV1::Authorized(_) => Ok(RoomArchiveResponseV1 {
+                    schema: ROOM_ARCHIVE_RESPONSE_SCHEMA_V1.to_owned(),
+                    room_id: room_id.to_string(),
+                    room_head: room_head(&fallback_head),
+                    duplicate: true,
+                }),
+            };
+        }
+        match ingress {
+            CoreAdministrationIngressV1::Existing(result) => {
+                archive_response_from_result(&core_request, &result, &fallback_head, true)
+            }
+            CoreAdministrationIngressV1::Conflict { .. } => Err(BackendError::Conflict),
+            CoreAdministrationIngressV1::Authorized(authority) => {
+                let _admission = self
+                    .admission_lanes
+                    .reserve_host_stimulus(&room_id)
+                    .map_err(|error| map_admission_lane_error(&error))?;
+                let resolution = self
+                    .store
+                    .commit_authorized_core_administration(
+                        self.registry.as_ref(),
+                        *authority,
+                        &core_request,
+                        recorded_at,
+                        next_core_id::<TransitionId>()?,
+                    )
+                    .map_err(map_room_commit_error)?;
+                archive_response_from_resolution(&core_request, &resolution, &fallback_head)
+            }
+        }
+    }
+
     fn operator_room_inventory(
         &self,
         session: &GatewaySession,
@@ -2905,6 +2993,61 @@ fn timer_response_from_resolution(
             room_head: room_head(complete_head),
             duplicate: resolution.duplicate(),
         });
+    }
+    match resolution {
+        RoomCommitResolutionV1::Conflict { .. } => Err(BackendError::Conflict),
+        RoomCommitResolutionV1::Fenced
+        | RoomCommitResolutionV1::Reprepare
+        | RoomCommitResolutionV1::RetryableKnownAbsent
+        | RoomCommitResolutionV1::NotApplicable => Err(BackendError::Busy),
+        RoomCommitResolutionV1::Indeterminate => Err(BackendError::Indeterminate),
+        _ => Err(BackendError::InvalidResult),
+    }
+}
+
+fn archive_response_from_result(
+    request: &CoreAdministrationRequestV1,
+    result: &StoredSemanticResultV1,
+    fallback_head: &worldstream_core::CompleteHeadV1,
+    duplicate: bool,
+) -> Result<RoomArchiveResponseV1, BackendError> {
+    let identity = worldstream_core::OperationIdentityV1::Administration(Box::new(
+        request.operation_identity().clone(),
+    ));
+    if result.operation_identity() != &identity
+        || result.canonical_request_hash()
+            != &request
+                .canonical_request_hash()
+                .map_err(|_| BackendError::InvalidResult)?
+        || result.target_room_id() != request.room_id()
+    {
+        return Err(BackendError::InvalidResult);
+    }
+    let head = match result.result() {
+        SemanticResultV1::TransitionCommitted { complete_head, .. } => complete_head,
+        SemanticResultV1::NoChangeRecorded { .. } => fallback_head,
+        _ => return Err(BackendError::InvalidResult),
+    };
+    Ok(RoomArchiveResponseV1 {
+        schema: ROOM_ARCHIVE_RESPONSE_SCHEMA_V1.to_owned(),
+        room_id: request.room_id().to_string(),
+        room_head: room_head(head),
+        duplicate,
+    })
+}
+
+fn archive_response_from_resolution(
+    request: &CoreAdministrationRequestV1,
+    resolution: &RoomCommitResolutionV1,
+    fallback_head: &worldstream_core::CompleteHeadV1,
+) -> Result<RoomArchiveResponseV1, BackendError> {
+    if let Some(result) = resolution.stored_result() {
+        return archive_response_from_result(
+            request,
+            result,
+            fallback_head,
+            resolution.duplicate(),
+        );
     }
     match resolution {
         RoomCommitResolutionV1::Conflict { .. } => Err(BackendError::Conflict),

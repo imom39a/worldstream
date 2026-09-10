@@ -65,10 +65,11 @@ use worldstream_protocol::{
     OperatorBackupProfileStatus, OperatorLiveBackupPrepareRequest, OperatorLiveBackupStatus,
     OperatorRoomInventoryPage, OperatorRoomInventoryRequest, OperatorRoomSummary,
     OperatorRunnerConnectionV1, OperatorRunnerFreshnessV1, OperatorRunnerPresenceV1, PackReference,
-    ProjectionReset, ProjectionResponse, ProtocolEnvelope, ReplayResponse, RoomAttach,
-    RoomAttached, RoomSyncAck, RunnerCapabilityProvisionRequestV1,
-    RunnerCapabilityProvisionResponseV1, RunnerHello, RunnerReady, ServerWelcome, TimerFireRequest,
-    TimerFireResponse, UlidString, VersionedEnvelope, WEBSOCKET_SUBPROTOCOL, decode_envelope,
+    ProjectionReset, ProjectionResponse, ProtocolEnvelope, ReplayResponse, RoomArchiveRequestV1,
+    RoomArchiveResponseV1, RoomAttach, RoomAttached, RoomSyncAck,
+    RunnerCapabilityProvisionRequestV1, RunnerCapabilityProvisionResponseV1, RunnerHello,
+    RunnerReady, ServerWelcome, TimerFireRequest, TimerFireResponse, UlidString, VersionedEnvelope,
+    WEBSOCKET_SUBPROTOCOL, decode_envelope,
 };
 use worldstream_runtime::{
     CompatibilitySummary, EffectiveConfig, ManifestError, StorageProfile, embedded_manifest,
@@ -607,6 +608,7 @@ pub(crate) fn runner_hello_is_bounded(request: &RunnerHello) -> bool {
 }
 const OPERATOR_TIMER_FIRE: &str = "timer-fire";
 const OPERATOR_LOBBY_LAUNCH: &str = "lobby-launch";
+const OPERATOR_ROOM_ARCHIVE: &str = "room-archive";
 const OPERATOR_ACTIVITY_PACK_CATALOG: &str = "activity-pack-catalog";
 const OPERATOR_ROOM_INVENTORY: &str = "room-inventory";
 const OPERATOR_ROOM_DETAIL: &str = "room-detail";
@@ -1041,6 +1043,19 @@ pub trait GatewayBackend: Send + Sync + 'static {
         _room_id: &str,
         _request: LobbyLaunchRequest,
     ) -> Result<Option<LobbyLaunchResponse>, BackendError> {
+        Err(BackendError::StorageUnavailable)
+    }
+    /// Irreversibly archives one exact Room through Core administration.
+    ///
+    /// # Errors
+    /// Returns a closed error for invalid authority, identity conflict,
+    /// unavailable Room truth, or a commit that cannot be resolved safely.
+    fn archive_room(
+        &self,
+        _session: &GatewaySession,
+        _room_id: &str,
+        _request: RoomArchiveRequestV1,
+    ) -> Result<RoomArchiveResponseV1, BackendError> {
         Err(BackendError::StorageUnavailable)
     }
     /// Reads the caller-authorized current Projection.
@@ -2056,6 +2071,7 @@ pub fn operator_router(state: OperatorState) -> Router {
         .route("/v1/operator/backups/health", get(operator_backup_profile))
         .route("/v1/operator/backups", post(operator_live_backup))
         .route("/v1/operator/rooms/{room_id}/timers/fire", post(fire_timer))
+        .route("/v1/operator/rooms/{room_id}/archive", post(archive_room))
         .route(
             "/v1/operator/rooms/{room_id}/lobby/launch",
             post(launch_lobby),
@@ -3141,6 +3157,60 @@ async fn resolve_lobby_launch(
         Err(error) => {
             let reason = reason_for_backend_error(&error);
             record_admission_with_correlation(state.telemetry.as_ref(), reason, correlation);
+            Err(ResponseError::from(error))
+        }
+    }
+}
+
+async fn archive_room(
+    State(state): State<OperatorState>,
+    Path(room_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ResponseResult<RoomArchiveResponseV1> {
+    let correlation = traceparent_correlation(&headers);
+    let session = Arc::new(authenticated_session(&headers)?);
+    let request = strict_json::<RoomArchiveRequestV1>(&body)?;
+    if request.validate_bounds().is_err() {
+        return Err(ResponseError::from(BackendError::Rejected));
+    }
+    let targets = [AdmissionTarget {
+        room_id: &room_id,
+        member_id: None,
+    }];
+    admit_authenticated_http(
+        &state,
+        &session,
+        &targets,
+        Some(OPERATOR_ROOM_ARCHIVE),
+        correlation,
+    )
+    .await?;
+    let backend = Arc::clone(&state.backend);
+    let backend_room_id = room_id.clone();
+    match backend_call(backend, move |backend| {
+        backend.archive_room(&session, &backend_room_id, request)
+    })
+    .await
+    {
+        Ok(response) => {
+            publish_live_frames(Arc::clone(&state.backend), &state.live_streams, &room_id).await;
+            record_admission_with_correlation(
+                state.telemetry.as_ref(),
+                telemetry::ReasonCodeV1::Accepted,
+                correlation,
+            );
+            record_commit_with_correlation(
+                state.telemetry.as_ref(),
+                telemetry::ReasonCodeV1::Accepted,
+                correlation,
+            );
+            Ok(Json(response))
+        }
+        Err(error) => {
+            let reason = reason_for_backend_error(&error);
+            record_admission_with_correlation(state.telemetry.as_ref(), reason, correlation);
+            record_commit_with_correlation(state.telemetry.as_ref(), reason, correlation);
             Err(ResponseError::from(error))
         }
     }
@@ -6738,6 +6808,32 @@ mod tests {
             })
         }
 
+        fn archive_room(
+            &self,
+            _: &super::GatewaySession,
+            room_id: &str,
+            _: worldstream_protocol::RoomArchiveRequestV1,
+        ) -> Result<worldstream_protocol::RoomArchiveResponseV1, super::BackendError> {
+            if room_id == "conflict" {
+                return Err(super::BackendError::Conflict);
+            }
+            Ok(worldstream_protocol::RoomArchiveResponseV1 {
+                schema: worldstream_protocol::ROOM_ARCHIVE_RESPONSE_SCHEMA_V1.to_owned(),
+                room_id: room_id.to_owned(),
+                room_head: RoomHead {
+                    room_id: room_id.to_owned(),
+                    room_seq: 2,
+                    genesis_or_transition_hash: "hash".to_owned(),
+                    core_schema_version: "schema".to_owned(),
+                    pack_digest: "digest".to_owned(),
+                    core_state_hash: "hash".to_owned(),
+                    activity_state_hash: "hash".to_owned(),
+                    authoritative_state_hash: "hash".to_owned(),
+                },
+                duplicate: room_id == "duplicate",
+            })
+        }
+
         fn projection(
             &self,
             _: &super::GatewaySession,
@@ -7890,6 +7986,107 @@ mod tests {
 
     fn lobby_launch_body() -> Body {
         Body::from(r#"{"input_id":"01ARZ3NDEKTSV4RRFFQ69G5FC6","based_on_room_seq":0}"#)
+    }
+
+    fn room_archive_body() -> Body {
+        Body::from(
+            r#"{"schema":"worldstream/room-archive-request/v1","idempotency_key":"creator-close-01"}"#,
+        )
+    }
+
+    #[tokio::test]
+    async fn room_archive_requires_authenticated_host_admission() {
+        let app = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("valid state: {error}"))
+                .with_backend(Arc::new(SuccessfulCreateBackend)),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/operator/rooms/room/archive")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(room_archive_body())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn room_archive_has_bounded_idempotent_and_conflict_outcomes() {
+        let app = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("valid state: {error}"))
+                .with_backend(Arc::new(SuccessfulCreateBackend)),
+        );
+        let success = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/operator/rooms/room/archive")
+                    .header(header::AUTHORIZATION, auth_header())
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(room_archive_body())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(success.status(), StatusCode::OK);
+        let success: worldstream_protocol::RoomArchiveResponseV1 = serde_json::from_slice(
+            &success
+                .into_body()
+                .collect()
+                .await
+                .unwrap_or_else(|error| unreachable!("body: {error}"))
+                .to_bytes(),
+        )
+        .unwrap_or_else(|error| unreachable!("archive response: {error}"));
+        assert_eq!(success.room_id, "room");
+        assert_eq!(success.room_head.room_id, "room");
+        assert!(!success.duplicate);
+
+        let duplicate = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/operator/rooms/duplicate/archive")
+                    .header(header::AUTHORIZATION, auth_header())
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(room_archive_body())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(duplicate.status(), StatusCode::OK);
+        let duplicate: worldstream_protocol::RoomArchiveResponseV1 = serde_json::from_slice(
+            &duplicate
+                .into_body()
+                .collect()
+                .await
+                .unwrap_or_else(|error| unreachable!("body: {error}"))
+                .to_bytes(),
+        )
+        .unwrap_or_else(|error| unreachable!("archive response: {error}"));
+        assert!(duplicate.duplicate);
+
+        let conflict = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/operator/rooms/conflict/archive")
+                    .header(header::AUTHORIZATION, auth_header())
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(room_archive_body())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
     }
 
     #[tokio::test]

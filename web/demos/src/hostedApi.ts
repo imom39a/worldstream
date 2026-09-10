@@ -49,11 +49,18 @@ export interface HostedLaunch {
   readonly launch_id: string;
   readonly activity_slug: string;
   readonly activity_title: string;
-  readonly state: "collecting" | "provisioning" | "reconciling" | "run_created" | "cancelled" | "expired" | "failed_pre_genesis" | "abandoned_prestart";
+  readonly state: "collecting" | "provisioning" | "reconciling" | "run_created" | "closing" | "closed_by_creator" | "cancelled" | "expired" | "failed_pre_genesis" | "abandoned_prestart";
   readonly expires_at: string;
   readonly can_manage: boolean;
   readonly fill_mode: "people_only" | "house_agents";
-  readonly recovery_state: "not_started" | "genesis_not_proven" | "genesis_recorded_repairing" | "entry_ready";
+  readonly recovery_state: "not_started" | "genesis_not_proven" | "genesis_recorded_repairing" | "entry_ready" | "closing";
+  readonly available_actions: readonly (
+    | "start"
+    | "cancel_setup"
+    | "stop_setup"
+    | "end_activity"
+    | "finish_closing"
+  )[];
   readonly house_fill: {
     readonly state: string;
     readonly claim_window_closes_at: string;
@@ -79,9 +86,11 @@ export interface MyGamesIndex {
     readonly title: string;
     readonly state:
       | "setup_pending"
+      | "activity_closing"
       | "setup_cancelled"
       | "setup_abandoned"
       | "setup_failed"
+      | "activity_closed"
       | "live"
       | "publication_pending"
       | "terminal_private"
@@ -91,7 +100,7 @@ export interface MyGamesIndex {
       | "verified_result";
     readonly updated_at: string;
     readonly participation: "human" | "external_agent";
-    readonly action: "continue_setup" | "return_to_game" | "view_result" | "none";
+    readonly action: "continue_setup" | "finish_closing" | "return_to_game" | "view_result" | "none";
     readonly result_public_id?: string;
   }[];
   readonly next: { readonly before_at: string; readonly before_launch_id: string } | null;
@@ -304,8 +313,8 @@ export async function claimInvitation(
 export async function launchMutation(
   csrf: string,
   launchId: string,
-  action: "start" | "cancel",
-): Promise<HostedLaunch | { readonly cancelled: true }> {
+  action: "start" | "close",
+): Promise<HostedLaunch | { readonly closed: true }> {
   return mutateLaunch(`/api/launches/${encodeURIComponent(launchId)}/${action}`, csrf, {});
 }
 

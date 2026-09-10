@@ -38,6 +38,7 @@ import type {
   HostedLaunchMaterial,
   HouseFillChoice,
   HouseFillRecord,
+  LaunchClosureCandidate,
   LaunchCreationResult,
   OwnedRunRecord,
   PrestartAbandonmentCandidate,
@@ -572,6 +573,22 @@ class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationD
     }));
   }
 
+  async requestLaunchClosure(input: {
+    accountId: string;
+    launchRequestId: string;
+    hostInstallationId: string;
+    canonicalRequest: Uint8Array;
+    requestDigest: Uint8Array;
+  }) {
+    return requiredBoolean(await requiredRpc(this.#rpc, "request_launch_closure_v1", {
+      p_creator_account_id: input.accountId,
+      p_launch_request_id: input.launchRequestId,
+      p_host_installation_id: input.hostInstallationId,
+      p_canonical_closure_request: bytea(input.canonicalRequest),
+      p_closure_request_digest: bytea(input.requestDigest),
+    }));
+  }
+
   async startHouseFill(accountId: string, launchRequestId: string) {
     return parseHouseFill(await requiredRpc(this.#rpc, "start_house_fill_v1", {
       p_creator_account_id: accountId,
@@ -787,6 +804,27 @@ class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationD
     }));
   }
 
+  async recordLaunchClosure(
+    launchRequestId: string,
+    canonicalEvidence: Uint8Array,
+    evidenceDigest: Uint8Array,
+  ): Promise<boolean> {
+    return requiredBoolean(await requiredRpc(this.#rpc, "record_launch_closure_v1", {
+      p_launch_request_id: launchRequestId,
+      p_canonical_closure_evidence: bytea(canonicalEvidence),
+      p_closure_evidence_digest: bytea(evidenceDigest),
+    }));
+  }
+
+  async listPendingLaunchClosures(limit: number): Promise<readonly LaunchClosureCandidate[]> {
+    const rows = readRows(await requiredRpc(this.#rpc, "list_pending_launch_closures_v1", {
+      p_limit: limit,
+    }));
+    return rows.map((row) => ({
+      launchRequestId: requiredString(row.launch_request_id),
+    }));
+  }
+
   async listPrestartAbandonmentCandidates(
     limit: number,
   ): Promise<readonly PrestartAbandonmentCandidate[]> {
@@ -878,9 +916,11 @@ class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationD
         title: requiredString(item.title),
         state: requiredEnum(item.state, [
           "setup_pending",
+          "activity_closing",
           "setup_cancelled",
           "setup_abandoned",
           "setup_failed",
+          "activity_closed",
           "live",
           "publication_pending",
           "terminal_private",
@@ -891,7 +931,13 @@ class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationD
         ]) as MyGamesIndex["items"][number]["state"],
         updatedAt: requiredString(item.updated_at),
         participation: requiredEnum(item.participation, ["human", "external_agent"]),
-        action: requiredEnum(item.action, ["continue_setup", "return_to_game", "view_result", "none"]),
+        action: requiredEnum(item.action, [
+          "continue_setup",
+          "finish_closing",
+          "return_to_game",
+          "view_result",
+          "none",
+        ]),
         resultPublicId: nullableString(item.result_public_id),
       })),
       next: next === null ? null : {

@@ -74,33 +74,31 @@ use worldstream_core::{
     AccessModeV1, ActivationContextInputV1, ActivationDeliveryV1, ActivationFrameV1,
     ActivationIntentStateV1, ActivationInvocationContextV1, ActivationOperationRequestV1,
     ActivationOperationResultV1, ActivationResultCodeV1, AuthorityCheckedAt, AuthorityErrorV1,
-    AuthorityStoreErrorV1, AuthorityStoreV1, AuthorizedDiagnosticV1, AuthorizedExternalInputV1,
-    AuthorizedReceiptReadV1, AuthorizedReceiptResolverV1, AuthorizedReplayV1,
-    AuthorizedRunnerControlV1, AuthorizedTimerFiredV1, Blake3DigestV1, CanonicalJsonV1,
-    CanonicalRequestHashV1, CompleteHeadV1, CoreTraceV1, DiagnosticOperationV1, DiagnosticTargetV1,
-    ExternalInputRecordedAt, ExternalInputV1, GenesisV1, HistoricalReplayErrorV1,
-    HistoricalReplayProjectionV1, HostClockSampleV1, IntegrityGenerationV1, MemberId,
-    MembershipStandingV1, MembershipV1, OperationIdentityV1, PackRegistryV1, PackRevisionLockV1,
-    PackViewerV1, ParticipantActionAuthorityV1, ParticipantActionRequestV1, ParticipantActionV1,
-    PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1, PreparedCreationPersistenceV1,
-    PreparedExistingIntentV1, PreparedMembershipMaterializationV1,
-    PreparedObservationConsequenceV1, PreparedRoomCommitV1, PreparedRoomWriteV1,
-    PreparedTimerMutationKindV1, RecordedStimulusV1, RecoveredObservationConsequenceV1,
-    RecoveredRoomMaterializationsV1, RecoveredTimerStateV1, RecoveryIntegrityDispositionV1,
-    ReplayFailureClassV1, ReplayStorageVerificationV1, ResolutionStatusV1, ResolveOutcomeV1,
-    RoomCommitResolutionV1, RoomCommitStorageV1, RoomId, RoomIntegrityStateV1,
-    RoomIntegrityStatusV1, RoomRecoveryCandidateV1, RoomRecoveryErrorV1, RoomRecoveryStorageV1,
-    RoomSequenceV1, RoomStatusV1, RunnerControlAdapterInputV1, RunnerControlOperationV1,
-    StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, TimerId,
-    TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1, commit_existing_room,
-    prepare_activation_context, projection_hash_for_canonical_bytes,
+    AuthorityStoreErrorV1, AuthorityStoreV1, AuthorizedCoreAdministrationV1,
+    AuthorizedDiagnosticV1, AuthorizedExternalInputV1, AuthorizedReceiptReadV1,
+    AuthorizedReceiptResolverV1, AuthorizedReplayV1, AuthorizedRunnerControlV1,
+    AuthorizedTimerFiredV1, Blake3DigestV1, CanonicalJsonV1, CanonicalRequestHashV1,
+    CompleteHeadV1, CoreAdministrationRequestV1, CoreRecordedAt, CoreTraceV1,
+    DiagnosticOperationV1, DiagnosticTargetV1, ExternalInputRecordedAt, ExternalInputV1, GenesisV1,
+    HistoricalReplayErrorV1, HistoricalReplayProjectionV1, HostClockSampleV1,
+    IntegrityGenerationV1, MemberId, MembershipStandingV1, MembershipV1, OperationIdentityV1,
+    PackRegistryV1, PackRevisionLockV1, PackViewerV1, ParticipantActionAuthorityV1,
+    ParticipantActionRequestV1, ParticipantActionV1, PreparedAdvancePersistenceV1,
+    PreparedAuthorityWitnessV1, PreparedCreationPersistenceV1, PreparedExistingIntentV1,
+    PreparedMembershipMaterializationV1, PreparedObservationConsequenceV1, PreparedRoomCommitV1,
+    PreparedRoomWriteV1, PreparedTimerMutationKindV1, RecordedStimulusV1,
+    RecoveredObservationConsequenceV1, RecoveredRoomMaterializationsV1, RecoveredTimerStateV1,
+    RecoveryIntegrityDispositionV1, ReplayFailureClassV1, ReplayStorageVerificationV1,
+    ResolutionStatusV1, ResolveOutcomeV1, RoomCommitResolutionV1, RoomCommitStorageV1, RoomId,
+    RoomIntegrityStateV1, RoomIntegrityStatusV1, RoomRecoveryCandidateV1, RoomRecoveryErrorV1,
+    RoomRecoveryStorageV1, RoomSequenceV1, RoomStatusV1, RunnerControlAdapterInputV1,
+    RunnerControlOperationV1, StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1,
+    TimerGenerationV1, TimerId, TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1,
+    commit_existing_room, prepare_activation_context, projection_hash_for_canonical_bytes,
 };
 
 #[cfg(feature = "conformance-tracer")]
-use worldstream_core::{
-    AuthorizedCoreAdministrationV1, AuthorizedParticipantActionV1, CoreAdministrationRequestV1,
-    CoreRecordedAt,
-};
+use worldstream_core::AuthorizedParticipantActionV1;
 
 /// The only PostgreSQL major accepted by the frozen storage contract.
 pub const POSTGRES_MAJOR: u16 = 17;
@@ -4297,6 +4295,54 @@ impl PostgresRoomStore {
             &trace,
             request,
             prepared_transition,
+            transition_id,
+            integrity_generation,
+            authority,
+            &frame_heads,
+        )
+        .map_err(|_| PostgresRoomCommitError::Preparation)?;
+        Ok(commit_existing_room(self, &mut trace, prepared)
+            .into_parts()
+            .0)
+    }
+
+    /// Commits one Core-authorized existing-Room administration request
+    /// through the production recovery, integrity, and atomic commit seam.
+    pub fn commit_authorized_core_administration(
+        &self,
+        registry: &PackRegistryV1,
+        authority: AuthorizedCoreAdministrationV1,
+        request: &CoreAdministrationRequestV1,
+        recorded_at: CoreRecordedAt,
+        transition_id: TransitionId,
+    ) -> Result<RoomCommitResolutionV1, PostgresRoomCommitError> {
+        let room_id = request.room_id().to_string();
+        let verification = self.verify_room(&room_id).map_err(|_| {
+            PostgresRoomCommitError::Recovery(RoomRecoveryErrorV1::StorageUnavailable)
+        })?;
+        if verification.integrity_status != "healthy" {
+            return Err(PostgresRoomCommitError::Recovery(
+                RoomRecoveryErrorV1::IntegrityUnavailable,
+            ));
+        }
+        let mut trace = self
+            .recover_room(registry, &room_id)
+            .map_err(PostgresRoomCommitError::Recovery)?
+            .ok_or(PostgresRoomCommitError::Recovery(
+                RoomRecoveryErrorV1::StorageUnavailable,
+            ))?;
+        if trace.head() != &verification.head {
+            return Err(PostgresRoomCommitError::Recovery(
+                RoomRecoveryErrorV1::ConcurrentChange,
+            ));
+        }
+        let frame_heads = postgres_frame_heads(&trace, &verification);
+        let integrity_generation = IntegrityGenerationV1::new(verification.integrity_generation)
+            .map_err(|_| PostgresRoomCommitError::Preparation)?;
+        let prepared = PreparedRoomCommitV1::for_authorized_core_administration(
+            &trace,
+            request,
+            recorded_at,
             transition_id,
             integrity_generation,
             authority,

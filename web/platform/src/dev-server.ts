@@ -95,6 +95,13 @@ export function createDevelopmentPlatformServer(environment = process.env, quali
                 hostedFormation.hostInstallationId,
                 resolveReviewedActivity,
               ).recover(launchId),
+              listPendingClosures: async (limit: number) => (await hostedFormation.data
+                .listPendingLaunchClosures(limit)).map(({ launchRequestId }) => launchRequestId),
+              recoverClosure: (launchId: string) => new HostedFormationCoordinator(
+                hostedFormation.data,
+                hostedFormation.gateway,
+                hostedFormation.hostInstallationId,
+              ).recoverClosure(launchId),
               abandonPrestart: (launchId: string) => new HostedFormationCoordinator(
                 hostedFormation.data,
                 hostedFormation.gateway,

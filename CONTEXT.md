@@ -186,6 +186,10 @@ _Avoid_: Room Setup Operation, Activity Run, Room, generic remote administration
 One reviewed participant configuration offered by an Activity Listing Revision, specifying which of its predeclared seats will be provisioned. Selecting it does not change those seats' Roles or participation policies.
 _Avoid_: Membership, mutable in-game roster, arbitrary Room Setup Specification
 
+**Hosted Launch Closure**:
+An idempotent, creator-authorized request to terminally fence one Launch Request's retained Host setup lineage. It either proves the lineage closed before Genesis or archives its one canonical Room, retires its House Runners, and returns exact Host evidence before platform capacity is released. It deletes neither the Room nor its history and grants no general Room administration authority.
+_Avoid_: Room deletion, rollback, generic Host administration, replacement launch
+
 **Seat Claim**:
 A pre-Genesis correspondence between one authenticated Platform Account and one exact seat plus a server-derived reference for a new run-scoped Principal. It cannot change the seat's Role or policy and grants no Membership or Room authority.
 _Avoid_: Membership, Role selection, participant session, seat reservation after Genesis

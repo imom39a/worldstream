@@ -46,13 +46,13 @@ const DEFAULT_FORMATION_FIXTURE: FormationFixture = {
       seatId: "navigator",
       displayName: "Navigator",
       participationKind: "account_human",
-      principalReference: "account:creator:navigator",
+      principalReference: "seat:navigator",
     },
     {
       seatId: "insider",
       displayName: "Insider",
       participationKind: "account_external_agent",
-      principalReference: "account:invitee:insider",
+      principalReference: "seat:insider",
     },
   ],
 };
@@ -66,19 +66,19 @@ const NEGOTIATE_FORMATION_FIXTURE: FormationFixture = {
       seatId: "buyer",
       displayName: "Buyer Agent",
       participationKind: "account_human",
-      principalReference: "account:creator:buyer",
+      principalReference: "seat:buyer",
     },
     {
       seatId: "seller",
       displayName: "Seller Agent",
       participationKind: "account_external_agent",
-      principalReference: "account:invitee:seller",
+      principalReference: "seat:seller",
     },
     {
       seatId: "approver",
       displayName: "Buyer Approver",
       participationKind: "account_human",
-      principalReference: "account:creator:approver",
+      principalReference: "seat:approver",
     },
   ],
 };
@@ -185,13 +185,17 @@ class HumanFormationData implements HostedFormationData {
   publicBindingRecords = 0;
   prestartAbandonmentRecords = 0;
   provisioningAbandonmentRecords = 0;
+  launchClosureRecords = 0;
 
   async readHostedLaunchMaterial(accountId: string, launchRequestId: string) {
     return accountId === ACCOUNT_ID && launchRequestId === LAUNCH_ID ? this.material : null;
   }
 
   async readHostedRecoveryMaterial(launchRequestId: string) {
-    return launchRequestId === LAUNCH_ID && this.material.hostMutationStarted ? this.material : null;
+    return launchRequestId === LAUNCH_ID &&
+      (this.material.hostMutationStarted || this.material.state === "closing")
+      ? this.material
+      : null;
   }
 
   async freezeLaunch(input: {
@@ -317,6 +321,24 @@ class HumanFormationData implements HostedFormationData {
   async releaseSeatClaim(_accountId: string, _launchRequestId: string, _seatId: string): Promise<boolean> { throw new Error("unused"); }
   async resetSeatClaim(_accountId: string, _launchRequestId: string, _seatId: string): Promise<boolean> { throw new Error("unused"); }
   async cancelLaunchRequest(_accountId: string, _launchRequestId: string): Promise<boolean> { throw new Error("unused"); }
+  async requestLaunchClosure(input: {
+    accountId: string;
+    launchRequestId: string;
+    hostInstallationId: string;
+    canonicalRequest: Uint8Array;
+    requestDigest: Uint8Array;
+  }): Promise<boolean> {
+    assert.equal(input.accountId, ACCOUNT_ID);
+    assert.equal(input.launchRequestId, LAUNCH_ID);
+    assert.equal(input.hostInstallationId, "hosted-preview-1");
+    assert.equal(input.requestDigest.byteLength, 32);
+    assert.equal(
+      JSON.parse(new TextDecoder().decode(input.canonicalRequest)).launch_request_id,
+      LAUNCH_ID,
+    );
+    this.material = { ...this.material, state: "closing" };
+    return true;
+  }
   async recordPrestartAbandonment(
     launchRequestId: string,
     canonicalEvidence: Uint8Array,
@@ -347,6 +369,22 @@ class HumanFormationData implements HostedFormationData {
     this.material = { ...this.material, state: "failed_pre_genesis" };
     return true;
   }
+  async recordLaunchClosure(
+    launchRequestId: string,
+    canonicalEvidence: Uint8Array,
+    evidenceDigest: Uint8Array,
+  ): Promise<boolean> {
+    assert.equal(launchRequestId, LAUNCH_ID);
+    assert.equal(evidenceDigest.byteLength, 32);
+    assert.equal(
+      JSON.parse(new TextDecoder().decode(canonicalEvidence)).schema,
+      "worldstream/hosted-launch-closure-evidence/v1",
+    );
+    this.launchClosureRecords += 1;
+    this.material = { ...this.material, state: "closed_by_creator" };
+    return true;
+  }
+  async listPendingLaunchClosures() { return []; }
   async listPrestartAbandonmentCandidates() { return []; }
   async startHouseFill(_accountId: string, _launchRequestId: string): Promise<HouseFillRecord | null> { throw new Error("unused"); }
   async readHouseFill(_accountId: string, _launchRequestId: string): Promise<HouseFillRecord | null> { return null; }
@@ -361,6 +399,7 @@ class RecordingGateway implements HostedFormationGateway {
   publicBindings: CanonicalObject[] = [];
   prestartAbandonments: CanonicalObject[] = [];
   provisioningAbandonments: CanonicalObject[] = [];
+  launchClosures: CanonicalObject[] = [];
   roomSetupComplete = true;
   observedState = "launched";
 
@@ -375,6 +414,36 @@ class RecordingGateway implements HostedFormationGateway {
 
   async readStatus(_request: CanonicalObject) {
     return { state: this.observedState, roomSetupComplete: this.roomSetupComplete };
+  }
+
+  async closeLaunch(request: CanonicalObject): Promise<CanonicalObject> {
+    this.launchClosures.push(request);
+    const roomExists = this.launches.length > 0;
+    const roomId = roomExists ? "01ARZ3NDEKTSV4RRFFQ69G5FAV" : null;
+    return {
+      schema: "worldstream/hosted-launch-closure-evidence/v1",
+      host_installation_id: "hosted-preview-1",
+      launch_request_id: String(request.launch_request_id),
+      listing_revision_digest: String(request.listing_revision_digest),
+      launch_request_digest: String(request.launch_request_digest),
+      room_setup_operation_id: String(request.room_setup_operation_id),
+      disposition: roomExists ? "room_archived" : "cancelled_before_genesis",
+      room_id: roomId,
+      room_head: roomExists
+        ? {
+            room_id: roomId,
+            room_seq: 2,
+            genesis_or_transition_hash: `blake3:${"1".repeat(64)}`,
+            core_schema_version: "worldstream.core-room-state.v1",
+            pack_digest: `blake3:${"2".repeat(64)}`,
+            core_state_hash: `blake3:${"3".repeat(64)}`,
+            activity_state_hash: `blake3:${"4".repeat(64)}`,
+            authoritative_state_hash: `blake3:${"5".repeat(64)}`,
+          }
+        : null,
+      closure_fence_digest: `blake3:${"a".repeat(64)}`,
+      authentication_tag: "b".repeat(64),
+    };
   }
 
   async abandonPrestart(request: CanonicalObject): Promise<CanonicalObject> {
@@ -490,6 +559,41 @@ test("the formation boundary accepts a reviewed non-Heist roster with different 
     { label: "seller", role: "seller" },
     { label: "approver", role: "approver" },
   ]);
+});
+
+test("creator closure fences an unstarted launch and is safe to retry", async () => {
+  const data = new HumanFormationData();
+  // Closing is a creator right on the launch lineage, not a side effect of
+  // still occupying the creator seat. A released/reset claim must not trap
+  // the account behind its capacity reservation.
+  data.material = { ...data.material, claims: [] };
+  const gateway = new RecordingGateway();
+  const coordinator = new HostedFormationCoordinator(data, gateway, "hosted-preview-1");
+
+  assert.equal(await coordinator.close(ACCOUNT_ID, LAUNCH_ID), true);
+  assert.equal(data.material.state, "closed_by_creator");
+  assert.equal(data.launchClosureRecords, 1);
+  assert.equal(gateway.launchClosures.length, 1);
+  assert.equal(gateway.launchClosures[0]?.launch_request_id, LAUNCH_ID);
+  assert.equal(gateway.launchClosures[0]?.room_setup_operation_id,
+    `launch-${LAUNCH_ID.replaceAll("-", "")}`);
+
+  assert.equal(await coordinator.close(ACCOUNT_ID, LAUNCH_ID), true);
+  assert.equal(data.launchClosureRecords, 1);
+  assert.equal(gateway.launchClosures.length, 1);
+  await assert.rejects(() => coordinator.advance(ACCOUNT_ID, LAUNCH_ID));
+});
+
+test("creator closure after Genesis retains the submitted launch identity", async () => {
+  const data = new HumanFormationData();
+  const gateway = new RecordingGateway();
+  const coordinator = new HostedFormationCoordinator(data, gateway, "hosted-preview-1");
+
+  assert.equal((await coordinator.advance(ACCOUNT_ID, LAUNCH_ID)).state, "run_created");
+  assert.equal(await coordinator.close(ACCOUNT_ID, LAUNCH_ID), true);
+  assert.equal(data.material.state, "closed_by_creator");
+  assert.equal(gateway.launchClosures[0]?.launch_request_digest,
+    gateway.launches[0]?.launch_request_digest);
 });
 
 test("post-Genesis provisioning retries the same setup before offering Run entry", async () => {

@@ -29,14 +29,14 @@ test("the hosted catalog retains the reviewed Agent Heist revision", async () =>
   assert.equal(reviewedActivityByDigest(`blake3:${"0".repeat(64)}`), null);
 
   const source = JSON.parse(
-    await readFile(resolve("../..", "config/hosted/listings/agent-heist-0.24.0.json"), "utf8"),
+    await readFile(resolve("../..", "config/hosted/listings/agent-heist-0.25.0.json"), "utf8"),
   );
   assert.deepEqual(
     [...activity.listing.canonicalBytes],
     [...encodeCanonical(source)],
   );
   const release = JSON.parse(await readFile(
-    resolve("../..", "config/activity-clients/releases/agent-heist-web-v7.json"), "utf8",
+    resolve("../..", "config/activity-clients/releases/agent-heist-web-v8.json"), "utf8",
   ));
   assert.equal(activity.listing.value.client.release_digest, release.release_digest);
   assert.equal(activity.listing.value.client.surface_id, "heist-hosted-web");
@@ -69,7 +69,7 @@ test("client selection is a reviewed client-contract concern, not a Pack branch"
   assert.equal(reviewedPublicViewerClientPath({ publicViewerClientPath: null }), null);
   const current = reviewedActivityBySlug("agent-heist");
   assert.ok(current);
-  assert.equal(reviewedPublicViewerClientPath(current.public), "/agent-heist-v7/hosted/");
+  assert.equal(reviewedPublicViewerClientPath(current.public), "/agent-heist-v8/hosted/");
 });
 
 test("Archive offers exactly four reviewed human-led rosters and is excluded from public discovery", async () => {
@@ -227,7 +227,7 @@ test("new discovery retains old exact Listing resolution without replacing its c
   assert.ok(old);
   assert.ok(current);
   assert.equal(old.listing.value.version, "0.3.0");
-  assert.equal(current.listing.value.version, "0.24.0");
+  assert.equal(current.listing.value.version, "0.25.0");
   assert.notEqual(old.listing.value.client.release_digest, current.listing.value.client.release_digest);
   assert.equal(old.public.clientPath, null);
   assert.equal(old.public.availability, "dependency_unavailable");
@@ -237,7 +237,7 @@ test("the public catalog contains only friendly bounded product choices", () => 
   const available = listPublicHostedActivities(true);
   assert.deepEqual(available.map(({ slug }) => slug), ["agent-heist", "negotiate"]);
   assert.equal(available[0]?.availability, "available");
-  assert.equal(available[0]?.clientPath, "/agent-heist-v7/hosted/");
+  assert.equal(available[0]?.clientPath, "/agent-heist-v8/hosted/");
   assert.equal(available[0]?.houseTerms?.maximumAgents, 2);
   assert.equal(available[1]?.availability, "coming_soon");
 
@@ -271,23 +271,37 @@ test("the prior live gameplay release retains its original Pack and client", () 
 });
 
 test("the current discovery Listing binds the current client to the schema-safe Heist Pack", async () => {
-  const candidate = reviewedActivityByDigest("blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397");
+  const candidate = reviewedActivityByDigest("blake3:8be1c66c9c69a4a67800dadf8e60d66bdf8a8b9118fb3baa96b5e8cdaf272b7d");
   assert.ok(candidate);
   assert.equal(candidate, reviewedActivityBySlug("agent-heist"));
-  assert.equal(candidate.listing.value.version, "0.24.0");
+  assert.equal(candidate.listing.value.version, "0.25.0");
   assert.equal(candidate.listing.value.pack.version, "0.5.0");
   assert.equal(candidate.listing.value.pack.digest, "blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9");
-  assert.equal(candidate.listing.value.client.release_digest, "sha256:e1efd39ff8da4cddaa48e87ed4333d2c16fb71dd5ad0321f1245ac0a55aad33c");
-  assert.equal(candidate.public.clientPath, "/agent-heist-v7/hosted/");
-  const source = JSON.parse(await readFile(resolve("../..", "config/hosted/listings/agent-heist-0.24.0.json"), "utf8"));
-  const predecessor = JSON.parse(await readFile(resolve("../..", "config/hosted/listings/agent-heist-0.23.0.json"), "utf8"));
+  assert.equal(candidate.listing.value.client.release_digest, "sha256:5398514701e6f86c0eb3dd7f877d2b7b00283b540220aa61e7723126f4224895");
+  assert.equal(candidate.public.clientPath, "/agent-heist-v8/hosted/");
+  const source = JSON.parse(await readFile(resolve("../..", "config/hosted/listings/agent-heist-0.25.0.json"), "utf8"));
+  const predecessor = JSON.parse(await readFile(resolve("../..", "config/hosted/listings/agent-heist-0.24.0.json"), "utf8"));
   assert.deepEqual([...candidate.listing.canonicalBytes], [...encodeCanonical(source)]);
-  assert.notDeepEqual(source.pack, predecessor.pack);
+  assert.deepEqual(source.pack, predecessor.pack);
   assert.notDeepEqual(source.client, predecessor.client);
-  assert.notDeepEqual(source.result.projector, predecessor.result.projector);
+  assert.deepEqual(source.result.projector, predecessor.result.projector);
   assert.deepEqual(source.result.projection, predecessor.result.projection);
   assert.deepEqual(source.result.publication, predecessor.result.publication);
   assert.deepEqual(source.room_setup, predecessor.room_setup);
+});
+
+test("Listing 0.24 retains its exact v7 public viewer and unchanged game dependencies", () => {
+  const retained = reviewedActivityByDigest("blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397");
+  const current = reviewedActivityBySlug("agent-heist");
+  assert.ok(retained);
+  assert.ok(current);
+  assert.equal(retained.listing.value.version, "0.24.0");
+  assert.equal(retained.listing.value.client.release_digest, "sha256:e1efd39ff8da4cddaa48e87ed4333d2c16fb71dd5ad0321f1245ac0a55aad33c");
+  assert.equal(retained.public.clientPath, "/agent-heist-v7/hosted/");
+  assert.equal(retained.public.publicViewerClientPath, "/agent-heist-v7/hosted/");
+  assert.deepEqual(retained.listing.value.pack, current.listing.value.pack);
+  assert.deepEqual(retained.listing.value.result, current.listing.value.result);
+  assert.deepEqual(new Set(retained.houseAgents.keys()), new Set(current.houseAgents.keys()));
 });
 
 test("the r11 Listing remains resolvable after the r12 successor advances discovery", () => {
@@ -415,7 +429,7 @@ test("discovery uses schema-safe House successors while retained Listings keep t
   const retained = reviewedActivityByDigest("blake3:9553f4fa320aa6901d0a03870f5c19ce4342d271efd2ef90d4fd287395f6cef1");
   assert.ok(current);
   assert.ok(retained);
-  assert.equal(current.listing.value.version, "0.24.0");
+  assert.equal(current.listing.value.version, "0.25.0");
   assert.equal(retained.listing.value.version, "0.5.0");
   assert.equal(retained.public.clientPath, "/agent-heist-v3/hosted/");
   assert.notDeepEqual(current.listing.value.client, retained.listing.value.client);

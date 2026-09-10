@@ -25,8 +25,9 @@ use worldstream_protocol::{
     AccessMode, BearerWireV1, CreateMember, CreateRoomRequest, CreateRoomResponse,
     HOSTED_ROOM_CREATION_RESPONSE_SCHEMA_V2, HOSTED_ROOM_CREATION_SCHEMA_V2,
     HostedRoomCreationRequestV2 as RuntimeHostedRoomCreationRequestV2,
-    HostedSpectatorCredentialInputV2, MAX_MESSAGE_BYTES, PrincipalKind, SealedCapabilityBearerV1,
-    SealedCapabilityInputV1, UlidString,
+    HostedSpectatorCredentialInputV2, MAX_MESSAGE_BYTES, PrincipalKind,
+    ROOM_ARCHIVE_REQUEST_SCHEMA_V1, ROOM_ARCHIVE_RESPONSE_SCHEMA_V1, RoomArchiveRequestV1,
+    RoomArchiveResponseV1, SealedCapabilityBearerV1, SealedCapabilityInputV1, UlidString,
 };
 pub use worldstream_protocol::{HostedRoomCreationResponseV2, HostedSpectatorCredentialReceiptV2};
 use worldstream_runtime::{
@@ -213,6 +214,18 @@ pub trait DaemonRoomCreatorV1: Send + Sync + 'static {
         &self,
         _request: &RetainedHostedRoomCreationIntentV2,
     ) -> Result<HostedRoomCreationResponseV2, RoomCreationAttemptErrorV1> {
+        Err(RoomCreationAttemptErrorV1::Rejected)
+    }
+
+    /// Archives one exact Room under the creator's retained Host authority.
+    ///
+    /// # Errors
+    /// Returns only ambiguous, operator-fix, or permanent rejection classes.
+    fn archive(
+        &self,
+        _room_id: &str,
+        _request: &RoomArchiveRequestV1,
+    ) -> Result<RoomArchiveResponseV1, RoomCreationAttemptErrorV1> {
         Err(RoomCreationAttemptErrorV1::Rejected)
     }
 }
@@ -419,6 +432,100 @@ impl HttpDaemonRoomCreatorV1 {
             _ => Err(RoomCreationAttemptErrorV1::Ambiguous),
         }
     }
+
+    fn archive_over_http(
+        &self,
+        room_id: &str,
+        request: &RoomArchiveRequestV1,
+    ) -> Result<RoomArchiveResponseV1, RoomCreationAttemptErrorV1> {
+        let reference = self
+            .host_authority
+            .as_ref()
+            .ok_or(RoomCreationAttemptErrorV1::OperatorFixRequired)?;
+        let room_id = room_id
+            .parse::<UlidString>()
+            .map_err(|_| RoomCreationAttemptErrorV1::Rejected)?;
+        let path = format!("/v1/operator/rooms/{}/archive", room_id.as_str());
+        let body = Zeroizing::new(
+            serde_json::to_vec(request).map_err(|_| RoomCreationAttemptErrorV1::Rejected)?,
+        );
+        if let Some(transport) = &self.managed {
+            let mut authority_unavailable = false;
+            let response = transport
+                .request("POST", &path, body.as_ref(), MAX_MESSAGE_BYTES, || {
+                    let resolved = (|| {
+                        let secret = self
+                            .vault
+                            .resolve(SecretKindV1::HostAuthority, reference)
+                            .map_err(|_| ())?;
+                        let bytes: [u8; 32] = secret.as_bytes().try_into().map_err(|_| ())?;
+                        let bearer = Zeroizing::new(BearerWireV1::from_bytes(bytes).to_wire());
+                        let token = Zeroizing::new(format!("Bearer {}", bearer.as_str()));
+                        let mut header =
+                            axum::http::HeaderValue::from_str(&token).map_err(|_| ())?;
+                        header.set_sensitive(true);
+                        Ok::<_, ()>(header)
+                    })();
+                    authority_unavailable = resolved.is_err();
+                    resolved
+                })
+                .map_err(|_| {
+                    if authority_unavailable {
+                        RoomCreationAttemptErrorV1::OperatorFixRequired
+                    } else {
+                        RoomCreationAttemptErrorV1::Ambiguous
+                    }
+                })?;
+            return match response.status {
+                200 => serde_json::from_slice(&response.body)
+                    .map_err(|_| RoomCreationAttemptErrorV1::Ambiguous),
+                401 | 403 => Err(RoomCreationAttemptErrorV1::OperatorFixRequired),
+                400 | 404 | 409 | 422 => Err(RoomCreationAttemptErrorV1::Rejected),
+                _ => Err(RoomCreationAttemptErrorV1::Ambiguous),
+            };
+        }
+
+        let secret = self
+            .vault
+            .resolve(SecretKindV1::HostAuthority, reference)
+            .map_err(|_| RoomCreationAttemptErrorV1::OperatorFixRequired)?;
+        let bytes: [u8; 32] = secret
+            .as_bytes()
+            .try_into()
+            .map_err(|_| RoomCreationAttemptErrorV1::OperatorFixRequired)?;
+        let bearer = Zeroizing::new(BearerWireV1::from_bytes(bytes).to_wire());
+        let header = Zeroizing::new(format!(
+            "POST {path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nContent-Type: application/json\r\nAuthorization: Bearer {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            self.address,
+            bearer.as_str(),
+            body.len(),
+        ));
+        let mut stream = TcpStream::connect_timeout(&self.address, self.timeout)
+            .map_err(|_| RoomCreationAttemptErrorV1::Ambiguous)?;
+        stream
+            .set_read_timeout(Some(self.timeout))
+            .and_then(|()| stream.set_write_timeout(Some(self.timeout)))
+            .map_err(|_| RoomCreationAttemptErrorV1::Ambiguous)?;
+        stream
+            .write_all(header.as_bytes())
+            .and_then(|()| stream.write_all(body.as_ref()))
+            .map_err(|_| RoomCreationAttemptErrorV1::Ambiguous)?;
+        let mut response = Vec::new();
+        stream
+            .take(u64::try_from(MAX_MESSAGE_BYTES).unwrap_or(u64::MAX) + 1)
+            .read_to_end(&mut response)
+            .map_err(|_| RoomCreationAttemptErrorV1::Ambiguous)?;
+        if response.len() > MAX_MESSAGE_BYTES {
+            return Err(RoomCreationAttemptErrorV1::Ambiguous);
+        }
+        let (status, body) = parse_http_response(&response)?;
+        match status {
+            200 => serde_json::from_slice(body).map_err(|_| RoomCreationAttemptErrorV1::Ambiguous),
+            401 | 403 => Err(RoomCreationAttemptErrorV1::OperatorFixRequired),
+            400 | 404 | 409 | 422 => Err(RoomCreationAttemptErrorV1::Rejected),
+            _ => Err(RoomCreationAttemptErrorV1::Ambiguous),
+        }
+    }
 }
 
 impl DaemonRoomCreatorV1 for HttpDaemonRoomCreatorV1 {
@@ -516,6 +623,24 @@ impl DaemonRoomCreatorV1 for HttpDaemonRoomCreatorV1 {
         request: &RetainedHostedRoomCreationIntentV2,
     ) -> Result<HostedRoomCreationResponseV2, RoomCreationAttemptErrorV1> {
         self.create_hosted_over_http(&self.hosted_runtime_request(request)?)
+    }
+
+    fn archive(
+        &self,
+        room_id: &str,
+        request: &RoomArchiveRequestV1,
+    ) -> Result<RoomArchiveResponseV1, RoomCreationAttemptErrorV1> {
+        if request.schema != ROOM_ARCHIVE_REQUEST_SCHEMA_V1 || request.validate_bounds().is_err() {
+            return Err(RoomCreationAttemptErrorV1::Rejected);
+        }
+        let response = self.archive_over_http(room_id, request)?;
+        if response.schema != ROOM_ARCHIVE_RESPONSE_SCHEMA_V1
+            || response.room_id != room_id
+            || response.room_head.room_id != room_id
+        {
+            return Err(RoomCreationAttemptErrorV1::Ambiguous);
+        }
+        Ok(response)
     }
 }
 
@@ -673,6 +798,21 @@ impl RoomCreationSupervisorV1 {
     pub fn status(&self, draft_id: &str) -> Result<RoomCreationOperationV1, RoomCreationErrorV1> {
         let _guard = self.lock();
         self.load_unlocked(draft_id)
+    }
+
+    pub(crate) fn archive_room(
+        &self,
+        room_id: &str,
+        idempotency_key: &str,
+    ) -> Result<RoomArchiveResponseV1, RoomCreationAttemptErrorV1> {
+        let request = RoomArchiveRequestV1 {
+            schema: ROOM_ARCHIVE_REQUEST_SCHEMA_V1.to_owned(),
+            idempotency_key: idempotency_key.to_owned(),
+        };
+        request
+            .validate_bounds()
+            .map_err(|_| RoomCreationAttemptErrorV1::Rejected)?;
+        self.creator.archive(room_id, &request)
     }
 
     /// Finds only an explicitly reviewed Genesis Operator Membership by its

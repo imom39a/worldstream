@@ -1273,6 +1273,7 @@ pub enum HostedHouseRunnerRetirementDispositionV1 {
     RunTerminal,
     FailedPreGenesis,
     PreStartAbandoned,
+    CreatorClosed,
 }
 
 /// Service-authenticated request to stop and fence one exact House Runner.
@@ -1344,6 +1345,49 @@ pub struct HostedLaunchEvidenceRequestV1 {
     pub listing_revision_digest: String,
     pub launch_request_digest: String,
     pub room_setup_operation_id: String,
+}
+
+/// Service-authenticated request to close one exact hosted launch lineage.
+///
+/// Unlike a status read, this carries the platform Launch Request identity so
+/// the Host can durably fence a close that races the first launch submission.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedLaunchClosureRequestV1 {
+    pub schema: String,
+    pub launch_request_id: String,
+    pub listing_revision_digest: String,
+    pub launch_request_digest: String,
+    pub room_setup_operation_id: String,
+}
+
+/// The two authoritative outcomes of closing a hosted launch lineage.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedLaunchClosureDispositionV1 {
+    /// The durable Host fence won before Room Genesis was committed.
+    CancelledBeforeGenesis,
+    /// Genesis existed and the exact canonical Room is now archived.
+    RoomArchived,
+}
+
+/// Durable Host evidence that one exact launch lineage can never resume.
+///
+/// A Room head is present only when canonical Room archival was confirmed.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedLaunchClosureEvidenceV1 {
+    pub schema: String,
+    pub host_installation_id: String,
+    pub launch_request_id: String,
+    pub listing_revision_digest: String,
+    pub launch_request_digest: String,
+    pub room_setup_operation_id: String,
+    pub disposition: HostedLaunchClosureDispositionV1,
+    pub room_id: Option<String>,
+    pub room_head: Option<HostedGenesisHeadV1>,
+    pub closure_fence_digest: String,
+    pub authentication_tag: String,
 }
 
 /// Exact Host evidence that a Genesis-created Room was durably fenced before
@@ -2546,6 +2590,72 @@ pub fn validate_hosted_launch_evidence_request(
     validate_digest(&request.listing_revision_digest, "blake3")?;
     validate_digest(&request.launch_request_digest, "blake3")?;
     validate_hosted_operation_reference(&request.room_setup_operation_id)
+}
+
+/// Validates the exact identity tuple used by the durable Host closure lane.
+///
+/// # Errors
+/// Returns a closed contract error for malformed or widened identities.
+pub fn validate_hosted_launch_closure_request(
+    request: &HostedLaunchClosureRequestV1,
+) -> Result<(), ContractError> {
+    if request.schema != "worldstream/hosted-launch-closure-request/v1" {
+        return Err(ContractError::Unsupported);
+    }
+    validate_uuid_reference(&request.launch_request_id)?;
+    validate_digest(&request.listing_revision_digest, "blake3")?;
+    validate_digest(&request.launch_request_digest, "blake3")?;
+    validate_hosted_operation_reference(&request.room_setup_operation_id)
+}
+
+/// Validates durable evidence that the exact launch is fenced and, when a
+/// Room existed, that its canonical archived head was observed.
+///
+/// # Errors
+/// Rejects malformed evidence or a disposition/Room shape mismatch.
+pub fn validate_hosted_launch_closure_evidence(
+    evidence: &HostedLaunchClosureEvidenceV1,
+) -> Result<(), ContractError> {
+    if evidence.schema != "worldstream/hosted-launch-closure-evidence/v1" {
+        return Err(ContractError::Unsupported);
+    }
+    validate_host_installation_reference(&evidence.host_installation_id)?;
+    validate_uuid_reference(&evidence.launch_request_id)?;
+    validate_digest(&evidence.listing_revision_digest, "blake3")?;
+    validate_digest(&evidence.launch_request_digest, "blake3")?;
+    validate_hosted_operation_reference(&evidence.room_setup_operation_id)?;
+    validate_digest(&evidence.closure_fence_digest, "blake3")?;
+    validate_hex(&evidence.authentication_tag, 64)?;
+    match (
+        evidence.disposition,
+        evidence.room_id.as_deref(),
+        evidence.room_head.as_ref(),
+    ) {
+        (HostedLaunchClosureDispositionV1::CancelledBeforeGenesis, None, None) => Ok(()),
+        (HostedLaunchClosureDispositionV1::RoomArchived, Some(room_id), Some(head)) => {
+            validate_ulid_reference(room_id)?;
+            validate_ulid_reference(&head.room_id)?;
+            validate_identifier(&head.core_schema_version, 128)?;
+            for digest in [
+                &head.genesis_or_transition_hash,
+                &head.pack_digest,
+                &head.core_state_hash,
+                &head.activity_state_hash,
+                &head.authoritative_state_hash,
+            ] {
+                validate_digest(digest, "blake3")?;
+            }
+            if head.room_id != room_id
+                || head.room_seq == 0
+                || head.room_seq > 9_007_199_254_740_991
+                || head.core_schema_version != "worldstream.core-room-state.v1"
+            {
+                return Err(ContractError::ReferenceMismatch);
+            }
+            Ok(())
+        }
+        _ => Err(ContractError::InvalidShape),
+    }
 }
 
 /// Validates the narrow evidence returned by the exact Host pre-start fence.

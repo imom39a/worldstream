@@ -74,6 +74,7 @@ export function hostedRuntimeLayout(environment = process.env) {
     managedAgentHostDigest: join(assetRoot, "managed-agent-host.blake3"),
     artifactDigest: join(binaryRoot, "worldstream-hosted-artifact-digest"),
     clientRelease: join(assetRoot, "agent-heist-web.json"),
+    retainedClientRelease: join(assetRoot, "agent-heist-web-v7.json"),
     inspectorRelease: join(assetRoot, "inspector-web.json"),
     clientBindings: join(assetRoot, "activity-client-bindings.json"),
   };
@@ -363,6 +364,7 @@ async function prepareLayout(layout) {
     layout.managedAgentHostDigest,
     layout.artifactDigest,
     layout.clientRelease,
+    layout.retainedClientRelease,
     layout.inspectorRelease,
     layout.clientBindings,
     layout.authoritySecret,
@@ -529,15 +531,16 @@ async function writeClientImport(layout) {
     if (matches.length !== 1) throw new Error("inspector_release_inventory_invalid");
     inspectorRelease = matches[0];
   }
-  const heistDeployment = bindings.deployments?.find(
+  const heistDeployments = bindings.deployments?.filter(
     (candidate) => candidate.client_id === "worldstream.agent-heist.web",
   );
   if (
     fallback === undefined ||
     inspectorDeployment === undefined ||
     !Array.isArray(inspectorDeployment.surfaces) ||
-    heistDeployment === undefined ||
-    !Array.isArray(heistDeployment.surfaces)
+    !Array.isArray(heistDeployments) ||
+    heistDeployments.length !== 2 ||
+    heistDeployments.some((deployment) => !Array.isArray(deployment.surfaces))
   ) {
     throw new Error("hosted_client_deployment_invalid");
   }
@@ -548,11 +551,22 @@ async function writeClientImport(layout) {
       clientOrigin,
     ).toString(),
   }));
-  heistDeployment.surfaces = heistDeployment.surfaces.map((surface) => ({
-    ...surface,
-    launch_url: new URL("/agent-heist-v7/hosted/", clientOrigin).toString(),
-  }));
-  bindings.deployments = [inspectorDeployment, heistDeployment];
+  const heistReleases = [
+    await readJson(layout.clientRelease),
+    await readJson(layout.retainedClientRelease),
+  ];
+  for (const deployment of heistDeployments) {
+    const release = heistReleases.find((candidate) => candidate.release_digest === deployment.release_digest);
+    if (release === undefined) throw new Error("hosted_client_release_invalid");
+    deployment.surfaces = deployment.surfaces.map((surface) => ({
+      ...surface,
+      launch_url: new URL(
+        release.surfaces.find((candidate) => candidate.surface_id === surface.surface_id).entrypoint,
+        clientOrigin,
+      ).toString(),
+    }));
+  }
+  bindings.deployments = [inspectorDeployment, ...heistDeployments];
   bindings.inspector_fallback = fallback;
   const retainedInspector = await writeJson(
     join(layout.generatedRoot, "retained-inspector-web.json"),
@@ -560,7 +574,11 @@ async function writeClientImport(layout) {
   );
   const heistRelease = await writeJson(
     join(layout.generatedRoot, "agent-heist-web.json"),
-    await readJson(layout.clientRelease),
+    heistReleases[0],
+  );
+  const retainedHeistRelease = await writeJson(
+    join(layout.generatedRoot, "agent-heist-web-v7.json"),
+    heistReleases[1],
   );
   const bindingFile = await writeJson(
     join(layout.generatedRoot, "hosted-client-bindings.json"),
@@ -568,7 +586,7 @@ async function writeClientImport(layout) {
   );
   return writeJson(join(layout.generatedRoot, "hosted-client-import.json"), {
     schema: "worldstream/client-declaration-import/v1",
-    release_files: [heistRelease, retainedInspector],
+    release_files: [heistRelease, retainedHeistRelease, retainedInspector],
     bindings_file: bindingFile,
   });
 }

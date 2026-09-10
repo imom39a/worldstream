@@ -135,6 +135,7 @@ body { min-width: 0; color: var(--game-text); background: var(--game-void); }
 .waiting-main, .join-main, .hosted-message { background: radial-gradient(ellipse at 50% 0%, #20374466, transparent 65%), var(--game-void); }
 .waiting-heading h1, .join-card h1, .hosted-message h1 { letter-spacing: 0; }
 .waiting-heading p, .join-card > p, .hosted-message p { color: #b4c6c9; font-size: 1rem; }
+.claim-countdown { border-color: #40574f; border-radius: 2px; background: #142722; }.claim-countdown strong { color: var(--game-cyan); }.claim-countdown span { color: var(--game-muted); }
 .roster-card, .join-card { background: #0e1a22f5; border-color: #3b504f; border-radius: 3px; }
 .roster-heading, .roster-seat { border-color: var(--game-line); }
 .roster-heading > span, .roster-seat span { color: var(--game-muted); font-size: .8125rem; }

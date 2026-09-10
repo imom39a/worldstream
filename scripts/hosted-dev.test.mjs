@@ -152,8 +152,8 @@ test("the readiness probe identity is stable and scoped to its Listing", () => {
   );
   assert.deepEqual(first, second);
   assert.deepEqual(first, {
-    roomSetupOperationId: "hosted-local-readiness-71805434",
-    reservationReference: "71805434-c253-4094-83a5-75336cb0a44d",
+    roomSetupOperationId: "hosted-local-readiness-8be1c66c",
+    reservationReference: "8be1c66c-9c69-44a6-8800-dadf8e60d66b",
   });
   assert.notDeepEqual(first, earlierListing);
 });
@@ -165,6 +165,14 @@ test("retained setup detection accepts only an owned resumable setup", () => {
       launch_id: "71923a05-7fcd-4bea-a53b-0c15676e484d",
       state: "setup_pending",
       action: "continue_setup",
+    }],
+  }), true);
+  assert.equal(hasRetainedHostedDevelopmentSetup({
+    version: "platform_my_games.v1",
+    items: [{
+      launch_id: "71923a05-7fcd-4bea-a53b-0c15676e484d",
+      state: "activity_closing",
+      action: "finish_closing",
     }],
   }), true);
   for (const value of [
@@ -294,7 +302,8 @@ test("local and Fly gateways retain all retained Listings as well as current dis
   const deployed = JSON.parse(value.slice(value.indexOf("=") + 1).trim());
   assert.equal(deployed, hostedDevelopmentListingAllowlist());
   const admitted = new Set(deployed.split(","));
-  assert.equal(admitted.size, 23);
+  assert.equal(admitted.size, 24);
+  assert.ok(admitted.has("blake3:8be1c66c9c69a4a67800dadf8e60d66bdf8a8b9118fb3baa96b5e8cdaf272b7d"));
   assert.ok(admitted.has("blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397"));
   assert.ok(admitted.has("blake3:945664f9fea18ace9991c44d43febc142a58244d69352d98514a69b4f7b22030"));
   assert.ok(admitted.has("blake3:0cd11b3aee7596f0f4c2ff5640247c29038f903914d0206a784f7adde8a84c46"));

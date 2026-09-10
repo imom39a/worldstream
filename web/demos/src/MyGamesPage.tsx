@@ -55,6 +55,8 @@ export function MyGamesPage({ onNavigate }: { onNavigate: Navigate }) {
               ? <button type="button" onClick={() => onNavigate(`/runs/${item.result_public_id}`)}>View result</button>
               : item.action === "continue_setup"
                 ? <button type="button" onClick={() => onNavigate(`/launches/${item.launch_id}`)}>Continue setup</button>
+                : item.action === "finish_closing"
+                  ? <button type="button" onClick={() => onNavigate(`/launches/${item.launch_id}`)}>Finish closing</button>
                 : item.action === "return_to_game"
                   ? <button type="button" onClick={() => onNavigate(`/launches/${item.launch_id}`)}>Return to game</button>
                   : <span>History retained</span>}
@@ -85,6 +87,8 @@ export function historyStatusDetail(
   if (state === "terminal_without_outcome") return "The activity ended without an outcome. No result will be published.";
   if (state === "result_suppressed") return "A result exists but is not available to display after integrity or privacy review.";
   if (state === "dependency_failure") return "WorldStream could not verify the activity status from retained evidence.";
+  if (state === "activity_closing") return "WorldStream is safely closing this activity. The creator can safely retry if it does not finish automatically.";
+  if (state === "activity_closed") return "This activity was closed by its creator. Its retained Room, if one was created, cannot resume.";
   if (state === "setup_cancelled" || state === "setup_abandoned" || state === "setup_failed") return "This setup ended before a Room was created.";
   if (state === "verified_result") return "This Replay-verified result is ready to view.";
   if (state === "live") return participation === "external_agent" ? "Your external agent is participating." : "You are participating.";

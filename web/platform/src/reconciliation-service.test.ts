@@ -21,12 +21,12 @@ test("current and retained Listings resolve their exact result projector without
     hostedGatewayUrl: "https://gateway.example.invalid",
     serviceAuthority: "synthetic-test-authority-".repeat(3),
   });
-  for (const version of ["0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.0", "0.10.0", "0.11.0", "0.12.0", "0.13.0", "0.14.0", "0.15.0", "0.16.0", "0.17.0", "0.18.0", "0.19.0", "0.20.0", "0.21.0", "0.22.0", "0.23.0", "0.24.0"]) {
+  for (const version of ["0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.0", "0.10.0", "0.11.0", "0.12.0", "0.13.0", "0.14.0", "0.15.0", "0.16.0", "0.17.0", "0.18.0", "0.19.0", "0.20.0", "0.21.0", "0.22.0", "0.23.0", "0.24.0", "0.25.0"]) {
     const source = JSON.parse(await readFile(resolve("../..", `config/hosted/listings/agent-heist-${version}.json`), "utf8"));
     const listing = readListingRevision(encodeCanonical(source));
     const pinned = reconciler.projectors.resolve(listing.digest);
     assert.equal(pinned.listing.digest, listing.digest);
-    assert.equal(pinned.listing.value.result.projector.version, version === "0.24.0" ? "0.5.0" : version === "0.12.0" ? "0.4.0" : ["0.7.0", "0.8.0", "0.9.0", "0.10.0", "0.11.0", "0.13.0", "0.14.0", "0.15.0", "0.16.0", "0.17.0", "0.18.0", "0.19.0", "0.20.0", "0.21.0", "0.22.0", "0.23.0"].includes(version) ? "0.3.0" : "0.2.0");
+    assert.equal(pinned.listing.value.result.projector.version, ["0.24.0", "0.25.0"].includes(version) ? "0.5.0" : version === "0.12.0" ? "0.4.0" : ["0.7.0", "0.8.0", "0.9.0", "0.10.0", "0.11.0", "0.13.0", "0.14.0", "0.15.0", "0.16.0", "0.17.0", "0.18.0", "0.19.0", "0.20.0", "0.21.0", "0.22.0", "0.23.0"].includes(version) ? "0.3.0" : "0.2.0");
   }
   const archive = reconciler.projectors.resolve(MIDNIGHT_ARCHIVE_LISTING_DIGEST);
   assert.equal(archive.listing.value.result.publication.policy, "disabled");
@@ -242,6 +242,8 @@ test("daily recovery requires exact authority and resumes Genesis candidates ind
   const bff = withHostedResultReconciliation(platform(), deps, {
     canonicalOrigin: "https://arena.example", cronSecret: "c".repeat(40),
     recover: async (id) => { recovered.push(id); if (id === "first") throw new Error("private failure details"); },
+    listPendingClosures: async () => [],
+    recoverClosure: async () => {},
     abandonPrestart: async () => {},
   });
   for (const [url, authorization, method] of [
@@ -283,6 +285,8 @@ test("stale provisioning candidates with no live Host authority remain recoverab
       recovered.push(launchRequestId);
       return null;
     },
+    listPendingClosures: async () => [],
+    recoverClosure: async () => {},
     abandonPrestart: async () => {},
   });
   const response = await bff.fetch(new Request("https://arena.example/api/internal/reconcile", {
@@ -301,6 +305,8 @@ test("the cron invokes exact Host abandonment only for the DB-selected pre-start
     canonicalOrigin: "https://arena.example",
     cronSecret: "d".repeat(40),
     recover: async () => { throw new Error("not a Genesis repair"); },
+    listPendingClosures: async () => [],
+    recoverClosure: async () => {},
     abandonPrestart: async (launchRequestId) => { abandoned.push(launchRequestId); },
   });
   const response = await bff.fetch(new Request("https://arena.example/api/internal/reconcile", {

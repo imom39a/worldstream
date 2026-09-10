@@ -9,7 +9,7 @@ select is((
   select count(distinct approvals.house_agent_revision_digest)::integer
   from platform_store.house_agent_host_approvals approvals
   join platform_store.activity_listing_revisions listings
-    on listings.listing_revision_digest = 'blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397'
+    on listings.listing_revision_digest = 'blake3:8be1c66c9c69a4a67800dadf8e60d66bdf8a8b9118fb3baa96b5e8cdaf272b7d'
   cross join lateral jsonb_array_elements(listings.seat_templates) seats(value)
   where approvals.host_installation_id = 'hosted-dev'
     and approvals.available_for_new_assignments and approvals.revoked_at is null

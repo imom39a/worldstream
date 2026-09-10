@@ -64,6 +64,10 @@ const RETIREMENT_TAG_DOMAIN: &str = "worldstream/house-runner-retirement-tag/v1"
 const RETIREMENT_MARKER_FILE: &str = "retired.json";
 const RETIREMENT_INTENT_MARKER_FILE: &str = "retiring.json";
 const OPERATOR_RETIREMENT_MARKER_FILE: &str = "operator-retired.json";
+const LAUNCH_CLOSURE_FENCE_SCHEMA_V1: &str =
+    "worldstream/retained-house-runner-launch-closure-fence/v1";
+const LAUNCH_CLOSURE_FENCE_TAG_DOMAIN: &str =
+    "worldstream/house-runner-launch-closure-fence-tag/v1";
 
 /// Closed Host-side reservation and launch failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -144,6 +148,18 @@ struct RetainedHouseRunnerRetirementIntentV1 {
     allowance_reset: bool,
 }
 
+/// Host-local monotonic fence shared by reservation, binding, start, and
+/// retirement paths for one creator-closed launch lineage.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RetainedHouseRunnerLaunchClosureFenceV1 {
+    schema: String,
+    host_installation_id: String,
+    launch_request_id: String,
+    closure_intent_digest: String,
+    authentication_tag: String,
+}
+
 #[derive(Serialize)]
 struct ReceiptWitnessV1<'a> {
     domain: &'static str,
@@ -181,6 +197,15 @@ struct RetirementIntentWitnessV1<'a> {
     authority: &'a str,
     request: &'a HostedHouseRunnerRetirementRequestV1,
     allowance_reset: bool,
+}
+
+#[derive(Serialize)]
+struct LaunchClosureFenceWitnessV1<'a> {
+    domain: &'static str,
+    schema: &'a str,
+    host_installation_id: &'a str,
+    launch_request_id: &'a str,
+    closure_intent_digest: &'a str,
 }
 
 enum DependencyCheckErrorV1 {
@@ -756,6 +781,7 @@ pub struct HostedHouseRunnerOperationsV1 {
     reservations: Arc<PathBuf>,
     units: Arc<PathBuf>,
     launch_bindings: Arc<PathBuf>,
+    launch_closure_fences: Arc<PathBuf>,
     host_installation_id: Arc<str>,
     listings: Arc<BTreeMap<String, ListingRevision>>,
     revisions: Arc<BTreeMap<String, HouseAgentRevision>>,
@@ -916,6 +942,10 @@ impl HostedHouseRunnerOperationsV1 {
                 prepare_data_directory(&root.join("launch-bindings"))
                     .map_err(|_| HostedHouseRunnerErrorV1::Unavailable)?,
             ),
+            launch_closure_fences: Arc::new(
+                prepare_data_directory(&root.join("launch-closure-fences"))
+                    .map_err(|_| HostedHouseRunnerErrorV1::Unavailable)?,
+            ),
             host_installation_id: Arc::from(host_installation_id),
             listings: Arc::new(listings),
             revisions: Arc::new(revisions),
@@ -956,6 +986,12 @@ impl HostedHouseRunnerOperationsV1 {
             .get(&request.house_agent_revision_digest)
             .ok_or(HostedHouseRunnerErrorV1::Invalid)?;
         let _guard = self.lock();
+        if self
+            .load_launch_closure_fence_unlocked(&request.launch_request_id)?
+            .is_some()
+        {
+            return Err(HostedHouseRunnerErrorV1::Conflict);
+        }
         match self.load_reservation(&request.reservation_operation_id) {
             Ok(existing) if existing.request == *request => {
                 self.verify_receipt(&existing.receipt)?;
@@ -1155,6 +1191,76 @@ impl HostedHouseRunnerOperationsV1 {
             }
             Err(error) => Err(error),
         }
+    }
+
+    /// Stops or pre-fences every successful House reservation belonging to a
+    /// creator-closed launch. The supplied digest names the durable closure
+    /// intent installed before this operation begins.
+    ///
+    /// # Errors
+    /// Fails closed if any retained reservation or child cannot be matched,
+    /// stopped, and durably fenced.
+    pub fn close_launch(
+        &self,
+        launch_request_id: &str,
+        closure_intent_digest: &str,
+    ) -> Result<(), HostedHouseRunnerErrorV1> {
+        if !uuid_reference(launch_request_id) || !valid_evidence_digest(closure_intent_digest) {
+            return Err(HostedHouseRunnerErrorV1::Invalid);
+        }
+        let requests = {
+            let _guard = self.lock();
+            self.install_or_match_launch_closure_fence_unlocked(
+                launch_request_id,
+                closure_intent_digest,
+            )?;
+            let mut requests = Vec::new();
+            for reservation in self.reservations_unlocked()? {
+                if reservation.receipt.launch_request_id != launch_request_id
+                    || reservation.receipt.outcome
+                        != HostedHouseRunnerReservationOutcomeV1::Succeeded
+                {
+                    continue;
+                }
+                // A terminal or earlier abandonment path may already have
+                // installed exact stop evidence. It is already safe for the
+                // launch closure to rely on that stronger fence; attempting a
+                // second disposition would only manufacture a false conflict.
+                if self.operator_retired(&reservation.receipt)? {
+                    continue;
+                }
+                let runner_unit_id = reservation
+                    .receipt
+                    .runner_unit_id
+                    .as_deref()
+                    .ok_or(HostedHouseRunnerErrorV1::Unavailable)?;
+                if let Some(intent) = self.retirement_intent(&self.units.join(runner_unit_id))? {
+                    // A failed earlier stop already installed the stronger
+                    // spawn fence. Resume its exact request so closure cannot
+                    // deadlock by trying to replace immutable evidence with a
+                    // new disposition.
+                    requests.push(intent.request);
+                    continue;
+                }
+                let launch_binding = self
+                    .load_launch_binding_unlocked(&reservation.receipt.reservation_operation_id)?;
+                requests.push(HostedHouseRunnerRetirementRequestV1 {
+                    schema: "worldstream/house-runner-retirement-request/v1".to_owned(),
+                    host_installation_id: self.host_installation_id.to_string(),
+                    reservation_operation_id: reservation.receipt.reservation_operation_id,
+                    launch_request_id: launch_request_id.to_owned(),
+                    house_agent_assignment_id: launch_binding
+                        .map(|binding| binding.house_agent_assignment_id),
+                    disposition: HostedHouseRunnerRetirementDispositionV1::CreatorClosed,
+                    platform_evidence_digest: closure_intent_digest.to_owned(),
+                });
+            }
+            requests
+        };
+        for request in requests {
+            self.retire(&request)?;
+        }
+        Ok(())
     }
 
     fn operator_retired(
@@ -1358,6 +1464,14 @@ impl HostedHouseRunnerOperationsV1 {
             return Err(HostedHouseRunnerErrorV1::Invalid);
         }
         let _guard = self.lock();
+        if self
+            .load_launch_closure_fence_unlocked(
+                &launch.capacity_authorization.reservation_reference,
+            )?
+            .is_some()
+        {
+            return Err(HostedHouseRunnerErrorV1::Conflict);
+        }
         let existing = self.launch_bindings_unlocked()?;
         for assignment in &launch.house_runner_assignments {
             let receipt = &assignment.reservation_receipt;
@@ -1415,6 +1529,14 @@ impl HostedHouseRunnerOperationsV1 {
         let Some(listing) = self.listings.get(&launch.listing_revision_digest) else {
             return HostedHouseRunnerGateV1::TerminalFailure;
         };
+        let _guard = self.lock();
+        match self.load_launch_closure_fence_unlocked(
+            &launch.capacity_authorization.reservation_reference,
+        ) {
+            Ok(Some(_)) => return HostedHouseRunnerGateV1::TerminalFailure,
+            Ok(None) => {}
+            Err(_) => return HostedHouseRunnerGateV1::RetryableFailure,
+        }
         for assignment in &launch.house_runner_assignments {
             let receipt = &assignment.reservation_receipt;
             let Some(revision) = self.revisions.get(&receipt.house_agent_revision_digest) else {
@@ -1476,6 +1598,9 @@ impl HostedHouseRunnerOperationsV1 {
                 return Err(HostedHouseRunnerErrorV1::Unavailable);
             }
         }
+        for fence in self.launch_closure_fences_unlocked()? {
+            self.verify_launch_closure_fence(&fence)?;
+        }
         Ok(())
     }
 
@@ -1489,6 +1614,65 @@ impl HostedHouseRunnerOperationsV1 {
         &self,
     ) -> Result<Vec<RetainedLaunchBindingV1>, HostedHouseRunnerErrorV1> {
         read_records(&self.launch_bindings, MAX_RESERVATIONS)
+    }
+
+    fn launch_closure_fences_unlocked(
+        &self,
+    ) -> Result<Vec<RetainedHouseRunnerLaunchClosureFenceV1>, HostedHouseRunnerErrorV1> {
+        read_records(&self.launch_closure_fences, MAX_RESERVATIONS)
+    }
+
+    fn load_launch_closure_fence_unlocked(
+        &self,
+        launch_request_id: &str,
+    ) -> Result<Option<RetainedHouseRunnerLaunchClosureFenceV1>, HostedHouseRunnerErrorV1> {
+        if !uuid_reference(launch_request_id) {
+            return Err(HostedHouseRunnerErrorV1::Invalid);
+        }
+        match read_record(
+            &self
+                .launch_closure_fences
+                .join(format!("{launch_request_id}.json")),
+        ) {
+            Ok(fence) => {
+                self.verify_launch_closure_fence(&fence)?;
+                Ok(Some(fence))
+            }
+            Err(RecordReadErrorV1::NotFound) => Ok(None),
+            Err(RecordReadErrorV1::Unavailable) => Err(HostedHouseRunnerErrorV1::Unavailable),
+        }
+    }
+
+    fn install_or_match_launch_closure_fence_unlocked(
+        &self,
+        launch_request_id: &str,
+        closure_intent_digest: &str,
+    ) -> Result<(), HostedHouseRunnerErrorV1> {
+        let mut fence = RetainedHouseRunnerLaunchClosureFenceV1 {
+            schema: LAUNCH_CLOSURE_FENCE_SCHEMA_V1.to_owned(),
+            host_installation_id: self.host_installation_id.to_string(),
+            launch_request_id: launch_request_id.to_owned(),
+            closure_intent_digest: closure_intent_digest.to_owned(),
+            authentication_tag: String::new(),
+        };
+        fence.authentication_tag = self.sign_launch_closure_fence(&fence)?;
+        let path = self
+            .launch_closure_fences
+            .join(format!("{launch_request_id}.json"));
+        match persist_new(&path, &fence) {
+            Ok(()) => Ok(()),
+            Err(HostedHouseRunnerErrorV1::Conflict) => {
+                let existing = self
+                    .load_launch_closure_fence_unlocked(launch_request_id)?
+                    .ok_or(HostedHouseRunnerErrorV1::Unavailable)?;
+                if existing == fence {
+                    Ok(())
+                } else {
+                    Err(HostedHouseRunnerErrorV1::Conflict)
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn load_reservation(
@@ -1647,6 +1831,45 @@ impl HostedHouseRunnerOperationsV1 {
         .map_err(|_| HostedHouseRunnerErrorV1::Invalid)
     }
 
+    fn sign_launch_closure_fence(
+        &self,
+        fence: &RetainedHouseRunnerLaunchClosureFenceV1,
+    ) -> Result<String, HostedHouseRunnerErrorV1> {
+        let bytes = canonical_bytes(&LaunchClosureFenceWitnessV1 {
+            domain: LAUNCH_CLOSURE_FENCE_TAG_DOMAIN,
+            schema: &fence.schema,
+            host_installation_id: &fence.host_installation_id,
+            launch_request_id: &fence.launch_request_id,
+            closure_intent_digest: &fence.closure_intent_digest,
+        })?;
+        Ok(hex(hmac::sign(&self.authenticator, &bytes).as_ref()))
+    }
+
+    fn verify_launch_closure_fence(
+        &self,
+        fence: &RetainedHouseRunnerLaunchClosureFenceV1,
+    ) -> Result<(), HostedHouseRunnerErrorV1> {
+        if fence.schema != LAUNCH_CLOSURE_FENCE_SCHEMA_V1
+            || fence.host_installation_id != self.host_installation_id.as_ref()
+            || !uuid_reference(&fence.launch_request_id)
+            || !valid_evidence_digest(&fence.closure_intent_digest)
+        {
+            return Err(HostedHouseRunnerErrorV1::Invalid);
+        }
+        hmac::verify(
+            &self.authenticator,
+            &canonical_bytes(&LaunchClosureFenceWitnessV1 {
+                domain: LAUNCH_CLOSURE_FENCE_TAG_DOMAIN,
+                schema: &fence.schema,
+                host_installation_id: &fence.host_installation_id,
+                launch_request_id: &fence.launch_request_id,
+                closure_intent_digest: &fence.closure_intent_digest,
+            })?,
+            &decode_hex(&fence.authentication_tag)?,
+        )
+        .map_err(|_| HostedHouseRunnerErrorV1::Invalid)
+    }
+
     fn lock(&self) -> MutexGuard<'_, ()> {
         self.mutation.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -1758,9 +1981,11 @@ fn validate_retirement_target(
                 && request.house_agent_assignment_id.as_deref()
                     == Some(binding.house_agent_assignment_id.as_str()) => {}
         Some(_) => return Err(HostedHouseRunnerErrorV1::Conflict),
-        None if request.disposition
-            == HostedHouseRunnerRetirementDispositionV1::FailedPreGenesis
-            && request.house_agent_assignment_id.is_none() => {}
+        None if matches!(
+            request.disposition,
+            HostedHouseRunnerRetirementDispositionV1::FailedPreGenesis
+                | HostedHouseRunnerRetirementDispositionV1::CreatorClosed
+        ) && request.house_agent_assignment_id.is_none() => {}
         None => return Err(HostedHouseRunnerErrorV1::Conflict),
     }
     match runtime_binding {
@@ -2820,6 +3045,126 @@ mod tests {
                 .join(RETIREMENT_INTENT_MARKER_FILE)
                 .exists(),
             "a failed stop remains durably fenced and keeps capacity occupied"
+        );
+    }
+
+    #[test]
+    fn creator_close_resumes_an_incomplete_retirement_intent_after_restart() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("tempdir: {error}"));
+        let mut failing_source = FakeSource::ready();
+        failing_source.retirement_failure = true;
+        let (operations, listing, revisions) = make_operations(directory.path(), failing_source);
+        let request = request(1, 1, "navigator", &revisions[0], &listing);
+        let reservation = operations
+            .reserve(&request)
+            .unwrap_or_else(|error| unreachable!("reserve: {error:?}"));
+        assert_eq!(
+            operations.retire(&retirement_request(
+                &reservation,
+                None,
+                HostedHouseRunnerRetirementDispositionV1::FailedPreGenesis,
+            )),
+            Err(HostedHouseRunnerErrorV1::Unavailable)
+        );
+        drop(operations);
+
+        let recovered_source = FakeSource::ready();
+        let retirements = recovered_source.retirements.clone();
+        let reopened = HostedHouseRunnerOperationsV1::open_with(
+            directory.path(),
+            "hosted-test",
+            vec![listing],
+            revisions,
+            recovered_source,
+        )
+        .unwrap_or_else(|error| unreachable!("reopen: {error:?}"));
+        let closure_digest = format!("blake3:{}", "7".repeat(64));
+        reopened
+            .close_launch(&request.launch_request_id, &closure_digest)
+            .unwrap_or_else(|error| unreachable!("close resumes stop: {error:?}"));
+        reopened
+            .close_launch(&request.launch_request_id, &closure_digest)
+            .unwrap_or_else(|error| unreachable!("close retry: {error:?}"));
+        assert_eq!(
+            retirements
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_slice(),
+            &[None]
+        );
+    }
+
+    #[test]
+    fn creator_close_fences_late_reservation_binding_and_start_across_restart() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("tempdir: {error}"));
+        let source = FakeSource::ready();
+        let retirements = source.retirements.clone();
+        let (operations, listing, revisions) = make_operations(directory.path(), source.clone());
+        let request = request(1, 1, "navigator", &revisions[0], &listing);
+        let receipt = operations
+            .reserve(&request)
+            .unwrap_or_else(|error| unreachable!("reserve: {error:?}"));
+        let launch = launch(
+            &listing,
+            vec![HostedHouseRunnerAssignmentV1 {
+                house_agent_assignment_id: "20000000-0000-4000-8000-000000000001".to_owned(),
+                reservation_receipt: receipt,
+            }],
+        );
+        let closure_digest = format!("blake3:{}", "7".repeat(64));
+
+        operations
+            .close_launch(&request.launch_request_id, &closure_digest)
+            .unwrap_or_else(|error| unreachable!("close: {error:?}"));
+        assert_eq!(
+            retirements
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_slice(),
+            &[None]
+        );
+        assert_eq!(
+            operations.reserve(&request),
+            Err(HostedHouseRunnerErrorV1::Conflict)
+        );
+        assert_eq!(
+            operations.bind_launch(&launch),
+            Err(HostedHouseRunnerErrorV1::Conflict)
+        );
+        assert_eq!(
+            operations.start_launch(&launch, "01JY0000000000000000000000"),
+            HostedHouseRunnerGateV1::TerminalFailure
+        );
+        operations
+            .close_launch(&request.launch_request_id, &closure_digest)
+            .unwrap_or_else(|error| unreachable!("close retry: {error:?}"));
+        assert_eq!(
+            retirements
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len(),
+            1
+        );
+
+        drop(operations);
+        let reopened = HostedHouseRunnerOperationsV1::open_with(
+            directory.path(),
+            "hosted-test",
+            vec![listing],
+            revisions,
+            source,
+        )
+        .unwrap_or_else(|error| unreachable!("reopen: {error:?}"));
+        assert_eq!(
+            reopened.reserve(&request),
+            Err(HostedHouseRunnerErrorV1::Conflict)
+        );
+        assert_eq!(
+            reopened.close_launch(
+                &request.launch_request_id,
+                &format!("blake3:{}", "8".repeat(64)),
+            ),
+            Err(HostedHouseRunnerErrorV1::Conflict)
         );
     }
 

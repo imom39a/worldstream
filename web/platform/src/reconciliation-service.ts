@@ -68,6 +68,8 @@ export function withHostedResultReconciliation(
     readonly canonicalOrigin: string;
     readonly cronSecret: string;
     readonly recover: (launchRequestId: string) => Promise<unknown>;
+    readonly listPendingClosures: (limit: number) => Promise<readonly string[]>;
+    readonly recoverClosure: (launchRequestId: string) => Promise<unknown>;
     /** Uses the Host's current task state; DB time only selects candidates. */
     readonly abandonPrestart: (launchRequestId: string) => Promise<unknown>;
   },
@@ -118,6 +120,14 @@ export function withHostedResultReconciliation(
         }
         if (candidates.length > 10) return Response.json({ error: { code: "candidate_limit_exceeded" } }, { status: 503 });
         let failed = 0;
+        let pendingClosures: readonly string[] = [];
+        try {
+          pendingClosures = await recovery.listPendingClosures(10);
+          if (pendingClosures.length > 10) throw new Error("candidate_limit_exceeded");
+          for (const launchRequestId of pendingClosures) {
+            try { await recovery.recoverClosure(launchRequestId); } catch { failed += 1; }
+          }
+        } catch { failed += 1; }
         for (const candidate of candidates) {
           try {
             await dependencies.data.markAttempt(candidate.launchRequestId);
@@ -150,7 +160,7 @@ export function withHostedResultReconciliation(
           await reconcileTerminalHouseRunnerRetirementCandidates(dependencies, 10);
           await reconcilePrestartHouseRunnerRetirementCandidates(dependencies, 10);
         } catch { failed += 1; }
-        return Response.json({ attempted: candidates.length + prestartLaunches.length, failed }, {
+        return Response.json({ attempted: pendingClosures.length + candidates.length + prestartLaunches.length, failed }, {
           status: failed === 0 ? 200 : 503, headers: { "cache-control": "no-store" },
         });
       }
