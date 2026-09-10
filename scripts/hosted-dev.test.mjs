@@ -68,6 +68,22 @@ test("hosted development builds every source Activity Client selected by its loc
   );
 });
 
+test("the canonical hosted candidate provisions its locked Playwright browser before acceptance", async () => {
+  const workflow = await readFile(
+    new URL(".github/workflows/hosted-foundations.yml", repository),
+    "utf8",
+  );
+  const candidate = workflow.slice(workflow.indexOf("  local-candidate:"));
+
+  assert.match(candidate, /pnpm install --frozen-lockfile/u);
+  assert.match(candidate, /pnpm exec playwright install --with-deps --only-shell chromium/u);
+  assert.ok(
+    candidate.indexOf("pnpm exec playwright install --with-deps --only-shell chromium") <
+      candidate.indexOf("pnpm hosted:acceptance:local"),
+    "the locked browser must be installed before the rendered acceptance journey",
+  );
+});
+
 test("hosted server start retries the bounded Runtime-restart startup sequence", async () => {
   const attempts = [];
   const pauses = [];
