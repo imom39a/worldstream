@@ -1,6 +1,6 @@
-"""Wait boundedly, then answer one Mira planning opportunity through scoped SDK connections.
+"""Wait boundedly, then answer one Jonah planning opportunity through scoped SDK connections.
 
-Run as ``python -m examples.midnight_archive.run_mira`` from the repository root.
+Run as ``python -m examples.midnight_archive.run_jonah`` from the repository root.
 Credential documents are owner-only CLI exports. No input Projection, credential,
 discovery, or plan is written to disk or included in the bounded result report.
 """
@@ -15,21 +15,18 @@ from examples.midnight_archive import companion_runner
 
 ACTION = companion_runner.ACTION
 ACTION_OFFER_DOMAIN = companion_runner.ACTION_OFFER_DOMAIN
-DIGEST = companion_runner.DIGEST
-PACK_ID = companion_runner.PACK_ID
-REASON = companion_runner.REASON
 
 LOCATIONS = {"atrium", "records", "conservation", "plant", "vault"}
 CANDIDATES = {"ledger-amber", "ledger-cobalt", "ledger-violet"}
 
 
-class MiraContractError(ValueError):
+class JonahContractError(ValueError):
     """A closed rejection without input data or authority material."""
 
 
 def require(condition: bool) -> None:
     if not condition:
-        raise MiraContractError("mira_contract_mismatch")
+        raise JonahContractError("jonah_contract_mismatch")
 
 
 def integer(value: Any, minimum: int, maximum: int) -> bool:
@@ -42,7 +39,7 @@ def exact(value: Any, fields: set[str]) -> dict:
 
 
 def select_plan(projection: dict) -> dict:
-    """Choose up to three bounded steps from Mira's own authorized view."""
+    """Choose up to three bounded steps from Jonah's own authorized view."""
     exact(projection, {"core", "activity", "action_offers"})
     offers = projection["action_offers"]
     require(isinstance(offers, list) and len(offers) == 1)
@@ -54,7 +51,7 @@ def select_plan(projection: dict) -> dict:
     activity = projection["activity"]
     require(isinstance(activity, dict) and activity.get("phase") == "active")
     companion = exact(
-        activity.get("mira"),
+        activity.get("jonah"),
         {
             "presence", "location", "mode", "task", "planning", "preparation",
             "knowledge", "field_assay", "last_contribution",
@@ -70,11 +67,10 @@ def select_plan(projection: dict) -> dict:
     require(
         task["status"] == "assigned"
         and task["kind"] in (
-            "investigate_records", "investigate_conservation", "open_service_hatch",
-            "field_assay",
+            "investigate_records", "investigate_conservation", "open_service_hatch"
         )
         and integer(task["revision"], 1, 2**53 - 1)
-        and integer(task["power_allowance"], 0, 2)
+        and integer(task["power_allowance"], 0, 1)
         and integer(task["power_spent"], 0, task["power_allowance"])
     )
     planning = exact(
@@ -96,8 +92,6 @@ def select_plan(projection: dict) -> dict:
             r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", planning["deadline"]
         ) is not None
     )
-    # Deadline eligibility is decided by Pack Semantic Time at admission.
-    # A local wall clock must never manufacture a fresh opportunity.
     knowledge = exact(companion["knowledge"], {"records", "conservation", "verifier_result"})
     require(all(knowledge[source] in ("unknown", "private", "shared")
                 for source in ("records", "conservation")))
@@ -106,36 +100,20 @@ def select_plan(projection: dict) -> dict:
     if assay["result"] is not None:
         result = exact(assay["result"], {"candidate_id", "confidence"})
         require(result["candidate_id"] in CANDIDATES and result["confidence"] == "verified")
+    require(assay["steps_completed"] == 0 and assay["result"] is None)
 
-    if task["kind"] == "field_assay":
-        require(task["power_allowance"] == 0 and task["power_spent"] == 0
-                and assay["result"] is None)
-        steps = [
-            step("move", destination=destination)
-            for destination in shortest_route(activity, location, "vault")
-        ]
-        if assay["steps_completed"] == 0:
-            steps.extend([step("collect_assay_sample"), step("complete_field_assay")])
-        else:
-            require(assay["steps_completed"] == 1)
-            steps.append(step("complete_field_assay"))
-        steps = steps[:3]
-    elif task["kind"] == "open_service_hatch":
+    if task["kind"] == "open_service_hatch":
         gates = exact(activity.get("gates"), {"archive_gate", "service_hatch"})
         require(gates["service_hatch"] == "closed"
-                and task["power_allowance"] == 2 and task["power_spent"] == 0)
-        steps = [
-            step("move", destination=destination)
-            for destination in shortest_route(activity, location, "plant")
-        ]
-        steps.append(step("open_service_hatch", power=2))
+                and task["power_allowance"] == 1 and task["power_spent"] == 0)
+        route = companion_runner.shortest_route(POLICY, activity, location, "plant", LOCATIONS)
+        steps = [step("move", destination=destination) for destination in route]
+        steps.append(step("open_service_hatch", power=1))
         steps = steps[:3]
     else:
-        require(task["power_allowance"] <= 1)
-        require(assay["steps_completed"] in (0, 1, 2))
         target = task["kind"].removeprefix("investigate_")
         require(knowledge[target] != "shared")
-        route = shortest_route(activity, location, target)
+        route = companion_runner.shortest_route(POLICY, activity, location, target, LOCATIONS)
         steps = [step("move", destination=destination) for destination in route]
         if knowledge[target] == "unknown":
             steps.append(step("inspect_source", source=target))
@@ -149,7 +127,7 @@ def select_plan(projection: dict) -> dict:
 
 
 def step(
-    kind: str, *, destination: str = "none", source: str = "none", power: int = 0
+    kind: str, *, destination: str = "none", source: str = "none", power: int = 0,
 ) -> dict:
     return {
         "step_type": kind,
@@ -159,15 +137,11 @@ def step(
     }
 
 
-def shortest_route(activity: dict, origin: str, target: str) -> list[str]:
-    return companion_runner.shortest_route(POLICY, activity, origin, target, LOCATIONS)
-
-
 POLICY = companion_runner.CompanionRunnerPolicy(
-    expected_role="mira",
+    expected_role="jonah",
     select_plan=select_plan,
-    contract_error=MiraContractError,
-    mismatch_code="mira_contract_mismatch",
+    contract_error=JonahContractError,
+    mismatch_code="jonah_contract_mismatch",
 )
 
 

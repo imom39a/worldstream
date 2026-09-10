@@ -1,23 +1,32 @@
-# Deterministic Mira Runner
+# Deterministic companion Runners
 
-This external Python process answers one `companion_plan_requested` Activation
-through the supported Python Runner and Membership SDK connections. It uses no
-provider and holds no human or Host authority. Run it from the repository root:
+These external Python processes answer one `companion_plan_requested`
+Activation through the supported Python Runner and Membership SDK connections.
+They use no provider and hold no human or Host authority. Shared machinery in
+`companion_runner.py` fences both policies to their expected Role; each process
+still receives only one companion's credential pair. Run them from the
+repository root:
 
 ```sh
 uv run --project sdk/python --python 3.14.7 python -m examples.midnight_archive.run_mira \
   --membership-file /protected/mira-membership.json \
   --runner-file /protected/mira-runner.json \
   --pack-revision blake3:EXACT_APPROVED_MIRA_REVISION
+
+uv run --project sdk/python --python 3.14.7 python -m examples.midnight_archive.run_jonah \
+  --membership-file /protected/jonah-membership.json \
+  --runner-file /protected/jonah-runner.json \
+  --pack-revision blake3:EXACT_APPROVED_COMPANION_REVISION
 ```
 
-Replace the revision placeholder with the exact approved IMO-202 Pack revision.
+Replace each revision placeholder with the exact approved Pack revision.
 The executable accepts the two separately exported credential files; no bearer
 belongs in an argument or environment variable. Existing strict credential
-loaders require owner-only regular files. The example checks the exact Pack,
-Mira Role, agent Principal, Runtime origin and single permitted Membership.
+loaders require owner-only regular files. Each Role adapter checks the exact
+Pack, expected Role, equal setup seat, agent Principal, Runtime origin and
+single permitted Membership.
 
-Each invocation keeps its Runner connection open only for its bounded wait
+Each Invocation keeps its Runner connection open only for its bounded wait
 window. It claims only the first matching reason for that exact
 Membership, compares the claimed Invocation Context with a fresh authorized
 Projection at the same Head, and submits at most one `submit_companion_plan`
@@ -78,10 +87,21 @@ this example connects through the SDK directly and does not launch that helper.
    Runner must not be invoked during Replay. Keep private payloads and exported
    credentials out of test receipts and committed artifacts.
 
+For Jonah, provision an independent `jonah` Agent Membership and external
+Runner assignment, export a separate owner-only Membership/Runner credential
+pair, and start `run_jonah` before Activity Start. The deterministic policy can
+perform ordinary source investigations or propose the one-charge specialist
+service-hatch route. It rejects Mira's field-assay task. In an all-three Room,
+start one Mira process and one Jonah process with distinct Principals,
+Memberships, Runner identities and bearers. Never broaden either Runner's
+`permitted_memberships`; the Pack serializes and targets each planning
+opportunity to the exact current Membership.
+
 Run the focused checks from the repository root:
 
 ```sh
 uv run --project sdk/python --python 3.14.7 python -m pytest examples/midnight_archive/test_run_mira.py sdk/python/tests/test_runner_client.py
+uv run --project sdk/python --python 3.14.7 python -m pytest examples/midnight_archive/test_run_jonah.py examples/midnight_archive/test_companion_runner.py
 uv run --project sdk/python --python 3.14.7 ruff check examples/midnight_archive
 ```
 

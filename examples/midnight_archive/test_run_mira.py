@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from worldstream_sdk.client import _loads
 
+from examples.midnight_archive import companion_runner
 from examples.midnight_archive import run_mira as mira
 
 PACK = {"id": mira.PACK_ID, "version": "0.1.0", "digest": "blake3:" + "1" * 64}
@@ -41,6 +42,7 @@ def projection():
                              "deadline": "2026-09-09T12:00:15.000Z"},
                 "knowledge": {"records": "unknown", "conservation": "unknown",
                               "verifier_result": None},
+                "field_assay": {"steps_completed": 0, "result": None},
                 "preparation": {}, "last_contribution": None,
             },
         },
@@ -84,6 +86,53 @@ def test_long_route_clips_to_three_and_respects_closed_gate():
     ]
     view["activity"]["gates"]["service_hatch"] = "closed"
     with pytest.raises(mira.MiraContractError):
+        mira.select_plan(view)
+
+
+def test_field_assay_uses_two_zero_power_steps_and_resumes_from_recorded_progress():
+    view = projection()
+    companion = view["activity"]["mira"]
+    companion["task"]["kind"] = "field_assay"
+    companion["location"] = "vault"
+    assert mira.select_plan(view)["steps"] == [
+        mira.step("collect_assay_sample"),
+        mira.step("complete_field_assay"),
+    ]
+    companion["field_assay"]["steps_completed"] = 1
+    assert mira.select_plan(view)["steps"] == [mira.step("complete_field_assay")]
+
+
+def test_field_assay_routes_to_the_vault_before_collecting_when_a_gate_is_open():
+    view = projection()
+    companion = view["activity"]["mira"]
+    companion["task"]["kind"] = "field_assay"
+    view["activity"]["gates"]["archive_gate"] = "open"
+    assert mira.select_plan(view)["steps"] == [
+        mira.step("move", destination="conservation"),
+        mira.step("move", destination="vault"),
+        mira.step("collect_assay_sample"),
+    ]
+
+
+def test_mira_can_plan_the_two_charge_ordinary_service_hatch_method():
+    view = projection()
+    companion = view["activity"]["mira"]
+    companion["task"].update(kind="open_service_hatch", power_allowance=2)
+    assert mira.select_plan(view)["steps"] == [
+        mira.step("move", destination="records"),
+        mira.step("move", destination="plant"),
+        mira.step("open_service_hatch", power=2),
+    ]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("steps_completed", 3),
+    ("result", {"candidate_id": "ledger-amber", "confidence": "unverified"}),
+])
+def test_field_assay_contract_fails_closed(field, value):
+    view = projection()
+    view["activity"]["mira"]["field_assay"][field] = value
+    with pytest.raises(mira.MiraContractError, match="^mira_contract_mismatch$"):
         mira.select_plan(view)
 
 
@@ -146,6 +195,7 @@ def transport(projection: dict):
     offer = {
         "activation_id": "activation", "room_id": "room", "member_id": "mira",
         "reason_code": mira.REASON, "cause_room_seq": 8,
+        "deadline": "2026-09-09T12:00:15.000Z",
     }
     context = {
         "activation_id": "activation", "claim_id": "claim", "lease_generation": 1,
@@ -154,7 +204,7 @@ def transport(projection: dict):
         "lease_until": "2026-09-09T12:00:30.000Z", "deadline": "2026-09-09T12:00:15.000Z",
         "integrity_generation": 1, "policy_revision": 1, "authority_generation": 1,
         "membership_generation": 1, "frame_head": 8, "retained_floor": 0, "cursor": None,
-        "projection_schema": "worldstream.midnight-archive/participant/v1",
+        "projection_schema": companion_runner.PROJECTION_SCHEMA,
         "runner_budget": {}, "runner_limits": {}, "artifact_references": [],
         "delivery": {"kind": "projection_reset", "baseline_frame_head": 8, "reason": "initial"},
     }
@@ -325,12 +375,15 @@ def credentials():
 
 
 @pytest.mark.parametrize("invalid", [
-    "human_role", "foreign_runner_owner", "another_origin", "shared_bearer", "broad_runner",
+    "human_role", "wrong_seat", "foreign_runner_owner", "another_origin", "shared_bearer",
+    "broad_runner",
 ])
 def test_credentials_fail_closed_before_connecting(monkeypatch, tmp_path, invalid):
     membership, runner = credentials()
     if invalid == "human_role":
         membership["role"] = "lead"
+    elif invalid == "wrong_seat":
+        runner["seat"] = "jonah"
     elif invalid == "foreign_runner_owner":
         runner["owner_principal_id"] = "different-agent"
     elif invalid == "another_origin":
@@ -339,10 +392,10 @@ def test_credentials_fail_closed_before_connecting(monkeypatch, tmp_path, invali
         runner["bearer"] = membership["bearer"]
     else:
         runner["permitted_memberships"].append({"room_id": "room", "member_id": "lead"})
-    monkeypatch.setattr(mira, "load_membership", lambda _: membership)
-    monkeypatch.setattr(mira, "load_runner", lambda _: runner)
+    monkeypatch.setattr(companion_runner, "load_membership", lambda _: membership)
+    monkeypatch.setattr(companion_runner, "load_runner", lambda _: runner)
     factory = AsyncMock()
-    monkeypatch.setattr(mira, "Client", factory)
+    monkeypatch.setattr(companion_runner, "Client", factory)
     with pytest.raises(mira.MiraContractError):
         asyncio.run(mira.run(tmp_path / "membership", tmp_path / "runner", PACK["digest"]))
     factory.assert_not_called()
