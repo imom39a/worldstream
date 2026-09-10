@@ -36,7 +36,7 @@ async function main() {
   ]);
   await Promise.all([
     copyFile(
-      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "agent-heist-web-v6.json"),
+      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "agent-heist-web-v7.json"),
       join(assetRoot, "agent-heist-web.json"),
     ),
     copyFile(
@@ -109,7 +109,7 @@ async function main() {
     );
     await ctl([
       "room", "example",
-      "--pack", "worldstream.agent-heist@0.3.0",
+      "--pack", "worldstream.agent-heist@0.5.0",
       "--output", setup,
     ]);
     const created = JSON.parse((await runRoomCreateWithRetainedSetupRetry(

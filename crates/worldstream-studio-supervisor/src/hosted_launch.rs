@@ -1825,13 +1825,13 @@ mod tests {
     const HOUSE_LISTING: &[u8] =
         include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json");
     const CURRENT_LISTING: &[u8] =
-        include_bytes!("../../../config/hosted/listings/agent-heist-0.23.0.json");
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.24.0.json");
     const HOUSE_AGENT: &[u8] =
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json");
     const CURRENT_PLANNER: &[u8] =
-        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-16.json");
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-17.json");
     const CURRENT_AUDITOR: &[u8] =
-        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-15.json");
+        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-16.json");
     const LAUNCH: &[u8] =
         include_bytes!("../../../fixtures/hosted-contract/valid/agent-heist-launch-request.json");
     const ROSTER: &[u8] =
@@ -2312,7 +2312,7 @@ mod tests {
     }
 
     #[test]
-    fn current_house_profiles_validate_against_listing_019() {
+    fn current_house_profiles_validate_against_listing_024() {
         for house_source in [CURRENT_PLANNER, CURRENT_AUDITOR] {
             let (request, listing, house) =
                 current_house_request("hosted-current-profile", house_source);

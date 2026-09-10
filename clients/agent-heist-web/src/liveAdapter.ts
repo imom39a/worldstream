@@ -16,12 +16,15 @@ export const AGENT_HEIST_REVISION_0_3 =
   "blake3:4e4c970403f29a8448a1a3bcf7a96c030df713499730288f324c7e200d160b2d" as const;
 export const AGENT_HEIST_REVISION_0_4 =
   "blake3:4455e4302bda695a5fc4aca150b5a8dac944775474930dafaef1539acb86c96e" as const;
+export const AGENT_HEIST_REVISION_0_5 =
+  "blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9" as const;
 
 const SUPPORTED_REVISIONS = new Map<string, string>([
   [AGENT_HEIST_REVISION_0_1, "0.1.0"],
   [AGENT_HEIST_REVISION_0_2, "0.2.0"],
   [AGENT_HEIST_REVISION_0_3, "0.3.0"],
   [AGENT_HEIST_REVISION_0_4, "0.4.0"],
+  [AGENT_HEIST_REVISION_0_5, "0.5.0"],
 ]);
 const DIGEST = /^blake3:[0-9a-f]{64}$/;
 const MAX_COLLECTION = 128;

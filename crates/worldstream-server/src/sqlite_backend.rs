@@ -4229,8 +4229,7 @@ mod tests {
         CapabilityBearerV1, CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1,
         CapabilityScopeV1, NewCapabilityV1, PresentedCapabilityV1, PrincipalKindV1,
         agent_heist_clock_safe_digest, agent_heist_lobby_digest, builtin_agent_heist_registry,
-        builtin_counter_registry,
-        counter_v2_digest, counter_v3_digest, counter_v4_digest,
+        builtin_counter_registry, counter_v2_digest, counter_v3_digest, counter_v4_digest,
     };
     use worldstream_protocol::{
         AccessMode, BearerWireV1, CreateMember, HostedSpectatorCredentialInputV2,

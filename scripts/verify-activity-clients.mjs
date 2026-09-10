@@ -15,12 +15,12 @@ const buildRoots = new Map([
   ["worldstream.inspector.web", "web/console/dist"],
 ]);
 const currentReleaseFiles = new Map([
-  ["worldstream.agent-heist.web", "agent-heist-web-v6.json"],
+  ["worldstream.agent-heist.web", "agent-heist-web-v7.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const currentEvidenceFiles = new Map([
-  ["worldstream.agent-heist.web", "agent-heist-web-v6.json"],
+  ["worldstream.agent-heist.web", "agent-heist-web-v7.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
@@ -83,7 +83,7 @@ for (const { name, value: evidence } of evidenceDocuments) {
   check(
     JSON.stringify(evidence.checks) === JSON.stringify([
       ...expectedChecks.get(evidence.subject.client_id),
-      ...(["agent-heist-web-v2.json", "agent-heist-web-v3.json", "agent-heist-web-v4.json", "agent-heist-web-v5.json", "agent-heist-web-v6.json"].includes(name) ? [
+      ...(["agent-heist-web-v2.json", "agent-heist-web-v3.json", "agent-heist-web-v4.json", "agent-heist-web-v5.json", "agent-heist-web-v6.json", "agent-heist-web-v7.json"].includes(name) ? [
         "deployment-owned-stream-bootstrap-and-recovery",
         "separate-local-kernel-and-hosted-entrypoints-without-auth-fallback",
       ] : []),
@@ -288,7 +288,8 @@ async function verifySourceBoundaries() {
     "Agent Heist WebMCP surface is missing its bounded reviewed tools",
   );
   for (const [prefix, root] of [
-    ["/agent-heist-v6/", "clients/agent-heist-web/dist"],
+    ["/agent-heist-v7/", "clients/agent-heist-web/dist"],
+    ["/agent-heist-v6/", "config/activity-clients/artifacts/agent-heist-web-v6"],
     ["/agent-heist-v5/", "config/activity-clients/artifacts/agent-heist-web-v5"],
     ["/agent-heist-v4/", "config/activity-clients/artifacts/agent-heist-web-v4"],
     ["/agent-heist-v3/", "config/activity-clients/artifacts/agent-heist-web-v3"],

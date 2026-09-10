@@ -387,16 +387,16 @@ mod tests {
             startup.base_distribution_identity().packs().len(),
             expected.len()
         );
-        // These exact values are the immutable eight-pack identity and pack
-        // set persisted by the initial hosted SQLite deployment. Adding a new
-        // executor must use a distribution successor, not rewrite them.
+        // These exact values are the immutable nine-pack successor identity
+        // and pack set. The prior eight-pack deployment remains an addressable
+        // historical distribution; adding Heist 0.5 creates this successor.
         assert_eq!(
             startup.base_distribution_identity().digest().to_string(),
-            "c8482cf53886fb1824de96fb735057d271e03ff76afef6ae0c3469b7d3f0281d"
+            "116c73b634a7eea201c3c92dc0cb2bd61704945da966087574d33617c2f08936"
         );
         assert_eq!(
             hosted_sqlite_pack_set_digest(startup.base_distribution_identity()),
-            "e4d2d4a0f6d6e223c663ec6f52e1ecf01ea0defe82ecb0cce1e1ec8d98a704d3"
+            "23d454a84a6d908803674d7300fb4f4945814c827df29a78dd780f1693ce0e5a"
         );
         assert!(directory.path().join("activity-packs/inventory").is_dir());
     }

@@ -1,7 +1,50 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
-select plan(25);
+select plan(31);
+
+select is(
+  (select encode(extensions.digest(canonical_document, 'sha256'), 'hex')
+   from platform_store.activity_listing_revisions
+   where listing_revision_digest = 'blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397'),
+  '6250c443125882b8cef24a2da0d18273d75903da5cb85a4230e931f0e9e1a5ee',
+  'the schema-safe Listing stores the checked canonical artifact bytes'
+);
+select is(
+  (select convert_from(canonical_document, 'utf8')::jsonb ->> 'version'
+   from platform_store.activity_listing_revisions
+   where listing_revision_digest = 'blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397'),
+  '0.24.0',
+  'the schema-safe Listing is a separate immutable discovery revision'
+);
+select is(
+  (select pack_revision_digest from platform_store.activity_listing_revisions
+   where listing_revision_digest = 'blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397'),
+  'blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9',
+  'the schema-safe Listing pins the exact Heist 0.5 Pack'
+);
+select is(
+  (select result_projector_revision_digest from platform_store.activity_listing_revisions
+   where listing_revision_digest = 'blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397'),
+  'blake3:3344a8af68f9fe2ce32a7c12b40d439cd4d1ee9e75e8d45c0cce07e2f2b827fb',
+  'the schema-safe Listing pins its exact Result Projector'
+);
+select is(
+  (select client_release_digest from platform_store.activity_listing_revisions
+   where listing_revision_digest = 'blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397'),
+  'sha256:e1efd39ff8da4cddaa48e87ed4333d2c16fb71dd5ad0321f1245ac0a55aad33c',
+  'the schema-safe Listing pins the exact v7 client release'
+);
+select is(
+  (select string_agg(agent_profile_revision || ':' || runner_template_revision, ',' order by house_agent_key)
+   from platform_store.house_agent_revisions
+   where house_agent_revision_digest in (
+     'blake3:9788fe46953cf5c049c2dc457dac4dc5f916c45627457d4647c7e6d16c9308b9',
+     'blake3:2ec02c67644b04dcdcfcd76c9bd05e56cc4a4bf3e84b549be705fb26e43d5117'
+   )),
+  '17:16,16:16',
+  'schema-safe House successors bind exact profile revisions to Runner r16'
+);
 
 select is(
   (select encode(extensions.digest(canonical_document, 'sha256'), 'hex')
@@ -15,7 +58,7 @@ select is(
    from platform_store.activity_listing_revisions
    where listing_revision_digest = 'blake3:945664f9fea18ace9991c44d43febc142a58244d69352d98514a69b4f7b22030'),
   '0.23.0',
-  'the r15 successor Listing is the current immutable revision'
+  'the r15 successor Listing remains an immutable retained revision'
 );
 select is(
   (select convert_from(canonical_document, 'utf8')::jsonb ->> 'version'
@@ -32,7 +75,7 @@ select is(
      'blake3:8ffb7a9247cc647565c7b7a0f3ed29301b15b450e8110f4c96b521fdc3883c7c'
    )),
   '16:15,15:15',
-  'current House profiles bind new immutable profile revisions to Runner r15'
+  'retained House profiles remain bound to Runner r15'
 );
 select is(
   (select convert_from(canonical_document, 'utf8')::jsonb ->> 'version'

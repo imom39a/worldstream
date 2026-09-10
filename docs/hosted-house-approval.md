@@ -5,14 +5,15 @@ a migration, or an automatic startup action. Use it after the approved
 spending-limited OpenRouter credential and the exact Fly image are installed.
 Keep launches and House calls closed until the final checks pass.
 
-The current candidate Listing is Agent Heist `0.23.0`. Its two House strategies are
-Cooperative Planner `16` and Skeptical Auditor `15`. Both use the exact Granite
+The current candidate Listing is Agent Heist `0.24.0`. Its two House strategies are
+Cooperative Planner `17` and Skeptical Auditor `16`. Both use the exact Granite
 model and DeepInfra provider route declared in their immutable files. Their
 instructions differ; this is a two-strategy exhibition, not a comparison of two
-models. This candidate pins the clock-safe Pack `0.3.0`, v6 Activity Client,
-result projector `0.3.0`, and Runner Template `15`. The provider route and hard
-allowances are unchanged. Check the deployment record before treating the
-candidate as installed or approved.
+models. This candidate pins the schema-safe Pack `0.5.0`, v7 Activity Client,
+result projector `0.5.0`, and Runner Template `16`. The Pack gives each Heist
+action its own closed payload schema, so an empty model action is rejected before
+it can reach the reducer. The provider route and hard allowances are unchanged.
+Check the deployment record before treating the candidate as installed or approved.
 
 Keep Cooperative Planner `1` (the Qwen route) and Listings `0.4.0` and
 `0.5.0` as retained records. Do not change their canonical bytes or transfer
@@ -45,11 +46,14 @@ actual executable before approving it. Candidate metadata is not evidence of
 live gameplay. The draft 0.11.0 metadata was corrected before its first hosted
 publication; the unqualified image from commit `2419456` must not be deployed.
 
-The current `0.23.0` successor uses Planner `16`, Auditor `15`, and Runner
-Template `15` at `hosted-house-r15-01` on port `9605`. It explicitly disables
+Retain Listing `0.23.0`, Planner `16`, Auditor `15`, and Runner Template `15`
+unchanged for their historical assignments. The current `0.24.0` successor uses
+Planner `17`, Auditor `16`, and Runner Template `16` at
+`hosted-house-r16-01` on port `9606`. It explicitly disables
 the Granite route's default reasoning so the short Action JSON does not exhaust
-the fixed completion allowance. It is a new immutable candidate, not a
-replacement for the retained r14 bytes or their approvals.
+the fixed completion allowance. It is a new immutable candidate with the
+schema-safe Pack contract, not a replacement for the retained r15 bytes or their
+approvals.
 
 ## What this evidence means
 
@@ -112,15 +116,15 @@ generated SDK build.
 3. Capture these records from that same installation into a private local
    directory. Preserve their relative layout beneath a `studio` directory:
 
+   - `agent-profiles/revisions/<hex profile ID>/3137.json` for
+     `house-cooperative-planner` revision `17`;
    - `agent-profiles/revisions/<hex profile ID>/3136.json` for
-     `house-cooperative-planner` revision `16`;
-   - `agent-profiles/revisions/<hex profile ID>/3135.json` for
-     `house-skeptical-auditor` revision `15`;
-   - `runner-templates/installed/openrouter-house--15.json`;
+     `house-skeptical-auditor` revision `16`;
+   - `runner-templates/installed/openrouter-house--16.json`;
    - `model-provider-credentials/installed/hosted-openrouter.json`.
 
    Profile path components are the lowercase hexadecimal encoding of UTF-8;
-   `3136` encodes revision `16`; `3135` encodes revision `15`. Capture the binary
+   `3137` encodes revision `17`; `3136` encodes revision `16`. Capture the binary
    from the installed Runner Template's exact `executable.path` separately.
    Current installations use the persistent content-addressed path
    `/var/lib/worldstream/retained-runner-executables/blake3-<exact digest>/worldstream-managed-agent-host`;
@@ -149,8 +153,8 @@ node scripts/hosted-house-approval.mjs \
   --credential-id hosted-openrouter \
   --source-revision '<actual deployed Git commit>' \
   --image-digest 'sha256:<actual deployed image digest>' \
-  --house-revision config/hosted/house-agents/cooperative-planner-16.json \
-  --house-revision config/hosted/house-agents/skeptical-auditor-15.json \
+  --house-revision config/hosted/house-agents/cooperative-planner-17.json \
+  --house-revision config/hosted/house-agents/skeptical-auditor-16.json \
   --output-dir /private/tmp/worldstream-approval-capture/approval
 ```
 

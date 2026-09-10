@@ -25,7 +25,7 @@ test("the deployed retained catalog fits the allowlist contract, including 64 re
   const allowlist = JSON.parse(line.slice(line.indexOf("=") + 1));
   assert.ok(allowlist.length > 512, "exercise the former scalar-string limit");
   assert.ok(
-    allowlist.split(",").includes("blake3:945664f9fea18ace9991c44d43febc142a58244d69352d98514a69b4f7b22030"),
+    allowlist.split(",").includes("blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397"),
     "the Fly Gateway must admit the current discovery Listing",
   );
   assert.doesNotThrow(() => validateHostedRuntimeEnvironment(environment({ WORLDSTREAM_LISTING_ALLOWLIST: allowlist })));
@@ -141,13 +141,13 @@ test("House Runner import is exact and has no secret environment", () => {
     "a".repeat(64),
   );
   assert.equal(manifest.template_id, "openrouter-house");
-  assert.equal(manifest.revision, "15");
+  assert.equal(manifest.revision, "16");
   assert.deepEqual(manifest.instances, [{
-    instance_id: "hosted-house-r15-01", health_address: "127.0.0.1:9605",
+    instance_id: "hosted-house-r16-01", health_address: "127.0.0.1:9606",
   }]);
   assert.deepEqual(manifest.compatibility, [{
     activity_pack_id: "worldstream.agent-heist",
-    exact_revisions: ["0.3.0"],
+    exact_revisions: ["0.5.0"],
   }]);
   assert.deepEqual(manifest.secret_environment, []);
   assert.equal(manifest.capacity.maximum_concurrent_invocations, 4);
@@ -163,6 +163,7 @@ test("successor House Runner instances do not collide with retained installation
     { instance_id: "hosted-house-r12-01", health_address: "127.0.0.1:9602" },
     { instance_id: "hosted-house-r13-01", health_address: "127.0.0.1:9603" },
     { instance_id: "hosted-house-r14-01", health_address: "127.0.0.1:9604" },
+    { instance_id: "hosted-house-r15-01", health_address: "127.0.0.1:9605" },
   ]) {
   const successor = renderHouseRunnerTemplate("/var/lib/worldstream/retained-runner-executables/blake3-a/worldstream-managed-agent-host", "a".repeat(64));
   for (const instance of successor.instances) {
@@ -177,8 +178,8 @@ test("successor House Runner instances do not collide with retained installation
 test("fresh local and Fly imports bind the two Granite strategies to distinct exact profile revisions", () => {
   const profiles = renderHouseAgentProfiles();
   assert.deepEqual(Object.values(profiles).map(({ profile_id, revision }) => ({ profile_id, revision })), [
-    { profile_id: "house-cooperative-planner", revision: "16" },
-    { profile_id: "house-skeptical-auditor", revision: "15" },
+    { profile_id: "house-cooperative-planner", revision: "17" },
+    { profile_id: "house-skeptical-auditor", revision: "16" },
   ]);
   for (const profile of Object.values(profiles)) {
     assert.equal(profile.schema, "worldstream/studio-agent-profile-publish/v2");
@@ -186,12 +187,12 @@ test("fresh local and Fly imports bind the two Granite strategies to distinct ex
     assert.deepEqual(profile.non_secret_configuration, {});
     assert.deepEqual(profile.host_contract, {
       kind: "managed_house_openrouter", host_contract_revision: "1",
-      runner_template: { template_id: "openrouter-house", revision: "15" },
+      runner_template: { template_id: "openrouter-house", revision: "16" },
     });
   }
 });
 
-test("r12, r13, and r14 keep their retained executable bytes after r15 installs", async (t) => {
+test("r12 through r15 keep their retained executable bytes after r16 installs", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "worldstream-retained-runner-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const source = join(root, "mutable-build-output");
@@ -212,6 +213,10 @@ test("r12, r13, and r14 keep their retained executable bytes after r15 installs"
   const r15 = await retainRunnerExecutable({
     source, retainedRoot, digest: "d".repeat(64),
   });
+  await writeFile(source, "r16 successor executable bytes", { mode: 0o700 });
+  const r16 = await retainRunnerExecutable({
+    source, retainedRoot, digest: "e".repeat(64),
+  });
   const r12Template = {
     ...renderHouseRunnerTemplate(r12, "a".repeat(64)), revision: "12",
     instances: [{ instance_id: "hosted-house-r12-01", health_address: "127.0.0.1:9602" }],
@@ -224,7 +229,11 @@ test("r12, r13, and r14 keep their retained executable bytes after r15 installs"
     ...renderHouseRunnerTemplate(r14, "c".repeat(64)), revision: "14",
     instances: [{ instance_id: "hosted-house-r14-01", health_address: "127.0.0.1:9604" }],
   };
-  const r15Template = renderHouseRunnerTemplate(r15, "d".repeat(64));
+  const r15Template = {
+    ...renderHouseRunnerTemplate(r15, "d".repeat(64)), revision: "15",
+    instances: [{ instance_id: "hosted-house-r15-01", health_address: "127.0.0.1:9605" }],
+  };
+  const r16Template = renderHouseRunnerTemplate(r16, "e".repeat(64));
   assert.notEqual(r12, r13);
   assert.notEqual(r13, r14);
   assert.notEqual(r14, r15);
@@ -236,11 +245,14 @@ test("r12, r13, and r14 keep their retained executable bytes after r15 installs"
   assert.equal(r14Template.executable.path, r14);
   assert.equal(r15Template.revision, "15");
   assert.equal(r15Template.executable.path, r15);
+  assert.equal(r16Template.revision, "16");
+  assert.equal(r16Template.executable.path, r16);
   assert.equal(await readFile(r12, "utf8"), "r12 executable bytes",
     "an active r12 Assignment still resolves its content-addressed retained bytes");
   assert.equal(await readFile(r13, "utf8"), "r13 successor executable bytes");
   assert.equal(await readFile(r14, "utf8"), "r14 successor executable bytes");
   assert.equal(await readFile(r15, "utf8"), "r15 successor executable bytes");
+  assert.equal(await readFile(r16, "utf8"), "r16 successor executable bytes");
   await assert.rejects(
     retainRunnerExecutable({ source, retainedRoot, digest: "a".repeat(64) }),
     /retained_runner_digest_collision/u,

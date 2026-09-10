@@ -73,14 +73,15 @@ independent public viewer surface at `/agent-heist-v6/hosted/`. A new Listing
 revision changes discovery only; it does not rewrite Listing `0.13.0` or any
 existing Run.
 
-Listing `0.23.0` is the current discovery profile. It keeps the frozen Heist
-`0.3.0` Pack, Client v6 release, result projector, public policy, and limits
-unchanged. It advances only the House Agent references to the Runner template
-`15` recovery chain. This gives the new source/image release separate approval
-evidence and an isolated Runner instance while reusing the content-addressed
-managed Host executable when its bytes are unchanged. Listings `0.22.0` and
-earlier remain retained for existing Rooms and Assignments; no existing Runner
-executable path or House approval is rebound.
+Listing `0.24.0` is the current discovery profile. It pins the schema-safe
+Heist `0.5.0` Pack and its exact `0.5.0` Result Projector while keeping Client
+v7, the two Runner template `16` House successors, public policy, and limits
+unchanged. Client v7 adds exact Pack `0.5.0` compatibility without changing the
+participant or public-viewer protocol. Every non-empty Heist Action now declares a closed payload schema,
+so a generic client or House Runner rejects an unusable `{}` payload before it
+can reach the Pack reducer. Listing `0.23.0` and all earlier revisions remain
+retained for existing Rooms and Assignments; no retained Pack, Listing,
+projector, Runner executable, or House approval is rebound.
 
 The launch request is intentionally small:
 

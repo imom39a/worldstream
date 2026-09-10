@@ -44,8 +44,9 @@ const HOSTED_NATIVE_BINARY_NAMES = [
 ];
 export const HOSTED_LOCAL_RECONCILIATION_SECRET =
   "worldstream-local-reconciliation-secret-000000000000";
-const LISTING_DIGEST = "blake3:945664f9fea18ace9991c44d43febc142a58244d69352d98514a69b4f7b22030";
+const LISTING_DIGEST = "blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397";
 const RETAINED_LISTING_DIGESTS = [
+  "blake3:945664f9fea18ace9991c44d43febc142a58244d69352d98514a69b4f7b22030",
   "blake3:0cd11b3aee7596f0f4c2ff5640247c29038f903914d0206a784f7adde8a84c46",
   "blake3:3cdaaa7b2402b816ded0b36d5419f405b1be1428b37c89155a805d39bf826069",
   "blake3:1cf75abcb30d77fdbe0abc5e39813a315bea6900c61e9b49c51b84d995335d74",
@@ -859,7 +860,7 @@ async function hostedClientDeclaration(stateDirectory, stateRoot) {
 
   const template = await readRegularJson(join(configuration, "hosted-local-bindings.json"));
   const currentHeist = await readRegularJson(
-    join(configuration, "releases", "agent-heist-web-v6.json"),
+    join(configuration, "releases", "agent-heist-web-v7.json"),
   );
   template.deployments = [
     deployment,
@@ -993,7 +994,7 @@ async function assertLoopbackPortAvailable(portNumber, host, message, allowUnsup
 
 async function compatibleAgentHeistAlreadyRunning(portNumber) {
   try {
-    const response = await fetch(`http://127.0.0.1:${portNumber}/agent-heist-v6/hosted/`, {
+    const response = await fetch(`http://127.0.0.1:${portNumber}/agent-heist-v7/hosted/`, {
       signal: AbortSignal.timeout(1_000),
     });
     if (response.status !== 200) return false;
@@ -1051,7 +1052,7 @@ async function readiness(ports, ctl, children) {
     waitForHttp("product", `http://127.0.0.1:${ports.product}/`, 200, children),
     waitForHttp(
       "same-origin Agent Heist",
-      `http://127.0.0.1:${ports.product}/agent-heist-v6/hosted/`,
+      `http://127.0.0.1:${ports.product}/agent-heist-v7/hosted/`,
       200,
       children,
     ),
@@ -1259,7 +1260,7 @@ async function verifyDevelopmentFlow(ports) {
     [
       "fixtures/hosted-contract/valid/agent-heist-launch-request.json",
       "fixtures/hosted-contract/valid/agent-heist-frozen-roster.json",
-      "config/hosted/listings/agent-heist-0.23.0.json",
+      "config/hosted/listings/agent-heist-0.24.0.json",
     ].map(async (path) => JSON.parse(await readFile(join(REPOSITORY_ROOT, path), "utf8"))),
   );
   const frozenLaunchRequest = {
@@ -1471,11 +1472,11 @@ async function verifyCanonicalLocalCandidate({
       gateway_revision: commit,
       schema_head: schemaHead,
       listing_revision_digest: LISTING_DIGEST,
-      pack_digest: "blake3:4e4c970403f29a8448a1a3bcf7a96c030df713499730288f324c7e200d160b2d",
+      pack_digest: "blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9",
       client_release_digest:
-        "sha256:ed70155dd56f13010f33ab6cba55f3085443840a7e0f7a286e32b2e6d1719d10",
+        "sha256:e1efd39ff8da4cddaa48e87ed4333d2c16fb71dd5ad0321f1245ac0a55aad33c",
       projector_digest:
-        "blake3:f676cab8007a374db5510d66f534697472c53ea4b2719900bfecce53786f7563",
+        "blake3:3344a8af68f9fe2ce32a7c12b40d439cd4d1ee9e75e8d45c0cce07e2f2b827fb",
     },
     checks: Object.fromEntries(
       LOCAL_ACCEPTANCE_CHECKS.map((name) => [name,
@@ -1525,7 +1526,7 @@ function printReady(ports, supabase) {
       "",
       "WorldStream hosted development stack is ready.",
       `Product:        http://127.0.0.1:${ports.product}/`,
-      `Agent Heist:    http://127.0.0.1:${ports.product}/agent-heist-v6/hosted/`,
+      `Agent Heist:    http://127.0.0.1:${ports.product}/agent-heist-v7/hosted/`,
       `Hosted Gateway: ${hostedDevelopmentGatewayConfiguration().browserStreamUrl}/`,
       `Supabase API:   ${requiredSupabase(supabase, "API_URL")}`,
       `Runtime:        127.0.0.1:${ports.runtime} (loopback only)`,

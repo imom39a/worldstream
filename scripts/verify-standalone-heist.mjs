@@ -50,7 +50,7 @@ try {
   // Run the exact retained copies once before the managed startup deadline.
   // Normal OS execution policy still applies; never recopy after this check.
   await preflightExecutables();
-  const release = JSON.parse(await readFile(join(workspace, "config/activity-clients/releases/agent-heist-web-v6.json"), "utf8"));
+  const release = JSON.parse(await readFile(join(workspace, "config/activity-clients/releases/agent-heist-web-v7.json"), "utf8"));
   assert.equal(await activityClientBuildDigest(join(workspace, "clients/agent-heist-web/dist")), release.artifacts[0].digest);
   await writeFile(config, `config_version = 1\n[server]\nbind = "127.0.0.1:9410"\n[storage]\nprofile = "sqlite-bundled"\ndata_dir = "${join(root, "runtime")}"\ndeployment_lineage = "development/local-heist-proof"\nstorage_epoch = 1\n[authority.bootstrap]\nsecret_file = "${join(root, "authority.secret")}"\n`, { mode: 0o600 });
   const bindings = JSON.parse(await readFile(join(workspace, "config/activity-clients/local-bindings.json"), "utf8"));
@@ -68,7 +68,7 @@ try {
   await writeFile(join(root, "bindings.json"), JSON.stringify(bindings), { mode: 0o600 });
   const declaration = join(root, "clients.json");
   await writeFile(declaration, JSON.stringify({ schema: "worldstream/client-declaration-import/v1",
-    release_files: ["agent-heist-web-v6.json", "inspector-web-v2.json"].map((name) => join(workspace, "config/activity-clients/releases", name)),
+    release_files: ["agent-heist-web-v7.json", "inspector-web-v2.json"].map((name) => join(workspace, "config/activity-clients/releases", name)),
     bindings_file: join(root, "bindings.json") }), { mode: 0o600 });
   await cli("init");
   const preview = await cli("init", "--client-declaration", declaration, "--preview");
@@ -90,7 +90,7 @@ try {
   });
   assert.ok(handoffResponse.ok);
   const handoff = await handoffResponse.json();
-  assert.equal(new URL(handoff.client_url).pathname, "/agent-heist-v6/");
+  assert.equal(new URL(handoff.client_url).pathname, "/agent-heist-v7/");
   const page = await browser.newPage();
   let platformRequests = 0;
   page.on("request", (request) => { if (new URL(request.url()).pathname === "/api/auth/session") platformRequests += 1; });

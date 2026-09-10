@@ -167,6 +167,18 @@ fn failed_initial_decision_gets_one_fresh_reminder_without_extending_briefing() 
 }
 
 #[test]
+fn retained_agent_ready_schema_allows_empty_payload_to_reach_the_reducer() -> Result<()> {
+    let (_, mut trace) = launch()?;
+    while view(&trace, MEMBERS[0])?["phase"] == "briefing" {
+        fire_next(&mut trace)?;
+    }
+
+    let result = trace.advance(action(&trace, MEMBERS[0], "publish_clue", json!({}))?);
+    assert!(matches!(result, Err(TraceErrorV1::Pack(_))));
+    Ok(())
+}
+
+#[test]
 fn complete_cooperative_game_uses_authorized_clues_and_replays() -> Result<()> {
     let (registry, mut trace) = launch()?;
     let mut calls = [0_u8; 3];
