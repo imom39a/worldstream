@@ -42,7 +42,7 @@ select
   'my-games-test-' || number, decode(lpad(number::text, 64, '0'), 'hex'),
   convert_to('{}', 'utf8'), extensions.digest(convert_to('{}', 'utf8'), 'sha256'),
   'worldstream/canonical-json/v1', 'disabled', 'spectator', null, 'account_human',
-  case when number in (2, 3) then 'run_created' when number = 20 then 'failed_pre_genesis' when number in (1, 18) then 'abandoned_prestart' else 'cancelled' end,
+  case when number in (2, 3, 4) then 'run_created' when number = 20 then 'failed_pre_genesis' when number in (1, 18) then 'abandoned_prestart' else 'cancelled' end,
   sampled_at - (number || ' seconds')::interval,
   sampled_at - (number || ' seconds')::interval,
   sampled_at - (number || ' seconds')::interval + interval '24 hours'
@@ -125,6 +125,31 @@ insert into platform_store.activity_run_terminal_evidence (
   decode(repeat('d', 64), 'hex'), convert_to('{}', 'utf8'), decode(repeat('e', 64), 'hex')
 );
 
+-- A private terminal-without-outcome disposition represents an expired
+-- activity. It retains the original participant correspondence for debrief
+-- re-entry without inventing an indexed or public result.
+insert into platform_store.activity_runs
+select (jsonb_populate_record(null::platform_store.activity_runs, to_jsonb(runs) || jsonb_build_object(
+  'activity_run_id', '70000000-0000-4000-8000-000000000096',
+  'launch_request_id', '70000000-0000-4000-8000-000000000004',
+  'room_setup_operation_id', 'private-expired-operation',
+  'room_id', '01ARZ3NDEKTSV4RRFFQ69G5FB5', 'public_id', repeat('c', 32)
+))).* from platform_store.activity_runs runs
+where activity_run_id = '70000000-0000-4000-8000-000000000098';
+insert into platform_store.activity_run_memberships
+select (jsonb_populate_record(null::platform_store.activity_run_memberships, to_jsonb(memberships) || jsonb_build_object(
+  'activity_run_id', '70000000-0000-4000-8000-000000000096',
+  'membership_id', '01ARZ3NDEKTSV4RRFFQ69G5FB6',
+  'principal_id', '01ARZ3NDEKTSV4RRFFQ69G5FB7', 'entry_selector', repeat('c', 32)
+))).* from platform_store.activity_run_memberships memberships
+where activity_run_id = '70000000-0000-4000-8000-000000000098';
+insert into platform_store.activity_run_terminal_evidence
+select (jsonb_populate_record(null::platform_store.activity_run_terminal_evidence, to_jsonb(evidence) || jsonb_build_object(
+  'activity_run_id', '70000000-0000-4000-8000-000000000096',
+  'projector_status', 'terminal_without_outcome', 'source_room_seq', 13
+))).* from platform_store.activity_run_terminal_evidence evidence
+where activity_run_id = '70000000-0000-4000-8000-000000000098';
+
 -- The rollback encloses this replacement, so the durable public view policy is
 -- never changed by the test.
 create or replace function platform_store.public_run_state_v1(p_activity_run_id uuid)
@@ -152,6 +177,21 @@ select ok(
   (select not (item ? 'result_public_id') from first_page, jsonb_array_elements(value -> 'items') item
    where item ->> 'launch_id' = '70000000-0000-4000-8000-000000000002'),
   'private terminal history has no public result link'
+);
+select is(
+  (select item ->> 'state' from first_page, jsonb_array_elements(value -> 'items') item
+   where item ->> 'launch_id' = '70000000-0000-4000-8000-000000000004'),
+  'terminal_private', 'private expiry is retained as terminal private history'
+);
+select is(
+  (select item ->> 'action' from first_page, jsonb_array_elements(value -> 'items') item
+   where item ->> 'launch_id' = '70000000-0000-4000-8000-000000000004'),
+  'return_to_game', 'the original Participant can return to a private expiry debrief'
+);
+select ok(
+  (select not (item ? 'result_public_id') from first_page, jsonb_array_elements(value -> 'items') item
+   where item ->> 'launch_id' = '70000000-0000-4000-8000-000000000004'),
+  'private expiry history has no public result link'
 );
 
 select is(
