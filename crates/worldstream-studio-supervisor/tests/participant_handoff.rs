@@ -1342,6 +1342,50 @@ fn fixed_daemon_gateway_sanitizes_projection_and_attaches_health_to_exact_member
         .unwrap_or_else(|error| panic!("daemon fixture thread: {error:?}"));
 }
 
+#[test]
+fn fixed_daemon_observe_finishes_after_the_declared_projection_reset() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| panic!("bind open daemon fixture: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("open daemon fixture address: {error}"));
+    let (release, hold_open) = std::sync::mpsc::channel();
+    let server = spawn_open_projection_fixture(listener, hold_open);
+    let authority = HumanSeatAuthorityV1::new(
+        ROOM_ID,
+        MEMBER_ID,
+        PackReference {
+            id: "worldstream.agent-heist".to_owned(),
+            version: "0.2.0".to_owned(),
+            digest: AGENT_HEIST_0_2_DIGEST.to_owned(),
+        },
+        AccessMode::Participant,
+        Some("navigator".to_owned()),
+        SealedCapabilityBearerV1::parse(BEARER.to_owned())
+            .unwrap_or_else(|error| panic!("fixture bearer: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("fixture authority: {error:?}"));
+    let gateway = FixedDaemonParticipantConsoleGatewayV1::new(address, Duration::from_secs(3));
+    let started = std::time::Instant::now();
+    let observed = gateway
+        .observe(&authority, None)
+        .unwrap_or_else(|error| panic!("bounded production observe: {error:?}"));
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "observe waited for an idle socket after receiving the declared reset"
+    );
+    assert_eq!(
+        observed.browser_value["delivery"][0]["kind"],
+        "projection_reset"
+    );
+    release
+        .send(())
+        .unwrap_or_else(|error| panic!("release open daemon fixture: {error}"));
+    server
+        .join()
+        .unwrap_or_else(|error| panic!("open daemon fixture thread: {error:?}"));
+}
+
 #[tokio::test]
 async fn protected_console_keeps_its_browser_frame_head_out_of_the_membership_cursor() {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -1475,6 +1519,35 @@ fn spawn_daemon_fixture(listener: TcpListener) -> thread::JoinHandle<()> {
         {
             serve_daemon_fixture_connection(&listener, index, standing);
         }
+    })
+}
+
+fn spawn_open_projection_fixture(
+    listener: TcpListener,
+    hold_open: std::sync::mpsc::Receiver<()>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let (stream, _) = listener
+            .accept()
+            .unwrap_or_else(|error| panic!("accept open daemon fixture: {error}"));
+        let mut socket = accept_hdr(stream, authorize_fixture_handshake)
+            .unwrap_or_else(|error| panic!("open fixture websocket handshake: {error}"));
+        let _hello = socket
+            .read()
+            .unwrap_or_else(|error| panic!("read open fixture hello: {error}"));
+        send_fixture_message(&mut socket, "server.welcome", &json!({}));
+        let attach = read_fixture_message(&mut socket, "open fixture attach");
+        assert_eq!(attach["body"]["room_id"], ROOM_ID);
+        assert_eq!(attach["body"]["member_id"], MEMBER_ID);
+        send_fixture_message(
+            &mut socket,
+            "room.attached",
+            &fixture_attached(MEMBER_ID, "enabled"),
+        );
+        send_fixture_message(&mut socket, "projection.reset", &fixture_projection_reset());
+        hold_open
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap_or_else(|error| panic!("observe did not finish before socket close: {error}"));
     })
 }
 
@@ -1627,6 +1700,7 @@ fn serve_cursor_enforcing_connection(listener: &TcpListener, action_receipt: Opt
         "room.attached",
         &fixture_attached(MEMBER_ID, "enabled"),
     );
+    send_fixture_message(&mut socket, "projection.reset", &fixture_projection_reset());
     if let Some(action_receipt) = action_receipt {
         let sync_ack = read_fixture_message(&mut socket, "cursor sync ack");
         assert_eq!(sync_ack["type"], "room.sync_ack");

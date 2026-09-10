@@ -56,6 +56,7 @@ const MAX_OFFER_ID_BYTES: usize = 256;
 const MAX_ACTION_PAYLOAD_BYTES: usize = 64 * 1024;
 const MAX_REPLAY_RESPONSE_BYTES: u64 = 256 * 1024;
 const MAX_TICKET_RESPONSE_BYTES: u64 = 16 * 1024;
+const MAX_OBSERVATION_DELIVERIES: u64 = 256;
 
 /// Exact, non-serializable authority retained by one participant console.
 pub struct HumanSeatAuthorityV1 {
@@ -580,40 +581,54 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
     fn read_delivery(
         socket: &mut WebSocket<TcpStream>,
         authority: &HumanSeatAuthorityV1,
+        sync: &worldstream_protocol::SyncBranch,
     ) -> Result<Vec<Value>, ParticipantConsoleGatewayErrorV1> {
-        let mut delivery = Vec::new();
-        while let Ok(value) = Self::read_any(socket) {
-            let kind = value
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let body = value.get("body").cloned().unwrap_or(Value::Null);
-            match kind {
-                "projection.reset" => {
-                    let reset: ProjectionReset = serde_json::from_value(body)
+        match sync {
+            worldstream_protocol::SyncBranch::ProjectionReset {
+                baseline_frame_head,
+                reason,
+            } => {
+                let reset: ProjectionReset =
+                    serde_json::from_value(Self::read_type(socket, "projection.reset")?)
                         .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
-                    if reset.room_id != authority.room_id()
-                        || reset.member_id != authority.member_id()
-                        || reset.room_head.room_id != authority.room_id()
-                    {
-                        return Err(ParticipantConsoleGatewayErrorV1::Rejected);
-                    }
-                    delivery.push(browser_delivery("projection_reset", reset)?);
+                if reset.room_id != authority.room_id()
+                    || reset.member_id != authority.member_id()
+                    || reset.room_head.room_id != authority.room_id()
+                    || reset.baseline_frame_head != *baseline_frame_head
+                    || reset.reset_reason != *reason
+                {
+                    return Err(ParticipantConsoleGatewayErrorV1::Rejected);
                 }
-                "observation.deliver" => {
-                    let observation: ObservationDeliver = serde_json::from_value(body)
-                        .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
+                Ok(vec![browser_delivery("projection_reset", reset)?])
+            }
+            worldstream_protocol::SyncBranch::RetainedFrames {
+                cursor_exclusive,
+                through_frame_head,
+            } => {
+                let frame_count = through_frame_head
+                    .checked_sub(*cursor_exclusive)
+                    .ok_or(ParticipantConsoleGatewayErrorV1::Unavailable)?;
+                if frame_count > MAX_OBSERVATION_DELIVERIES {
+                    return Err(ParticipantConsoleGatewayErrorV1::Unavailable);
+                }
+                let capacity = usize::try_from(frame_count)
+                    .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
+                let mut delivery = Vec::with_capacity(capacity);
+                for offset in 1..=frame_count {
+                    let observation: ObservationDeliver =
+                        serde_json::from_value(Self::read_type(socket, "observation.deliver")?)
+                            .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
                     if observation.room_id != authority.room_id()
                         || observation.member_id != authority.member_id()
+                        || observation.frame_seq != cursor_exclusive + offset
                     {
                         return Err(ParticipantConsoleGatewayErrorV1::Rejected);
                     }
                     delivery.push(browser_delivery("observation", observation)?);
                 }
-                _ => break,
+                Ok(delivery)
             }
         }
-        Ok(delivery)
     }
 
     fn send(
@@ -756,7 +771,7 @@ impl ParticipantConsoleGatewayV1 for FixedDaemonParticipantConsoleGatewayV1 {
         {
             return Err(ParticipantConsoleGatewayErrorV1::Rejected);
         }
-        let delivery = Self::read_delivery(&mut socket, authority)?;
+        let delivery = Self::read_delivery(&mut socket, authority, &attached.sync)?;
         Ok(ParticipantConsoleObservationV1 {
             browser_value: serde_json::json!({
                 "pack": {
