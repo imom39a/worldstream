@@ -17,7 +17,8 @@
     "./releases/midnight-archive-web-v3.json",
     "./releases/midnight-archive-web-v4.json",
     "./releases/midnight-archive-web-v5.json",
-    "./releases/midnight-archive-web-v6.json"
+    "./releases/midnight-archive-web-v6.json",
+    "./releases/midnight-archive-web-v7.json"
   ],
   "bindings_file": "./local-bindings.json"
 }

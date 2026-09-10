@@ -33,10 +33,13 @@ try {
     const body = await page.locator("body").innerText();
     reject(body, /fixture|sample offer|demo negotiation/i, "Negotiate 0.2 live client exposed recorded data");
   });
-  await verifySurface("Midnight Archive current", "/midnight-archive-v6/", "Midnight Archive · WorldStream Activity Client", async (page) => {
+  await verifySurface("Midnight Archive current", "/midnight-archive-v7/", "Midnight Archive · WorldStream Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
     const body = await page.locator("body").innerText();
     reject(body, /authentic_candidate_id|is_authentic|truth_marker|fixture/i, "Midnight Archive live client exposed private or recorded data");
+  });
+  await verifySurface("Midnight Archive retained v6", "/midnight-archive-v6/", "Midnight Archive · WorldStream Activity Client", async (page) => {
+    await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
   });
   await verifySurface("Midnight Archive retained v5", "/midnight-archive-v5/", "Midnight Archive · WorldStream Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();

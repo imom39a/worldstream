@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  base: "/midnight-archive-v6/",
+  base: "/midnight-archive-v7/",
   build: {
     rollupOptions: {
       input: {

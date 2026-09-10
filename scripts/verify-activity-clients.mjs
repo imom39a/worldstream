@@ -18,13 +18,13 @@ const buildRoots = new Map([
 const currentReleaseFiles = new Map([
   ["worldstream.agent-heist.web", "agent-heist-web-v6.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
-  ["worldstream.midnight-archive.web", "midnight-archive-web-v6.json"],
+  ["worldstream.midnight-archive.web", "midnight-archive-web-v7.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const currentEvidenceFiles = new Map([
   ["worldstream.agent-heist.web", "agent-heist-web-v6.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
-  ["worldstream.midnight-archive.web", "midnight-archive-web-v6.json"],
+  ["worldstream.midnight-archive.web", "midnight-archive-web-v7.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const expectedChecks = new Map([
@@ -96,7 +96,7 @@ for (const { name, value: evidence } of evidenceDocuments) {
     JSON.stringify(evidence.checks) === JSON.stringify([
       ...expectedChecks.get(evidence.subject.client_id),
       ...(evidence.subject.client_id === "worldstream.midnight-archive.web" ? (
-        ["midnight-archive-web-v5.json", "midnight-archive-web-v6.json"].includes(name) ? [
+        ["midnight-archive-web-v5.json", "midnight-archive-web-v6.json", "midnight-archive-web-v7.json"].includes(name) ? [
           "fixed-agreement-and-optional-objective-projection-boundaries",
           "all-four-starting-roster-component-host-witnesses",
           "structured-specialist-task-plan-and-private-knowledge-boundaries",
@@ -122,8 +122,10 @@ for (const { name, value: evidence } of evidenceDocuments) {
         "deployment-owned-stream-bootstrap-and-recovery",
         "separate-local-kernel-and-hosted-entrypoints-without-auth-fallback",
       ] : []),
-      ...(["midnight-archive-web-v2.json", "midnight-archive-web-v3.json", "midnight-archive-web-v4.json", "midnight-archive-web-v5.json", "midnight-archive-web-v6.json"].includes(name)
+      ...(["midnight-archive-web-v2.json", "midnight-archive-web-v3.json", "midnight-archive-web-v4.json", "midnight-archive-web-v5.json", "midnight-archive-web-v6.json", "midnight-archive-web-v7.json"].includes(name)
         ? ["bounded-idempotent-upstream-retry"] : []),
+      ...(name === "midnight-archive-web-v7.json"
+        ? ["unavailable-companion-plan-continuation-boundaries"] : []),
     ]),
     `${evidence.subject.client_id} conformance checks do not match the exercised canonical lane`,
   );
@@ -333,7 +335,8 @@ async function verifySourceBoundaries() {
     ["/negotiate-v3/", "clients/negotiate-web/dist"],
     ["/negotiate-v2/", "config/activity-clients/artifacts/negotiate-web-v2"],
     ["/negotiate/", "config/activity-clients/artifacts/negotiate-web-v1"],
-    ["/midnight-archive-v6/", "clients/midnight-archive-web/dist"],
+    ["/midnight-archive-v7/", "clients/midnight-archive-web/dist"],
+    ["/midnight-archive-v6/", "config/activity-clients/artifacts/midnight-archive-web-v6"],
     ["/midnight-archive-v5/", "config/activity-clients/artifacts/midnight-archive-web-v5"],
     ["/midnight-archive-v4/", "config/activity-clients/artifacts/midnight-archive-web-v4"],
     ["/midnight-archive-v3/", "config/activity-clients/artifacts/midnight-archive-web-v3"],

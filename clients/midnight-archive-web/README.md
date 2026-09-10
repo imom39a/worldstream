@@ -24,17 +24,17 @@ debrief attributes completed work only to effects the Pack executed.
 Staging is an authoritative Pack Action. The UI never spends a turn, drains
 power, moves the lead, opens a gate, or decides an outcome locally.
 
-The local `/midnight-archive-v6/` surface uses the existing loopback retained
+The local `/midnight-archive-v7/` surface uses the existing loopback retained
 session and exposes exact-head verified Replay after a terminal outcome. The
-`/midnight-archive-v6/hosted/` surface uses the authenticated WebSocket session;
+`/midnight-archive-v7/hosted/` surface uses the authenticated WebSocket session;
 its controller currently has no Replay method, so terminal Replay is visibly
 unavailable there. Neither surface invents a successful server response.
-The immutable v1 through v5 builds remain available at their versioned paths
+The immutable v1 through v6 builds remain available at their versioned paths
 for Rooms pinned to their exact Pack revisions.
 
 The exact supported Pack identity lives only in [`src/config.ts`](src/config.ts).
-The v6 build accepts only the production-proved consecutive-assay
-specialist-crew revision `blake3:59bb814b920b0eb6f8b8886f2d368052189c0f9263d6c36c91894f639c8e19f5`.
+The v7 build accepts only the unavailable-companion continuation revision
+`blake3:c3349a5688bf3b45e1497ee5d304231bb5d53bc2ef31f8a012082fa9aac28676`.
 
 Action types are `stage_move`, `stage_inspect_records`,
 `stage_inspect_conservation`, `stage_use_verifier`,
