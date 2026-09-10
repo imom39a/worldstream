@@ -19,8 +19,15 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
   const [state, setState] = useState<"loading" | "ready" | "unavailable">("loading");
   const [busy, setBusy] = useState<string | null>(null);
   const [startRequested, setStartRequested] = useState(false);
+  const [countdownNow, setCountdownNow] = useState(() => Date.now());
   const [invitation, setInvitation] = useState<{ seat: string; url: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const authenticatedCsrf = session.state === "authenticated" ? session.csrf : null;
+  const launchState = launch?.state ?? null;
+  const houseFillState = launch?.house_fill?.state ?? null;
+  const claimWindowClosesAt = houseFillState === "claim_window_open"
+    ? launch?.house_fill?.claim_window_closes_at ?? null
+    : null;
 
   const refresh = useCallback(async () => {
     if (session.state !== "authenticated") return;
@@ -46,15 +53,19 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
   useEffect(() => {
     if (
       !startRequested ||
-      session.state !== "authenticated" ||
-      launch === null ||
-      isTerminalLaunchState(launch.state) ||
+      authenticatedCsrf === null ||
+      launchState === null ||
+      isTerminalLaunchState(launchState) ||
       busy === "start"
     ) return undefined;
-    const delay = Math.max(1, launch.retry_after_seconds ?? 1) * 1_000;
+    const claimDeadline = claimWindowClosesAt === null ? Number.NaN : Date.parse(claimWindowClosesAt);
+    const untilClaimDeadline = claimDeadline - Date.now();
+    const delay = houseFillState === "claim_window_open"
+      ? (Number.isFinite(untilClaimDeadline) && untilClaimDeadline > 0 ? untilClaimDeadline : 1_000)
+      : 50;
     const timer = window.setTimeout(() => {
       setBusy("start");
-      void launchMutation(session.csrf, launchId, "start")
+      void launchMutation(authenticatedCsrf, launchId, "start")
         .then((value) => {
           if ("version" in value) setLaunch(value);
           if ("version" in value && value.state === "run_created") setStartRequested(false);
@@ -65,9 +76,15 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
           setBusy(null);
           setStartRequested(false);
         });
-    }, launch.house_fill?.state === "claim_window_open" ? delay : 50);
+    }, delay);
     return () => window.clearTimeout(timer);
-  }, [busy, launch, launchId, session, startRequested]);
+  }, [authenticatedCsrf, busy, claimWindowClosesAt, houseFillState, launchId, launchState, startRequested]);
+
+  useEffect(() => {
+    if (claimWindowClosesAt === null) return undefined;
+    const timer = window.setInterval(() => setCountdownNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [claimWindowClosesAt]);
 
   const seatAction = async (seat: HostedLaunchSeat, action: "invitation" | "release" | "reset") => {
     if (session.state !== "authenticated") return;
@@ -105,6 +122,10 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
   }
 
   const terminal = isTerminalLaunchState(launch.state);
+  const setupLocked = startRequested || busy !== null;
+  const claimSecondsRemaining = claimWindowClosesAt === null
+    ? null
+    : secondsUntil(claimWindowClosesAt, countdownNow);
   const houseFailure = houseFillFailureDetail(launch.house_fill?.failure_code ?? null);
   return (
     <div className="site-shell hosted-shell">
@@ -117,6 +138,12 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
             <span className={`formation-state state-${launch.state}`}><i />{stateLabel(launch.state)}</span>
           </div>
           <p>{stateDetail(launch)}</p>
+          {claimSecondsRemaining === null ? null : (
+            <div className="claim-countdown" role="timer" aria-live="off">
+              <strong>{claimCountdownLabel(claimSecondsRemaining)}</strong>
+              <span>People can still claim open seats.</span>
+            </div>
+          )}
           {houseFailure === null ? null : <p className="form-error" role="status">{houseFailure}</p>}
         </section>
 
@@ -132,13 +159,13 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
                 <div><strong>{seat.label}</strong><span>{seat.required ? "Required" : "Optional"} · {seatStatus(seat)}</span></div>
                 <div className="seat-actions">
                   {seat.status === "open" && launch.can_manage && launch.state === "collecting" ? (
-                    <button type="button" disabled={busy !== null} onClick={() => void seatAction(seat, "invitation")}>Copy invite</button>
+                    <button type="button" disabled={setupLocked} onClick={() => void seatAction(seat, "invitation")}>Copy invite</button>
                   ) : null}
                   {seat.status === "yours" && launch.state === "collecting" && !launch.can_manage ? (
-                    <button type="button" disabled={busy !== null} onClick={() => void seatAction(seat, "release")}>Leave seat</button>
+                    <button type="button" disabled={setupLocked} onClick={() => void seatAction(seat, "release")}>Leave seat</button>
                   ) : null}
                   {seat.status === "claimed" && launch.can_manage && launch.state === "collecting" ? (
-                    <button type="button" disabled={busy !== null} onClick={() => void seatAction(seat, "reset")}>Release seat</button>
+                    <button type="button" disabled={setupLocked} onClick={() => void seatAction(seat, "reset")}>Release seat</button>
                   ) : null}
                 </div>
               </article>
@@ -152,7 +179,7 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
           ) : null}
         </section>
 
-        <section className="waiting-actions">
+        <section className="waiting-actions" aria-busy={startRequested}>
           {launch.run !== null && launch.run.can_enter ? (
             <div className="entry-actions">
               {launch.run.entries.filter((entry) => entry.entry_selector !== null).map((entry) => (
@@ -170,10 +197,10 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
             </div>
           ) : launch.can_manage && !terminal ? (
             <>
-              <button className="start-room" type="button" disabled={startRequested || busy !== null} onClick={start}>
+              <button className="start-room" type="button" disabled={setupLocked} onClick={start}>
                 {startRequested ? "Starting safely…" : "Start activity"}
               </button>
-              <button className="text-button" type="button" disabled={busy !== null} onClick={() => {
+              <button className="text-button" type="button" disabled={setupLocked} onClick={() => {
                 if (session.state !== "authenticated") return;
                 setBusy("cancel");
                 void launchMutation(session.csrf, launchId, "cancel")
@@ -233,8 +260,19 @@ export function stateDetail(launch: HostedLaunch): string {
   }
   if (launch.state === "provisioning") return "The exact roster is frozen. The Host is creating one room.";
   if (launch.state === "reconciling") return "The Host is ready. The platform is confirming the exact Run.";
-  if (launch.house_fill?.state === "claim_window_open") return "People have 30 seconds to claim open seats before reviewed House Agents fill them.";
+  if (launch.house_fill?.state === "claim_window_open") return "People can claim open seats until the claim window ends. Reviewed House Agents then fill them.";
   return "Share seat invitations. A person can join directly or control an external agent.";
+}
+
+function secondsUntil(deadline: string, now: number): number {
+  const deadlineMilliseconds = Date.parse(deadline);
+  if (!Number.isFinite(deadlineMilliseconds)) return 0;
+  return Math.max(0, Math.ceil((deadlineMilliseconds - now) / 1_000));
+}
+
+function claimCountdownLabel(seconds: number): string {
+  if (seconds <= 0) return "House Agents are joining now…";
+  return `House Agents join in ${seconds} ${seconds === 1 ? "second" : "seconds"}`;
 }
 
 /** Maps only reviewed server codes; unknown text is never rendered to users. */

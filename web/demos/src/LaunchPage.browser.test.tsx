@@ -85,3 +85,49 @@ it("shows safe House-fill failure guidance without reflecting the server code", 
   expect(container.textContent).not.toContain("house_runner_capacity_exhausted");
   await act(async () => root.unmount());
 });
+
+it("keeps waiting-room controls stable and shows the House-fill countdown while starting", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-09-10T12:00:00.000Z"));
+  const collecting = {
+    ...launch,
+    state: "collecting",
+    expires_at: "2026-09-10T12:30:00.000Z",
+    retry_after_seconds: 30,
+    house_fill: {
+      state: "claim_window_open",
+      claim_window_closes_at: "2026-09-10T12:00:30.000Z",
+      failure_code: null,
+    },
+    seats: [{
+      seat_key: "navigator", label: "Navigator", required: true,
+      status: "claimed", participation: "external_agent", house_display_name: null,
+    }],
+  } as const;
+  mocks.readLaunch.mockResolvedValue(collecting);
+  mocks.launchMutation.mockResolvedValue(collecting);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<LaunchPage launchId={launch.launch_id} onNavigate={vi.fn()} />);
+    await Promise.resolve();
+  });
+
+  const button = (label: string) => [...container.querySelectorAll("button")]
+    .find((candidate) => candidate.textContent === label) as HTMLButtonElement | undefined;
+  await act(async () => button("Start activity")?.click());
+
+  expect(container.textContent).toContain("House Agents join in 30 seconds");
+  expect(button("Starting safely…")?.disabled).toBe(true);
+  expect(button("Release seat")?.disabled).toBe(true);
+  expect(button("Abandon room")?.disabled).toBe(true);
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1_000);
+  });
+  expect(container.textContent).toContain("House Agents join in 29 seconds");
+  expect(button("Release seat")?.disabled).toBe(true);
+  expect(button("Abandon room")?.disabled).toBe(true);
+  await act(async () => root.unmount());
+});
