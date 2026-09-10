@@ -119,7 +119,7 @@ test("the hosted image packages the same current client as hosted bindings", asy
   assert.ok(name, "image must copy an exact reviewed client release");
   const release = JSON.parse(await readFile(new URL(`../config/activity-clients/releases/${name}`, import.meta.url), "utf8"));
   const bindings = JSON.parse(await readFile(new URL("../config/activity-clients/hosted-local-bindings.json", import.meta.url), "utf8"));
-  const deployment = bindings.deployments.find(value => value.client_id === release.client_id);
+  const deployment = bindings.deployments.find(value => value.client_id === release.client_id && value.release_digest === release.release_digest);
   assert.equal(deployment.release_digest, release.release_digest);
 });
 

@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 
 import type { ActivityClientAction } from "@worldstream/client";
+import { PhaseCountdown } from "./PhaseCountdown";
 
 import type {
   AgentHeistActionOffer,
@@ -100,7 +101,7 @@ function ReadyParticipant({
         eyebrow="Mission control"
         heading="The operation"
         status={<span className="play-state"><i className={connection === "live" ? "is-running" : ""} />{connectionLabel(connection)}</span>}
-        center={<PublicBoard state={state} />}
+        center={<PublicBoard state={state} connection={connection} />}
         footer={<>
           <span>Sequence {state.roomSequence}</span>
           <span>Frame {state.frameHead}</span>
@@ -153,13 +154,19 @@ function MembershipPanel({
   </>;
 }
 
-function PublicBoard({ state }: { readonly state: AgentHeistReadyState }) {
+function PublicBoard({ state, connection }: {
+  readonly state: AgentHeistReadyState;
+  readonly connection: AgentHeistClientConnection;
+}) {
   const result = state.projection.outcome;
   return <div className="live-board">
     <HeistMissionStage phase={state.projection.phase} />
     <section className="phase-window">
       <div><span className="live-panel-label">Current phase</span><strong>{capitalize(state.projection.phase)}</strong></div>
-      <div><span className="live-panel-label">Deadline</span><strong>{deadlineLabel(state.projection.phaseDeadline)}</strong></div>
+      <div><span className="live-panel-label">Time remaining</span><PhaseCountdown
+        key={`${state.projection.phaseGeneration}:${state.projection.phaseDeadline}:${connection}`}
+        deadline={state.projection.phaseDeadline} connected={connection === "live"}
+      /></div>
     </section>
     <div className="live-board-grid">
       <section><span className="live-panel-label">Published claims</span><h3>Clue board</h3>
@@ -355,19 +362,6 @@ function agentAssistLabel(status: AgentHeistAgentAssist): string {
   if (status === "unsupported") return "Human controls";
   if (status === "unavailable") return "Agent tools unavailable";
   return "Checking agent tools";
-}
-
-function deadlineLabel(value: string | null): string {
-  if (value === null) return "No active deadline";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Authoritative deadline set";
-  return date.toLocaleString([], {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-  });
 }
 
 function capitalize(value: string): string { return value.charAt(0).toUpperCase() + value.slice(1); }

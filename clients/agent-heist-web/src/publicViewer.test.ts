@@ -10,7 +10,7 @@ import {
 } from "./publicViewer";
 
 const publicId = "a".repeat(32);
-const href = `https://arena.example/agent-heist-v7/hosted/?public_run=${publicId}&platform_return=%2F&platform_result=%2Fruns%2F${publicId}`;
+const href = `https://arena.example/agent-heist-v8/hosted/?public_run=${publicId}&platform_return=%2F&platform_result=%2Fruns%2F${publicId}`;
 
 function target(value = href) {
   return { location: new URL(value) } as unknown as Window;
@@ -23,22 +23,22 @@ test("accepts only the bounded server-shaped public viewer context", () => {
     resultPath: `/runs/${publicId}`,
   });
   for (const malicious of [
-    `https://arena.example/agent-heist-v7/hosted/?public_run=${publicId}&platform_return=https%3A%2F%2Fattacker.example&platform_result=%2Fruns%2F${publicId}`,
-    `https://arena.example/agent-heist-v7/hosted/?public_run=${publicId}&platform_return=%2F&platform_result=%2Fruns%2F${"b".repeat(32)}`,
-    `https://arena.example/agent-heist-v7/hosted/?public_run=${publicId}&platform_return=%2F&platform_result=%2Fruns%2F${publicId}&handoff=secret`,
+    `https://arena.example/agent-heist-v8/hosted/?public_run=${publicId}&platform_return=https%3A%2F%2Fattacker.example&platform_result=%2Fruns%2F${publicId}`,
+    `https://arena.example/agent-heist-v8/hosted/?public_run=${publicId}&platform_return=%2F&platform_result=%2Fruns%2F${"b".repeat(32)}`,
+    `https://arena.example/agent-heist-v8/hosted/?public_run=${publicId}&platform_return=%2F&platform_result=%2Fruns%2F${publicId}&handoff=secret`,
   ]) assert.equal(readPublicViewerContext(target(malicious)), null);
 });
 
 test("requires the BFF to select this exact Activity Client release", () => {
   assert.equal(isSelectedPublicViewerLaunch(target(), href), true);
-  assert.equal(isSelectedPublicViewerLaunch(target(), href.replace("agent-heist-v7", "negotiate-v1")), false);
-  assert.equal(isSelectedPublicViewerLaunch(target(), `https://attacker.example/agent-heist-v7/hosted/?public_run=${publicId}`), false);
+  assert.equal(isSelectedPublicViewerLaunch(target(), href.replace("agent-heist-v8", "negotiate-v1")), false);
+  assert.equal(isSelectedPublicViewerLaunch(target(), `https://attacker.example/agent-heist-v8/hosted/?public_run=${publicId}`), false);
 });
 
 test("Back to games never accepts a browser-selected destination", () => {
   assert.equal(readPlatformReturnTarget(target()), "/");
   assert.equal(
-    readPlatformReturnTarget(target("https://arena.example/agent-heist-v7/hosted/?platform_return=https%3A%2F%2Fattacker.example")),
+    readPlatformReturnTarget(target("https://arena.example/agent-heist-v8/hosted/?platform_return=https%3A%2F%2Fattacker.example")),
     "/",
   );
 });

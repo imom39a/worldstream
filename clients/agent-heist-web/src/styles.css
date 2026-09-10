@@ -205,6 +205,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .heist-live-shell .live-panel-label { color: var(--game-cyan); font-size: .75rem; letter-spacing: .1em; }
 .heist-live-shell .phase-window { border-radius: 3px; }
 .heist-live-shell .phase-window strong { font-size: .875rem; }
+.heist-live-shell .phase-window .phase-countdown { font-size: 1.5rem; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.phase-countdown-urgent { color: #ffcc70 !important; }
+.phase-countdown-note { color: #b7c9cc; font-size: .8125rem; }
 .heist-live-shell .live-board h3 { font-size: 1.75rem; }
 .heist-live-shell .live-board-grid > section, .heist-live-shell .plan-board, .heist-live-shell .outcome-card { border-radius: 3px; background: var(--game-panel); }
 .heist-live-shell .live-data-list li { flex-wrap: wrap; font-size: .875rem; }

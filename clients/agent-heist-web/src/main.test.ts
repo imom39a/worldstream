@@ -79,7 +79,7 @@ test("missing deployment stream configuration fails closed without a same-origin
 
 test("the selected public viewer uses a credential-free public projection, not participant admission", async () => {
   const publicId = "a".repeat(32);
-  const viewerUrl = `${browserOrigin}/agent-heist-v7/hosted/?public_run=${publicId}&platform_return=%2F&platform_result=%2Fruns%2F${publicId}`;
+  const viewerUrl = `${browserOrigin}/agent-heist-v8/hosted/?public_run=${publicId}&platform_return=%2F&platform_result=%2Fruns%2F${publicId}`;
   vi.stubGlobal("window", {
     location: new URL(viewerUrl),
     history: { replaceState: vi.fn() },

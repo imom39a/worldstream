@@ -27,6 +27,19 @@
           "launch_url": "http://127.0.0.1:5180/agent-heist-v7/hosted/"
         }
       ]
+    },
+    {
+      "schema": "worldstream/client-deployment/v1",
+      "deployment_id": "hosted-agent-heist-web-v8-53985147",
+      "client_id": "worldstream.agent-heist.web",
+      "release_digest": "sha256:5398514701e6f86c0eb3dd7f877d2b7b00283b540220aa61e7723126f4224895",
+      "trust_level": "externally_trusted",
+      "surfaces": [
+        {
+          "surface_id": "heist-hosted-web",
+          "launch_url": "http://127.0.0.1:5180/agent-heist-v8/hosted/"
+        }
+      ]
     }
   ],
   "bindings": [
@@ -61,6 +74,40 @@
       "access_mode": "spectator",
       "roles": [],
       "deployment_id": "hosted-agent-heist-web-v7-e1efd39f",
+      "surface_id": "heist-hosted-web",
+      "preference": "default"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "hosted-agent-heist-0-5-v8-53985147-participant",
+      "pack": {
+        "id": "worldstream.agent-heist",
+        "version": "0.5.0",
+        "digest": "blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "participant",
+      "roles": [
+        "navigator",
+        "insider",
+        "broker"
+      ],
+      "deployment_id": "hosted-agent-heist-web-v8-53985147",
+      "surface_id": "heist-hosted-web",
+      "preference": "default"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "hosted-agent-heist-0-5-v8-53985147-spectator",
+      "pack": {
+        "id": "worldstream.agent-heist",
+        "version": "0.5.0",
+        "digest": "blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "spectator",
+      "roles": [],
+      "deployment_id": "hosted-agent-heist-web-v8-53985147",
       "surface_id": "heist-hosted-web",
       "preference": "default"
     },

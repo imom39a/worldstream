@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import { fileURLToPath } from "node:url";
 
 export default defineConfig({
-  base: "/agent-heist-v7/",
+  base: "/agent-heist-v8/",
   build: {
     rollupOptions: {
       input: {

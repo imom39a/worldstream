@@ -1,13 +1,13 @@
 # First-party client design release
 
-Current source builds are Agent Heist v7, Negotiate v3, and Inspector v2. Each
+Current source builds are Agent Heist v8, Negotiate v3, and Inspector v2. Each
 release has an exact build-tree digest and linked evidence under `releases/`
 and `conformance/`. The shared CSS in `web/design/` is bundled independently;
 it does not create a runtime dependency between clients.
 
 | Current path | Source |
 | --- | --- |
-| `/agent-heist-v7/` and `/agent-heist-v7/hosted/` | `clients/agent-heist-web` |
+| `/agent-heist-v8/` and `/agent-heist-v8/hosted/` | `clients/agent-heist-web` |
 | `/negotiate-v3/` | `clients/negotiate-web` |
 | `/inspector-v2/` | `web/console` |
 
@@ -22,9 +22,9 @@ operator approval. Existing installed approvals are not rewritten by a source
 checkout. `hosted-local-import.json` proposes the new hosted release; deployment
 startup preserves an existing installation’s Inspector fallback when present.
 
-The hosted platform installs the current Heist v7 build and retained v6/v5/v4/v3/v2
-artifacts. Listing 0.24.0 and its database migration pin v7, while retained
-Listing 0.23.0 resolves v6. Publish through the coordinated hosted release process; changing
+The hosted platform installs the current Heist v8 build and retained v7/v6/v5/v4/v3/v2
+artifacts. Listing 0.25.0 and its database migration pin v8, while retained
+Listing 0.24.0 resolves v7. Publish through the coordinated hosted release process; changing
 frontend files alone does not activate a Runtime or database migration.
 
 Run `pnpm activity-clients:build`, `node scripts/verify-activity-clients.mjs`, and

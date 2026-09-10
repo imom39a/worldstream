@@ -69,6 +69,85 @@ function readyState(): AgentHeistReadyState {
 }
 
 describe("standalone Agent Heist live participant surface", () => {
+  it("ticks from the authorized deadline without disturbing input or advancing the phase", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-15T12:00:30Z"));
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const onAct = vi.fn();
+    const state = readyState();
+    const render = (value = state, connection: "live" | "disconnected" = "live") =>
+      root.render(<AgentHeistClientView state={value} connection={connection} onAct={onAct} />);
+    const timer = () => host.querySelector('[role="timer"]')?.textContent;
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    try {
+      await act(async () => render());
+      expect(timer()).toBe("01:30");
+      const input = host.querySelector<HTMLInputElement>("input")!;
+      input.value = "my-plan";
+      input.focus();
+      await act(async () => { vi.advanceTimersByTime(1_000); });
+      expect(timer()).toBe("01:29");
+      expect(host.querySelector("input")).toBe(input);
+      expect(input.value).toBe("my-plan");
+      expect(document.activeElement).toBe(input);
+
+      // Background tabs may skip ticks; use the absolute deadline on return.
+      vi.setSystemTime(new Date("2026-08-15T12:01:59.500Z"));
+      await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+      expect(timer()).toBe("00:01");
+      await act(async () => { vi.advanceTimersByTime(1_000); });
+      expect(timer()).toBe("00:00");
+      expect(host.textContent).toContain("Waiting for the next phase…");
+      expect(host.querySelector(".phase-window")?.textContent).toContain("Negotiation");
+      expect(onAct).not.toHaveBeenCalled();
+
+      const next = { ...state, projection: { ...state.projection, phase: "commitment" as const,
+        phaseGeneration: 3, phaseDeadline: "2026-08-15T12:03:00Z" } };
+      await act(async () => render(next));
+      expect(timer()).toBe("01:00");
+      expect(host.textContent).not.toContain("Waiting for the next phase…");
+      expect(vi.getTimerCount()).toBe(1);
+      await act(async () => render(next, "disconnected"));
+      expect(timer()).toBeUndefined();
+      expect(host.textContent).toContain("Reconnect to update timer");
+      expect(vi.getTimerCount()).toBe(0);
+      vi.setSystemTime(new Date("2026-08-15T12:02:10Z"));
+      await act(async () => render(next));
+      expect(timer()).toBe("00:50");
+      await act(async () => render({ ...next, projection: { ...next.projection, phase: "complete", phaseDeadline: null } }));
+      expect(host.textContent).toContain("No active timer");
+      expect(timer()).toBeUndefined();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+      vi.useRealTimers();
+      (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+    }
+  });
+
+  it("shows a countdown for spectators and no invented timer for invalid deadlines", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-15T12:00:30Z"));
+    try {
+      const state = readyState();
+      const markup = renderToStaticMarkup(<AgentHeistClientView state={{ ...state,
+        authorization: { accessMode: "spectator", role: null }, offers: [],
+      }} connection="live" onAct={vi.fn()} />);
+      expect(markup).toContain("01:30");
+      expect(markup).toContain('role="timer"');
+      const invalid = renderToStaticMarkup(<AgentHeistClientView state={{ ...state,
+        projection: { ...state.projection, phaseDeadline: "invalid" },
+      }} connection="live" onAct={vi.fn()} />);
+      expect(invalid).toContain("Timer unavailable");
+      expect(invalid).not.toContain('role="timer"');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("submits the chosen full ID and discards selection when plans are replaced", async () => {
     const host = document.createElement("div");
     document.body.append(host);
