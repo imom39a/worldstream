@@ -168,6 +168,17 @@ prepared step per committed turn, private inspection and explicit sharing,
 allowance and shared-power checks, replacement/suspension invalidation,
 terminal timer cancellation, following and one-edge regrouping.
 
+The current specialist-crew 0.1.0 bundle is
+[`worldstream-midnight-archive-309721db5290e9f2daf8c092ed97528d8cf7dc2bdcf577edef737f26e14157ea.wspack`](releases/0.1.0/worldstream-midnight-archive-309721db5290e9f2daf8c092ed97528d8cf7dc2bdcf577edef737f26e14157ea.wspack).
+Its physical bundle digest is
+`blake3:309721db5290e9f2daf8c092ed97528d8cf7dc2bdcf577edef737f26e14157ea`,
+its semantic revision is
+`blake3:894f7a58c01b0ca99ac29b1b84a9083bab7f0f858f0b33ce495413255cf91339`,
+its Component digest is
+`blake3:6c645f1eefc5bf9620fb670fd6b2908af2775fabe3ececfe7a19d314d40e36f0`,
+and its production proof is retained in
+[`evidence/production-proof-0.1.0-specialist-crew.json`](evidence/production-proof-0.1.0-specialist-crew.json).
+
 The retained IMO-202 Mira 0.1.0 bundle (before schema version 2 specialists) is
 [`worldstream-midnight-archive-ea79ce7ff3e90ab5d073409486af1227286b82512daec98db3e921097dd8ac99.wspack`](releases/0.1.0/worldstream-midnight-archive-ea79ce7ff3e90ab5d073409486af1227286b82512daec98db3e921097dd8ac99.wspack).
 Its physical bundle digest is
