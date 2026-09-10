@@ -237,6 +237,20 @@ code { font-family: var(--ws-mono-font); }
 .charge-meter i.charged { border-color: var(--archive-cyan); background: var(--archive-cyan); box-shadow: 0 0 11px rgba(115, 215, 205, .28); }
 .location-resource > strong { font-size: 1.65rem; }
 
+.scenario-briefing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 28px;
+  padding: 18px 24px;
+  border: 1px solid var(--archive-line);
+  border-top: 0;
+  background: rgba(14, 26, 30, .92);
+}
+.scenario-briefing > div:last-child { flex: 1 1 260px; min-width: 0; }
+.scenario-briefing h2 { margin: 4px 0 0; font: 400 1.4rem/1.2 var(--ws-title-font); }
+.scenario-briefing p { margin: 0; color: var(--archive-muted); font-size: .85rem; line-height: 1.6; }
+.scenario-briefing p + p { margin-top: 4px; }
+
 .archive-workspace {
   display: grid;
   grid-template-columns: minmax(0, 1.65fr) minmax(330px, .75fr);

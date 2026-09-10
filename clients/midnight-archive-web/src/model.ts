@@ -248,7 +248,25 @@ export type ArchiveStagedAction =
       readonly powerCost: 0;
     };
 
+const OPERATION_COSTS = {
+  move: [1, 0], inspect_records: [1, 0], inspect_conservation: [1, 0],
+  use_verifier: [1, 1], accept_preservation_agreement: [1, 0],
+  prepare_collection: [1, 0], energize_preservation_equipment: [1, 1],
+  open_service_hatch: [1, 2], recover_candidate: [1, 0],
+  protect_source_record: [1, 1], extract: [1, 0], wait: [1, 0],
+  companion_move: [0, 0], companion_inspect_source: [0, 0], companion_share_source: [0, 0],
+  mira_field_assay: [0, 0], companion_verifier: [0, 1], mira_open_service_hatch: [0, 2],
+  jonah_open_service_hatch: [0, 1],
+} as const;
+export type ArchiveOperation = keyof typeof OPERATION_COSTS;
+
 export interface MidnightArchiveProjection {
+  readonly scenario:
+    | { readonly id: "standard-v1"; readonly label: "Standard" }
+    | { readonly id: "low-reserve-v1"; readonly label: "Low Reserve" };
+  readonly initialPower: 2 | 3;
+  readonly methodCosts: { readonly verifier: 1; readonly ordinaryServiceHatch: 2 };
+  readonly operationCosts: Readonly<Record<ArchiveOperation, ArchiveActionCost>>;
   readonly phase: ArchivePhase;
   readonly objective: string;
   readonly location: ArchiveLocation;
@@ -346,6 +364,10 @@ const MAX_OBJECTIVE_BYTES = 384;
 const MAX_LABEL_BYTES = 64;
 const MAX_DESCRIPTION_BYTES = 256;
 const ROOT_KEYS = [
+  "scenario",
+  "initial_power",
+  "method_costs",
+  "operation_costs",
   "candidates",
   "crew_debrief",
   "debrief",
@@ -377,51 +399,6 @@ const EXPECTED_CONNECTIONS = new Map<string, ArchiveGate | null>([
   ["plant|vault", "service_hatch"],
 ]);
 
-export const TEN_TURN_TECHNICAL_ROUTE: readonly MidnightArchiveActionIntent[] = [
-  { action: "stage_move", destination: "records" },
-  { action: "stage_use_verifier" },
-  { action: "stage_move", destination: "plant" },
-  { action: "stage_open_service_hatch" },
-  { action: "stage_move", destination: "vault" },
-  { action: "stage_recover_candidate", candidate_id: "ledger-violet" },
-  { action: "stage_move", destination: "plant" },
-  { action: "stage_move", destination: "records" },
-  { action: "stage_move", destination: "atrium" },
-  { action: "stage_extract" },
-];
-
-export const ELEVEN_TURN_POWERED_AGREEMENT_ROUTE: readonly MidnightArchiveActionIntent[] = [
-  { action: "stage_move", destination: "records" },
-  { action: "stage_use_verifier" },
-  { action: "stage_move", destination: "conservation" },
-  { action: "stage_accept_preservation_agreement" },
-  { action: "stage_prepare_collection" },
-  { action: "stage_energize_preservation_equipment" },
-  { action: "stage_move", destination: "vault" },
-  { action: "stage_recover_candidate", candidate_id: "ledger-violet" },
-  { action: "stage_move", destination: "conservation" },
-  { action: "stage_move", destination: "atrium" },
-  { action: "stage_extract" },
-];
-
-export const FIFTEEN_TURN_BOTH_OPTIONALS_ROUTE: readonly MidnightArchiveActionIntent[] = [
-  { action: "stage_move", destination: "records" },
-  { action: "stage_use_verifier" },
-  { action: "stage_move", destination: "conservation" },
-  { action: "stage_accept_preservation_agreement" },
-  { action: "stage_prepare_collection" },
-  { action: "stage_energize_preservation_equipment" },
-  { action: "stage_move", destination: "vault" },
-  { action: "stage_recover_candidate", candidate_id: "ledger-violet" },
-  { action: "stage_move", destination: "conservation" },
-  { action: "stage_move", destination: "records" },
-  { action: "stage_move", destination: "plant" },
-  { action: "stage_protect_source_record" },
-  { action: "stage_move", destination: "records" },
-  { action: "stage_move", destination: "atrium" },
-  { action: "stage_extract" },
-];
-
 /** Reads the complete authorized participant Projection and rejects any drift. */
 export function readMidnightArchiveProjection(
   value: unknown,
@@ -429,6 +406,11 @@ export function readMidnightArchiveProjection(
   const source = exactRecord(value, ROOT_KEYS);
   if (source === null) return null;
 
+  const scenario = readScenario(source.scenario);
+  const initialPower = source.initial_power === 2 || source.initial_power === 3
+    ? source.initial_power : null;
+  const methodCosts = readMethodCosts(source.method_costs);
+  const operationCosts = readOperationCosts(source.operation_costs);
   const phase = readPhase(source.phase);
   const objective = boundedText(source.objective, MAX_OBJECTIVE_BYTES);
   const location = readLocation(source.location);
@@ -446,7 +428,9 @@ export function readMidnightArchiveProjection(
   const preservationAgreement = readPreservationAgreement(source.preservation_agreement);
   const optionalObjectives = readOptionalObjectives(source.optional_objectives);
   const debrief = readDebrief(source.debrief);
-  const stagedAction = readStagedAction(source.staged_action);
+  const stagedAction = operationCosts === null
+    ? undefined
+    : readStagedAction(source.staged_action, operationCosts);
   const carriedCandidate = source.carried_candidate === null
     ? null
     : candidateId(source.carried_candidate);
@@ -454,8 +438,11 @@ export function readMidnightArchiveProjection(
   const outcome = readOutcome(source.outcome);
 
   if (
-    phase === null || objective === null || location === null
+    scenario === null || initialPower === null || methodCosts === null || operationCosts === null
+    || initialPower !== (scenario.id === "standard-v1" ? 3 : 2)
+    || phase === null || objective === null || location === null
     || turnsUsed === null || turnsRemaining === null || power === null
+    || power > initialPower
     || gates === null || map === null || candidates === null || mira === null || jonah === null
     || turnResolution === null || extraction === null || crewDebrief === null
     || preservationAgreement === null || optionalObjectives === null
@@ -477,7 +464,10 @@ export function readMidnightArchiveProjection(
     || !agreementStateIsConsistent(preservationAgreement, optionalObjectives, gates)
     || !specialistStateFitsProjection(mira, "mira", turnsUsed, power, candidates, verifierResult)
     || !specialistStateFitsProjection(jonah, "jonah", turnsUsed, power, candidates, verifierResult)
-    || !crewStateIsConsistent(mira, jonah, turnResolution, extraction, crewDebrief, phase, turnsUsed, power, stagedAction)
+    || !crewStateIsConsistent(
+      mira, jonah, turnResolution, extraction, crewDebrief, phase, turnsUsed, power,
+      stagedAction, operationCosts,
+    )
     || !stagedActionFitsProjection(
       stagedAction,
       location,
@@ -488,6 +478,7 @@ export function readMidnightArchiveProjection(
       optionalObjectives,
       verifierResult,
       carriedCandidate,
+      operationCosts,
     )
     || (phase === "briefing" && (turnsUsed !== 0 || stagedAction !== null || outcome !== null))
     || (phase === "active" && (outcome !== null || debrief !== null))
@@ -509,6 +500,10 @@ export function readMidnightArchiveProjection(
   ) return null;
 
   return {
+    scenario,
+    initialPower,
+    methodCosts,
+    operationCosts,
     phase,
     objective,
     location,
@@ -533,33 +528,63 @@ export function readMidnightArchiveProjection(
   };
 }
 
-export function actionCost(action: MidnightArchiveActionType): ArchiveActionCost {
-  switch (action) {
-    case "stage_use_verifier": return { turns: 1, power: 1 };
-    case "stage_energize_preservation_equipment": return { turns: 1, power: 1 };
-    case "stage_protect_source_record": return { turns: 1, power: 1 };
-    case "stage_open_service_hatch": return { turns: 1, power: 2 };
-    case "assign_mira_task":
-    case "cancel_mira_task":
-    case "set_mira_follow":
-    case "set_mira_hold":
-    case "set_mira_regroup":
-    case "request_mira_plan":
-    case "prepare_mira_contribution":
-    case "defer_mira_contribution":
-    case "assign_jonah_task":
-    case "cancel_jonah_task":
-    case "set_jonah_follow":
-    case "set_jonah_hold":
-    case "set_jonah_regroup":
-    case "request_jonah_plan":
-    case "prepare_jonah_contribution":
-    case "defer_jonah_contribution":
-    case "prepare_extraction":
-    case "acknowledge_extraction":
-    case "commit_turn": return { turns: 0, power: 0 };
-    default: return { turns: 1, power: 0 };
+function readScenario(value: unknown): MidnightArchiveProjection["scenario"] | null {
+  const source = exactRecord(value, ["id", "label"]);
+  if (source?.id === "standard-v1" && source.label === "Standard") {
+    return { id: "standard-v1", label: "Standard" };
   }
+  if (source?.id === "low-reserve-v1" && source.label === "Low Reserve") {
+    return { id: "low-reserve-v1", label: "Low Reserve" };
+  }
+  return null;
+}
+
+function readMethodCosts(value: unknown): MidnightArchiveProjection["methodCosts"] | null {
+  const source = exactRecord(value, ["verifier", "ordinary_service_hatch"]);
+  return source?.verifier === 1 && source.ordinary_service_hatch === 2
+    ? { verifier: 1, ordinaryServiceHatch: 2 } : null;
+}
+
+function readOperationCosts(value: unknown): MidnightArchiveProjection["operationCosts"] | null {
+  const source = exactRecord(value, Object.keys(OPERATION_COSTS));
+  if (source === null) return null;
+  const entries: Array<[string, ArchiveActionCost]> = [];
+  for (const [operation, [turns, power]] of Object.entries(OPERATION_COSTS)) {
+    const cost = exactRecord(source[operation], ["turn_cost", "power_cost"]);
+    if (cost?.turn_cost !== turns || cost.power_cost !== power) return null;
+    entries.push([operation, { turns, power }]);
+  }
+  return Object.fromEntries(entries) as Record<ArchiveOperation, ArchiveActionCost>;
+}
+
+export function actionCost(
+  projection: Pick<MidnightArchiveProjection, "operationCosts">,
+  action: MidnightArchiveActionType,
+): ArchiveActionCost {
+  return actionCostFromOperations(projection.operationCosts, action);
+}
+
+const STAGED_ACTION_OPERATIONS: Readonly<Partial<Record<MidnightArchiveActionType, ArchiveOperation>>> = {
+  stage_move: "move",
+  stage_inspect_records: "inspect_records",
+  stage_inspect_conservation: "inspect_conservation",
+  stage_use_verifier: "use_verifier",
+  stage_accept_preservation_agreement: "accept_preservation_agreement",
+  stage_prepare_collection: "prepare_collection",
+  stage_energize_preservation_equipment: "energize_preservation_equipment",
+  stage_open_service_hatch: "open_service_hatch",
+  stage_recover_candidate: "recover_candidate",
+  stage_protect_source_record: "protect_source_record",
+  stage_extract: "extract",
+  stage_wait: "wait",
+};
+
+function actionCostFromOperations(
+  operationCosts: MidnightArchiveProjection["operationCosts"],
+  action: MidnightArchiveActionType,
+): ArchiveActionCost {
+  const operation = STAGED_ACTION_OPERATIONS[action];
+  return operation === undefined ? { turns: 0, power: 0 } : operationCosts[operation];
 }
 
 export function actionPayload(intent: MidnightArchiveActionIntent): JsonValue {
@@ -1076,6 +1101,7 @@ function crewStateIsConsistent(
   turnsUsed: number,
   power: number,
   staged: ArchiveStagedAction | null,
+  operationCosts: MidnightArchiveProjection["operationCosts"],
 ): boolean {
   const companions = { mira, jonah } as const;
   const starting = new Set(debrief.startingRoles);
@@ -1106,7 +1132,9 @@ function crewStateIsConsistent(
   for (const role of expectedPrepared) {
     if (ineligible.has(role)) continue;
     const reservation = turn.reservations.find((item) => item.role === role);
-    if (reservation === undefined || !reservationFitsTask(reservation, companions[role], role)) return false;
+    if (reservation === undefined || !reservationFitsTask(
+      reservation, companions[role], role, operationCosts,
+    )) return false;
     expectedReservations.push(reservation);
   }
   if (JSON.stringify(turn.reservations) !== JSON.stringify(expectedReservations)
@@ -1160,14 +1188,19 @@ function reservationFitsTask(
   reservation: ArchiveTurnResolution["reservations"][number],
   specialist: SpecialistCrewState,
   role: CompanionRole,
+  operationCosts: MidnightArchiveProjection["operationCosts"],
 ): boolean {
   const remainingAllowance = specialist.task.powerAllowance - specialist.task.powerSpent;
   if (reservation.interaction === "service_hatch") {
-    const cost = role === "mira" ? 2 : 1;
+    const cost = role === "mira"
+      ? operationCosts.mira_open_service_hatch.power
+      : operationCosts.jonah_open_service_hatch.power;
     return specialist.task.kind === "open_service_hatch" && reservation.power === cost && cost <= remainingAllowance;
   }
   if (reservation.interaction === "catalog_verifier") {
-    return specialist.task.kind === "investigate_records" && reservation.power === 1 && remainingAllowance >= 1;
+    const cost = operationCosts.companion_verifier.power;
+    return specialist.task.kind === "investigate_records"
+      && reservation.power === cost && remainingAllowance >= cost;
   }
   return reservation.power === 0;
 }
@@ -1291,12 +1324,15 @@ function readOptionalObjectives(value: unknown): ArchiveOptionalObjectives | nul
   };
 }
 
-function readStagedAction(value: unknown): ArchiveStagedAction | null | undefined {
+function readStagedAction(
+  value: unknown,
+  operationCosts: MidnightArchiveProjection["operationCosts"],
+): ArchiveStagedAction | null | undefined {
   if (value === null) return null;
   if (!isRecord(value) || !isMidnightArchiveActionType(value.action_type) || !value.action_type.startsWith("stage_")) {
     return undefined;
   }
-  const cost = actionCost(value.action_type);
+  const cost = actionCostFromOperations(operationCosts, value.action_type);
   if (value.turn_cost !== cost.turns || value.power_cost !== cost.power) return undefined;
   if (value.action_type === "stage_move") {
     if (!hasExactKeys(value, ["action_type", "destination", "power_cost", "turn_cost"])) return undefined;
@@ -1304,9 +1340,9 @@ function readStagedAction(value: unknown): ArchiveStagedAction | null | undefine
     return destination === null ? undefined : {
       actionType: value.action_type,
       destination,
-      turnCost: 1,
-      powerCost: 0,
-    };
+      turnCost: cost.turns,
+      powerCost: cost.power,
+    } as ArchiveStagedAction;
   }
   if (value.action_type === "stage_recover_candidate") {
     if (!hasExactKeys(value, ["action_type", "candidate_id", "power_cost", "turn_cost"])) return undefined;
@@ -1314,33 +1350,14 @@ function readStagedAction(value: unknown): ArchiveStagedAction | null | undefine
     return id === undefined ? undefined : {
       actionType: value.action_type,
       candidateId: id,
-      turnCost: 1,
-      powerCost: 0,
-    };
+      turnCost: cost.turns,
+      powerCost: cost.power,
+    } as ArchiveStagedAction;
   }
   if (!hasExactKeys(value, ["action_type", "power_cost", "turn_cost"])) return undefined;
-  if (value.action_type === "stage_use_verifier") {
-    return { actionType: value.action_type, turnCost: 1, powerCost: 1 };
-  }
-  if (value.action_type === "stage_open_service_hatch") {
-    return { actionType: value.action_type, turnCost: 1, powerCost: 2 };
-  }
-  if (
-    value.action_type === "stage_energize_preservation_equipment"
-    || value.action_type === "stage_protect_source_record"
-  ) {
-    return { actionType: value.action_type, turnCost: 1, powerCost: 1 };
-  }
-  if (value.action_type === "stage_inspect_records" || value.action_type === "stage_inspect_conservation") {
-    return { actionType: value.action_type, turnCost: 1, powerCost: 0 };
-  }
-  if (
-    value.action_type === "stage_accept_preservation_agreement"
-    || value.action_type === "stage_prepare_collection"
-    || value.action_type === "stage_extract"
-    || value.action_type === "stage_wait"
-  ) return { actionType: value.action_type, turnCost: 1, powerCost: 0 };
-  return undefined;
+  return STAGED_ACTION_OPERATIONS[value.action_type] === undefined
+    ? undefined
+    : { actionType: value.action_type as ArchiveStagedAction["actionType"], turnCost: cost.turns, powerCost: cost.power } as ArchiveStagedAction;
 }
 
 function readVerifierResult(
@@ -1401,8 +1418,11 @@ function stagedActionFitsProjection(
   optionalObjectives: ArchiveOptionalObjectives,
   verifierResult: MidnightArchiveProjection["verifierResult"],
   carriedCandidate: ArchiveCandidateId | null,
+  operationCosts: MidnightArchiveProjection["operationCosts"],
 ): boolean {
   if (staged === null) return true;
+  const expectedCost = actionCostFromOperations(operationCosts, staged.actionType);
+  if (staged.turnCost !== expectedCost.turns || staged.powerCost !== expectedCost.power) return false;
   if (staged.powerCost > power) return false;
   switch (staged.actionType) {
     case "stage_move": {

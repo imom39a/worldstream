@@ -83,11 +83,17 @@ export function authorizedView(
 export function participantProjection(state: ArchiveState, role: Role, core?: CanonicalObject): CanonicalObject {
   return {
     phase: state.phase,
+    scenario: { id: state.scenario_id, label: state.scenario_label },
     objective: `${state.objective} ${state.role_notes[role]}`,
     location: state.location,
     turns_used: state.turns_used,
     turns_remaining: state.turn_limit - state.turns_used,
     power: state.power_remaining,
+    initial_power: state.initial_power,
+    method_costs: { ...state.method_costs },
+    operation_costs: Object.fromEntries(
+      Object.entries(state.operation_costs).map(([operation, cost]) => [operation, { ...cost }]),
+    ),
     gates: {
       archive_gate: state.gates.conservation_vault_open ? "open" : "closed",
       service_hatch: state.gates.plant_vault_open ? "open" : "closed",
@@ -162,15 +168,15 @@ function preservationAgreementProjection(state: ArchiveState): CanonicalObject {
         condition_id: "lead_acceptance",
         label: "Human lead accepts this fixed agreement",
         status: state.preservation_agreement === "accepted" ? "complete" : "pending",
-        turn_cost: 1,
-        power_cost: 0,
+        turn_cost: state.operation_costs.accept_preservation_agreement.turn_cost,
+        power_cost: state.operation_costs.accept_preservation_agreement.power_cost,
       },
       {
         condition_id: "collection_preparation",
         label: "Prepare the threatened collection",
         status: state.collection_preservation === "unprepared" ? "pending" : "complete",
-        turn_cost: 1,
-        power_cost: 0,
+        turn_cost: state.operation_costs.prepare_collection.turn_cost,
+        power_cost: state.operation_costs.prepare_collection.power_cost,
       },
       {
         condition_id: "equipment_energized",
@@ -180,8 +186,8 @@ function preservationAgreementProjection(state: ArchiveState): CanonicalObject {
           : state.collection_preservation === "prepared"
           ? "pending"
           : "complete",
-        turn_cost: 1,
-        power_cost: 1,
+        turn_cost: state.operation_costs.energize_preservation_equipment.turn_cost,
+        power_cost: state.operation_costs.energize_preservation_equipment.power_cost,
       },
     ],
   };
@@ -196,8 +202,8 @@ function optionalObjectivesProjection(state: ArchiveState): CanonicalObject {
         : state.collection_preservation === "prepared"
         ? "prepared"
         : "complete",
-      turn_cost: 2,
-      power_cost: 1,
+      turn_cost: state.operation_costs.prepare_collection.turn_cost + state.operation_costs.energize_preservation_equipment.turn_cost,
+      power_cost: state.operation_costs.prepare_collection.power_cost + state.operation_costs.energize_preservation_equipment.power_cost,
     },
     source_record_protected: {
       label: "Protect the source's identifying record",
@@ -206,14 +212,14 @@ function optionalObjectivesProjection(state: ArchiveState): CanonicalObject {
         : state.carried_candidate_id === "none"
         ? "locked"
         : "available",
-      turn_cost: 1,
-      power_cost: 1,
+      turn_cost: state.operation_costs.protect_source_record.turn_cost,
+      power_cost: state.operation_costs.protect_source_record.power_cost,
     },
   };
 }
 
 function candidateEvidence(state: ArchiveState, candidate: VisibleCandidate, role: Role): CanonicalObject {
-  const observed = authoredEvidenceSources().filter((source) =>
+  const observed = authoredEvidenceSources(state).filter((source) =>
     state.evidence[source.source_id] === "observed" ||
     ((role === "mira" || role === "jonah") && state[role].knowledge[source.source_id] !== "unknown")
   );
@@ -299,21 +305,21 @@ function leadActionOffers(state: ArchiveState, core: CanonicalObject): PackActio
   if (
     state.location === "conservation" &&
     state.collection_preservation === "prepared" &&
-    state.power_remaining >= 1
+    state.power_remaining >= state.operation_costs.energize_preservation_equipment.power_cost
   ) {
     offers.push(offer("stage_energize_preservation_equipment"));
   }
   if (
     state.location === "records" &&
     state.verifier_result === "none" &&
-    state.power_remaining >= 1
+    state.power_remaining >= state.operation_costs.use_verifier.power_cost
   ) {
     offers.push(offer("stage_use_verifier"));
   }
   if (
     state.location === "plant" &&
     !state.gates.plant_vault_open &&
-    state.power_remaining >= 2
+    state.power_remaining >= state.operation_costs.open_service_hatch.power_cost
   ) {
     offers.push(offer("stage_open_service_hatch"));
   }
@@ -322,7 +328,7 @@ function leadActionOffers(state: ArchiveState, core: CanonicalObject): PackActio
     state.location === "plant" &&
     state.carried_candidate_id !== "none" &&
     !state.source_record_protected &&
-    state.power_remaining >= 1
+    state.power_remaining >= state.operation_costs.protect_source_record.power_cost
   ) {
     offers.push(offer("stage_protect_source_record"));
   }

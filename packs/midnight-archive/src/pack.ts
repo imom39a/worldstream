@@ -311,7 +311,7 @@ function cleanRejectionAllowed(stimulusType: string): boolean {
 export default defineActivityPack({
   descriptor: {
     packId: "worldstream.midnight-archive",
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: "Midnight Archive",
     version: "0.1.0",
     roles: [
@@ -458,7 +458,7 @@ export default defineActivityPack({
     attentionReasons: [MIRA_PLAN_ATTENTION_REASON],
     configurationSchema: {
       additionalProperties: false,
-      properties: { scenario_id: { const: "standard-v1", type: "string" } },
+      properties: { scenario_id: { enum: ["standard-v1", "low-reserve-v1"], type: "string" } },
       required: ["scenario_id"],
       type: "object",
     },

@@ -9,6 +9,7 @@ import {
 
 import { MidnightArchiveClient } from "./MidnightArchiveClient";
 import { readPlatformSession } from "./platformSession";
+import { createMidnightArchiveRetryingFetch } from "./retryingFetch";
 import "./styles.css";
 
 const root = document.getElementById("root") ?? missingRoot();
@@ -16,7 +17,7 @@ const startup = selectActivityClientStartup(window);
 
 void platformSession().then(({ csrf, browserStreamUrl }) => {
   const origin = window.location.origin;
-  const authority = new ActivityClientHandoffClient(origin, undefined, {
+  const authority = new ActivityClientHandoffClient(origin, createMidnightArchiveRetryingFetch(), {
     browserOrigin: origin,
     csrf,
   });

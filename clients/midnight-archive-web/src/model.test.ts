@@ -1,16 +1,21 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  ELEVEN_TURN_POWERED_AGREEMENT_ROUTE,
-  FIFTEEN_TURN_BOTH_OPTIONALS_ROUTE,
-  TEN_TURN_TECHNICAL_ROUTE,
   actionCost,
   actionPayload,
   candidateConfidence,
   moveOptions,
   readMidnightArchiveProjection,
 } from "./model";
-import { projection, rawJonah, rawMira, rawProjection } from "./testFixtures";
+import {
+  ELEVEN_TURN_POWERED_AGREEMENT_ROUTE,
+  FIFTEEN_TURN_BOTH_OPTIONALS_ROUTE,
+  TEN_TURN_TECHNICAL_ROUTE,
+  projection,
+  rawJonah,
+  rawMira,
+  rawProjection,
+} from "./testFixtures";
 
 describe("Midnight Archive strict participant Projection", () => {
   it("accepts the exact five-location, finite-resource contract", () => {
@@ -568,7 +573,7 @@ describe("technical route semantics", () => {
   it("models the documented ten-turn route using all three power charges", () => {
     expect(TEN_TURN_TECHNICAL_ROUTE).toHaveLength(10);
     const totals = TEN_TURN_TECHNICAL_ROUTE.reduce((sum, intent) => {
-      const cost = actionCost(intent.action);
+      const cost = actionCost(projection(), intent.action);
       return { turns: sum.turns + cost.turns, power: sum.power + cost.power };
     }, { turns: 0, power: 0 });
     expect(totals).toEqual({ turns: 10, power: 3 });
@@ -587,11 +592,11 @@ describe("technical route semantics", () => {
   });
 
   it("models the eleven-turn powered agreement route and fifteen-turn route with both optionals", () => {
-    expect(routeCost(ELEVEN_TURN_POWERED_AGREEMENT_ROUTE)).toEqual({ turns: 11, power: 2 });
+    expect(routeCost(projection(), ELEVEN_TURN_POWERED_AGREEMENT_ROUTE)).toEqual({ turns: 11, power: 2 });
     expect(ELEVEN_TURN_POWERED_AGREEMENT_ROUTE.map((intent) => intent.action)).toContain("stage_accept_preservation_agreement");
     expect(ELEVEN_TURN_POWERED_AGREEMENT_ROUTE.map((intent) => intent.action)).toContain("stage_energize_preservation_equipment");
 
-    expect(routeCost(FIFTEEN_TURN_BOTH_OPTIONALS_ROUTE)).toEqual({ turns: 15, power: 3 });
+    expect(routeCost(projection(), FIFTEEN_TURN_BOTH_OPTIONALS_ROUTE)).toEqual({ turns: 15, power: 3 });
     expect(FIFTEEN_TURN_BOTH_OPTIONALS_ROUTE.map((intent) => intent.action)).toContain("stage_protect_source_record");
   });
 
@@ -610,7 +615,7 @@ describe("technical route semantics", () => {
       task_kind: "investigate_records",
       power_allowance: 1,
     })).toEqual({ task_kind: "investigate_records", power_allowance: 1 });
-    expect(actionCost("request_mira_plan")).toEqual({ turns: 0, power: 0 });
+    expect(actionCost(current, "request_mira_plan")).toEqual({ turns: 0, power: 0 });
     expect(actionPayload({
       action: "assign_jonah_task",
       task_kind: "open_service_hatch",
@@ -644,9 +649,12 @@ describe("technical route semantics", () => {
   });
 });
 
-function routeCost(route: readonly { readonly action: Parameters<typeof actionCost>[0] }[]) {
+function routeCost(
+  current: Parameters<typeof actionCost>[0],
+  route: readonly { readonly action: Parameters<typeof actionCost>[1] }[],
+) {
   return route.reduce((sum, intent) => {
-    const cost = actionCost(intent.action);
+    const cost = actionCost(current, intent.action);
     return { turns: sum.turns + cost.turns, power: sum.power + cost.power };
   }, { turns: 0, power: 0 });
 }

@@ -1,9 +1,12 @@
 # Midnight Archive: first playable design
 
-Status: Design decisions adopted, 2026-09-09. Implementation and hosted
-qualification have not been performed. The user accepted Q1–Q12 and directed
-that all remaining grilling questions use the recommended answers. The
-[decision record](second-game-design.md) closes that interview.
+Status: Design decisions adopted, 2026-09-09. The portable Pack, independent
+browser client, optional specialist mechanics, unavailable-companion path, and
+authored Standard/Low Reserve scenarios are implemented and locally qualified.
+Common-platform discovery, reviewed model companions, hosted lifecycle
+qualification, and human playtesting remain. The user accepted Q1–Q12 and
+directed that all remaining grilling questions use the recommended answers.
+The [decision record](second-game-design.md) closes that interview.
 
 ## Product and experiment
 
@@ -334,8 +337,9 @@ allowance.
 
 ## Variation and content upkeep
 
-Implement Standard first, then a Low Reserve configuration with two initial
-power charges. Keep the same map and rules. In the solo route model, powered
+Standard and Low Reserve are now closed authored configurations. Low Reserve
+starts with two initial power charges while Standard starts with three; both
+keep the same map, rules, and sixteen-turn budget. In the solo route model, powered
 verification plus the ordinary service hatch is feasible in Standard and
 infeasible in Low Reserve; other legal combinations remain. Both optional
 objectives require more careful authentication choices in Low Reserve.
@@ -363,14 +367,14 @@ generated missions.
 The core state/action model fits. Adding this game is nevertheless more than
 placing a new JSON file in the catalog.
 
-| Required work | Current source finding |
+| Remaining work | Current source finding |
 | --- | --- |
-| Optional Role cardinalities | The authoring CLI currently emits minimum 1, maximum 1 for every Role |
-| Supported bounded schemas and offer timing | Generated schemas are generic objects; SDK offer shorthand gets a null eligibility window |
-| Generic hosted start | Catalog/start code recognizes Heist's lobby contract and retained Heist revisions |
-| Representative conformance fixtures | Generic harness assumptions include buyer/seller views and a buyerCeiling privacy mutation |
-| Reviewed roster selection | Existing hosted launch-input-v1 accepts only none |
-| Second-game registration | Catalog, artifact generation and result-projector registration contain explicit Heist wiring |
+| Bounded model companions | Deterministic companion plans and failure continuation work; reviewed House policies, bounded current-context dialogue, and exact live identities remain |
+| Common-platform discovery | The portable Pack/client are exact; the unlisted authenticated library candidate and dependency availability gate remain to be completed |
+| Reviewed roster selection | Solo and all Pack roster variants work locally; named hosted roster options still need exact House revision bindings |
+| Hosted lifecycle | Generic start and client re-entry foundations exist; Archive formation, private terminal status, expiry, and capacity-reuse evidence remain |
+| Publication and results | Archive must stay nonpublic during the experiment while its exact projector records terminal facts without leaking private clues |
+| Player evidence | Scripted conformance proves rules and Replay; it does not establish comprehension, enjoyment, session length, or replay motivation |
 
 Extend the public TypeScript authoring tools backwards compatibly. Keep
 legacy source forms readable and preserve retained artifacts. Supply explicit

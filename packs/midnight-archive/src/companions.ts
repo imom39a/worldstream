@@ -548,6 +548,7 @@ export function applyMiraResolution(
     return { ...afterLead, [companionRole]: mira };
   }
   const step = resolution.step!;
+  const stepCost = companionStepCost(afterLead, step, companionRole);
   if (step.step_type === "move") {
     mira = { ...mira, location: step.destination as Location };
   } else if (step.step_type === "inspect_source") {
@@ -571,14 +572,14 @@ export function applyMiraResolution(
     evidence = { records: "observed", conservation: "observed" };
     mira = { ...mira, field_assay: { steps_completed: 2, result: afterLead.truth_marker } };
   } else if (step.step_type === "open_service_hatch") {
-    powerRemaining -= step.power_cost;
-    mira = { ...mira, task: { ...mira.task, power_spent: (mira.task.power_spent + step.power_cost) as 0 | 1 | 2 } };
+    powerRemaining -= stepCost.power_cost;
+    mira = { ...mira, task: { ...mira.task, power_spent: (mira.task.power_spent + stepCost.power_cost) as 0 | 1 | 2 } };
   } else {
-    powerRemaining -= 1;
+    powerRemaining -= stepCost.power_cost;
     verifierResult = afterLead.truth_marker;
     mira = {
       ...mira,
-      task: { ...mira.task, power_spent: (mira.task.power_spent + 1) as 0 | 1 },
+      task: { ...mira.task, power_spent: (mira.task.power_spent + stepCost.power_cost) as 0 | 1 },
       knowledge: { ...mira.knowledge, verifier_result: afterLead.truth_marker },
     };
   }
@@ -657,7 +658,7 @@ function validatePlannedSequence(state: ArchiveState, mira: MiraState, steps: re
   )) reject("plan_invalid", "Mira's sampled assay must continue on the immediately following turn");
   for (const step of steps) {
     if (taskComplete) reject("plan_invalid", "a Companion Plan cannot continue after completing its task");
-    validateStepForTask(mira.task.kind, step, companionRole);
+    validateStepForTask(state, mira.task.kind, step, companionRole);
     if (step.step_type === "move") {
       if (!legalDestinationsFrom(state, location).includes(step.destination as Location)) {
         reject("plan_invalid", "a planned move is not one currently open passage");
@@ -688,7 +689,7 @@ function validatePlannedSequence(state: ArchiveState, mira: MiraState, steps: re
       verifierUsed = true;
       taskComplete = true;
     }
-    plannedPower += step.power_cost;
+    plannedPower += companionStepCost(state, step, companionRole).power_cost;
   }
   if (mira.task.power_spent + plannedPower > mira.task.power_allowance) {
     reject("task_violation", "the Companion Plan exceeds its task power allowance");
@@ -705,7 +706,7 @@ function miraTaskGoalComplete(mira: MiraState, hatchOpen: boolean): boolean {
 }
 
 function validateStepAtTurnStart(state: ArchiveState, mira: MiraState, step: MiraPlanStep, companionRole: CompanionRole): void {
-  validateStepForTask(mira.task.kind, step, companionRole);
+  validateStepForTask(state, mira.task.kind, step, companionRole);
   if (
     mira.plan.origin_member_id !== mira.member_id ||
     mira.plan.origin_task_revision !== mira.task.revision ||
@@ -732,7 +733,7 @@ function validateStepAtTurnStart(state: ArchiveState, mira: MiraState, step: Mir
     }
   } else if (step.step_type === "open_service_hatch") {
     if (location !== "plant" || state.gates.plant_vault_open ||
-      mira.task.power_spent + step.power_cost > mira.task.power_allowance) {
+      mira.task.power_spent + companionStepCost(state, step, companionRole).power_cost > mira.task.power_allowance) {
       reject("task_violation", "the hatch is no longer eligible within this task");
     }
   } else if (step.step_type === "collect_assay_sample" || step.step_type === "complete_field_assay") {
@@ -747,20 +748,20 @@ function validateStepAtTurnStart(state: ArchiveState, mira: MiraState, step: Mir
   } else {
     if (
       location !== "records" || state.verifier_result !== "none" ||
-      mira.task.power_spent + 1 > mira.task.power_allowance
+      mira.task.power_spent + state.operation_costs.companion_verifier.power_cost > mira.task.power_allowance
     ) reject("task_violation", "Mira's verifier step is no longer eligible within its task limits");
   }
 }
 
-function validateStepForTask(taskKind: MiraTaskKind, step: MiraPlanStep, companionRole: CompanionRole): void {
+function validateStepForTask(state: ArchiveState, taskKind: MiraTaskKind, step: MiraPlanStep, companionRole: CompanionRole): void {
   if (step.step_type === "open_service_hatch") {
     if (taskKind !== "open_service_hatch" || step.destination !== "none" || step.source_id !== "none" ||
-      step.power_cost !== (companionRole === "jonah" ? 1 : 2)) reject("plan_invalid", "hatch work must match the current specialist method");
+      step.power_cost !== companionStepCost(state, step, companionRole).power_cost) reject("plan_invalid", "hatch work must match the current specialist method");
     return;
   }
   if (step.step_type === "collect_assay_sample" || step.step_type === "complete_field_assay") {
     if (companionRole !== "mira" || taskKind !== "field_assay" || step.destination !== "none" ||
-      step.source_id !== "none" || step.power_cost !== 0) reject("plan_invalid", "only Mira's Vault assay task admits assay work");
+      step.source_id !== "none" || step.power_cost !== state.operation_costs.mira_field_assay.power_cost) reject("plan_invalid", "only Mira's Vault assay task admits assay work");
     return;
   }
   const source = taskKind === "investigate_records"
@@ -769,21 +770,41 @@ function validateStepForTask(taskKind: MiraTaskKind, step: MiraPlanStep, compani
     ? "conservation"
     : "none";
   if (step.step_type === "move") {
-    if (step.destination === "none" || step.source_id !== "none" || step.power_cost !== 0) {
+    if (step.destination === "none" || step.source_id !== "none" || step.power_cost !== state.operation_costs.companion_move.power_cost) {
       reject("plan_invalid", "move requires a Location, source none, and zero power");
     }
     return;
   }
   if (step.step_type === "inspect_source" || step.step_type === "share_source") {
-    if (step.destination !== "none" || step.source_id !== source || step.power_cost !== 0) {
+    const cost = step.step_type === "inspect_source"
+      ? state.operation_costs.companion_inspect_source
+      : state.operation_costs.companion_share_source;
+    if (step.destination !== "none" || step.source_id !== source || step.power_cost !== cost.power_cost) {
       reject("plan_invalid", "source work must match the assigned source and use zero power");
     }
     return;
   }
   if (
-    step.destination !== "none" || step.source_id !== "records" || step.power_cost !== 1 ||
+    step.destination !== "none" || step.source_id !== "records" || step.power_cost !== state.operation_costs.companion_verifier.power_cost ||
     taskKind !== "investigate_records"
   ) reject("plan_invalid", "verifier work requires the Records task and one power");
+}
+
+function companionStepCost(
+  state: ArchiveState,
+  step: MiraPlanStep,
+  companionRole: CompanionRole,
+) {
+  if (step.step_type === "move") return state.operation_costs.companion_move;
+  if (step.step_type === "inspect_source") return state.operation_costs.companion_inspect_source;
+  if (step.step_type === "share_source") return state.operation_costs.companion_share_source;
+  if (step.step_type === "collect_assay_sample" || step.step_type === "complete_field_assay") {
+    return state.operation_costs.mira_field_assay;
+  }
+  if (step.step_type === "use_verifier") return state.operation_costs.companion_verifier;
+  return companionRole === "jonah"
+    ? state.operation_costs.jonah_open_service_hatch
+    : state.operation_costs.mira_open_service_hatch;
 }
 
 function parsePlanStep(value: CanonicalJson, label: string): MiraPlanStep {

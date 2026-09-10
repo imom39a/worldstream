@@ -126,6 +126,38 @@ export interface StagedAction {
   readonly power_cost: 0 | 1 | 2;
 }
 
+export interface OperationCost {
+  readonly turn_cost: 0 | 1;
+  readonly power_cost: 0 | 1 | 2;
+}
+
+/**
+ * The complete authored operational budget. Lead actions consume their own
+ * turn; companion steps resolve within the lead's committed turn and therefore
+ * have a zero turn cost here.
+ */
+export interface ArchiveOperationCosts {
+  readonly move: OperationCost;
+  readonly inspect_records: OperationCost;
+  readonly inspect_conservation: OperationCost;
+  readonly use_verifier: OperationCost;
+  readonly accept_preservation_agreement: OperationCost;
+  readonly prepare_collection: OperationCost;
+  readonly energize_preservation_equipment: OperationCost;
+  readonly open_service_hatch: OperationCost;
+  readonly recover_candidate: OperationCost;
+  readonly protect_source_record: OperationCost;
+  readonly extract: OperationCost;
+  readonly wait: OperationCost;
+  readonly companion_move: OperationCost;
+  readonly companion_inspect_source: OperationCost;
+  readonly companion_share_source: OperationCost;
+  readonly mira_field_assay: OperationCost;
+  readonly companion_verifier: OperationCost;
+  readonly mira_open_service_hatch: OperationCost;
+  readonly jonah_open_service_hatch: OperationCost;
+}
+
 export interface ArchiveOutcome {
   readonly kind: OutcomeKind;
   readonly factual_reason: string;
@@ -134,7 +166,17 @@ export interface ArchiveOutcome {
 
 export interface ArchiveState {
   readonly phase: Phase;
-  readonly scenario_id: "standard-v1";
+  readonly scenario_id: "standard-v1" | "low-reserve-v1";
+  readonly scenario_label: "Standard" | "Low Reserve";
+  readonly initial_power: 2 | 3;
+  readonly evidence_records: readonly {
+    readonly source_id: EvidenceSourceId;
+    readonly source_label: string;
+    readonly attribute: "binding" | "marking" | "year";
+    readonly value: string | number;
+  }[];
+  readonly method_costs: { readonly verifier: 1; readonly ordinary_service_hatch: 2 };
+  readonly operation_costs: ArchiveOperationCosts;
   readonly objective: string;
   readonly location: Location;
   readonly turn_limit: 16;

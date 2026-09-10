@@ -2,6 +2,7 @@ import type { CanonicalJson, CanonicalObject } from "@worldstream/pack-sdk";
 
 import {
   type ArchiveOutcome,
+  type ArchiveOperationCosts,
   type ArchiveState,
   type CandidateId,
   type EvidenceSourceId,
@@ -35,15 +36,47 @@ export interface AuthoredEvidenceSource {
 }
 
 export interface AuthoredScenario {
-  readonly scenario_id: "standard-v1";
+  readonly scenario_id: "standard-v1" | "low-reserve-v1";
+  readonly scenario_label: "Standard" | "Low Reserve";
+  readonly initial_power: 2 | 3;
+  readonly method_costs: { readonly verifier: 1; readonly ordinary_service_hatch: 2 };
+  readonly operation_costs: ArchiveOperationCosts;
   readonly candidates: readonly VisibleCandidate[];
   readonly authentic_candidate_id: CandidateId;
   readonly evidence_sources: readonly AuthoredEvidenceSource[];
 }
 
+function closedOperationCosts(): ArchiveOperationCosts {
+  return {
+  move: { turn_cost: 1, power_cost: 0 },
+  inspect_records: { turn_cost: 1, power_cost: 0 },
+  inspect_conservation: { turn_cost: 1, power_cost: 0 },
+  use_verifier: { turn_cost: 1, power_cost: 1 },
+  accept_preservation_agreement: { turn_cost: 1, power_cost: 0 },
+  prepare_collection: { turn_cost: 1, power_cost: 0 },
+  energize_preservation_equipment: { turn_cost: 1, power_cost: 1 },
+  open_service_hatch: { turn_cost: 1, power_cost: 2 },
+  recover_candidate: { turn_cost: 1, power_cost: 0 },
+  protect_source_record: { turn_cost: 1, power_cost: 1 },
+  extract: { turn_cost: 1, power_cost: 0 },
+  wait: { turn_cost: 1, power_cost: 0 },
+  companion_move: { turn_cost: 0, power_cost: 0 },
+  companion_inspect_source: { turn_cost: 0, power_cost: 0 },
+  companion_share_source: { turn_cost: 0, power_cost: 0 },
+  mira_field_assay: { turn_cost: 0, power_cost: 0 },
+  companion_verifier: { turn_cost: 0, power_cost: 1 },
+  mira_open_service_hatch: { turn_cost: 0, power_cost: 2 },
+  jonah_open_service_hatch: { turn_cost: 0, power_cost: 1 },
+  };
+}
+
 function standardScenario(): AuthoredScenario {
   return {
     scenario_id: "standard-v1",
+    scenario_label: "Standard",
+    initial_power: 3,
+    method_costs: { verifier: 1, ordinary_service_hatch: 2 },
+    operation_costs: closedOperationCosts(),
     candidates: [
       { candidate_id: "ledger-amber", binding: "calfskin", marking: "compass_rose", year: 1891 },
       { candidate_id: "ledger-cobalt", binding: "linen", marking: "split_star", year: 1891 },
@@ -57,14 +90,78 @@ function standardScenario(): AuthoredScenario {
   };
 }
 
+function lowReserveScenario(): AuthoredScenario {
+  return {
+    scenario_id: "low-reserve-v1",
+    scenario_label: "Low Reserve",
+    initial_power: 2,
+    method_costs: { verifier: 1, ordinary_service_hatch: 2 },
+    operation_costs: closedOperationCosts(),
+    candidates: [
+      { candidate_id: "ledger-amber", binding: "calfskin", marking: "split_star", year: 1904 },
+      { candidate_id: "ledger-cobalt", binding: "calfskin", marking: "compass_rose", year: 1891 },
+      { candidate_id: "ledger-violet", binding: "linen", marking: "compass_rose", year: 1904 },
+    ],
+    authentic_candidate_id: "ledger-cobalt",
+    evidence_sources: [
+      { source_id: "records", source_label: "Records intake card", attribute: "binding", value: "calfskin" },
+      { source_id: "conservation", source_label: "Conservation restoration note", attribute: "marking", value: "compass_rose" },
+    ],
+  };
+}
+
+function resolveScenario(id: string): AuthoredScenario {
+  if (id === "standard-v1") return standardScenario();
+  if (id === "low-reserve-v1") return lowReserveScenario();
+  throw new TypeError("configuration must select a closed authored scenario");
+}
+
 export function validateAuthoredScenario(scenario: AuthoredScenario): void {
+  const expectedScenario = scenario.scenario_id === "standard-v1"
+    ? {
+      label: "Standard", initialPower: 3, authenticCandidate: "ledger-violet",
+      candidates: {
+        "ledger-amber": { binding: "calfskin", marking: "compass_rose", year: 1891 },
+        "ledger-cobalt": { binding: "linen", marking: "split_star", year: 1891 },
+        "ledger-violet": { binding: "calfskin", marking: "split_star", year: 1904 },
+      },
+      conservationMarking: "split_star",
+    }
+    : scenario.scenario_id === "low-reserve-v1"
+      ? {
+        label: "Low Reserve", initialPower: 2, authenticCandidate: "ledger-cobalt",
+        candidates: {
+          "ledger-amber": { binding: "calfskin", marking: "split_star", year: 1904 },
+          "ledger-cobalt": { binding: "calfskin", marking: "compass_rose", year: 1891 },
+          "ledger-violet": { binding: "linen", marking: "compass_rose", year: 1904 },
+        },
+        conservationMarking: "compass_rose",
+      }
+      : null;
   const ids = new Set(scenario.candidates.map((candidate) => candidate.candidate_id));
   const expectedIds = ["ledger-amber", "ledger-cobalt", "ledger-violet"] as const;
   if (
-    scenario.scenario_id !== "standard-v1" ||
+    !expectedScenario ||
+    scenario.scenario_label !== expectedScenario.label ||
+    scenario.initial_power !== expectedScenario.initialPower ||
+    scenario.authentic_candidate_id !== expectedScenario.authenticCandidate ||
+    scenario.method_costs.verifier !== scenario.operation_costs.use_verifier.power_cost ||
+    scenario.method_costs.ordinary_service_hatch !== scenario.operation_costs.open_service_hatch.power_cost ||
+    !hasExactKeys(scenario, ["scenario_id", "scenario_label", "initial_power", "method_costs", "operation_costs", "candidates", "authentic_candidate_id", "evidence_sources"]) ||
+    !hasExactKeys(scenario.method_costs, ["verifier", "ordinary_service_hatch"]) ||
+    !hasClosedOperationCosts(scenario.operation_costs) ||
     scenario.candidates.length !== expectedIds.length ||
     ids.size !== scenario.candidates.length ||
-    expectedIds.some((candidateId) => !ids.has(candidateId))
+    expectedIds.some((candidateId) => !ids.has(candidateId)) ||
+    scenario.candidates.some((candidate) =>
+      !hasExactKeys(candidate, ["candidate_id", "binding", "marking", "year"]) ||
+      !["calfskin", "linen"].includes(candidate.binding) ||
+      !["compass_rose", "split_star"].includes(candidate.marking) ||
+      ![1891, 1904].includes(candidate.year) ||
+      candidate.binding !== expectedScenario.candidates[candidate.candidate_id].binding ||
+      candidate.marking !== expectedScenario.candidates[candidate.candidate_id].marking ||
+      candidate.year !== expectedScenario.candidates[candidate.candidate_id].year,
+    )
   ) {
     throw new TypeError("an authored scenario requires exactly three distinct candidates");
   }
@@ -76,7 +173,14 @@ export function validateAuthoredScenario(scenario: AuthoredScenario): void {
     scenario.evidence_sources.length !== 2 ||
     sourceIds.size !== 2 ||
     !sourceIds.has("records") ||
-    !sourceIds.has("conservation")
+    !sourceIds.has("conservation") ||
+    scenario.evidence_sources.some((source) =>
+      !hasExactKeys(source, ["source_id", "source_label", "attribute", "value"]) ||
+      (source.source_id === "records" &&
+        (source.source_label !== "Records intake card" || source.attribute !== "binding" || source.value !== "calfskin")) ||
+      (source.source_id === "conservation" &&
+        (source.source_label !== "Conservation restoration note" || source.attribute !== "marking" || source.value !== expectedScenario.conservationMarking)),
+    )
   ) {
     throw new TypeError("an authored scenario requires Records and Conservation sources");
   }
@@ -93,8 +197,24 @@ export function validateAuthoredScenario(scenario: AuthoredScenario): void {
   }
 }
 
-export function authoredEvidenceSources(): readonly AuthoredEvidenceSource[] {
-  return standardScenario().evidence_sources;
+function hasExactKeys(value: object, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  return actual.length === expected.length && actual.every((key, index) => key === [...expected].sort()[index]);
+}
+
+function hasClosedOperationCosts(costs: ArchiveOperationCosts): boolean {
+  const expectedCosts = closedOperationCosts();
+  if (!hasExactKeys(costs, Object.keys(expectedCosts))) return false;
+  return (Object.keys(expectedCosts) as Array<keyof ArchiveOperationCosts>).every((operation) => {
+    const expected = expectedCosts[operation];
+    const actual = costs[operation];
+    return hasExactKeys(actual, ["turn_cost", "power_cost"]) &&
+      actual.turn_cost === expected.turn_cost && actual.power_cost === expected.power_cost;
+  });
+}
+
+export function authoredEvidenceSources(state: ArchiveState): readonly AuthoredEvidenceSource[] {
+  return state.evidence_records;
 }
 
 function emptyStage(): StagedAction {
@@ -118,20 +238,25 @@ function pendingOutcome(): ArchiveOutcome {
 export function initializeArchiveState(configuration: CanonicalObject): ArchiveState {
   if (
     Object.keys(configuration).length !== 1 ||
-    configuration.scenario_id !== "standard-v1"
+    typeof configuration.scenario_id !== "string"
   ) {
-    throw new TypeError("configuration must select the exact standard-v1 scenario");
+    throw new TypeError("configuration must select one closed authored scenario");
   }
-  const scenario = standardScenario();
+  const scenario = resolveScenario(configuration.scenario_id);
   validateAuthoredScenario(scenario);
   return {
     phase: "briefing",
-    scenario_id: "standard-v1",
+    scenario_id: scenario.scenario_id,
+    scenario_label: scenario.scenario_label,
+    initial_power: scenario.initial_power,
+    evidence_records: scenario.evidence_sources,
+    method_costs: scenario.method_costs,
+    operation_costs: scenario.operation_costs,
     objective: OBJECTIVE,
     location: "atrium",
     turn_limit: 16,
     turns_used: 0,
-    power_remaining: 3,
+    power_remaining: scenario.initial_power,
     gates: {
       conservation_vault_open: false,
       plant_vault_open: false,
@@ -212,13 +337,7 @@ function stagedAction(
       if (isVaultEdge(state.location, destination)) reject("gate_closed", "the selected vault gate is closed");
       reject("illegal_action", "destination is not adjacent to the current Location");
     }
-    return {
-      kind: "move",
-      destination,
-      candidate_id: "none",
-      turn_cost: 1,
-      power_cost: 0,
-    };
+    return stagedFromCost(state, "move", destination);
   }
   if (actionType === "stage_use_verifier") {
     exactKeys(payload, []);
@@ -226,26 +345,20 @@ function stagedAction(
     if (state.verifier_result !== "none") {
       reject("illegal_action", "the catalog verifier result is already recorded");
     }
-    requirePower(state, 1);
-    return {
-      kind: "use_verifier",
-      destination: "none",
-      candidate_id: "none",
-      turn_cost: 1,
-      power_cost: 1,
-    };
+    requirePower(state, state.operation_costs.use_verifier.power_cost);
+    return stagedFromCost(state, "use_verifier");
   }
   if (actionType === "stage_inspect_records") {
     exactKeys(payload, []);
     if (state.location !== "records") reject("illegal_action", "the intake evidence is in Records");
     if (state.evidence.records === "observed") reject("illegal_action", "the Records source has already been inspected");
-    return { kind: "inspect_records", destination: "none", candidate_id: "none", turn_cost: 1, power_cost: 0 };
+    return stagedFromCost(state, "inspect_records");
   }
   if (actionType === "stage_inspect_conservation") {
     exactKeys(payload, []);
     if (state.location !== "conservation") reject("illegal_action", "the restoration evidence is in Conservation");
     if (state.evidence.conservation === "observed") reject("illegal_action", "the Conservation source has already been inspected");
-    return { kind: "inspect_conservation", destination: "none", candidate_id: "none", turn_cost: 1, power_cost: 0 };
+    return stagedFromCost(state, "inspect_conservation");
   }
   if (actionType === "stage_accept_preservation_agreement") {
     exactKeys(payload, []);
@@ -255,13 +368,7 @@ function stagedAction(
     if (state.preservation_agreement === "accepted") {
       reject("illegal_action", "the preservation agreement is already accepted");
     }
-    return {
-      kind: "accept_preservation_agreement",
-      destination: "none",
-      candidate_id: "none",
-      turn_cost: 1,
-      power_cost: 0,
-    };
+    return stagedFromCost(state, "accept_preservation_agreement");
   }
   if (actionType === "stage_prepare_collection") {
     exactKeys(payload, []);
@@ -271,13 +378,7 @@ function stagedAction(
     if (state.collection_preservation !== "unprepared") {
       reject("illegal_action", "the collection is already prepared or preserved");
     }
-    return {
-      kind: "prepare_collection",
-      destination: "none",
-      candidate_id: "none",
-      turn_cost: 1,
-      power_cost: 0,
-    };
+    return stagedFromCost(state, "prepare_collection");
   }
   if (actionType === "stage_energize_preservation_equipment") {
     exactKeys(payload, []);
@@ -287,27 +388,15 @@ function stagedAction(
     if (state.collection_preservation !== "prepared") {
       reject("illegal_action", "the collection must be prepared before energizing the equipment");
     }
-    requirePower(state, 1);
-    return {
-      kind: "energize_preservation_equipment",
-      destination: "none",
-      candidate_id: "none",
-      turn_cost: 1,
-      power_cost: 1,
-    };
+    requirePower(state, state.operation_costs.energize_preservation_equipment.power_cost);
+    return stagedFromCost(state, "energize_preservation_equipment");
   }
   if (actionType === "stage_open_service_hatch") {
     exactKeys(payload, []);
     if (state.location !== "plant") reject("illegal_action", "the service hatch controls are in Plant");
     if (state.gates.plant_vault_open) reject("illegal_action", "the service hatch is already open");
-    requirePower(state, 2);
-    return {
-      kind: "open_service_hatch",
-      destination: "none",
-      candidate_id: "none",
-      turn_cost: 1,
-      power_cost: 2,
-    };
+    requirePower(state, state.operation_costs.open_service_hatch.power_cost);
+    return stagedFromCost(state, "open_service_hatch");
   }
   if (actionType === "stage_recover_candidate") {
     exactKeys(payload, ["candidate_id"]);
@@ -316,13 +405,7 @@ function stagedAction(
     if (!isCandidateId(candidateId)) {
       reject("unknown_candidate", "candidate_id is not present in this scenario");
     }
-    return {
-      kind: "recover_candidate",
-      destination: "none",
-      candidate_id: candidateId,
-      turn_cost: 1,
-      power_cost: 0,
-    };
+    return stagedFromCost(state, "recover_candidate", "none", candidateId);
   }
   if (actionType === "stage_protect_source_record") {
     exactKeys(payload, []);
@@ -335,37 +418,28 @@ function stagedAction(
     if (state.source_record_protected) {
       reject("illegal_action", "the source record is already protected");
     }
-    requirePower(state, 1);
-    return {
-      kind: "protect_source_record",
-      destination: "none",
-      candidate_id: "none",
-      turn_cost: 1,
-      power_cost: 1,
-    };
+    requirePower(state, state.operation_costs.protect_source_record.power_cost);
+    return stagedFromCost(state, "protect_source_record");
   }
   if (actionType === "stage_extract") {
     exactKeys(payload, []);
     if (state.location !== "atrium") reject("illegal_action", "extraction is available only in the Atrium");
-    return {
-      kind: "extract",
-      destination: "none",
-      candidate_id: "none",
-      turn_cost: 1,
-      power_cost: 0,
-    };
+    return stagedFromCost(state, "extract");
   }
   if (actionType === "stage_wait") {
     exactKeys(payload, []);
-    return {
-      kind: "wait",
-      destination: "none",
-      candidate_id: "none",
-      turn_cost: 1,
-      power_cost: 0,
-    };
+    return stagedFromCost(state, "wait");
   }
   reject("invalid_payload", "Action type is not declared by Midnight Archive");
+}
+
+function stagedFromCost(
+  state: ArchiveState,
+  kind: Exclude<StagedAction["kind"], "none">,
+  destination: Location | "none" = "none",
+  candidateId: CandidateId | "none" = "none",
+): StagedAction {
+  return { kind, destination, candidate_id: candidateId, ...state.operation_costs[kind] };
 }
 
 function commitTurn(
@@ -388,7 +462,7 @@ function commitTurn(
   if (kind === "move") {
     next.location = staged.destination as Location;
   } else if (kind === "use_verifier") {
-    next.power_remaining -= 1;
+    next.power_remaining -= next.operation_costs.use_verifier.power_cost;
     next.verifier_result = next.truth_marker;
     if (next.carried_candidate_id !== "none") {
       next.carried_confidence = next.carried_candidate_id === next.verifier_result
@@ -404,10 +478,10 @@ function commitTurn(
   } else if (kind === "prepare_collection") {
     next.collection_preservation = "prepared";
   } else if (kind === "energize_preservation_equipment") {
-    next.power_remaining -= 1;
+    next.power_remaining -= next.operation_costs.energize_preservation_equipment.power_cost;
     next.collection_preservation = "preserved";
   } else if (kind === "open_service_hatch") {
-    next.power_remaining -= 2;
+    next.power_remaining -= next.operation_costs.open_service_hatch.power_cost;
     next.gates = { ...next.gates, plant_vault_open: true };
   } else if (kind === "recover_candidate") {
     next.carried_candidate_id = staged.candidate_id;
@@ -415,7 +489,7 @@ function commitTurn(
       ? "verified"
       : "unverified";
   } else if (kind === "protect_source_record") {
-    next.power_remaining -= 1;
+    next.power_remaining -= next.operation_costs.protect_source_record.power_cost;
     next.source_record_protected = true;
   }
 
@@ -427,7 +501,7 @@ function commitTurn(
 
   next = resolveCompanions(current, next, turnWork) as MutableArchiveState;
 
-  next.turns_used += 1;
+  next.turns_used += staged.turn_cost;
   next.staged_action = emptyStage();
   if (kind === "extract") {
     next.phase = "complete";
@@ -477,7 +551,7 @@ function validateStagedAtTurnStart(state: ArchiveState, staged: StagedAction): v
     if (state.location !== "records" || state.verifier_result !== "none") {
       reject("illegal_action", "the verifier is no longer eligible");
     }
-    requirePower(state, 1);
+    requirePower(state, state.operation_costs.use_verifier.power_cost);
   } else if (staged.kind === "inspect_records") {
     if (state.location !== "records" || state.evidence.records === "observed") {
       reject("illegal_action", "the Records evidence is no longer eligible");
@@ -498,12 +572,12 @@ function validateStagedAtTurnStart(state: ArchiveState, staged: StagedAction): v
     if (state.location !== "conservation" || state.collection_preservation !== "prepared") {
       reject("illegal_action", "the preservation equipment is no longer eligible to run");
     }
-    requirePower(state, 1);
+    requirePower(state, state.operation_costs.energize_preservation_equipment.power_cost);
   } else if (staged.kind === "open_service_hatch") {
     if (state.location !== "plant" || state.gates.plant_vault_open) {
       reject("illegal_action", "the service hatch action is no longer eligible");
     }
-    requirePower(state, 2);
+    requirePower(state, state.operation_costs.open_service_hatch.power_cost);
   } else if (staged.kind === "recover_candidate") {
     if (state.location !== "vault") reject("illegal_action", "the Vault is no longer occupied");
     if (!isCandidateId(staged.candidate_id)) reject("unknown_candidate", "the staged candidate is absent");
@@ -515,7 +589,7 @@ function validateStagedAtTurnStart(state: ArchiveState, staged: StagedAction): v
     ) {
       reject("illegal_action", "the source record protection action is no longer eligible");
     }
-    requirePower(state, 1);
+    requirePower(state, state.operation_costs.protect_source_record.power_cost);
   } else if (staged.kind === "extract" && state.location !== "atrium") {
     reject("illegal_action", "the crew is no longer at the Atrium");
   }

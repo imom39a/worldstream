@@ -400,6 +400,10 @@ fn loads_the_repository_client_host_configuration_without_pack_specific_code() {
             "blake3:d398d13df28f50edcc271aa8f6ffa75f1c26eca1851ac78215aa8e0f6017d8e5",
             "http://127.0.0.1:5173/midnight-archive-v9/",
         ),
+        (
+            "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64",
+            "http://127.0.0.1:5173/midnight-archive-v10/",
+        ),
     ] {
         let archive_participant = ClientSelectionRequestV1 {
             pack: ExactPackReferenceV1 {

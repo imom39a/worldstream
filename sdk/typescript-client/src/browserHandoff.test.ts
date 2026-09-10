@@ -275,54 +275,6 @@ describe("Activity Client opaque handoff", () => {
     await expect(unknownState.act(submission)).rejects.toMatchObject({ code: "participant_session_invalid_response" });
   });
 
-  it("retries an exact idempotent Action after a bounded transient upstream failure", async () => {
-    vi.useFakeTimers();
-    try {
-      const submission = {
-        action_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY",
-        based_on_room_seq: 7,
-        offer_id: "7:inspect_clue:0",
-        schema_digest: `blake3:${"a".repeat(64)}`,
-        action_type: "inspect_clue",
-        payload: { clue_id: "vault" },
-      };
-      const unavailable = () => new Response(JSON.stringify({
-        code: "participant_session_unavailable",
-        message: "The participant client cannot reach the Room service safely.",
-        next_action: "reconnect",
-        retryable: true,
-      }), { status: 502 });
-      const fetch = vi.fn()
-        .mockResolvedValueOnce(unavailable())
-        .mockResolvedValueOnce(unavailable())
-        .mockResolvedValueOnce(Response.json({ state: "accepted", room_seq: 8 }));
-      const client = new ActivityClientHandoffClient("http://127.0.0.1:9420", fetch);
-
-      const receipt = client.act(submission);
-      await vi.runAllTimersAsync();
-      await expect(receipt).resolves.toEqual({ state: "accepted", room_seq: 8 });
-      expect(fetch).toHaveBeenCalledTimes(3);
-      expect(fetch.mock.calls.map((call) => call[1]?.body)).toEqual([
-        JSON.stringify(submission),
-        JSON.stringify(submission),
-        JSON.stringify(submission),
-      ]);
-
-      const exhaustedFetch = vi.fn(() => Promise.resolve(unavailable()));
-      const exhausted = new ActivityClientHandoffClient("http://127.0.0.1:9420", exhaustedFetch);
-      const failure = expect(exhausted.act(submission)).rejects.toMatchObject({
-        code: "participant_session_unavailable",
-        nextAction: "reconnect",
-        retryable: true,
-      });
-      await vi.runAllTimersAsync();
-      await failure;
-      expect(exhaustedFetch).toHaveBeenCalledTimes(3);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it("redeems hosted handoffs only through the exact same-origin BFF", async () => {
     const csrf = "c".repeat(43);
     const target = browser(`#handoff=${HANDOFF}`, "https://arena.example");

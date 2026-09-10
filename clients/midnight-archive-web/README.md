@@ -6,7 +6,7 @@ data, installs only the authorized lead Projection delivered by the retained
 Activity Client session, and fails closed on Pack identity or Projection drift.
 
 The browser presents the fixed five-location map, visible gate state, sixteen
-turns, three power charges, candidate ledgers, the carried ledger's known
+turns, the current and initial power reserve, candidate ledgers, the carried ledger's known
 confidence, contextual staging controls, and a separate **Commit Turn** step.
 The Conservation view presents the Archivist's fixed preservation agreement,
 its ordered conditions, and direct controls for accepting and completing it.
@@ -24,17 +24,28 @@ debrief attributes completed work only to effects the Pack executed.
 Staging is an authoritative Pack Action. The UI never spends a turn, drains
 power, moves the lead, opens a gate, or decides an outcome locally.
 
-The local `/midnight-archive-v9/` surface uses the existing loopback retained
+Standard and Low Reserve are fixed authored scenarios. Their candidate markings,
+source evidence, authentic ledger, and initial reserve differ; the browser reveals
+only the participant's authorized evidence. Standard starts with three shared
+power charges; Low Reserve starts with two. The scenario briefing explains the
+projected verifier (one power) and ordinary service hatch (two power) costs, whose
+combined cost exceeds Low Reserve's initial budget. Action Offers still determine
+which controls are available; the client neither selects nor rerolls a scenario.
+
+The local `/midnight-archive-v10/` surface uses the existing loopback retained
 session and exposes exact-head verified Replay after a terminal outcome. The
-`/midnight-archive-v9/hosted/` surface uses the authenticated WebSocket session;
+`/midnight-archive-v10/hosted/` surface uses the authenticated WebSocket session;
 its controller currently has no Replay method, so terminal Replay is visibly
 unavailable there. Neither surface invents a successful server response.
-The immutable v1 through v8 builds remain available at their versioned paths
+The immutable v1 through v9 builds remain available at their versioned paths
 for Rooms pinned to their exact Pack revisions.
 
 The exact supported Pack identity lives only in [`src/config.ts`](src/config.ts).
-The v9 build accepts only the production-proved unavailable-companion revision
-`blake3:d398d13df28f50edcc271aa8f6ffa75f1c26eca1851ac78215aa8e0f6017d8e5`.
+The v10 build requires the authored-scenario Projection contract and its exact
+Pack revision
+`blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64`.
+The retained v9 build supports the earlier unavailable-companion
+revision `blake3:d398d13df28f50edcc271aa8f6ffa75f1c26eca1851ac78215aa8e0f6017d8e5`.
 The retained v7 and v8 builds target superseded Pack candidates and are
 unqualified; they are preserved for exact historical Room compatibility only.
 

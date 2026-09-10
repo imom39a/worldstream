@@ -36,11 +36,15 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const PACK_ID: &str = "worldstream.midnight-archive";
 const PACK_VERSION: &str = "0.1.0";
 const CURRENT_BUNDLE_DIGEST: &str =
-    "blake3:0ddcd385d0b250f9ec5a285df1783fbae45a685a90fcf69703026787959b540f";
+    "blake3:8083201f2d1d6a1afdaab8e6759287a3aeacc1a7908d85d2b758af272c150b47";
 const CURRENT_REVISION_DIGEST: &str =
-    "blake3:d398d13df28f50edcc271aa8f6ffa75f1c26eca1851ac78215aa8e0f6017d8e5";
+    "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64";
 const CURRENT_COMPONENT_DIGEST: &str =
-    "blake3:326eaf7db7474a9484f8e53a6398f111077e8bf4f41d0b4fc79590a2a0ac6d0d";
+    "blake3:aa124b20667020510de26eb1658f54876b49a6354d0950052c804f6a5338e0a1";
+const RETAINED_V9_BUNDLE_DIGEST: &str =
+    "blake3:0ddcd385d0b250f9ec5a285df1783fbae45a685a90fcf69703026787959b540f";
+const RETAINED_V9_REVISION_DIGEST: &str =
+    "blake3:d398d13df28f50edcc271aa8f6ffa75f1c26eca1851ac78215aa8e0f6017d8e5";
 const RETAINED_CONSECUTIVE_BUNDLE_DIGEST: &str =
     "blake3:b82e0d5df065af1b31252a06e06a3bbd685a5ba63c3d2bfeb71a0d6dd06ebbab";
 const RETAINED_CONSECUTIVE_REVISION_DIGEST: &str =
@@ -69,7 +73,7 @@ const FORBIDDEN_PRIVATE_KEYS: &[&str] = &["authentic_candidate_id", "is_authenti
 
 fn client_binding_identity() -> TestResult<(String, String)> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config/activity-clients/releases/midnight-archive-web-v6.json");
+        .join("../../config/activity-clients/releases/midnight-archive-web-v10.json");
     let release: Value = serde_json::from_slice(&fs::read(path)?)?;
     let release_digest = release["release_digest"]
         .as_str()
@@ -79,7 +83,7 @@ fn client_binding_identity() -> TestResult<(String, String)> {
         .as_array()
         .and_then(|surfaces| {
             surfaces.iter().find_map(|surface| {
-                (surface["entrypoint"] == "/midnight-archive-v6/")
+                (surface["entrypoint"] == "/midnight-archive-v10/")
                     .then(|| surface["surface_id"].as_str())
                     .flatten()
             })
@@ -102,7 +106,7 @@ fn release_bundle_path(bundle_digest: &str) -> PathBuf {
 fn current_bundle_path() -> PathBuf {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let proof_path = workspace
-        .join("packs/midnight-archive/evidence/production-proof-0.1.0-unavailable-companions.json");
+        .join("packs/midnight-archive/evidence/production-proof-0.1.0-authored-scenarios.json");
     let proof: Value = serde_json::from_slice(
         &fs::read(&proof_path)
             .unwrap_or_else(|error| panic!("read Archive proof {proof_path:?}: {error}")),
@@ -238,6 +242,11 @@ async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn low_reserve_evidence_and_service_route_replays_exactly() -> TestResult {
+    run_archive_witness(&[], Scenario::LowReserve).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mira_assay_and_ordinary_hatch_complete_with_the_starting_crew() -> TestResult {
     run_archive_witness(&["mira"], Scenario::Complete).await
 }
@@ -268,6 +277,7 @@ enum Scenario {
     Complete,
     Partial,
     Unavailable,
+    LowReserve,
 }
 
 struct QualificationClock(Mutex<HostClockSampleV1>);
@@ -553,6 +563,100 @@ impl LiveWitness {
         self.act("lead", "acknowledge_extraction", json!({"preview_revision":preview["revision"],"left_behind_roles":preview["left_behind_roles"]}))?;
         self.act("lead", "commit_turn", json!({}))
     }
+}
+
+fn low_reserve_route(live: &mut LiveWitness) -> TestResult {
+    assert_eq!(
+        live.state["scenario"],
+        json!({"id":"low-reserve-v1","label":"Low Reserve"})
+    );
+    assert_eq!(live.state["initial_power"], 2);
+    assert_eq!(
+        live.state["method_costs"],
+        json!({"verifier":1,"ordinary_service_hatch":2})
+    );
+    assert_eq!(live.state["verifier_result"], Value::Null);
+    assert!(
+        live.state["candidates"]
+            .as_array()
+            .ok_or("candidate catalog missing")?
+            .iter()
+            .all(|candidate| {
+                candidate["evidence_assessment"] == "unknown"
+                    && candidate["observed_evidence"] == json!([])
+            })
+    );
+    live.personal("stage_move", json!({"destination":"records"}))?;
+    live.personal("stage_inspect_records", json!({}))?;
+    assert!(
+        live.state["candidates"]
+            .as_array()
+            .ok_or("candidate catalog missing")?
+            .iter()
+            .all(|candidate| { candidate["evidence_assessment"] == "observed" })
+    );
+    live.personal("stage_move", json!({"destination":"conservation"}))?;
+    live.personal("stage_inspect_conservation", json!({}))?;
+    let supported = live.state["candidates"]
+        .as_array()
+        .ok_or("candidate catalog missing")?
+        .iter()
+        .filter(|candidate| candidate["evidence_assessment"] == "recommended")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        supported.len(),
+        1,
+        "both legitimate sources must identify one candidate"
+    );
+    assert_eq!(
+        supported[0]["observed_evidence"].as_array().map(Vec::len),
+        Some(2)
+    );
+    let candidate = supported[0]["candidate_id"].clone();
+    assert_eq!(
+        live.state["power"], 2,
+        "connected evidence must spend no power"
+    );
+    assert_eq!(live.state["verifier_result"], Value::Null);
+    live.personal("stage_move", json!({"destination":"records"}))?;
+    live.personal("stage_move", json!({"destination":"plant"}))?;
+    live.personal("stage_open_service_hatch", json!({}))?;
+    assert_eq!(live.state["power"], 0);
+    assert_eq!(live.state["gates"]["service_hatch"], "open");
+    live.personal("stage_move", json!({"destination":"vault"}))?;
+    live.personal("stage_recover_candidate", json!({"candidate_id":candidate}))?;
+    live.personal("stage_move", json!({"destination":"plant"}))?;
+    live.personal("stage_move", json!({"destination":"records"}))?;
+    assert!(
+        !live
+            .offers
+            .iter()
+            .any(|offer| offer["action_type"] == "stage_use_verifier")
+    );
+    let unchanged = live.state.clone();
+    live.reject("stage_use_verifier", json!({}), false)?;
+    assert_eq!(
+        live.state, unchanged,
+        "an unaffordable method must not change game facts"
+    );
+    live.personal("stage_move", json!({"destination":"atrium"}))?;
+    live.extract()?;
+    assert_eq!(live.state["outcome"]["kind"], "success");
+    assert_eq!(live.state["turns_used"], 13);
+    assert_eq!(live.state["turns_remaining"], 3);
+    assert_eq!(live.state["power"], 0);
+    assert_eq!(live.state["initial_power"], 2);
+    assert_eq!(
+        live.state["crew_debrief"]["starting_roles"],
+        json!(["lead"])
+    );
+    assert_eq!(
+        live.state["crew_debrief"]["extracted_roles"],
+        json!(["lead"])
+    );
+    assert_eq!(live.state["crew_debrief"]["left_behind_roles"], json!([]));
+    assert_eq!(live.state["verifier_result"], Value::Null);
+    Ok(())
 }
 
 fn plan_step(kind: &str, destination: &str, source: &str, power: u64) -> Value {
@@ -899,8 +1003,11 @@ async fn run_archive_witness(roles: &[&str], scenario: Scenario) -> TestResult {
         CURRENT_COMPONENT_DIGEST
     );
     let revision = verified.revision_digest().clone();
-    let configuration: Value =
-        serde_json::from_slice(&verified.golden_corpus().genesis.configuration.to_bytes()?)?;
+    let configuration: Value = if matches!(scenario, Scenario::LowReserve) {
+        json!({"scenario_id":"low-reserve-v1"})
+    } else {
+        serde_json::from_slice(&verified.golden_corpus().genesis.configuration.to_bytes()?)?
+    };
     let witness = verified.golden_corpus().actions.clone();
     assert_eq!(
         witness
@@ -919,7 +1026,7 @@ async fn run_archive_witness(roles: &[&str], scenario: Scenario) -> TestResult {
     let host = ComponentPackHostV1::new()?;
     let mut admissions = Vec::new();
     let mut retained_revisions = Vec::new();
-    if roles.is_empty() {
+    if roles.is_empty() && !matches!(scenario, Scenario::LowReserve) {
         for (bundle, expected_revision) in [
             (
                 RETAINED_FIRST_PLAYABLE_BUNDLE_DIGEST,
@@ -942,6 +1049,7 @@ async fn run_archive_witness(roles: &[&str], scenario: Scenario) -> TestResult {
                 RETAINED_CONSECUTIVE_BUNDLE_DIGEST,
                 RETAINED_CONSECUTIVE_REVISION_DIGEST,
             ),
+            (RETAINED_V9_BUNDLE_DIGEST, RETAINED_V9_REVISION_DIGEST),
         ] {
             let old = PackBundleVerifierV1
                 .inspect(Arc::<[u8]>::from(fs::read(release_bundle_path(bundle))?))?;
@@ -1104,7 +1212,10 @@ async fn run_archive_witness(roles: &[&str], scenario: Scenario) -> TestResult {
         assert_eq!(state["phase"], "active");
         assert_eq!(state["turns_used"], 0);
         assert_eq!(state["turns_remaining"], 16);
-        assert_eq!(state["power"], 3);
+        let initial_power = if matches!(scenario, Scenario::LowReserve) { 2 } else { 3 };
+        assert_eq!(state["power"], initial_power);
+        assert_eq!(state["initial_power"], initial_power);
+        assert_eq!(state["scenario"]["id"], if matches!(scenario, Scenario::LowReserve) { "low-reserve-v1" } else { "standard-v1" });
         assert_eq!(state["location"], "atrium");
         let mut agents = BTreeMap::new();
         let mut agent_objectives = BTreeMap::new();
@@ -1136,7 +1247,9 @@ async fn run_archive_witness(roles: &[&str], scenario: Scenario) -> TestResult {
             offers: action_offers(&active).cloned().ok_or("initial offers missing")?, sequence: room_seq(&active), next_id: 1000, descriptor_actions };
         live.reject("stage_move", json!({"destination":"vault"}), false)?;
         live.reject("stage_wait", json!({}), true)?;
-        if owned_roles.is_empty() {
+        if matches!(scenario, Scenario::LowReserve) {
+            low_reserve_route(&mut live)?;
+        } else if owned_roles.is_empty() {
             for expected in witness {
                 let before_turns = turns_used(&live.state);
                 let before_power = live.state["power"].clone();

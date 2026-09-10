@@ -6,6 +6,7 @@ import type {
   MidnightArchiveReadyState,
 } from "./liveAdapter";
 import {
+  actionCost,
   candidateById,
   candidateConfidence,
   type MidnightArchiveProjection,
@@ -18,6 +19,7 @@ import {
   CarriedLedgerCard,
   CostPills,
   ResourceStrip,
+  ScenarioBriefing,
   SectionHeading,
 } from "./presentation";
 import type { MidnightArchiveReplayState } from "./replay";
@@ -162,6 +164,7 @@ function ReadyArchive({
       ) : null}
 
       <ResourceStrip projection={projection} />
+      <ScenarioBriefing projection={projection} />
       <ArchiveOutcomePanel projection={projection} />
       {projection.phase === "complete" ? (
         <ReplayPanel replay={replay} onOpenReplay={onOpenReplay} />
@@ -291,6 +294,7 @@ function CandidateBoard({
 }) {
   const projection = state.projection;
   const atVault = projection.location === "vault";
+  const recoveryCost = actionCost(projection, "stage_recover_candidate");
   return (
     <section className="candidate-board" aria-labelledby="candidate-board-title">
       <SectionHeading
@@ -335,11 +339,11 @@ function CandidateBoard({
                 disabled={!enabled || !recoveryOffered || !atVault || carried}
                 onClick={() => onAction({ action: "stage_recover_candidate", candidate_id: candidate.candidateId })}
                 type="button"
-                aria-label={`Stage recovery of ${candidate.label}; costs 1 turn and 0 power`}
+                aria-label={`Stage recovery of ${candidate.label}; costs ${recoveryCost.turns} turn and ${recoveryCost.power} power`}
               >
                 {carried ? "Currently carried" : atVault ? "Stage this ledger" : "Recover at the Vault"}
               </button>
-              <CostPills turns={1} power={0} />
+              <CostPills turns={recoveryCost.turns} power={recoveryCost.power} />
             </article>
           );
         })}
@@ -374,27 +378,28 @@ function ContextActions({
     intent: { action: "stage_inspect_records" },
     eyebrow: "Records source",
     title: "Inspect the intake evidence",
-    description: "Disclose the authored Records source. This costs one turn and no power.",
-    turns: 1,
-    power: 0,
+    description: "Disclose the authored Records source. The projected operation cost is shown below.",
+    ...actionCost(projection, "stage_inspect_records"),
     available: !projection.candidates.some((candidate) => candidate.observedEvidence.some((evidence) => evidence.sourceId === "records")),
   });
   if (projection.location === "records") actions.push({
     intent: { action: "stage_use_verifier" },
     eyebrow: "Records instrument",
     title: projection.verifierResult === null ? "Run the catalog verifier" : "Verifier result recorded",
-    description: "Spend one charge to identify one candidate with instrument confidence.",
-    turns: 1,
-    power: 1,
-    available: projection.verifierResult === null && projection.power >= 1,
+    description: `Spend ${powerChargeLabel(actionCost(projection, "stage_use_verifier").power)} to identify one candidate with instrument confidence.`,
+    ...actionCost(projection, "stage_use_verifier"),
+    available: projection.verifierResult === null
+      && projection.power >= actionCost(projection, "stage_use_verifier").power,
+    unavailableReason: projection.verifierResult === null
+      ? powerRequirement(actionCost(projection, "stage_use_verifier").power)
+      : "The verifier result is already recorded.",
   });
   if (projection.location === "conservation") actions.push({
     intent: { action: "stage_inspect_conservation" },
     eyebrow: "Conservation source",
     title: "Inspect the restoration evidence",
-    description: "Disclose the authored Conservation source. This costs one turn and no power.",
-    turns: 1,
-    power: 0,
+    description: "Disclose the authored Conservation source. The projected operation cost is shown below.",
+    ...actionCost(projection, "stage_inspect_conservation"),
     available: !projection.candidates.some((candidate) => candidate.observedEvidence.some((evidence) => evidence.sourceId === "conservation")),
   });
   if (projection.location === "conservation") actions.push({
@@ -404,8 +409,7 @@ function ContextActions({
       ? "Accept the preservation agreement"
       : "Preservation agreement accepted",
     description: "Accept the Archivist's fixed terms. No free-text terms or hidden conditions are added.",
-    turns: 1,
-    power: 0,
+    ...actionCost(projection, "stage_accept_preservation_agreement"),
     available: projection.preservationAgreement.commitment === "not_accepted",
     unavailableReason: "The lead has already accepted this agreement.",
   });
@@ -416,8 +420,7 @@ function ContextActions({
       ? "Prepare the threatened collection"
       : "Collection preparation recorded",
     description: "Stabilize the collection before the preservation equipment can be energized.",
-    turns: 1,
-    power: 0,
+    ...actionCost(projection, "stage_prepare_collection"),
     available: projection.optionalObjectives.collectionPreserved.status === "not_started",
     unavailableReason: "The collection has already been prepared.",
   });
@@ -429,15 +432,15 @@ function ContextActions({
       title: collectionStatus === "complete"
         ? "Preservation equipment energized"
         : "Energize preservation equipment",
-      description: "Spend one charge to preserve the prepared collection and honor the agreement when accepted.",
-      turns: 1,
-      power: 1,
-      available: collectionStatus === "prepared" && projection.power >= 1,
+      description: `Spend ${powerChargeLabel(actionCost(projection, "stage_energize_preservation_equipment").power)} to preserve the prepared collection and honor the agreement when accepted.`,
+      ...actionCost(projection, "stage_energize_preservation_equipment"),
+      available: collectionStatus === "prepared"
+        && projection.power >= actionCost(projection, "stage_energize_preservation_equipment").power,
       unavailableReason: collectionStatus === "not_started"
         ? "Prepare the collection first."
         : collectionStatus === "complete"
           ? "The collection is already preserved."
-          : "One power charge is required.",
+          : powerRequirement(actionCost(projection, "stage_energize_preservation_equipment").power),
     });
   }
   if (projection.location === "plant") actions.push({
@@ -445,12 +448,12 @@ function ContextActions({
     eyebrow: "Service controls",
     title: projection.gates.service_hatch === "open" ? "Service hatch is open" : "Open the service hatch",
     description: "Route emergency power to the Plant–Vault passage. Traversal starts next turn.",
-    turns: 1,
-    power: 2,
-    available: projection.gates.service_hatch === "closed" && projection.power >= 2,
+    ...actionCost(projection, "stage_open_service_hatch"),
+    available: projection.gates.service_hatch === "closed"
+      && projection.power >= actionCost(projection, "stage_open_service_hatch").power,
     unavailableReason: projection.gates.service_hatch === "open"
       ? "The service hatch is already open."
-      : "Two power charges are required.",
+      : powerRequirement(actionCost(projection, "stage_open_service_hatch").power),
   });
   if (projection.location === "plant") {
     const sourceStatus = projection.optionalObjectives.sourceRecordProtected.status;
@@ -460,15 +463,15 @@ function ContextActions({
       title: sourceStatus === "complete"
         ? "Source record protected"
         : "Protect the source's identifying record",
-      description: "Spend one charge after recovering a ledger to protect the source record.",
-      turns: 1,
-      power: 1,
-      available: sourceStatus === "available" && projection.power >= 1,
+      description: `Spend ${powerChargeLabel(actionCost(projection, "stage_protect_source_record").power)} after recovering a ledger to protect the source record.`,
+      ...actionCost(projection, "stage_protect_source_record"),
+      available: sourceStatus === "available"
+        && projection.power >= actionCost(projection, "stage_protect_source_record").power,
       unavailableReason: sourceStatus === "locked"
         ? "Recover a ledger before protecting the source record."
         : sourceStatus === "complete"
           ? "The source record is already protected."
-          : "One power charge is required.",
+          : powerRequirement(actionCost(projection, "stage_protect_source_record").power),
     });
   }
   if (projection.location === "atrium") actions.push({
@@ -478,8 +481,7 @@ function ContextActions({
     description: projection.carriedCandidate === null
       ? "Leave now without a ledger. The debrief will record an empty-handed extraction."
       : "Leave now with the carried ledger. Hidden authenticity resolves only in the outcome.",
-    turns: 1,
-    power: 0,
+    ...actionCost(projection, "stage_extract"),
     available: projection.mira.presence !== "active" || projection.mira.location === "atrium",
     unavailableReason: `Regroup Mira from ${locationLabel(state, projection.mira.location)} before extracting.`,
   });
@@ -488,8 +490,7 @@ function ContextActions({
     eyebrow: "Hold position",
     title: "Wait for one turn",
     description: "Advance time without moving or spending power. No companion contribution is created by waiting; only a prepared Room-authorized contribution can resolve beside this turn.",
-    turns: 1,
-    power: 0,
+    ...actionCost(projection, "stage_wait"),
     available: true,
   });
 
@@ -526,6 +527,14 @@ function ContextActions({
       </div>
     </section>
   );
+}
+
+function powerChargeLabel(power: number): string {
+  return power === 1 ? "one charge" : `${power} charges`;
+}
+
+function powerRequirement(power: number): string {
+  return power === 1 ? "One power charge is required." : `${power} power charges are required.`;
 }
 
 function TurnCommitPanel({

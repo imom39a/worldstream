@@ -9,8 +9,54 @@ import {
 import type { MidnightArchiveReadyState } from "./liveAdapter";
 import {
   readMidnightArchiveProjection,
+  type MidnightArchiveActionIntent,
   type MidnightArchiveProjection,
 } from "./model";
+
+export const TEN_TURN_TECHNICAL_ROUTE: readonly MidnightArchiveActionIntent[] = [
+  { action: "stage_move", destination: "records" },
+  { action: "stage_use_verifier" },
+  { action: "stage_move", destination: "plant" },
+  { action: "stage_open_service_hatch" },
+  { action: "stage_move", destination: "vault" },
+  { action: "stage_recover_candidate", candidate_id: "ledger-violet" },
+  { action: "stage_move", destination: "plant" },
+  { action: "stage_move", destination: "records" },
+  { action: "stage_move", destination: "atrium" },
+  { action: "stage_extract" },
+];
+
+export const ELEVEN_TURN_POWERED_AGREEMENT_ROUTE: readonly MidnightArchiveActionIntent[] = [
+  { action: "stage_move", destination: "records" },
+  { action: "stage_use_verifier" },
+  { action: "stage_move", destination: "conservation" },
+  { action: "stage_accept_preservation_agreement" },
+  { action: "stage_prepare_collection" },
+  { action: "stage_energize_preservation_equipment" },
+  { action: "stage_move", destination: "vault" },
+  { action: "stage_recover_candidate", candidate_id: "ledger-violet" },
+  { action: "stage_move", destination: "conservation" },
+  { action: "stage_move", destination: "atrium" },
+  { action: "stage_extract" },
+];
+
+export const FIFTEEN_TURN_BOTH_OPTIONALS_ROUTE: readonly MidnightArchiveActionIntent[] = [
+  { action: "stage_move", destination: "records" },
+  { action: "stage_use_verifier" },
+  { action: "stage_move", destination: "conservation" },
+  { action: "stage_accept_preservation_agreement" },
+  { action: "stage_prepare_collection" },
+  { action: "stage_energize_preservation_equipment" },
+  { action: "stage_move", destination: "vault" },
+  { action: "stage_recover_candidate", candidate_id: "ledger-violet" },
+  { action: "stage_move", destination: "conservation" },
+  { action: "stage_move", destination: "records" },
+  { action: "stage_move", destination: "plant" },
+  { action: "stage_protect_source_record" },
+  { action: "stage_move", destination: "records" },
+  { action: "stage_move", destination: "atrium" },
+  { action: "stage_extract" },
+];
 
 export const digest = (character: string) => `blake3:${character.repeat(64)}`;
 
@@ -83,6 +129,30 @@ export function rawProjection(overrides: Record<string, unknown> = {}): Record<s
   const terminalExtracted = terminal && !exhausted ? startingRoles : [];
   const terminalLeft = terminal ? startingRoles.filter((role) => !terminalExtracted.includes(role)) : [];
   return {
+    scenario: { id: "standard-v1", label: "Standard" },
+    initial_power: 3,
+    method_costs: { verifier: 1, ordinary_service_hatch: 2 },
+    operation_costs: {
+      move: { turn_cost: 1, power_cost: 0 },
+      inspect_records: { turn_cost: 1, power_cost: 0 },
+      inspect_conservation: { turn_cost: 1, power_cost: 0 },
+      use_verifier: { turn_cost: 1, power_cost: 1 },
+      accept_preservation_agreement: { turn_cost: 1, power_cost: 0 },
+      prepare_collection: { turn_cost: 1, power_cost: 0 },
+      energize_preservation_equipment: { turn_cost: 1, power_cost: 1 },
+      open_service_hatch: { turn_cost: 1, power_cost: 2 },
+      recover_candidate: { turn_cost: 1, power_cost: 0 },
+      protect_source_record: { turn_cost: 1, power_cost: 1 },
+      extract: { turn_cost: 1, power_cost: 0 },
+      wait: { turn_cost: 1, power_cost: 0 },
+      companion_move: { turn_cost: 0, power_cost: 0 },
+      companion_inspect_source: { turn_cost: 0, power_cost: 0 },
+      companion_share_source: { turn_cost: 0, power_cost: 0 },
+      mira_field_assay: { turn_cost: 0, power_cost: 0 },
+      companion_verifier: { turn_cost: 0, power_cost: 1 },
+      mira_open_service_hatch: { turn_cost: 0, power_cost: 2 },
+      jonah_open_service_hatch: { turn_cost: 0, power_cost: 1 },
+    },
     phase,
     objective: "Recover the authentic ledger and return to the Atrium before the archive seals.",
     location: "records",

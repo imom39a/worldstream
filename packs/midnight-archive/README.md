@@ -5,8 +5,8 @@ One human `lead` explores a small archive, spends a fixed power budget, chooses
 among visible ledger candidates, and extracts before the sixteenth turn ends.
 The mission remains fully playable alone, with Mira, with Jonah, or with both.
 Each optional Agent Participant accepts bounded tasks and authenticated plans.
-Every starting crew member begins in Atrium with the same Standard budget.
-The source now uses schema version 2; retained version-1 Bundles remain immutable.
+Every starting crew member begins in Atrium with the selected scenario's fixed budget.
+The source now uses schema version 3; retained version-1 and version-2 Bundles remain immutable.
 
 The current source adds two authored evidence sources and the archivist's
 fixed preservation agreement. A committed Records inspection reveals a
@@ -192,7 +192,18 @@ qualification uses an injected HostClock and the real Runtime scheduler to
 expire a missing reply, reconnects the original agent capabilities, and
 compares the completed mission with authorized Replay.
 
-The current unavailable-companion 0.1.0 bundle is
+The current authored-scenarios 0.1.0 bundle is
+[`worldstream-midnight-archive-8083201f2d1d6a1afdaab8e6759287a3aeacc1a7908d85d2b758af272c150b47.wspack`](releases/0.1.0/worldstream-midnight-archive-8083201f2d1d6a1afdaab8e6759287a3aeacc1a7908d85d2b758af272c150b47.wspack).
+Its physical bundle digest is
+`blake3:8083201f2d1d6a1afdaab8e6759287a3aeacc1a7908d85d2b758af272c150b47`,
+its semantic revision is
+`blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64`,
+its Component digest is
+`blake3:aa124b20667020510de26eb1658f54876b49a6354d0950052c804f6a5338e0a1`,
+and its production proof is retained in
+[`evidence/production-proof-0.1.0-authored-scenarios.json`](evidence/production-proof-0.1.0-authored-scenarios.json).
+
+The unavailable-companion 0.1.0 bundle remains retained at
 [`worldstream-midnight-archive-0ddcd385d0b250f9ec5a285df1783fbae45a685a90fcf69703026787959b540f.wspack`](releases/0.1.0/worldstream-midnight-archive-0ddcd385d0b250f9ec5a285df1783fbae45a685a90fcf69703026787959b540f.wspack).
 Its physical bundle digest is
 `blake3:0ddcd385d0b250f9ec5a285df1783fbae45a685a90fcf69703026787959b540f`,

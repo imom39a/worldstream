@@ -36,7 +36,7 @@ PACK_ID = "worldstream.midnight-archive"
 ACTION = "submit_companion_plan"
 ACTION_OFFER_DOMAIN = "worldstream/action-offer/v1"
 REASON = "companion_plan_requested"
-PROJECTION_SCHEMA = "worldstream.midnight-archive/participant-projection/v2"
+PROJECTION_SCHEMA = "worldstream.midnight-archive/participant-projection/v3"
 DIGEST = re.compile(r"blake3:[0-9a-f]{64}\Z")
 UTC_TIMESTAMP = re.compile(
     r"(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})"

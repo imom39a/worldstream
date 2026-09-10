@@ -17,7 +17,10 @@ const execute = promisify(execFile);
 const workspace = resolve(import.meta.dirname, "..");
 const binaries = ["worldstreamctl", "worldstreamd", "worldstream-studio-supervisor", "worldstream-assignment-mcp"];
 const forbidden = ["authentic_candidate_id", "is_authentic", "truth_marker"];
-const recoveryCandidateId = "ledger-violet";
+const proofMode = process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_PROOF_MODE ?? "agreement";
+const lowReserveProof = proofMode === "low-reserve";
+const scenarioId = lowReserveProof ? "low-reserve-v1" : "standard-v1";
+const recoveryCandidateId = lowReserveProof ? "ledger-cobalt" : "ledger-violet";
 const authorizedProjectionTimeoutMs = 45_000;
 const technicalRoute = [
   ["stage_move", { destination: "records" }], ["commit_turn", {}],
@@ -67,15 +70,34 @@ const bothObjectivesRoute = [
   ["stage_move", { destination: "atrium" }], ["commit_turn", {}],
   ["stage_extract", {}], ["commit_turn", {}],
 ];
-const proofMode = process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_PROOF_MODE ?? "agreement";
+const lowReserveRoute = [
+  ["stage_move", { destination: "records" }], ["commit_turn", {}],
+  ["stage_inspect_records", {}], ["commit_turn", {}],
+  ["stage_move", { destination: "conservation" }], ["commit_turn", {}],
+  ["stage_inspect_conservation", {}], ["commit_turn", {}],
+  ["stage_accept_preservation_agreement", {}], ["commit_turn", {}],
+  ["stage_prepare_collection", {}], ["commit_turn", {}],
+  ["stage_energize_preservation_equipment", {}], ["commit_turn", {}],
+  ["stage_move", { destination: "vault" }], ["commit_turn", {}],
+  ["stage_recover_candidate", { candidate_id: recoveryCandidateId }], ["commit_turn", {}],
+  ["stage_move", { destination: "conservation" }], ["commit_turn", {}],
+  ["stage_move", { destination: "records" }], ["commit_turn", {}],
+  ["stage_move", { destination: "plant" }], ["commit_turn", {}],
+  ["stage_protect_source_record", {}], ["commit_turn", {}],
+  ["stage_move", { destination: "records" }], ["commit_turn", {}],
+  ["stage_move", { destination: "atrium" }], ["commit_turn", {}],
+  ["stage_extract", {}], ["commit_turn", {}],
+];
 const liveMiraProof = proofMode === "mira-live";
 const crewLiveProof = proofMode === "crew-live";
 const unavailableLiveProof = proofMode === "unavailable-live";
 const liveSpecialistRoles = crewLiveProof || unavailableLiveProof ? ["mira", "jonah"] : liveMiraProof ? ["mira"] : [];
 const liveCompanionProof = liveSpecialistRoles.length > 0;
-const clientReleaseGeneration = "v9";
+const clientReleaseGeneration = "v10";
 const archiveClientRelease = process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_CLIENT_RELEASE;
-const witness = proofMode === "technical"
+const witness = lowReserveProof
+  ? { route: lowReserveRoute, turns: 16, turnsRemaining: 0, powerRemaining: 0, candidate: "Cobalt Ledger", checks: ["sixteen_turn_low_reserve_witness", "sourced_evidence_disclosure", "authored_agreement_honored", "collection_preserved", "source_record_protected"] }
+  : proofMode === "technical"
   ? { route: technicalRoute, turns: 10, turnsRemaining: 6, powerRemaining: 0, candidate: "Violet Ledger", checks: ["ten_turn_phone_witness", "verifier_selected_candidate"] }
   : proofMode === "evidence-service"
     ? { route: evidenceServiceRoute, turns: 12, turnsRemaining: 4, powerRemaining: 1, candidate: "Violet Ledger", checks: ["twelve_turn_evidence_service_witness", "sourced_evidence_disclosure"] }
@@ -129,7 +151,7 @@ try {
   debug("binary preflight and bundle inspection complete");
 
   const releasePath = archiveClientRelease === undefined
-    ? join(workspace, "config/activity-clients/releases/midnight-archive-web-v9.json")
+    ? join(workspace, "config/activity-clients/releases/midnight-archive-web-v10.json")
     : resolve(workspace, archiveClientRelease);
   const release = JSON.parse(await readFile(releasePath, "utf8"));
   const standaloneSurface = release.surfaces.find((surface) => surface.surface_id === "midnight-archive-web");
@@ -198,7 +220,7 @@ try {
       version: "0.1.0",
       digest,
     },
-    configuration: { scenario_id: "standard-v1" },
+    configuration: { scenario_id: scenarioId },
     seats: [
       {
         label: "lead",
@@ -270,6 +292,7 @@ try {
         latestBrowserActionResponse = {
           request: browserActionRequests,
           status: response.status(),
+          state: responseActionState(body),
           code: responseErrorCode(body),
         };
       }
@@ -307,6 +330,9 @@ try {
   await startActivity(room);
   await page.getByText("Projection current", { exact: true }).waitFor({ timeout: authorizedProjectionTimeoutMs });
   debug("Activity Start committed");
+  const activeBody = await page.locator("body").innerText();
+  assert.match(activeBody, new RegExp(lowReserveProof ? "Low Reserve" : "Standard", "i"));
+  assert.match(activeBody, new RegExp(`Power reserve\\s*${lowReserveProof ? 2 : 3}\\s*/\\s*${lowReserveProof ? 2 : 3}`, "i"));
   if (crewLiveProof) {
     await page.setViewportSize({ width: 390, height: 844 });
     await assertViewportFits(page, "phone full-party mission");
@@ -332,18 +358,18 @@ try {
   const body = await page.locator("body").innerText();
   assert.match(body, new RegExp(`Turns remaining\\s*${witness.turnsRemaining}`, "i"));
   assert.match(body, new RegExp(`Power reserve\\s*${witness.powerRemaining}`, "i"));
-  if (proofMode === "agreement" || proofMode === "both-objectives") {
+  if (proofMode === "agreement" || proofMode === "both-objectives" || lowReserveProof) {
     assert.match(body, /Agreement\s*honored/i);
     assert.match(body, /Collection preserved\s*Yes/i);
   }
-  if (proofMode === "both-objectives") assert.match(body, /Source record protected\s*Yes/i);
+  if (proofMode === "both-objectives" || lowReserveProof) assert.match(body, /Source record protected\s*Yes/i);
   const replayButton = page.getByRole("button", { name: /replay/i });
   assert.equal(await replayButton.count(), 1, "Replay acceptance blocked: the Archive client exposes no Replay control or authorized replay endpoint seam");
   await replayButton.click();
   await page.getByRole("button", { name: "Replay verified", exact: true }).waitFor({ timeout: authorizedProjectionTimeoutMs });
   }
   if (bridgeFailure) throw bridgeFailure;
-  receipt = { status: "passed", pack: "worldstream.midnight-archive@0.1.0", bundle_digest: bundleIdentity.bundle_digest, revision_digest: bundleIdentity.revision_digest, room, turns: witness.turns, turns_remaining: witness.turnsRemaining, power_remaining: witness.powerRemaining, provider_calls: 0, runner_invocations: runnerInvocationReceipt(), checks: ["briefing_projection_before_activity_start", "actions_disabled_until_sync", "desktop_and_phone_layouts", ...witness.checks, ...(unavailableLiveProof ? ["authoritative_reconnect_without_runner_or_policy_rerun"] : liveCompanionProof ? ["authorized_replay_without_runner_or_policy_rerun"] : ["canonical_recovery_payload", "beginning_of_turn_gate_boundary", "terminal_success", "authorized_replay"]), "private_authenticity_non_leakage"] };
+  receipt = { status: "passed", pack: "worldstream.midnight-archive@0.1.0", bundle_digest: bundleIdentity.bundle_digest, revision_digest: bundleIdentity.revision_digest, scenario_id: scenarioId, room, turns: witness.turns, turns_remaining: witness.turnsRemaining, power_remaining: witness.powerRemaining, provider_calls: 0, runner_invocations: runnerInvocationReceipt(), checks: ["briefing_projection_before_activity_start", "actions_disabled_until_sync", "authored_scenario_and_initial_power_rendered", "desktop_and_phone_layouts", ...witness.checks, ...(unavailableLiveProof ? ["authoritative_reconnect_without_runner_or_policy_rerun"] : liveCompanionProof ? ["authorized_replay_without_runner_or_policy_rerun"] : ["canonical_recovery_payload", "beginning_of_turn_gate_boundary", "terminal_success", "authorized_replay"]), "private_authenticity_non_leakage"] };
 } catch (error) {
   failure = error;
 } finally {
@@ -365,7 +391,7 @@ async function archiveBundle() {
   if (process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE) return process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE;
   const proof = JSON.parse(await readFile(join(
     workspace,
-    "packs/midnight-archive/evidence/production-proof-0.1.0-unavailable-companions.json",
+    "packs/midnight-archive/evidence/production-proof-0.1.0-authored-scenarios.json",
   ), "utf8"));
   assert.equal(proof.status, "passed");
   assert.match(proof.bundleDigest, /^blake3:[0-9a-f]{64}$/u);
@@ -590,8 +616,8 @@ async function runRoute(page) {
         if (actionType === "stage_recover_candidate") {
           const card = page.locator(".candidate-card").filter({ hasText: new RegExp(witness.candidate, "i") });
           assert.equal(await card.count(), 1, "Recovery must target the evidence-supported candidate");
-          if (proofMode !== "evidence-service") assert.equal(await card.filter({ hasText: /Verified by the catalog instrument/i }).count(), 1, "Recovery must target the verifier-selected candidate");
-          if (proofMode === "evidence-service") assert.equal(await card.filter({ hasText: /Evidence recommendation/i }).count(), 1, "Recovery must target the source-evidence recommendation");
+          if (proofMode !== "evidence-service" && !lowReserveProof) assert.equal(await card.filter({ hasText: /Verified by the catalog instrument/i }).count(), 1, "Recovery must target the verifier-selected candidate");
+          if (proofMode === "evidence-service" || lowReserveProof) assert.equal(await card.filter({ hasText: /Evidence recommendation/i }).count(), 1, "Recovery must target the source-evidence recommendation");
         }
         if (await button.count()) await button.click();
         else if (await action.count()) await action.click();
@@ -1023,6 +1049,15 @@ async function clickLiveAction(page, locator, actionType) {
         const code = latestBrowserActionResponse.code ? ` (${latestBrowserActionResponse.code})` : "";
         throw new Error(`${actionType} was rejected by the participant Action endpoint: HTTP ${latestBrowserActionResponse.status}${code}`);
       }
+      if (latestBrowserActionResponse?.request === before + 1
+        && latestBrowserActionResponse.state === "rejected") {
+        const code = latestBrowserActionResponse.code ? ` (${latestBrowserActionResponse.code})` : "";
+        throw new Error(`${actionType} was rejected by the authoritative Room${code}`);
+      }
+      if (latestBrowserActionResponse?.request !== before + 1
+        || latestBrowserActionResponse.state !== "accepted") {
+        throw new Error(`${actionType} returned an invalid participant Action receipt`);
+      }
       await page.waitForTimeout(100);
       return;
     }
@@ -1036,9 +1071,20 @@ function responseErrorCode(body) {
     const decoded = JSON.parse(body.toString("utf8"));
     return typeof decoded?.code === "string"
       ? decoded.code
+      : typeof decoded?.receipt?.code === "string"
+        ? decoded.receipt.code
       : typeof decoded?.error?.code === "string"
         ? decoded.error.code
         : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function responseActionState(body) {
+  try {
+    const decoded = JSON.parse(body.toString("utf8"));
+    return decoded?.state === "accepted" || decoded?.state === "rejected" ? decoded.state : undefined;
   } catch {
     return undefined;
   }

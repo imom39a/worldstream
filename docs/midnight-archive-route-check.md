@@ -1,8 +1,10 @@
 # Midnight Archive route check
 
-Date: 2026-09-09. This is a check of the proposed solo rules, not a test of
-WorldStream, the Pack, the browser client or an LLM. The temporary model ran
-in memory and did not change product code.
+Date: 2026-09-09; implementation evidence added 2026-09-10. The original
+breadth-first check tested the proposed solo rules in memory. The same route
+claims are now covered by the Pack reducer, the production Component Host and
+the independent browser client. This remains rules evidence rather than human
+playtest or LLM-quality evidence.
 
 ## Model and assumptions
 
@@ -113,22 +115,27 @@ The standard powered-verification/agreement witness with both optional goals
 uses the same latter route, replaces the two evidence inspections with one
 catalog-verification action, and finishes in 15 turns.
 
-## What remains to prove during implementation
+## Implementation verification
 
-- Actual candidate generation and clue consistency, including what the human
-  and each companion can discover at each point.
-- All four party configurations, simultaneous task steps, resource
-  reservations, follow/regroup behavior and extraction with missing crew.
-- Replanning after new information, stale/cancelled plans and membership
-  changes.
-- Missteps, wrong candidates, late or unavailable model replies and explicit
-  manual continuation.
-- Whether players understand costs and consequences, enjoy making the
-  decisions, and want to retry. Sixteen turns is an initial tuning value,
-  not a measured 15–20-minute playtime guarantee.
+The authored Pack freezes `standard-v1` or `low-reserve-v1` at Genesis. Each
+configuration has a closed candidate catalog, two individually ambiguous
+evidence sources, one unique connected-evidence recommendation, one hidden
+authentic ledger and a complete operation-cost schedule. Invalid scenarios are
+rejected before play; narration cannot reroll or repair state.
 
-Use these witnesses as inputs to new Pack fixtures, then validate them against
-the actual reducer and production Component Host. This note cannot substitute
-for that conformance evidence.
+Reducer witnesses now cover all four Standard authentication/access
+combinations, the three feasible Low Reserve combinations, infeasibility of
+powered verification plus ordinary service in either order at Low Reserve,
+and the sixteen-turn Low Reserve evidence/agreement route with both optional
+objectives. Roster tests run each authored scenario solo, with Mira, with
+Jonah, and with both. Separate tests cover shared reservations, follow/regroup,
+private discoveries, replanning, stale or cancelled plans, wrong and missing
+ledgers, late or missing replies and explicit continuation.
+
+The exact Pack, Component Host and client evidence is recorded in
+[`../packs/midnight-archive/evidence/qualification-imo-206.md`](../packs/midnight-archive/evidence/qualification-imo-206.md).
+Whether players understand the choices, enjoy the consequences and want to
+retry still requires human playtests. Sixteen turns remains an authored tuning
+value rather than a measured 15–20-minute guarantee.
 
 See the [game design](midnight-archive-design.md).

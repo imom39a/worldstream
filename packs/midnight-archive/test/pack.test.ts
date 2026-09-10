@@ -83,8 +83,8 @@ test("briefing is a complete safe projection with no Action offers", () => {
   assert.equal(view.schema, "participant");
   assert.deepEqual(view.actionOffers, []);
   assert.deepEqual(Object.keys(view.projection).sort(), [
-    "candidates", "carried_candidate", "crew_debrief", "debrief", "extraction", "gates", "jonah", "location", "map", "mira",
-    "objective", "optional_objectives", "outcome", "phase", "power", "preservation_agreement",
+    "candidates", "carried_candidate", "crew_debrief", "debrief", "extraction", "gates", "initial_power", "jonah", "location", "map", "method_costs", "mira",
+    "objective", "operation_costs", "optional_objectives", "outcome", "phase", "power", "preservation_agreement", "scenario",
     "staged_action", "turn_resolution", "turns_remaining", "turns_used", "verifier_result",
   ]);
   assert.equal(view.projection.phase, "briefing");
@@ -118,6 +118,222 @@ test("only the exact Activity Start input leaves briefing", () => {
   }));
   assert.equal(malformed.activity_disposition_type, "reject");
   assert.equal(malformed.declared_code, "inactive");
+});
+
+test("Genesis selects one closed authored scenario and projects only its public configuration", () => {
+  const standard = initializeArchiveState({ scenario_id: "standard-v1" });
+  assert.equal(standard.scenario_label, "Standard");
+  assert.equal(standard.initial_power, 3);
+  assert.equal(standard.truth_marker, "ledger-violet");
+  assert.deepEqual(standard.candidates, [
+    { candidate_id: "ledger-amber", binding: "calfskin", marking: "compass_rose", year: 1891 },
+    { candidate_id: "ledger-cobalt", binding: "linen", marking: "split_star", year: 1891 },
+    { candidate_id: "ledger-violet", binding: "calfskin", marking: "split_star", year: 1904 },
+  ]);
+  const low = initializeArchiveState({ scenario_id: "low-reserve-v1" });
+  assert.equal(low.scenario_id, "low-reserve-v1");
+  assert.equal(low.scenario_label, "Low Reserve");
+  assert.equal(low.initial_power, 2);
+  assert.equal(low.power_remaining, 2);
+  assert.equal(low.truth_marker, "ledger-cobalt");
+  assert.deepEqual(low.candidates, [
+    { candidate_id: "ledger-amber", binding: "calfskin", marking: "split_star", year: 1904 },
+    { candidate_id: "ledger-cobalt", binding: "calfskin", marking: "compass_rose", year: 1891 },
+    { candidate_id: "ledger-violet", binding: "linen", marking: "compass_rose", year: 1904 },
+  ]);
+  assert.deepEqual(low.evidence_records, [
+    { source_id: "records", source_label: "Records intake card", attribute: "binding", value: "calfskin" },
+    { source_id: "conservation", source_label: "Conservation restoration note", attribute: "marking", value: "compass_rose" },
+  ]);
+  const projection = participantProjection(low, "lead");
+  assert.deepEqual(projection.scenario, { id: "low-reserve-v1", label: "Low Reserve" });
+  assert.equal(projection.initial_power, 2);
+  assert.deepEqual(projection.method_costs, { verifier: 1, ordinary_service_hatch: 2 });
+  assert.deepEqual(projection.operation_costs, low.operation_costs);
+  assertNoTruth(projection);
+
+  assert.throws(() => initializeArchiveState({ scenario_id: "unknown-v1" }), TypeError);
+  assert.throws(() => initializeArchiveState({ scenario_id: "low-reserve-v1", power: 9 }), TypeError);
+  assert.throws(() => validateAuthoredScenario({
+    scenario_id: "low-reserve-v1",
+    scenario_label: "Low Reserve",
+    initial_power: 2,
+    method_costs: { verifier: 1, ordinary_service_hatch: 3 },
+    operation_costs: low.operation_costs,
+    candidates: low.candidates,
+    authentic_candidate_id: "ledger-cobalt",
+    evidence_sources: low.evidence_records,
+  } as unknown as Parameters<typeof validateAuthoredScenario>[0]), TypeError);
+  assert.throws(() => validateAuthoredScenario({
+    scenario_id: "low-reserve-v1",
+    scenario_label: "Low Reserve",
+    initial_power: 2,
+    method_costs: low.method_costs,
+    operation_costs: { ...low.operation_costs, wait: { turn_cost: 0, power_cost: 0 } },
+    candidates: low.candidates,
+    authentic_candidate_id: "ledger-cobalt",
+    evidence_sources: low.evidence_records,
+  } as unknown as Parameters<typeof validateAuthoredScenario>[0]), TypeError);
+  assert.equal(canonicalStringify(low as unknown as CanonicalJson), canonicalStringify(
+    initializeArchiveState({ scenario_id: "low-reserve-v1" }) as unknown as CanonicalJson,
+  ));
+  for (const state of [standard, low]) {
+    assertNoTruth(participantProjection(state, "lead"));
+    assertNoTruth(authorizedView(state, core(), { viewer_type: "public", member_id: "spectator-1" }).projection);
+  }
+});
+
+test("Low Reserve makes verifier and ordinary service mutually infeasible in either order", () => {
+  let verifierFirst = freshLowReserveActive();
+  verifierFirst = commit(verifierFirst, "stage_move", { destination: "records" });
+  verifierFirst = commit(verifierFirst, "stage_use_verifier", {});
+  assert.equal(verifierFirst.power_remaining, 1);
+  verifierFirst = commit(verifierFirst, "stage_move", { destination: "plant" });
+  assertRule("insufficient_power", () => applyLeadAction(verifierFirst, "stage_open_service_hatch", {}));
+  assertReducerRejectsWithoutMutation(verifierFirst, "stage_open_service_hatch");
+
+  let serviceFirst = freshLowReserveActive();
+  serviceFirst = commit(serviceFirst, "stage_move", { destination: "records" });
+  serviceFirst = commit(serviceFirst, "stage_move", { destination: "plant" });
+  serviceFirst = commit(serviceFirst, "stage_open_service_hatch", {});
+  assert.equal(serviceFirst.power_remaining, 0);
+  serviceFirst = commit(serviceFirst, "stage_move", { destination: "records" });
+  assertRule("insufficient_power", () => applyLeadAction(serviceFirst, "stage_use_verifier", {}));
+  assertReducerRejectsWithoutMutation(serviceFirst, "stage_use_verifier");
+});
+
+test("Low Reserve solo evidence and agreement route completes both optional objectives within sixteen turns", () => {
+  let state = freshLowReserveActive();
+  for (const action of [
+    ["stage_move", { destination: "records" }],
+    ["stage_inspect_records", {}],
+    ["stage_move", { destination: "conservation" }],
+    ["stage_inspect_conservation", {}],
+    ["stage_accept_preservation_agreement", {}],
+    ["stage_prepare_collection", {}],
+    ["stage_energize_preservation_equipment", {}],
+    ["stage_move", { destination: "vault" }],
+    ["stage_recover_candidate", { candidate_id: "ledger-cobalt" }],
+    ["stage_move", { destination: "conservation" }],
+    ["stage_move", { destination: "records" }],
+    ["stage_move", { destination: "plant" }],
+    ["stage_protect_source_record", {}],
+    ["stage_move", { destination: "records" }],
+    ["stage_move", { destination: "atrium" }],
+    ["stage_extract", {}],
+  ] as const) {
+    state = commit(state, action[0], action[1]);
+  }
+  assert.equal(state.turns_used, 16);
+  assert.equal(state.outcome.kind, "success");
+  assert.equal(state.collection_preservation, "preserved");
+  assert.equal(state.source_record_protected, true);
+  assert.equal(state.power_remaining, 0);
+});
+
+test("reducer witnesses prove the four solo authentication and access combinations", () => {
+  const witnesses = [
+    {
+      name: "Standard evidence authentication with agreement access",
+      scenarioId: "standard-v1" as const,
+      expectedTurns: 12,
+      expectedPower: 2,
+      actions: [
+        ["stage_move", { destination: "records" }], ["stage_inspect_records", {}],
+        ["stage_move", { destination: "conservation" }], ["stage_inspect_conservation", {}],
+        ["stage_accept_preservation_agreement", {}], ["stage_prepare_collection", {}],
+        ["stage_energize_preservation_equipment", {}], ["stage_move", { destination: "vault" }],
+        ["stage_recover_candidate", { candidate_id: "ledger-violet" }], ["stage_move", { destination: "conservation" }],
+        ["stage_move", { destination: "atrium" }], ["stage_extract", {}],
+      ],
+    },
+    {
+      name: "Standard verifier authentication with ordinary-service access",
+      scenarioId: "standard-v1" as const,
+      expectedTurns: 10,
+      expectedPower: 0,
+      actions: [
+        ["stage_move", { destination: "records" }], ["stage_use_verifier", {}],
+        ["stage_move", { destination: "plant" }], ["stage_open_service_hatch", {}],
+        ["stage_move", { destination: "vault" }], ["stage_recover_candidate", { candidate_id: "ledger-violet" }],
+        ["stage_move", { destination: "plant" }], ["stage_move", { destination: "records" }],
+        ["stage_move", { destination: "atrium" }], ["stage_extract", {}],
+      ],
+    },
+    {
+      name: "Low Reserve verifier authentication with agreement access",
+      scenarioId: "low-reserve-v1" as const,
+      expectedTurns: 11,
+      expectedPower: 0,
+      actions: [
+        ["stage_move", { destination: "records" }], ["stage_use_verifier", {}],
+        ["stage_move", { destination: "conservation" }], ["stage_accept_preservation_agreement", {}],
+        ["stage_prepare_collection", {}], ["stage_energize_preservation_equipment", {}],
+        ["stage_move", { destination: "vault" }], ["stage_recover_candidate", { candidate_id: "ledger-cobalt" }],
+        ["stage_move", { destination: "conservation" }], ["stage_move", { destination: "atrium" }], ["stage_extract", {}],
+      ],
+    },
+    {
+      name: "Low Reserve evidence authentication with ordinary-service access",
+      scenarioId: "low-reserve-v1" as const,
+      expectedTurns: 12,
+      expectedPower: 0,
+      actions: [
+        ["stage_move", { destination: "conservation" }], ["stage_inspect_conservation", {}],
+        ["stage_move", { destination: "records" }], ["stage_inspect_records", {}],
+        ["stage_move", { destination: "plant" }], ["stage_open_service_hatch", {}],
+        ["stage_move", { destination: "vault" }], ["stage_recover_candidate", { candidate_id: "ledger-cobalt" }],
+        ["stage_move", { destination: "plant" }], ["stage_move", { destination: "records" }],
+        ["stage_move", { destination: "atrium" }], ["stage_extract", {}],
+      ],
+    },
+  ] as const;
+  for (const witness of witnesses) {
+    const state = reducerRoute(witness.scenarioId, ["lead"], witness.actions);
+    assert.match(witness.name, /authentication/);
+    assert.equal(state.turns_used, witness.expectedTurns);
+    assert.equal(state.power_remaining, witness.expectedPower);
+    assert.equal(state.outcome.kind, "success");
+    assert.deepEqual(state.extraction.extracted_roles, ["lead"]);
+    if (witness.scenarioId === "low-reserve-v1" && witness.name.includes("evidence")) {
+      assert.equal(state.carried_candidate_id, "ledger-cobalt");
+      assert.deepEqual(participantProjection(state, "lead").debrief, {
+        evidence_status: "complete",
+        message: "Both authored sources were inspected and their intersection informed the recommendation.",
+        agreement_commitment: "not_accepted",
+        optional_objectives: { collection_preserved: false, source_record_protected: false },
+      });
+    }
+  }
+});
+
+test("each authored scenario extracts every supported starting roster through the reducer", () => {
+  const rosters = [["lead"], ["lead", "mira"], ["lead", "jonah"], ["lead", "mira", "jonah"]] as const;
+  const routes = {
+    "standard-v1": [
+      ["stage_move", { destination: "records" }], ["stage_use_verifier", {}],
+      ["stage_move", { destination: "plant" }], ["stage_open_service_hatch", {}],
+      ["stage_move", { destination: "vault" }], ["stage_recover_candidate", { candidate_id: "ledger-violet" }],
+      ["stage_move", { destination: "plant" }], ["stage_move", { destination: "records" }],
+      ["stage_move", { destination: "atrium" }], ["stage_extract", {}],
+    ],
+    "low-reserve-v1": [
+      ["stage_move", { destination: "conservation" }], ["stage_inspect_conservation", {}],
+      ["stage_move", { destination: "records" }], ["stage_inspect_records", {}],
+      ["stage_move", { destination: "plant" }], ["stage_open_service_hatch", {}],
+      ["stage_move", { destination: "vault" }], ["stage_recover_candidate", { candidate_id: "ledger-cobalt" }],
+      ["stage_move", { destination: "plant" }], ["stage_move", { destination: "records" }],
+      ["stage_move", { destination: "atrium" }], ["stage_extract", {}],
+    ],
+  } as const;
+  for (const scenarioId of ["standard-v1", "low-reserve-v1"] as const) {
+    for (const roster of rosters) {
+      const state = reducerRoute(scenarioId, roster, routes[scenarioId]);
+      assert.equal(state.outcome.kind, "success");
+      assert.deepEqual(state.extraction.extracted_roles, roster);
+      assert.deepEqual(state.extraction.left_behind_roles, []);
+    }
+  }
 });
 
 test("staging and restaging are free; only commit spends a turn", () => {
@@ -507,21 +723,25 @@ test("participant, public, operator, and final views never serialize private tru
 test("authored sources validate ambiguity alone and a unique authentic intersection", () => {
   const scenario = {
     scenario_id: "standard-v1" as const,
+    scenario_label: "Standard" as const,
+    initial_power: 3 as const,
+    method_costs: { verifier: 1 as const, ordinary_service_hatch: 2 as const },
+    operation_costs: freshActive().operation_costs,
     candidates: freshActive().candidates,
     authentic_candidate_id: "ledger-violet" as const,
     evidence_sources: [
-      { source_id: "records" as const, source_label: "Records", attribute: "binding" as const, value: "calfskin" },
-      { source_id: "conservation" as const, source_label: "Conservation", attribute: "marking" as const, value: "split_star" },
+      { source_id: "records" as const, source_label: "Records intake card", attribute: "binding" as const, value: "calfskin" },
+      { source_id: "conservation" as const, source_label: "Conservation restoration note", attribute: "marking" as const, value: "split_star" },
     ],
   };
   assert.doesNotThrow(() => validateAuthoredScenario(scenario));
   assert.throws(() => validateAuthoredScenario({
     ...scenario,
     evidence_sources: [
-      { source_id: "records", source_label: "Records", attribute: "binding", value: "linen" },
-      { source_id: "conservation", source_label: "Conservation", attribute: "marking", value: "split_star" },
+      { source_id: "records", source_label: "Records intake card", attribute: "binding", value: "linen" },
+      { source_id: "conservation", source_label: "Conservation restoration note", attribute: "marking", value: "split_star" },
     ],
-  }), /more than one candidate possible/);
+  }), /Records and Conservation/);
   assert.throws(() => validateAuthoredScenario({
     ...scenario,
     evidence_sources: [scenario.evidence_sources[0]!, scenario.evidence_sources[0]!],
@@ -529,14 +749,14 @@ test("authored sources validate ambiguity alone and a unique authentic intersect
   assert.throws(() => validateAuthoredScenario({
     ...scenario,
     authentic_candidate_id: "ledger-amber",
-  }), /unique intersection/);
+  }), /exactly three distinct candidates/);
   assert.throws(() => validateAuthoredScenario({
     ...scenario,
     evidence_sources: [
-      { source_id: "records", source_label: "Records", attribute: "binding", value: "calfskin" },
-      { source_id: "conservation", source_label: "Conservation", attribute: "year", value: 1891 },
+      { source_id: "records", source_label: "Records intake card", attribute: "binding", value: "calfskin" },
+      { source_id: "conservation", source_label: "Conservation restoration note", attribute: "year", value: 1891 },
     ],
-  }), /unique intersection/);
+  }), /Records and Conservation/);
 });
 
 test("Records and Conservation inspections disclose sourced evidence only after committed turns", () => {
@@ -665,7 +885,7 @@ test("Mira advances one planned step beside each committed lead action and keeps
       { step_type: "share_source", destination: "none", source_id: "records", power_cost: 0 },
     ],
   }, core(), "mira-1", "2026-09-09T12:00:01.000Z", {}).state;
-  assert.equal(canonicalStringify(participantProjection(state, "lead")).includes("inspect_source"), false);
+  assert.equal(canonicalStringify(participantProjection(state, "lead")).includes("\"step_type\":\"inspect_source\""), false);
 
   state = miraControl(state, "prepare_mira_contribution", {});
   state = applyLeadAction(state, "commit_turn", {}, core()).state;
@@ -1022,6 +1242,68 @@ function freshActive(): ArchiveState {
   return startArchive(freshBriefing());
 }
 
+function freshLowReserveActive(): ArchiveState {
+  return startArchive(initializeArchiveState({ scenario_id: "low-reserve-v1" }));
+}
+
+function reducerRoute(
+  scenarioId: "standard-v1" | "low-reserve-v1",
+  roles: readonly ("lead" | "mira" | "jonah")[],
+  actions: readonly (readonly [string, unknown])[],
+): ArchiveState {
+  const currentCore = reducerCore(roles);
+  let state = startArchive(pack.initialize({
+    configuration: { scenario_id: scenarioId },
+    initial_core_state: currentCore,
+  }).initial_activity_state as unknown as ArchiveState);
+  for (const [actionType, payload] of actions) {
+    state = reducerLeadAction(state, currentCore, actionType, payload as CanonicalObject);
+    if (actionType === "stage_extract") {
+      state = reducerLeadAction(state, currentCore, "prepare_extraction", {});
+      state = reducerLeadAction(state, currentCore, "acknowledge_extraction", {
+        preview_revision: state.extraction.revision,
+        left_behind_roles: [...state.extraction.left_behind_roles],
+      });
+    }
+    state = reducerLeadAction(state, currentCore, "commit_turn", {});
+  }
+  return state;
+}
+
+function reducerLeadAction(
+  state: ArchiveState,
+  currentCore: CanonicalObject,
+  actionType: string,
+  payload: CanonicalObject,
+): ArchiveState {
+  const result = reduceArchive({
+    prior_activity_state: state as unknown as CanonicalJson,
+    core_before: currentCore,
+    proposed_core_after: currentCore,
+    recorded_stimulus: {
+      stimulus_type: "participant_action",
+      member_id: "lead-1",
+      action_type: actionType,
+      canonical_payload: payload,
+      admitted_at: "2026-09-10T12:00:00.000Z",
+    },
+    scheduled_timers: {},
+  });
+  assert.equal(result.activity_disposition_type, "apply", JSON.stringify(result));
+  if (result.activity_disposition_type !== "apply") throw new Error("reducer route rejected");
+  return result.next_activity_state as unknown as ArchiveState;
+}
+
+function reducerCore(roles: readonly ("lead" | "mira" | "jonah")[]): CanonicalObject {
+  return {
+    room_status: "active",
+    memberships: Object.fromEntries(roles.map((role) => [
+      role === "lead" ? "lead-1" : `${role}-1`,
+      membership(role === "lead" ? "lead-1" : `${role}-1`, role, role === "lead" ? "human" : "agent"),
+    ])),
+  };
+}
+
 function freshActiveWithMira(): ArchiveState {
   return { ...freshActive(), mira: initialMiraState("mira-1"), starting_crew: [{ role: "lead", member_id: "lead-1" }, { role: "mira", member_id: "mira-1" }] };
 }
@@ -1075,6 +1357,19 @@ function assertRule(code: string, operation: () => unknown): void {
   assert.throws(operation, (error: unknown) =>
     error instanceof RuleRejection && error.code === code
   );
+}
+
+function assertReducerRejectsWithoutMutation(state: ArchiveState, actionType: string): void {
+  const before = canonicalStringify(state as unknown as CanonicalJson);
+  const result = reduceArchive(reduceInput(state, {
+    stimulus_type: "participant_action",
+    member_id: "lead-1",
+    action_type: actionType,
+    canonical_payload: {},
+  }));
+  assert.equal(result.activity_disposition_type, "reject");
+  assert.equal(result.declared_code, "insufficient_power");
+  assert.equal(canonicalStringify(state as unknown as CanonicalJson), before);
 }
 
 function assertNoTruth(projection: CanonicalObject): void {

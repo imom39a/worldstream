@@ -17,8 +17,8 @@ function core(roles = ["lead", "mira", "jonah"]): CanonicalObject {
   }])) };
 }
 
-function fresh(roles?: string[]): ArchiveState {
-  return startArchive(pack.initialize({ configuration: { scenario_id: "standard-v1" }, initial_core_state: core(roles) }).initial_activity_state as unknown as ArchiveState);
+function fresh(roles?: string[], scenarioId: "standard-v1" | "low-reserve-v1" = "standard-v1"): ArchiveState {
+  return startArchive(pack.initialize({ configuration: { scenario_id: scenarioId }, initial_core_state: core(roles) }).initial_activity_state as unknown as ArchiveState);
 }
 
 function action(state: ArchiveState, member: string, actionType: string, payload: CanonicalObject = {}, currentCore = core()): ArchiveState {
@@ -43,6 +43,20 @@ test("every supported starting roster is retained at Genesis with the same budge
     assert.equal(state.power_remaining, 3);
     assert.equal(state.turn_limit, 16);
     assert.deepEqual((state as unknown as { starting_crew: { role: string }[] }).starting_crew.map((member) => member.role), roles);
+  }
+});
+
+test("each authored scenario starts every supported roster with its own fixed budget", () => {
+  for (const [scenarioId, expectedPower] of [["standard-v1", 3], ["low-reserve-v1", 2]] as const) {
+    for (const roles of [["lead"], ["lead", "mira"], ["lead", "jonah"], ["lead", "mira", "jonah"]]) {
+      const state = fresh(roles, scenarioId);
+      assert.equal(state.power_remaining, expectedPower);
+      assert.equal(state.initial_power, expectedPower);
+      assert.deepEqual(participantProjection(state, "lead", core(roles)).scenario, {
+        id: scenarioId,
+        label: scenarioId === "standard-v1" ? "Standard" : "Low Reserve",
+      });
+    }
   }
 });
 
@@ -100,6 +114,21 @@ test("Jonah opens the hatch for one charge; Mira's ordinary method costs two", (
     assert.equal(state[role].task.status, "complete");
     assert.deepEqual(state.completed_crew_work.filter((work) => work.role === role), [{ role, kind: "open_service_hatch", turn: 1 }]);
   }
+});
+
+test("Jonah's verifier plan consumes the declared role-neutral companion cost", () => {
+  let state = fresh();
+  state = { ...state, jonah: { ...state.jonah, location: "records", mode: "holding" } };
+  state = plan(state, "jonah", "investigate_records", [step("use_verifier", "none", "records", 1)], 1);
+  const beforePower = state.power_remaining;
+
+  state = wait(state, ["jonah"]);
+
+  assert.deepEqual(state.operation_costs.companion_verifier, { turn_cost: 0, power_cost: 1 });
+  assert.equal(state.power_remaining, beforePower - state.operation_costs.companion_verifier.power_cost);
+  assert.equal(state.jonah.task.power_spent, state.operation_costs.companion_verifier.power_cost);
+  assert.equal(state.jonah.task.status, "complete");
+  assert.equal(state.verifier_result, "ledger-violet");
 });
 
 test("Mira's two Vault assay steps disclose no finding before eligible completion and replan after sample", () => {

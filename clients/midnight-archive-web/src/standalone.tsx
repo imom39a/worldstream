@@ -8,6 +8,7 @@ import {
 } from "@worldstream/client";
 
 import { StandaloneMidnightArchiveClient } from "./StandaloneMidnightArchiveClient";
+import { createMidnightArchiveRetryingFetch } from "./retryingFetch";
 import "./styles.css";
 
 const root = document.getElementById("root");
@@ -28,6 +29,7 @@ if (!loopback) {
 } else {
   const client = new ActivityClientHandoffClient(
     import.meta.env.VITE_WORLDSTREAM_SUPERVISOR_URL ?? "http://127.0.0.1:9420",
+    createMidnightArchiveRetryingFetch(),
   );
   void resumeRetainedActivityClient(startup, client).then((resolvedStartup) => {
     createRoot(root).render(

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import {
+  actionCost,
   candidateById,
   candidateConfidence,
   moveOptions,
@@ -31,6 +32,7 @@ export function ArchiveMap({
   readonly onAction: (intent: MidnightArchiveActionIntent) => void;
 }) {
   const options = new Map(moveOptions(projection).map((option) => [option.destination, option]));
+  const moveCost = actionCost(projection, "stage_move");
   return (
     <section className="archive-map-panel" aria-labelledby="archive-map-title">
       <div className="section-heading">
@@ -66,7 +68,7 @@ export function ArchiveMap({
             : option === undefined
               ? "not adjacent"
               : option.open
-                ? "one turn"
+                ? `${moveCost.turns} turn · ${moveCost.power} power`
                 : `${gateName(option.gate)} closed`;
           return (
             <button
@@ -113,15 +115,38 @@ export function ResourceStrip({ projection }: { readonly projection: MidnightArc
       </div>
       <div className="resource-card">
         <span>Power reserve</span>
-        <strong>{projection.power}<small> / 3</small></strong>
-        <div className="charge-meter" role="img" aria-label={`${projection.power} of 3 power charges remain`}>
-          {[0, 1, 2].map((charge) => <i className={charge < projection.power ? "charged" : "spent"} key={charge} />)}
+        <strong>{projection.power}<small> / {projection.initialPower}</small></strong>
+        <div className="charge-meter" role="img" aria-label={`${projection.power} of ${projection.initialPower} power charges remain`}>
+          {Array.from({ length: projection.initialPower }, (_, charge) => (
+            <i className={charge < projection.power ? "charged" : "spent"} key={charge} />
+          ))}
         </div>
       </div>
       <div className="resource-card location-resource">
         <span>Current location</span>
         <strong>{locationName(projection, projection.location)}</strong>
         <small>Turn {Math.min(projection.turnsUsed + 1, 16)} of 16</small>
+      </div>
+    </section>
+  );
+}
+
+export function ScenarioBriefing({ projection }: { readonly projection: MidnightArchiveProjection }) {
+  const combinedCost = projection.methodCosts.verifier + projection.methodCosts.ordinaryServiceHatch;
+  return (
+    <section className="scenario-briefing" aria-labelledby="archive-scenario-title">
+      <div>
+        <span className="archive-kicker">This expedition</span>
+        <h2 id="archive-scenario-title">{projection.scenario.label}</h2>
+      </div>
+      <div>
+        <p>Candidate markings, source evidence, and the authentic ledger differ between scenarios. Compare evidence from this expedition.</p>
+        <p>Initial reserve: {projection.initialPower} power charges, shared by the crew.</p>
+        <p>Catalog verifier: {projection.methodCosts.verifier} power. Ordinary service hatch: {projection.methodCosts.ordinaryServiceHatch} power.
+          {combinedCost > projection.initialPower
+            ? ` Together they need ${combinedCost} charges, exceeding this expedition’s ${projection.initialPower}-charge initial reserve. Choose a different authentication or access method.`
+            : ` Together they use all ${projection.initialPower} initial charges.`}
+        </p>
       </div>
     </section>
   );

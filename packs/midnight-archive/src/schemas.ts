@@ -172,6 +172,31 @@ function schemaParts() {
     required: ["candidate_id", "binding", "marking", "year"],
     type: "object",
   };
+  const operationCost = (turnCost: 0 | 1, powerCost: 0 | 1 | 2) => ({
+    additionalProperties: false,
+    properties: { turn_cost: { const: turnCost }, power_cost: { const: powerCost } },
+    required: ["turn_cost", "power_cost"],
+    type: "object",
+  });
+  const operationCosts = {
+    additionalProperties: false,
+    properties: {
+      move: operationCost(1, 0), inspect_records: operationCost(1, 0), inspect_conservation: operationCost(1, 0),
+      use_verifier: operationCost(1, 1), accept_preservation_agreement: operationCost(1, 0), prepare_collection: operationCost(1, 0),
+      energize_preservation_equipment: operationCost(1, 1), open_service_hatch: operationCost(1, 2), recover_candidate: operationCost(1, 0),
+      protect_source_record: operationCost(1, 1), extract: operationCost(1, 0), wait: operationCost(1, 0),
+      companion_move: operationCost(0, 0), companion_inspect_source: operationCost(0, 0), companion_share_source: operationCost(0, 0),
+      mira_field_assay: operationCost(0, 0), companion_verifier: operationCost(0, 1), mira_open_service_hatch: operationCost(0, 2),
+      jonah_open_service_hatch: operationCost(0, 1),
+    },
+    required: [
+      "move", "inspect_records", "inspect_conservation", "use_verifier", "accept_preservation_agreement", "prepare_collection",
+      "energize_preservation_equipment", "open_service_hatch", "recover_candidate", "protect_source_record", "extract", "wait",
+      "companion_move", "companion_inspect_source", "companion_share_source", "mira_field_assay", "companion_verifier",
+      "mira_open_service_hatch", "jonah_open_service_hatch",
+    ],
+    type: "object",
+  };
   const gates = {
     additionalProperties: false,
     properties: {
@@ -423,7 +448,7 @@ function schemaParts() {
     stagedAction,
     stagedActionProjection,
     verifierResultProjection,
-    visibleCandidate,
+    visibleCandidate, operationCosts,
   };
 }
 
@@ -448,9 +473,14 @@ export function stateSchema(): CanonicalObject {
       outcome: part.outcome,
       phase: { enum: ["briefing", "active", "complete"] },
       power_remaining: { maximum: 3, minimum: 0, type: "integer" },
+      initial_power: { enum: [2, 3] },
+      scenario_label: { enum: ["Standard", "Low Reserve"] },
+      evidence_records: { items: { additionalProperties: false, properties: { source_id: { enum: ["records", "conservation"] }, source_label: { enum: ["Records intake card", "Conservation restoration note"] }, attribute: { enum: ["binding", "marking"] }, value: { enum: ["calfskin", "split_star", "compass_rose"] } }, required: ["source_id", "source_label", "attribute", "value"], type: "object" }, minItems: 2, maxItems: 2, type: "array" },
+      method_costs: { additionalProperties: false, properties: { verifier: { const: 1 }, ordinary_service_hatch: { const: 2 } }, required: ["verifier", "ordinary_service_hatch"], type: "object" },
+      operation_costs: part.operationCosts,
       preservation_agreement: { enum: ["offered", "accepted"] },
       role_notes: part.roleNotes,
-      scenario_id: { const: "standard-v1" },
+      scenario_id: { enum: ["standard-v1", "low-reserve-v1"] },
       staged_action: part.stagedAction,
       source_record_protected: { type: "boolean" },
       turn_limit: { const: 16 },
@@ -459,7 +489,7 @@ export function stateSchema(): CanonicalObject {
       truth_marker: part.candidate,
     },
     required: [
-      "phase", "scenario_id", "objective", "location", "turn_limit", "turns_used",
+      "phase", "scenario_id", "scenario_label", "initial_power", "evidence_records", "method_costs", "operation_costs", "objective", "location", "turn_limit", "turns_used",
       "power_remaining", "gates", "candidates", "evidence", "preservation_agreement",
       "collection_preservation", "source_record_protected", "mira", "jonah", "starting_crew", "extraction", "completed_crew_work", "truth_marker", "verifier_result",
       "carried_candidate_id", "carried_confidence", "staged_action", "outcome", "role_notes",
@@ -535,13 +565,17 @@ export function participantProjectionSchema(): CanonicalObject {
       outcome: part.outcomeProjection,
       phase: { enum: ["briefing", "active", "complete"] },
       power: { maximum: 3, minimum: 0, type: "integer" },
+      initial_power: { enum: [2, 3] },
+      scenario: { additionalProperties: false, properties: { id: { enum: ["standard-v1", "low-reserve-v1"] }, label: { enum: ["Standard", "Low Reserve"] } }, required: ["id", "label"], type: "object" },
+      method_costs: { additionalProperties: false, properties: { verifier: { const: 1 }, ordinary_service_hatch: { const: 2 } }, required: ["verifier", "ordinary_service_hatch"], type: "object" },
+      operation_costs: part.operationCosts,
       staged_action: part.stagedActionProjection,
       turns_remaining: { maximum: 16, minimum: 0, type: "integer" },
       turns_used: { maximum: 16, minimum: 0, type: "integer" },
       verifier_result: part.verifierResultProjection,
     },
     required: [
-      "phase", "objective", "location", "turns_used", "turns_remaining", "power",
+      "phase", "scenario", "objective", "location", "turns_used", "turns_remaining", "power", "initial_power", "method_costs", "operation_costs",
       "gates", "map", "candidates", "staged_action", "carried_candidate", "debrief",
       "preservation_agreement", "optional_objectives", "mira", "jonah", "turn_resolution", "extraction", "crew_debrief",
       "verifier_result", "outcome",
