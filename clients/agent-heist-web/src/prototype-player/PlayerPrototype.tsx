@@ -10,6 +10,13 @@ type Variant = "A" | "B" | "C";
 type Step = 0 | 1 | 2 | 3 | 4 | 5;
 const variants: Variant[] = ["A", "B", "C"];
 const names = { A: "Mission focus", B: "Crew tabletop", C: "Interactive story" };
+const artwork = import.meta.glob<string>("./art/*.png", { eager: true, query: "?url", import: "default" });
+const artKeys = [["canal", "service-entrance", "rooftop"], [], ["disguise", "thermal-key", "jammer"], ["van", "boat", "motorbike"]];
+function ChoiceArt({ part, option, className = "" }: { part: number; option: number; className?: string }) {
+  const url = artwork[`./art/${artKeys[part]?.[option]}.png`];
+  if (part === 1) return <span className={`px-window-art ${className}`} aria-hidden="true"><span>ENTRY WINDOW</span><span className="px-window-segments">{[0,1,2].map(i => <i key={i} className={i === [2,0,1][option] ? "active" : ""} />)}</span><span>{["Late", "Early", "Middle"][option]}</span></span>;
+  return url ? <img className={`px-card-art ${className}`} src={url} alt="" decoding="async" /> : <span className={`px-option-symbol ${className}`} aria-hidden="true">◇</span>;
+}
 const chapters = ["Safehouse", "Discover", "Share", "Build a plan", "Lock it in", "Debrief"];
 const choices = [
   { label: "Way in", hint: "Your route intel says: Service entrance.", options: ["Canal", "Service entrance", "Rooftop"], correct: 1, symbol: "↳" },
@@ -21,7 +28,7 @@ const objectives = [
   ["One crew. One way out.", "Find four pieces of intel. Agree on a plan. Commit together."],
   ["Find your way in.", "You are the Navigator. Your sealed dossier contains the route the crew needs."],
   ["A secret does not help the crew.", "You know the way in. Decide whether to share your intel with everyone."],
-  ["Put the pieces together.", "Choose one option for each part of the plan. Compare it with the intel your crew shared."],
+  ["Build the crew's plan.", "Choose a way in, a time, a tool and a way out. Then the crew must commit to the same complete plan."],
   ["Make your choice count.", "Backing a plan is not your final vote. Seal your choice before the window closes."],
   ["Every choice left a trace.", "This is a crew result, not an individual ranking. Here is how this practice plan scored."],
 ];
@@ -92,7 +99,7 @@ function PlayerPrototype() {
   </section>;
   else if (step === 1) play = <section className={`px-dossier ${inspected ? "opened" : ""}`}>
     <div className="px-dossier-top"><span>{inspected ? "PRIVATE / ONLY YOU" : "SEALED / YOUR INTEL"}</span><span>01</span></div>
-    <div className="px-dossier-mark" aria-hidden="true">{inspected ? "↳" : "◇"}</div>
+    {inspected ? <ChoiceArt part={0} option={1} className="px-dossier-art" /> : <div className="px-dossier-mark" aria-hidden="true">◇</div>}
     <h2>{inspected ? "The service entrance." : "Route dossier"}</h2>
     <p>{inspected ? "Your intel confirms that the service entrance is the correct way in. Your crew does not know this yet." : "There is one route the crew needs to find. Open your dossier to learn it."}</p>
     {inspected ? primary("Continue practice → planning", () => advance(2)) : primary("Open my dossier", () => { setInspected(true); setNotice("Dossier opened. This clue is still private."); })}
@@ -100,7 +107,7 @@ function PlayerPrototype() {
   </section>;
   else if (step === 2) play = <section className="px-share">
     <span className="px-overline">{shared ? "SHARED WITH THE CREW" : "YOUR PRIVATE INTEL"}</span>
-    <div className="px-intel-line"><span className="px-large-icon">↳</span><div><small>Way in</small><h2>Service entrance</h2></div><span className="px-seal">{shared ? "✓ Shared" : "Only you"}</span></div>
+    <div className="px-intel-line"><ChoiceArt part={0} option={1} className="px-intel-thumb" /><div><small>Way in</small><h2>Service entrance</h2></div><span className="px-seal">{shared ? "✓ Shared" : "Only you"}</span></div>
     <p>{shared ? "The crew can now use your route. In this practice, your teammates have shared their intel too." : "Give everyone the route you found. It will appear on the shared crew board."}</p>
     {shared ? <div className="px-intel-chips"><span>◷ Early <small>Insider</small></span><span>⌘ Thermal key <small>Broker</small></span><span>⇢ Boat <small>Broker</small></span></div> : <div className="px-other-crew">Insider knows when. Broker knows the equipment and escape.</div>}
     {shared ? primary("Build a plan", () => advance(3)) : primary("Share with crew", () => { setShared(true); setNotice("Your route is public. Practice teammates shared their clues."); })}
@@ -110,13 +117,13 @@ function PlayerPrototype() {
     <div className="px-plan-tabs" role="tablist" aria-label="Plan parts">{choices.map((choice, i) => <button key={choice.label} role="tab" aria-selected={part === i} onClick={() => setPart(i)}><span>{i + 1}</span>{choice.label}{visited.includes(i) ? " ✓" : ""}</button>)}</div>
     <span className="px-overline">PART {part + 1} OF 4</span><h2>{choices[part]!.label}</h2>
     <p className="px-evidence">{choices[part]!.hint}</p>
-    <div className="px-options">{choices[part]!.options.map((option, i) => <button className={plan[part] === i && visited.includes(part) ? "selected" : ""} key={option} aria-pressed={plan[part] === i && visited.includes(part)} onClick={() => { setPlan(plan.map((value, j) => j === part ? i : value)); setVisited([...new Set([...visited, part])]); }}><span className="px-option-symbol">{["Ⅰ", "Ⅱ", "Ⅲ"][i]}</span><strong>{option}</strong><span>{plan[part] === i && visited.includes(part) ? "Selected ✓" : "Choose"}</span></button>)}</div>
+    <div className="px-options px-illustrated-options">{choices[part]!.options.map((option, i) => <button className={plan[part] === i && visited.includes(part) ? "selected" : ""} key={option} aria-pressed={plan[part] === i && visited.includes(part)} onClick={() => { setPlan(plan.map((value, j) => j === part ? i : value)); setVisited([...new Set([...visited, part])]); }}><ChoiceArt part={part} option={i} /><strong>{option}</strong><span className="px-card-pick">{plan[part] === i && visited.includes(part) ? "In your plan ✓" : "Add to plan"}</span></button>)}</div>
     <div className="px-plan-summary">{choices.map((choice, i) => <span key={choice.label}><small>{choice.label}</small>{visited.includes(i) ? choice.options[plan[i]!] : "Not chosen"}</span>)}</div>
     {part < 3 ? primary("Next: " + choices[part + 1]!.label.toLowerCase(), () => setPart(part + 1), !visited.includes(part)) : primary("Propose this plan", () => { advance(4); setNotice("Practice: plan proposed, planning window ended. Insider will choose this plan too."); }, visited.length !== 4)}
   </section>;
   else if (step === 4) play = <section className="px-commit">
     <span className="px-overline">YOUR PLAN / SEALED CHOICE</span><h2>The crew's way through.</h2>
-    <div className="px-route-strip">{choices.map((choice, i) => <div key={choice.label}><span>{choice.symbol}</span><small>{choice.label}</small><strong>{choice.options[plan[i]!]}</strong></div>)}</div>
+    <div className="px-route-strip px-illustrated-route">{choices.map((choice, i) => <div key={choice.label}><ChoiceArt part={i} option={plan[i]!} /><small>{choice.label}</small><strong>{choice.options[plan[i]!]}</strong></div>)}</div>
     <label className="px-contribute"><input type="checkbox" checked={resource} onChange={e => setResource(e.target.checked)} /><div><strong>Contribute my resource</strong><p>The selected plan earns one resource point if at least one of its supporters contributes.</p></div></label>
     <p className="px-warning">Your choice is final for this round. In this practice, Insider votes for your plan; no other player contributes a resource.</p>
     {primary("Seal my choice", () => { advance(5); setNotice("Practice resolved with two votes for your plan. No live game was changed."); })}

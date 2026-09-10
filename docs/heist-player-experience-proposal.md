@@ -258,3 +258,50 @@ Two frontier decisions for the user:
 Tutorial before joining is the recommended onboarding approach for this
 proposal. Longer timers, pause, resource costs, deception, map movement and
 new scoring are separate gameplay design decisions, not quietly bundled here.
+
+## Follow-up: illustrated cards and the purpose of choosing
+
+The user likes the practice direction and requests original artwork for the
+service entrance, thermal key, boat and other game objects. Keep all three
+layouts. Replace the Roman-numeral choice placeholders with consistently
+illustrated route, equipment and extraction cards. Keep readable HTML labels,
+selection state, keyboard support and compact phone controls. Illustrate all
+alternatives with equal care; art must not identify which answer is correct.
+Reuse the same object artwork in the dossier and plan review for recognition.
+Entry-time choices remain a clear early/middle/late window visualization, not
+invented clock times or a night-to-day mechanic.
+
+This does not make Heist a prisoner's dilemma. The current rules have a common
+crew score and no individual payoff for betrayal. A prisoner's dilemma needs
+an incentive structure in which individual defection is tempting even though
+mutual cooperation is better than mutual defection. Simply making votes
+private does not create that structure.
+
+There are two separate decisions in today's game:
+
+1. **Plan construction:** choose a route, entry window, tool and extraction.
+   These are a proposal for a whole operation, not four independent crew votes.
+2. **Crew commitment:** pick an existing complete plan. At least two players
+   must commit to the same plan; unanimity is not required. Only then does
+   the server score that plan against the hidden facts and contribution rule.
+
+Example: Navigator knows service entrance; Insider knows early; Broker knows
+thermal key and boat. Combining them gives a correct proposal. Two players
+must still commit to that proposal, and a supporter must contribute for 5/5.
+Two votes for a wrong plan agree but lose correctness points. Three different
+plan votes have no majority and earn zero.
+
+The prototype intentionally scripts teammate disclosure and agreement so the
+first practice teaches controls. It does not currently test the human's
+negotiation or coordination skill. The real game's interesting promise is
+pooling different information and coordinating under a shared deadline.
+But the present rule set is shallow after all truthful clues are shared,
+and contributing has no personal cost. Art and better wording cannot fix
+that lack of tradeoffs. Do not market this as a deep strategic benchmark.
+
+Recommended later gameplay direction, NOT implemented or frozen: a cooperative
+constraint puzzle with meaningful tradeoffs (for example a limited number of
+inspections and several viable plans with differing risks). An alternative is
+a mixed-motive social game with explicit personal/team payoffs. These are
+different design goals. Adding a contribution cost alone does not automatically
+make either one a prisoner's dilemma; specify and test the payoff structure.
