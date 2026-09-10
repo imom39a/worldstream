@@ -31,6 +31,10 @@ def policy(selector: Mock | None = None) -> companion_runner.CompanionRunnerPoli
 
 
 def transport() -> tuple[SimpleNamespace, SimpleNamespace, SimpleNamespace, dict]:
+    async def no_events():
+        await asyncio.Event().wait()
+        yield {}
+
     projection = {
         "core": {},
         "activity": {"phase": "active", "private_canary": "never-returned"},
@@ -89,6 +93,8 @@ def transport() -> tuple[SimpleNamespace, SimpleNamespace, SimpleNamespace, dict
     room = SimpleNamespace(
         room_id="room",
         member_id="mira-member",
+        events=Mock(side_effect=no_events),
+        ack=AsyncMock(),
         act=AsyncMock(return_value={
             "transition_id": "transition",
             "room_head": {**head, "room_seq": 9},
@@ -119,7 +125,7 @@ def test_shared_activation_path_submits_once_at_the_claimed_head_then_completes(
     ("claim_id", "other"),
     ("lease_generation", True),
     ("deadline", "2026-09-09T12:00:16.000Z"),
-    ("projection_schema", "worldstream.midnight-archive/participant-observation/v1"),
+    ("projection_schema", "worldstream.midnight-archive/participant-projection/v1"),
 ])
 def test_shared_claim_context_mismatch_never_submits_or_completes(field, value):
     room, runner, client, _ = transport()
@@ -140,6 +146,124 @@ def test_offer_for_another_companion_membership_is_never_claimed():
     runner.claim.assert_not_called()
     client.projection.assert_not_called()
     room.act.assert_not_called()
+
+
+def test_idle_offer_wait_acks_multiple_observations_and_stops_before_action():
+    room, runner, client, _ = transport()
+    offer = runner.poll_offers.return_value["offers"][0]
+    observations_acked = asyncio.Event()
+    drain_stopped = asyncio.Event()
+    acknowledged: list[int] = []
+
+    async def events_until_cancelled():
+        try:
+            yield {"frame_seq": 9}
+            yield {"frame_seq": 10}
+            await asyncio.Event().wait()
+        finally:
+            drain_stopped.set()
+
+    async def ack(frame_seq: int):
+        acknowledged.append(frame_seq)
+        if acknowledged == [9, 10]:
+            observations_acked.set()
+
+    async def offer_after_observations(*_args):
+        await observations_acked.wait()
+        return {"offers": [offer]}
+
+    async def act_after_drain(*_args, **_kwargs):
+        assert drain_stopped.is_set()
+        return {
+            "transition_id": "transition",
+            "room_head": {
+                "room_id": "room",
+                "room_seq": 9,
+                "pack_digest": PACK["digest"],
+            },
+        }
+
+    room.events = Mock(side_effect=events_until_cancelled)
+    room.ack.side_effect = ack
+    room.act.side_effect = act_after_drain
+    runner.poll_offers.side_effect = offer_after_observations
+    result = asyncio.run(
+        companion_runner.answer_once(
+            room, runner, client, PACK, policy(), wait_seconds=1
+        )
+    )
+    assert result == {"status": "handled", "submitted_actions": 1}
+    assert acknowledged == [9, 10]
+    assert drain_stopped.is_set()
+
+
+def test_no_opportunity_cancels_and_awaits_the_membership_drain():
+    room, runner, client, _ = transport()
+    drain_started = asyncio.Event()
+    drain_stopped = asyncio.Event()
+
+    async def events_until_cancelled():
+        try:
+            drain_started.set()
+            await asyncio.Event().wait()
+            yield {}
+        finally:
+            drain_stopped.set()
+
+    async def no_offer_after_drain_started(*_args):
+        await drain_started.wait()
+        return {"offers": []}
+
+    room.events = Mock(side_effect=events_until_cancelled)
+    runner.poll_offers.side_effect = no_offer_after_drain_started
+    result = asyncio.run(
+        companion_runner.answer_once(
+            room, runner, client, PACK, policy(), wait_seconds=0
+        )
+    )
+    assert result == {"status": "no_opportunity", "submitted_actions": 0}
+    assert drain_stopped.is_set()
+    runner.claim.assert_not_called()
+    room.act.assert_not_called()
+
+
+def test_membership_drain_failure_prevents_claim_and_submission():
+    room, runner, client, _ = transport()
+    invalid_delivery_started = asyncio.Event()
+    offer = runner.poll_offers.return_value["offers"][0]
+
+    async def invalid_events():
+        invalid_delivery_started.set()
+        yield {"frame_seq": 0}
+
+    async def offer_after_invalid_delivery(*_args):
+        await invalid_delivery_started.wait()
+        await asyncio.sleep(0)
+        return {"offers": [offer]}
+
+    room.events = Mock(side_effect=invalid_events)
+    runner.poll_offers.side_effect = offer_after_invalid_delivery
+    with pytest.raises(RunnerContractError, match="^test_contract_mismatch$"):
+        asyncio.run(
+            companion_runner.answer_once(
+                room, runner, client, PACK, policy(), wait_seconds=1
+            )
+        )
+    runner.claim.assert_not_called()
+    client.projection.assert_not_called()
+    room.act.assert_not_called()
+
+
+def test_idle_offer_wait_accepts_180_seconds_but_rejects_a_broader_window():
+    room, runner, _, _ = transport()
+    offer = asyncio.run(
+        companion_runner.wait_for_matching_offer(room, runner, policy(), 180)
+    )
+    assert offer is runner.poll_offers.return_value["offers"][0]
+    with pytest.raises(RunnerContractError, match="^test_contract_mismatch$"):
+        asyncio.run(
+            companion_runner.wait_for_matching_offer(room, runner, policy(), 181)
+        )
 
 
 def credentials() -> tuple[dict, dict]:

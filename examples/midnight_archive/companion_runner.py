@@ -12,6 +12,7 @@ import asyncio
 import json
 import re
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,7 @@ PACK_ID = "worldstream.midnight-archive"
 ACTION = "submit_companion_plan"
 ACTION_OFFER_DOMAIN = "worldstream/action-offer/v1"
 REASON = "companion_plan_requested"
-PROJECTION_SCHEMA = "worldstream.midnight-archive/participant-observation/v2"
+PROJECTION_SCHEMA = "worldstream.midnight-archive/participant-projection/v2"
 DIGEST = re.compile(r"blake3:[0-9a-f]{64}\Z")
 
 PlanSelector = Callable[[dict], dict]
@@ -125,7 +126,9 @@ async def wait_for_matching_offer(
     poll_interval: float = 0.1,
 ) -> dict | None:
     """Keep one Runner attached for one bounded, exact-Membership opportunity."""
-    require(policy, integer(wait_seconds, 0, 120) and 0 <= poll_interval <= 1)
+    # This is only the local idle-offer ceiling. The Pack's 15-second planning
+    # opportunity and any future provider-call timeout remain separate fences.
+    require(policy, integer(wait_seconds, 0, 180) and 0 <= poll_interval <= 1)
     deadline = asyncio.get_running_loop().time() + wait_seconds
     while True:
         polled = await runner.poll_offers(room.room_id, room.member_id)
@@ -155,7 +158,15 @@ async def answer_once(
     wait_seconds: int = 0,
 ) -> dict:
     """Wait boundedly, then claim and answer at most one exact Activation."""
-    offer = await wait_for_matching_offer(room, runner, policy, wait_seconds)
+    observation_drain = asyncio.create_task(
+        drain_membership_observations(room, policy)
+    )
+    try:
+        offer = await wait_for_matching_offer(room, runner, policy, wait_seconds)
+    finally:
+        observation_drain.cancel()
+        with suppress(asyncio.CancelledError):
+            await observation_drain
     if offer is None:
         return {"status": "no_opportunity", "submitted_actions": 0}
     claimed = await runner.claim(offer["activation_id"], 30_000)
@@ -222,6 +233,19 @@ async def answer_once(
     }
 
 
+async def drain_membership_observations(
+    room: Any, policy: CompanionRunnerPolicy,
+) -> None:
+    """Keep the exact Membership stream current while its Runner waits idle."""
+    async for delivery in room.events():
+        require(
+            policy,
+            isinstance(delivery, dict)
+            and integer(delivery.get("frame_seq"), 1, 2**63 - 1),
+        )
+        await room.ack(delivery["frame_seq"])
+
+
 async def run_for_role(
     policy: CompanionRunnerPolicy,
     membership_file: Path,
@@ -235,7 +259,7 @@ async def run_for_role(
         policy,
         isinstance(revision, str)
         and DIGEST.fullmatch(revision) is not None
-        and integer(wait_seconds, 1, 120),
+        and integer(wait_seconds, 1, 180),
     )
     membership = load_membership(membership_file)
     runner_document = load_runner(runner_file)

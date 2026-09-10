@@ -4,7 +4,7 @@ import asyncio
 import copy
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from worldstream_sdk.client import _loads
@@ -184,6 +184,10 @@ def test_malformed_map_cannot_authorize_a_route():
 
 
 def transport(projection: dict):
+    async def no_events():
+        await asyncio.Event().wait()
+        yield {}
+
     head = {
         "room_id": "room", "room_seq": 8, "pack_digest": PACK["digest"],
         "core_schema_version": "worldstream.core-room-state.v1",
@@ -226,6 +230,7 @@ def transport(projection: dict):
     }))
     room = SimpleNamespace(
         room_id="room", member_id="mira",
+        events=Mock(side_effect=no_events), ack=AsyncMock(),
         act=AsyncMock(return_value={
             "transition_id": "transition", "room_head": {**head, "room_seq": 9},
         }),
