@@ -3,6 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 
 import {
   agentHeistListingBase64,
+  retainedAgentHeistListing025Base64,
   retainedAgentHeistListing024Base64,
   retainedAgentHeistListing023Base64,
   retainedAgentHeistListing022Base64,
@@ -77,11 +78,11 @@ export function createHostedResultReconciler(input: {
       serviceAuthority: input.serviceAuthority,
     }),
     projectors: new PinnedResultProjectorRegistry([
-      agentHeistListingBase64, retainedAgentHeistListing024Base64, retainedAgentHeistListing023Base64, retainedAgentHeistListing022Base64, retainedAgentHeistListing021Base64, retainedAgentHeistListing020Base64, retainedAgentHeistListing019Base64, retainedAgentHeistListing018Base64, retainedAgentHeistListing017Base64, retainedAgentHeistListing016Base64, retainedAgentHeistListing015Base64, retainedAgentHeistListing014Base64, retainedAgentHeistListing013Base64, retainedAgentHeistListing012Base64, retainedAgentHeistListing011Base64, retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64,
+      agentHeistListingBase64, retainedAgentHeistListing025Base64, retainedAgentHeistListing024Base64, retainedAgentHeistListing023Base64, retainedAgentHeistListing022Base64, retainedAgentHeistListing021Base64, retainedAgentHeistListing020Base64, retainedAgentHeistListing019Base64, retainedAgentHeistListing018Base64, retainedAgentHeistListing017Base64, retainedAgentHeistListing016Base64, retainedAgentHeistListing015Base64, retainedAgentHeistListing014Base64, retainedAgentHeistListing013Base64, retainedAgentHeistListing012Base64, retainedAgentHeistListing011Base64, retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64,
       retainedAgentHeistListing04Base64, retainedAgentHeistListing05Base64, retainedAgentHeistListing06Base64, retainedAgentHeistListing07Base64, retainedAgentHeistListing08Base64, retainedAgentHeistListing09Base64, retainedAgentHeistListing010Base64,
     ].map((listingBytes) => ({
         listingBytes: decode(listingBytes),
-        projectorBytes: decode(listingBytes === agentHeistListingBase64 || listingBytes === retainedAgentHeistListing024Base64 ? agentHeistResultProjectorBase64
+        projectorBytes: decode(listingBytes === agentHeistListingBase64 || listingBytes === retainedAgentHeistListing025Base64 || listingBytes === retainedAgentHeistListing024Base64 ? agentHeistResultProjectorBase64
           : listingBytes === retainedAgentHeistListing012Base64 ? retainedAgentHeistResultProjector04Base64
           : listingBytes === retainedAgentHeistListing023Base64 || listingBytes === retainedAgentHeistListing022Base64 || listingBytes === retainedAgentHeistListing021Base64 || listingBytes === retainedAgentHeistListing020Base64 || listingBytes === retainedAgentHeistListing019Base64 || listingBytes === retainedAgentHeistListing018Base64 || listingBytes === retainedAgentHeistListing017Base64 || listingBytes === retainedAgentHeistListing016Base64 || listingBytes === retainedAgentHeistListing015Base64 || listingBytes === retainedAgentHeistListing014Base64 || listingBytes === retainedAgentHeistListing013Base64 || listingBytes === retainedAgentHeistListing011Base64 || listingBytes === retainedAgentHeistListing07Base64 || listingBytes === retainedAgentHeistListing08Base64 || listingBytes === retainedAgentHeistListing09Base64 || listingBytes === retainedAgentHeistListing010Base64
             ? retainedAgentHeistResultProjector03Base64 : retainedAgentHeistResultProjector02Base64),

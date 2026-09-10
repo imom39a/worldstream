@@ -1,0 +1,18 @@
+{
+  "generatedOn": "2026-09-10",
+  "mode": "built-in image_gen",
+  "prompts": [
+    {
+      "key": "early",
+      "prompt": "Use case: stylized-concept. Asset type: illustrated game card for Agent Heist, a cinematic noir cooperative heist. Create one single landscape 3:2 painted concept-art image, not a UI mockup. Subject: a beautiful compact brass-and-dark-steel hourglass belonging to a covert crew, standing on a dark stone ledge, a softly blurred midnight city and rain behind it. Midnight navy and teal shadows, restrained amber glass reflections, painterly detail, strong recognizable silhouette at small card size. This is a symbolic relative mission entry window, NOT a time of day. Keep the whole hourglass visible centered with safe margins. No humans, no clock digits, no written words, no logos, no UI borders, no watermark. All card options should look equally appealing and equally safe; never indicate a correct choice. EARLY entry window: the hourglass has just started; most luminous fine amber sand remains in the upper bulb and only a small mound is in the lower bulb. A delicate stream is flowing."
+    },
+    {
+      "key": "middle",
+      "prompt": "Use case: stylized-concept. Asset type: illustrated game card for Agent Heist, a cinematic noir cooperative heist. Create one single landscape 3:2 painted concept-art image, not a UI mockup. Subject: a beautiful compact brass-and-dark-steel hourglass belonging to a covert crew, standing on a dark stone ledge, a softly blurred midnight city and rain behind it. Midnight navy and teal shadows, restrained amber glass reflections, painterly detail, strong recognizable silhouette at small card size. This is a symbolic relative mission entry window, NOT a time of day. Keep the whole hourglass visible centered with safe margins. No humans, no clock digits, no written words, no logos, no UI borders, no watermark. All card options should look equally appealing and equally safe; never indicate a correct choice. MIDDLE entry window: the hourglass is halfway through; approximately equal amounts of luminous fine amber sand occupy both bulbs. A delicate stream is flowing."
+    },
+    {
+      "key": "late",
+      "prompt": "Use case: stylized-concept. Asset type: illustrated game card for Agent Heist, a cinematic noir cooperative heist. Create one single landscape 3:2 painted concept-art image, not a UI mockup. Subject: a beautiful compact brass-and-dark-steel hourglass belonging to a covert crew, standing on a dark stone ledge, a softly blurred midnight city and rain behind it. Midnight navy and teal shadows, restrained amber glass reflections, painterly detail, strong recognizable silhouette at small card size. This is a symbolic relative mission entry window, NOT a time of day. Keep the whole hourglass visible centered with safe margins. No humans, no clock digits, no written words, no logos, no UI borders, no watermark. All card options should look equally appealing and equally safe; never indicate a correct choice. LATE entry window: the hourglass is nearly through; a small remainder of luminous fine amber sand is in the upper bulb and most has gathered in the lower bulb. A delicate stream is flowing. Do not use red warning colors."
+    }
+  ]
+}

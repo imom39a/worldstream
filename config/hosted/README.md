@@ -73,9 +73,10 @@ independent public viewer surface at `/agent-heist-v6/hosted/`. A new Listing
 revision changes discovery only; it does not rewrite Listing `0.13.0` or any
 existing Run.
 
-Listing `0.25.0` is the current discovery profile. It pins the schema-safe
+Listing `0.26.0` is the current discovery profile. It pins the schema-safe
 Heist `0.5.0` Pack and its exact `0.5.0` Result Projector while advancing to
-Client v8 for the in-game deadline countdown. The two Runner template `16`
+Client v9 for illustrated Mission focus play and separate guided practice.
+Listing `0.25.0` retains Client v8 and its countdown. The two Runner template `16`
 House successors, public policy, and limits are unchanged. Every non-empty Heist Action declares a closed payload schema,
 so a generic client or House Runner rejects an unusable `{}` payload before it
 can reach the Pack reducer. Listing `0.24.0` retains Client v7, and it and all earlier revisions remain
