@@ -173,6 +173,7 @@ export default {
       { maximum: 1, minimum: 0, role: "jonah" },
     ],
     stateSchema: stateSchema(),
+    schemaVersion: 2,
     version: "0.1.0",
   },
 

@@ -92,7 +92,9 @@ test("archive fixture proves bounded roles, schemas, inputs, and all viewer clas
     "participant",
     "public",
   ]);
-  assert.ok(semantic.schemaIds["stimulus:archive.fixture/briefing-opened/v1"]);
+  assert.equal(evidence.schemaVersion, 2);
+  assert.ok(semantic.schemaIds["stimulus:archive.fixture/briefing-opened/v1"]!.endsWith("/v2"));
+  assert.ok(Object.values(semantic.schemaIds).every((schemaId) => schemaId.endsWith("/v2")));
   assert.ok(inspected.members.includes("golden-corpus.json"));
   assert.equal(built.componentExports.join(","), "descriptor,initialize,reduce,view,observe");
 
@@ -113,6 +115,7 @@ test("archive fixture rejects unsupported schemas and undeclared ExternalInput k
   const invalidStartPayload = join(parent, "invalid-start-payload");
   const oversizedStart = join(parent, "oversized-start");
   const malformedStartRejection = join(parent, "malformed-start-rejection");
+  const invalidSchemaVersion = join(parent, "invalid-schema-version");
   const invalidStartRejectionDetails = join(parent, "invalid-start-rejection-details");
   const oversizedStartRejectionDetails = join(parent, "oversized-start-rejection-details");
   await cp(fixture, unsupportedSchema, { recursive: true });
@@ -121,9 +124,17 @@ test("archive fixture rejects unsupported schemas and undeclared ExternalInput k
   await cp(fixture, invalidStartPayload, { recursive: true });
   await cp(fixture, oversizedStart, { recursive: true });
   await cp(fixture, malformedStartRejection, { recursive: true });
+  await cp(fixture, invalidSchemaVersion, { recursive: true });
   await cp(fixture, invalidStartRejectionDetails, { recursive: true });
   await cp(fixture, oversizedStartRejectionDetails, { recursive: true });
   const toolchain = new WorldStreamPackToolchain();
+
+  const invalidSchemaVersionSource = join(invalidSchemaVersion, "src", "pack.ts");
+  await writeFile(
+    invalidSchemaVersionSource,
+    (await readFile(invalidSchemaVersionSource, "utf8")).replace("schemaVersion: 2", "schemaVersion: 0"),
+  );
+  await assert.rejects(() => toolchain.test(invalidSchemaVersion), PackCliError);
 
   const schemaPath = join(unsupportedSchema, "src", "pack.ts");
   await writeFile(

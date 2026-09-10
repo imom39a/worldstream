@@ -57,6 +57,11 @@ export interface ActivityPackDescriptorDraft {
   readonly name: string;
   readonly version: string;
   /**
+   * Version suffix for every generated schema ID in this Pack revision.
+   * Defaults to 1. Increment it when a client-visible schema changes incompatibly.
+   */
+  readonly schemaVersion?: number;
+  /**
    * A string preserves the first authoring form and means exactly one enabled
    * participant. The object form declares a bounded cardinality explicitly.
    */

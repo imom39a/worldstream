@@ -27,6 +27,7 @@ export interface BehavioralEvidence {
   readonly packId: string;
   readonly name: string;
   readonly version: string;
+  readonly schemaVersion: number;
   readonly operations: readonly string[];
   readonly roles: readonly RoleEvidence[];
   readonly actions: readonly ActionEvidence[];
@@ -105,6 +106,7 @@ interface ActivityPackDefinition {
     readonly packId: string;
     readonly name: string;
     readonly version: string;
+    readonly schemaVersion?: number;
     readonly roles: readonly ActivityPackRoleDraft[];
     readonly actions: readonly ActivityPackActionDraft[];
     readonly rejectionCodes: readonly string[];
@@ -133,6 +135,7 @@ interface AudienceFixture {
 }
 
 interface NormalizedDescriptor {
+  readonly schemaVersion: number;
   readonly roles: readonly RoleEvidence[];
   readonly actions: readonly ActionEvidence[];
   readonly events: readonly EventEvidence[];
@@ -403,6 +406,7 @@ export async function runBehavioralConformance(
     packId: pack.descriptor.packId,
     name: pack.descriptor.name,
     version: pack.descriptor.version,
+    schemaVersion: descriptor.schemaVersion,
     operations: ["descriptor", "initialize", "reduce", "view", "observe"],
     roles: descriptor.roles,
     actions: descriptor.actions,
@@ -463,18 +467,20 @@ function validateDefinition(pack: ActivityPackDefinition, file: string): Normali
     throw new PackCliError(diagnostic("WSP-CONTRACT-002", "Activity Pack definition is incomplete", { file }));
   }
   const { descriptor } = pack;
+  const schemaVersion = descriptor.schemaVersion ?? 1;
   const roles = descriptor.roles.map(normalizeRole);
   const actions = descriptor.actions.map(normalizeAction);
   const events = descriptor.events.map(normalizeEvent);
   if (
     !/^[a-z0-9]+(?:[.-][a-z0-9]+)+$/u.test(descriptor.packId) || descriptor.name.length === 0 ||
     descriptor.version.length === 0 || roles.length < 2 || actions.length === 0 ||
-    descriptor.rejectionCodes.length === 0
+    descriptor.rejectionCodes.length === 0 || !Number.isSafeInteger(schemaVersion) ||
+    schemaVersion < 1 || schemaVersion > 65_535
   ) {
     throw new PackCliError(diagnostic(
       "WSP-CONTRACT-003",
       "Activity Pack descriptor draft is invalid",
-      { file, detail: "Use a stable dotted pack ID, two or more Roles, Actions, and declared rejection codes." },
+      { file, detail: "Use a stable dotted pack ID, schema version 1..65535, two or more Roles, Actions, and declared rejection codes." },
     ));
   }
   if (
@@ -532,6 +538,7 @@ function validateDefinition(pack: ActivityPackDefinition, file: string): Normali
     }
   }
   return {
+    schemaVersion,
     roles,
     actions,
     events,

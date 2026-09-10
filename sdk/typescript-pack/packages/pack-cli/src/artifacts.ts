@@ -52,7 +52,7 @@ export function generateSemanticArtifacts(evidence: BehavioralEvidence): Generat
   const schemaIds: Record<string, string> = {};
   const documents: SchemaDocument[] = [];
   const add = (key: string, suffix: string, schema: JsonValue): SchemaDocument => {
-    const schemaId = `${evidence.packId}/${suffix}/v1`;
+    const schemaId = `${evidence.packId}/${suffix}/v${evidence.schemaVersion}`;
     const document = {
       canonical_schema: schema,
       schema_digest: taggedBlake3(canonicalBytes(schema)),
