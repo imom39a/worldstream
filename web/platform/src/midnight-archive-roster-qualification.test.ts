@@ -127,6 +127,8 @@ class RosterData implements HostedFormationData {
   genesisRecords = 0;
   frozenRoster: CanonicalObject | null = null;
   frozenSetup: CanonicalObject | null = null;
+  readonly closureRequests: CanonicalObject[] = [];
+  readonly closureEvidence: CanonicalObject[] = [];
   failHouseFill = false;
 
   constructor(
@@ -163,7 +165,10 @@ class RosterData implements HostedFormationData {
   }
 
   async readHostedRecoveryMaterial(launchRequestId: string) {
-    return launchRequestId === this.launchId && this.material.hostMutationStarted ? this.material : null;
+    return launchRequestId === this.launchId &&
+      (this.material.hostMutationStarted || this.material.state === "closing")
+      ? this.material
+      : null;
   }
 
   async freezeLaunch(input: {
@@ -256,13 +261,47 @@ class RosterData implements HostedFormationData {
   async releaseSeatClaim(_accountId: string, _launchRequestId: string, _seatId: string): Promise<boolean> { throw new Error("unused"); }
   async resetSeatClaim(_accountId: string, _launchRequestId: string, _seatId: string): Promise<boolean> { throw new Error("unused"); }
   async cancelLaunchRequest(_accountId: string, _launchRequestId: string): Promise<boolean> { throw new Error("unused"); }
+  async requestLaunchClosure(input: {
+    accountId: string;
+    launchRequestId: string;
+    hostInstallationId: string;
+    canonicalRequest: Uint8Array;
+    requestDigest: Uint8Array;
+  }): Promise<boolean> {
+    assert.equal(input.accountId, ACCOUNT_ID);
+    assert.equal(input.launchRequestId, this.launchId);
+    assert.equal(input.hostInstallationId, HOST_ID);
+    assert.equal(input.requestDigest.byteLength, 32);
+    const request = JSON.parse(new TextDecoder().decode(input.canonicalRequest)) as CanonicalObject;
+    assert.equal(request.launch_request_id, this.launchId);
+    this.closureRequests.push(request);
+    this.material = { ...this.material, state: "closing" };
+    return true;
+  }
   async startHouseFill(_accountId: string, _launchRequestId: string): Promise<HouseFillRecord | null> { throw new Error("unused"); }
   async retainHouseFillSelection(_launchRequestId: string, _hostInstallationId: string): Promise<HouseFillRecord | null> { throw new Error("unused"); }
   async recordHouseRunnerReservation(_input: never): Promise<HouseFillRecord | null> { throw new Error("unused"); }
   async completeHouseFill(_launchRequestId: string): Promise<HouseFillRecord | null> { throw new Error("unused"); }
   async recordPrestartAbandonment(_launchRequestId: string, _canonicalEvidence: Uint8Array, _evidenceDigest: Uint8Array): Promise<boolean> { throw new Error("unused"); }
   async recordProvisioningAbandonment(_launchRequestId: string, _canonicalEvidence: Uint8Array, _evidenceDigest: Uint8Array): Promise<boolean> { throw new Error("unused"); }
-  async listPrestartAbandonmentCandidates() { return []; }
+  async recordLaunchClosure(
+    launchRequestId: string,
+    canonicalEvidence: Uint8Array,
+    evidenceDigest: Uint8Array,
+  ): Promise<boolean> {
+    assert.equal(launchRequestId, this.launchId);
+    assert.equal(evidenceDigest.byteLength, 32);
+    const evidence = JSON.parse(new TextDecoder().decode(canonicalEvidence)) as CanonicalObject;
+    assert.equal(evidence.schema, "worldstream/hosted-launch-closure-evidence/v1");
+    this.closureEvidence.push(evidence);
+    this.material = { ...this.material, state: "closed_by_creator" };
+    return true;
+  }
+  async listPendingLaunchClosures(limit: number) {
+    if (limit <= 0 || this.material.state !== "closing") return [];
+    return [{ launchRequestId: this.launchId }].slice(0, limit);
+  }
+  async listPrestartAbandonmentCandidates(_limit: number) { return []; }
   async recordPublicRelayBinding(_input: {
     runId: string; canonicalRequest: Uint8Array; requestDigest: Uint8Array;
     canonicalReceipt: Uint8Array; receiptDigest: Uint8Array;
@@ -272,6 +311,7 @@ class RosterData implements HostedFormationData {
 
 class RosterGateway implements HostedFormationGateway {
   readonly launches: CanonicalObject[] = [];
+  readonly launchClosures: CanonicalObject[] = [];
   roomSetupComplete = false;
 
   async launch(request: CanonicalObject) {
@@ -289,6 +329,34 @@ class RosterGateway implements HostedFormationGateway {
       listing_revision_digest: String(request.listing_revision_digest),
       launch_request_digest: String(request.launch_request_digest),
       room_setup_operation_id: String(request.room_setup_operation_id),
+    };
+  }
+
+  async closeLaunch(request: CanonicalObject): Promise<CanonicalObject> {
+    this.launchClosures.push(structuredClone(request));
+    const roomExists = this.launches.length > 0;
+    const roomId = roomExists ? "01ARZ3NDEKTSV4RRFFQ69G5FAV" : null;
+    return {
+      schema: "worldstream/hosted-launch-closure-evidence/v1",
+      host_installation_id: HOST_ID,
+      launch_request_id: String(request.launch_request_id),
+      listing_revision_digest: String(request.listing_revision_digest),
+      launch_request_digest: String(request.launch_request_digest),
+      room_setup_operation_id: String(request.room_setup_operation_id),
+      disposition: roomExists ? "room_archived" : "cancelled_before_genesis",
+      room_id: roomId,
+      room_head: roomExists ? {
+        room_id: roomId,
+        room_seq: 2,
+        genesis_or_transition_hash: `blake3:${"1".repeat(64)}`,
+        core_schema_version: "worldstream.core-room-state.v1",
+        pack_digest: `blake3:${"2".repeat(64)}`,
+        core_state_hash: `blake3:${"3".repeat(64)}`,
+        activity_state_hash: `blake3:${"4".repeat(64)}`,
+        authoritative_state_hash: `blake3:${"5".repeat(64)}`,
+      } : null,
+      closure_fence_digest: `blake3:${"a".repeat(64)}`,
+      authentication_tag: "b".repeat(64),
     };
   }
 

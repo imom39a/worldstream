@@ -78,6 +78,7 @@ test("background reconciliation uses the injected reviewed catalog for Genesis r
           host_installation_id: config.WORLDSTREAM_HOSTED_INSTALLATION_ID,
           room_setup_operation_id: operation(genesisLaunch),
         }]);
+        case "list_pending_launch_closures_v1": return Response.json([]);
         case "list_prestart_abandonment_candidates_v1":
           return Response.json([{ launch_request_id: prestartLaunch }]);
         case "mark_reconciliation_attempt_v1": return Response.json(null);
