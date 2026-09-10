@@ -7,6 +7,7 @@
     "node": "24.18.1"
   },
   "scripts": {
+    "heist:prototype": "npm --prefix clients/agent-heist-web run dev -- --port 5188 --strictPort",
     "docs:dev": "pnpm --dir web/manual dev",
     "docs:build": "pnpm --dir web/manual build",
     "docs:lint": "pnpm --dir web/manual lint",
