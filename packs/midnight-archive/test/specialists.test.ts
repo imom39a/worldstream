@@ -130,6 +130,31 @@ test("Mira's two Vault assay steps disclose no finding before eligible completio
   assert.ok((finalProjection.candidates as CanonicalObject[]).every((candidate) => (candidate.observed_evidence as unknown[]).length === 2));
 });
 
+test("Mira's pending assay sample resets when the next turn or task interrupts it", () => {
+  let state = fresh();
+  state = { ...state, mira: { ...state.mira, location: "vault", mode: "holding" } };
+  state = plan(state, "mira", "field_assay", [step("collect_assay_sample")]);
+  state = wait(state, ["mira"]);
+  assert.equal(state.mira.field_assay.steps_completed, 1);
+
+  state = wait(state);
+  assert.deepEqual(state.mira.field_assay, { steps_completed: 0, result: "none" });
+  state = action(state, "lead", "request_mira_plan");
+  rejectAction(state, "mira", "submit_companion_plan", "plan_invalid", {
+    task_revision: state.mira.task.revision,
+    opportunity_revision: state.mira.opportunity.revision,
+    steps: [step("complete_field_assay")],
+  });
+
+  state = action(state, "lead", "cancel_mira_task");
+  state = { ...state, mira: { ...state.mira, location: "vault", mode: "holding" } };
+  state = plan(state, "mira", "field_assay", [step("collect_assay_sample")]);
+  state = wait(state, ["mira"]);
+  assert.equal(state.mira.field_assay.steps_completed, 1);
+  state = action(state, "lead", "set_mira_hold");
+  assert.deepEqual(state.mira.field_assay, { steps_completed: 0, result: "none" });
+});
+
 test("a hatch opening this turn cannot authorize another participant's traversal", () => {
   let state = fresh();
   state = { ...state, location: "plant", jonah: { ...state.jonah, location: "plant", mode: "holding" }, mira: { ...state.mira, mode: "holding" } };

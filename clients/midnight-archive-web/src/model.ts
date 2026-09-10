@@ -963,6 +963,9 @@ function specialistStateFitsProjection(
       && verifierResult?.candidateId === knowledge.verifierResult.candidateId
     ))
     && (role !== "jonah" || (mira.fieldAssay.stepsCompleted === 0 && mira.fieldAssay.result === null))
+    && (mira.fieldAssay.stepsCompleted !== 1 || (
+      lastContribution.kind === "collect_assay_sample" && lastContribution.turn === turnsUsed
+    ))
     && (mira.fieldAssay.result === null
       ? mira.fieldAssay.stepsCompleted < 2
       : mira.fieldAssay.stepsCompleted === 2 && candidates.some((candidate) => (

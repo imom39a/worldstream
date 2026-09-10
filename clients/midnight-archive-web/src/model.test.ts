@@ -190,6 +190,15 @@ describe("Midnight Archive strict participant Projection", () => {
     }));
     expect(parsed?.mira.fieldAssay).toEqual({ stepsCompleted: 1, result: null });
     expect(readMidnightArchiveProjection(rawProjection({
+      turns_used: 2,
+      turns_remaining: 14,
+      mira,
+      crew_debrief: {
+        starting_roles: ["lead", "mira"], extracted_roles: [], left_behind_roles: [],
+        completed_work: [{ role: "mira", kind: "collect_assay_sample", turn: 1 }],
+      },
+    }))).toBeNull();
+    expect(readMidnightArchiveProjection(rawProjection({
       mira: rawMira({ ...mira, field_assay: { steps_completed: 1, result: { candidate_id: "ledger-violet", confidence: "verified" } } }),
       crew_debrief: {
         starting_roles: ["lead", "mira"], extracted_roles: [], left_behind_roles: [],

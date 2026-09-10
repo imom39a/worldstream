@@ -118,6 +118,7 @@ export function reconcileMira(
       opportunity: { ...emptyOpportunity(), revision: state[companionRole].opportunity.revision },
       plan: emptyPlan(),
       preparation: emptyPreparation(),
+      field_assay: resetPendingAssay(state[companionRole]),
     };
     return {
       state: { ...cloneState(state), [companionRole]: mira },
@@ -134,6 +135,7 @@ export function reconcileMira(
       opportunity: { ...emptyOpportunity(), revision: state[companionRole].opportunity.revision },
       plan: emptyPlan(),
       preparation: emptyPreparation(),
+      field_assay: resetPendingAssay(state[companionRole]),
     };
     return { state: { ...cloneState(state), [companionRole]: mira }, timerRequests: [] };
   }
@@ -187,6 +189,7 @@ export function applyMiraLeadControl(
       opportunity: { ...emptyOpportunity(), revision: mira.opportunity.revision },
       plan: emptyPlan(),
       preparation: emptyPreparation(),
+      field_assay: resetPendingAssay(mira),
     };
   } else if (actionType === "cancel_mira_task") {
     exactKeys(payload, []);
@@ -198,6 +201,7 @@ export function applyMiraLeadControl(
       opportunity: { ...emptyOpportunity(), revision: mira.opportunity.revision },
       plan: emptyPlan(),
       preparation: emptyPreparation(),
+      field_assay: resetPendingAssay(mira),
     };
   } else if (
     actionType === "set_mira_follow" || actionType === "set_mira_hold" ||
@@ -216,6 +220,7 @@ export function applyMiraLeadControl(
       opportunity: { ...emptyOpportunity(), revision: mira.opportunity.revision },
       plan: emptyPlan(),
       preparation: emptyPreparation(),
+      field_assay: resetPendingAssay(mira),
     };
   } else if (actionType === "request_mira_plan") {
     exactKeys(payload, []);
@@ -497,6 +502,9 @@ export function applyMiraResolution(
   let evidence = afterLead.evidence;
   let verifierResult = afterLead.verifier_result;
   let powerRemaining = afterLead.power_remaining;
+  const completesPendingAssay = companionRole === "mira" && resolution.kind === "plan" &&
+    resolution.step?.step_type === "complete_field_assay";
+  if (!completesPendingAssay) mira = { ...mira, field_assay: resetPendingAssay(mira) };
   if (resolution.kind === "none") {
     if (mira.mode === "tasked") mira = { ...mira, preparation: emptyPreparation() };
     return { ...afterLead, [companionRole]: mira };
@@ -621,6 +629,11 @@ function validatePlannedSequence(state: ArchiveState, mira: MiraState, steps: re
   let plannedPower = 0;
   let taskComplete = false;
   let assayProgress = mira.field_assay.steps_completed;
+  if (assayProgress === 1 && (
+    steps[0]?.step_type !== "complete_field_assay" ||
+    mira.last_contribution.kind !== "collect_assay_sample" ||
+    mira.last_contribution.turn !== state.turns_used
+  )) reject("plan_invalid", "Mira's sampled assay must continue on the immediately following turn");
   for (const step of steps) {
     if (taskComplete) reject("plan_invalid", "a Companion Plan cannot continue after completing its task");
     validateStepForTask(mira.task.kind, step, companionRole);
@@ -702,7 +715,12 @@ function validateStepAtTurnStart(state: ArchiveState, mira: MiraState, step: Mir
       reject("task_violation", "the hatch is no longer eligible within this task");
     }
   } else if (step.step_type === "collect_assay_sample" || step.step_type === "complete_field_assay") {
-    if (location !== "vault" || mira.field_assay.steps_completed !== (step.step_type === "collect_assay_sample" ? 0 : 1)) {
+    const continuesSample = step.step_type !== "complete_field_assay" || (
+      mira.last_contribution.kind === "collect_assay_sample" &&
+      mira.last_contribution.turn === state.turns_used
+    );
+    if (location !== "vault" || !continuesSample ||
+      mira.field_assay.steps_completed !== (step.step_type === "collect_assay_sample" ? 0 : 1)) {
       reject("task_violation", "the current Vault assay prerequisite is unmet");
     }
   } else {
@@ -829,6 +847,12 @@ function emptyPreparation(): MiraState["preparation"] {
     step_index: 0,
     summary: "none",
   };
+}
+
+function resetPendingAssay(mira: MiraState): MiraState["field_assay"] {
+  return mira.field_assay.steps_completed === 1
+    ? { steps_completed: 0, result: "none" }
+    : mira.field_assay;
 }
 
 function preparationSummary(stepType: MiraPlanStep["step_type"]): string {
