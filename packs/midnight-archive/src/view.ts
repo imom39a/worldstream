@@ -4,10 +4,11 @@ import type {
   PackActionOffer,
 } from "@worldstream/pack-sdk";
 
-import type { ArchiveState, Role, StagedAction, VisibleCandidate } from "./model.js";
+import type { ArchiveState, CompanionRole, Role, StagedAction, VisibleCandidate } from "./model.js";
 import { record, stringValue } from "./model.js";
 import { authoredEvidenceSources, legalDestinations } from "./rules.js";
 import { miraActionOffers, planningStatus } from "./companions.js";
+import { crewDebrief, prepareTurn } from "./turn-resolution.js";
 
 export type AudienceSchema =
   | "public"
@@ -68,16 +69,18 @@ export function authorizedView(
   }
   return {
     schema,
-    projection: participantProjection(state, role),
+    projection: participantProjection(state, role, core),
     actionOffers: viewerType === "participant"
       ? role === "lead"
-        ? [...leadActionOffers(state), ...miraActionOffers(state, role, viewerMemberId)]
-        : miraActionOffers(state, role, viewerMemberId)
+        ? [...leadActionOffers(state, core), ...miraActionOffers(state, role, viewerMemberId), ...miraActionOffers(state, role, viewerMemberId, "jonah"),
+          ...(state.phase === "active" && state.staged_action.kind === "extract"
+            ? [...(state.extraction.status === "none" && prepareTurn(state, core).view.status === "clear" ? [{ actionType: "prepare_extraction", eligibilityWindow: null }] : []), ...(state.extraction.status === "prepared" ? [{ actionType: "acknowledge_extraction", eligibilityWindow: null }] : [])] : [])]
+        : miraActionOffers(state, role, viewerMemberId, role)
       : [],
   };
 }
 
-export function participantProjection(state: ArchiveState, role: Role): CanonicalObject {
+export function participantProjection(state: ArchiveState, role: Role, core?: CanonicalObject): CanonicalObject {
   return {
     phase: state.phase,
     objective: `${state.objective} ${state.role_notes[role]}`,
@@ -110,6 +113,11 @@ export function participantProjection(state: ArchiveState, role: Role): Canonica
     preservation_agreement: preservationAgreementProjection(state),
     optional_objectives: optionalObjectivesProjection(state),
     mira: miraProjection(state),
+    jonah: miraProjection(state, "jonah"),
+    turn_resolution: prepareTurn(state, core).view as unknown as CanonicalObject,
+    extraction: { status: state.extraction.status, revision: state.extraction.revision, for_turn: state.extraction.for_turn,
+      extracted_roles: [...state.extraction.extracted_roles], left_behind_roles: [...state.extraction.left_behind_roles] },
+    crew_debrief: crewDebrief(state),
     debrief: debriefProjection(state),
     outcome: state.outcome.kind === "pending" ? null : { kind: state.outcome.kind },
   };
@@ -207,7 +215,7 @@ function optionalObjectivesProjection(state: ArchiveState): CanonicalObject {
 function candidateEvidence(state: ArchiveState, candidate: VisibleCandidate, role: Role): CanonicalObject {
   const observed = authoredEvidenceSources().filter((source) =>
     state.evidence[source.source_id] === "observed" ||
-    (role === "mira" && state.mira.knowledge[source.source_id] !== "unknown")
+    ((role === "mira" || role === "jonah") && state[role].knowledge[source.source_id] !== "unknown")
   );
   const observedEvidence = observed.map((source) => ({
     source_id: source.source_id,
@@ -224,35 +232,37 @@ function candidateEvidence(state: ArchiveState, candidate: VisibleCandidate, rol
   };
 }
 
-function miraProjection(state: ArchiveState): CanonicalObject {
-  const status = planningStatus(state.mira);
+function miraProjection(state: ArchiveState, companionRole: CompanionRole = "mira"): CanonicalObject {
+  const companion = state[companionRole];
+  const status = planningStatus(companion);
   const visiblePlan = status === "ready" || status === "complete";
   return {
-    presence: state.mira.presence,
-    location: state.mira.location,
-    mode: state.mira.mode,
-    task: { ...state.mira.task },
+    field_assay: { steps_completed: companion.field_assay.steps_completed, result: companion.field_assay.result === "none" ? null : { candidate_id: companion.field_assay.result, confidence: "verified" } },
+    presence: companion.presence,
+    location: companion.location,
+    mode: companion.mode,
+    task: { ...companion.task },
     planning: {
       status,
-      opportunity_revision: state.mira.opportunity.revision,
-      plan_revision: visiblePlan ? state.mira.plan.revision : 0,
-      steps_total: visiblePlan ? state.mira.plan.steps.length : 0,
-      steps_completed: visiblePlan ? state.mira.plan.next_step_index : 0,
-      deadline: status === "waiting" ? state.mira.opportunity.deadline : "none",
+      opportunity_revision: companion.opportunity.revision,
+      plan_revision: visiblePlan ? companion.plan.revision : 0,
+      steps_total: visiblePlan ? companion.plan.steps.length : 0,
+      steps_completed: visiblePlan ? companion.plan.next_step_index : 0,
+      deadline: status === "waiting" ? companion.opportunity.deadline : "none",
     },
     preparation: {
-      status: state.mira.preparation.status,
-      for_turn: state.mira.preparation.for_turn,
-      summary: state.mira.preparation.summary,
+      status: companion.preparation.status,
+      for_turn: companion.preparation.for_turn,
+      summary: companion.preparation.summary,
     },
     knowledge: {
-      records: state.mira.knowledge.records,
-      conservation: state.mira.knowledge.conservation,
-      verifier_result: state.mira.knowledge.verifier_result === "none"
+      records: companion.knowledge.records,
+      conservation: companion.knowledge.conservation,
+      verifier_result: companion.knowledge.verifier_result === "none"
         ? null
-        : { candidate_id: state.mira.knowledge.verifier_result, confidence: "verified" },
+        : { candidate_id: companion.knowledge.verifier_result, confidence: "verified" },
     },
-    last_contribution: { ...state.mira.last_contribution },
+    last_contribution: { ...companion.last_contribution },
   };
 }
 
@@ -270,7 +280,7 @@ function stagedProjection(staged: StagedAction): CanonicalJson {
   return common;
 }
 
-function leadActionOffers(state: ArchiveState): PackActionOffer[] {
+function leadActionOffers(state: ArchiveState, core: CanonicalObject): PackActionOffer[] {
   if (state.phase !== "active") return [];
   const offers: PackActionOffer[] = [];
   if (legalDestinations(state).length > 0) offers.push(offer("stage_move"));
@@ -318,7 +328,8 @@ function leadActionOffers(state: ArchiveState): PackActionOffer[] {
   }
   if (state.location === "atrium") offers.push(offer("stage_extract"));
   offers.push(offer("stage_wait"));
-  if (state.staged_action.kind !== "none") offers.push(offer("commit_turn"));
+  if (state.staged_action.kind !== "none" && prepareTurn(state, core).view.status === "clear" &&
+    (state.staged_action.kind !== "extract" || state.extraction.status === "acknowledged")) offers.push(offer("commit_turn"));
   return offers;
 }
 

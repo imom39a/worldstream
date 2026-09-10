@@ -71,6 +71,8 @@ export const bothObjectivesRouteActions = [
   stage("stage_move", { destination: "atrium" }),
   stage("commit_turn", {}),
   stage("stage_extract", {}),
+  stage("prepare_extraction", {}),
+  stage("acknowledge_extraction", { preview_revision: 30, left_behind_roles: [] }),
   stage("commit_turn", {}),
 ] as const;
 
@@ -139,6 +141,8 @@ export function bothObjectivesRouteFinalState(): ArchiveState {
   let state = startArchive({
     ...initializeArchiveState({ scenario_id: "standard-v1" }),
     mira: initialMiraState(MIRA_MEMBER_ID),
+    jonah: initialMiraState(JONAH_MEMBER_ID, "jonah"),
+    starting_crew: [{ role: "lead", member_id: LEAD_MEMBER_ID }, { role: "mira", member_id: MIRA_MEMBER_ID }, { role: "jonah", member_id: JONAH_MEMBER_ID }],
   });
   const fixtureCore = {
     memberships: Object.fromEntries(

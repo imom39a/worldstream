@@ -90,6 +90,7 @@ function schemaParts() {
     enum: [
       null,
       { kind: "success" },
+      { kind: "partial_extraction" },
       { kind: "wrong_ledger" },
       { kind: "no_ledger" },
       { kind: "exhausted_inside" },
@@ -155,7 +156,7 @@ function schemaParts() {
     properties: {
       extracted_candidate_id: candidateOrNone,
       factual_reason: { maxLength: 256, type: "string" },
-      kind: { enum: ["pending", "success", "wrong_ledger", "no_ledger", "exhausted_inside"] },
+      kind: { enum: ["pending", "success", "partial_extraction", "wrong_ledger", "no_ledger", "exhausted_inside"] },
     },
     required: ["kind", "factual_reason", "extracted_candidate_id"],
     type: "object",
@@ -236,9 +237,9 @@ function schemaParts() {
     additionalProperties: false,
     properties: {
       destination: locationOrNone,
-      power_cost: { enum: [0, 1] },
+      power_cost: { enum: [0, 1, 2] },
       source_id: { enum: ["none", "records", "conservation"] },
-      step_type: { enum: ["move", "inspect_source", "share_source", "use_verifier"] },
+      step_type: { enum: ["move", "inspect_source", "share_source", "use_verifier", "open_service_hatch", "collect_assay_sample", "complete_field_assay"] },
     },
     required: ["step_type", "destination", "source_id", "power_cost"],
     type: "object",
@@ -246,9 +247,9 @@ function schemaParts() {
   const miraTask = {
     additionalProperties: false,
     properties: {
-      kind: { enum: ["none", "investigate_records", "investigate_conservation"] },
-      power_allowance: { enum: [0, 1] },
-      power_spent: { enum: [0, 1] },
+      kind: { enum: ["none", "investigate_records", "investigate_conservation", "open_service_hatch", "field_assay"] },
+      power_allowance: { enum: [0, 1, 2] },
+      power_spent: { enum: [0, 1, 2] },
       revision: { maximum: 65_535, minimum: 0, type: "integer" },
       status: { enum: ["none", "assigned", "complete", "cancelled"] },
     },
@@ -256,7 +257,7 @@ function schemaParts() {
     type: "object",
   };
   const contributionKind = { enum: [
-    "none", "move", "inspect_source", "share_source", "use_verifier", "follow_move", "regroup_move",
+    "none", "move", "inspect_source", "share_source", "use_verifier", "open_service_hatch", "collect_assay_sample", "complete_field_assay", "follow_move", "regroup_move",
   ] };
   const miraKnowledge = {
     additionalProperties: false,
@@ -272,6 +273,7 @@ function schemaParts() {
     additionalProperties: false,
     properties: {
       knowledge: miraKnowledge,
+      field_assay: { additionalProperties: false, type: "object", properties: { steps_completed: { type: "integer", minimum: 0, maximum: 2 }, result: candidateOrNone }, required: ["steps_completed", "result"] },
       last_contribution: {
         additionalProperties: false,
         properties: {
@@ -332,7 +334,7 @@ function schemaParts() {
     },
     required: [
       "presence", "member_id", "location", "mode", "task", "opportunity", "plan",
-      "preparation", "knowledge", "last_contribution",
+      "preparation", "knowledge", "last_contribution", "field_assay",
     ],
     type: "object",
   };
@@ -350,6 +352,7 @@ function schemaParts() {
         type: "object",
       },
       last_contribution: miraState.properties.last_contribution,
+      field_assay: { additionalProperties: false, type: "object", properties: { steps_completed: { type: "integer", minimum: 0, maximum: 2 }, result: verifierResultProjection }, required: ["steps_completed", "result"] },
       location: locationOrNone,
       mode: miraState.properties.mode,
       planning: {
@@ -378,10 +381,29 @@ function schemaParts() {
       presence: miraState.properties.presence,
       task: miraTask,
     },
-    required: ["presence", "location", "mode", "task", "planning", "preparation", "knowledge", "last_contribution"],
+    required: ["presence", "location", "mode", "task", "planning", "preparation", "knowledge", "last_contribution", "field_assay"],
     type: "object",
   };
+  const role = { enum: ["lead", "mira", "jonah"] };
+  const companionRole = { enum: ["mira", "jonah"] };
+  const roles = arrayOf(role, 3);
+  const companions = arrayOf(companionRole, 2);
+  const revision = { type: "integer", minimum: 0, maximum: 65535 };
+  const completedWork = arrayOf(closed({ role: companionRole, kind: contributionKind, turn: { type: "integer", minimum: 1, maximum: 16 } }), 32);
+  const extraction = closed({ status: { enum: ["none", "prepared", "acknowledged"] }, revision,
+    for_turn: { type: "integer", minimum: 0, maximum: 16 }, extracted_roles: roles, left_behind_roles: companions });
+  const extractionState = closed({ ...extraction.properties,
+    contribution_fingerprint: { type: "string", minLength: 4, maxLength: 71 } });
+  const turnResolution = closed({ status: { enum: ["clear", "conflict"] },
+    power_reserved: { type: "integer", minimum: 0, maximum: 5 },
+    prepared_roles: companions, deferred_roles: companions, unprepared_roles: companions,
+    reservations: arrayOf(closed({ role, power: { type: "integer", minimum: 0, maximum: 2 },
+      interaction: { enum: ["none", "service_hatch", "catalog_verifier"] } }), 3),
+    conflicts: arrayOf(closed({ code: { enum: ["shared_power", "service_hatch", "catalog_verifier", "ineligible_contribution"] }, roles }), 5) });
+  const crewDebrief = closed({ starting_roles: roles, extracted_roles: roles, left_behind_roles: roles, completed_work: completedWork });
+  const startingCrew = arrayOf(closed({ role, member_id: { type: "string", minLength: 1, maxLength: 64 } }), 3);
   return {
+    extraction, extractionState, turnResolution, crewDebrief, startingCrew, completedWork,
     candidate,
     candidateOrNull,
     debriefProjection,
@@ -418,6 +440,10 @@ export function stateSchema(): CanonicalObject {
       gates: part.gates,
       location: part.location,
       mira: part.miraState,
+      jonah: part.miraState,
+      starting_crew: part.startingCrew,
+      extraction: part.extractionState,
+      completed_crew_work: part.completedWork,
       objective: { maxLength: 256, minLength: 1, type: "string" },
       outcome: part.outcome,
       phase: { enum: ["briefing", "active", "complete"] },
@@ -435,7 +461,7 @@ export function stateSchema(): CanonicalObject {
     required: [
       "phase", "scenario_id", "objective", "location", "turn_limit", "turns_used",
       "power_remaining", "gates", "candidates", "evidence", "preservation_agreement",
-      "collection_preservation", "source_record_protected", "mira", "truth_marker", "verifier_result",
+      "collection_preservation", "source_record_protected", "mira", "jonah", "starting_crew", "extraction", "completed_crew_work", "truth_marker", "verifier_result",
       "carried_candidate_id", "carried_confidence", "staged_action", "outcome", "role_notes",
     ],
     type: "object",
@@ -501,6 +527,10 @@ export function participantProjectionSchema(): CanonicalObject {
         type: "object",
       },
       mira: part.miraProjection,
+      jonah: part.miraProjection,
+      turn_resolution: part.turnResolution,
+      extraction: part.extraction,
+      crew_debrief: part.crewDebrief,
       objective: { maxLength: 384, minLength: 1, type: "string" },
       outcome: part.outcomeProjection,
       phase: { enum: ["briefing", "active", "complete"] },
@@ -513,7 +543,7 @@ export function participantProjectionSchema(): CanonicalObject {
     required: [
       "phase", "objective", "location", "turns_used", "turns_remaining", "power",
       "gates", "map", "candidates", "staged_action", "carried_candidate", "debrief",
-      "preservation_agreement", "optional_objectives", "mira",
+      "preservation_agreement", "optional_objectives", "mira", "jonah", "turn_resolution", "extraction", "crew_debrief",
       "verifier_result", "outcome",
     ],
     type: "object",
@@ -542,4 +572,12 @@ export function emptyPayloadSchema(): CanonicalObject {
     required: [],
     type: "object",
   };
+}
+
+function closed(properties: Record<string, unknown>) {
+  return { additionalProperties: false, type: "object", properties, required: Object.keys(properties) };
+}
+
+function arrayOf(items: unknown, maximum: number) {
+  return { type: "array", items, minItems: 0, maxItems: maximum };
 }

@@ -33,14 +33,15 @@ import {
 import { authorizedView } from "./view.js";
 import {
   MIRA_PLAN_ATTENTION_REASON,
-  activeMiraMemberId,
   applyMiraLeadControl,
   expireMiraOpportunity,
-  initialMiraState,
+  initialCompanionFromCore,
   isMiraLeadControl,
   reconcileMira,
   submitMiraPlan,
 } from "./companions.js";
+import { JONAH_PLAN_TIMER_ID } from "./companions.js";
+import { invalidateExtraction } from "./turn-resolution.js";
 
 export const ACTIVITY_START_INPUT_TYPE =
   "worldstream.midnight-archive/briefing-opened/v1";
@@ -83,37 +84,44 @@ function turnCommittedSchema(): CanonicalObject {
       event_type: { const: "turn_committed" },
       location: { enum: ["atrium", "records", "conservation", "plant", "vault"] },
       outcome_kind: {
-        enum: ["pending", "success", "wrong_ledger", "no_ledger", "exhausted_inside"],
+        enum: ["pending", "success", "partial_extraction", "wrong_ledger", "no_ledger", "exhausted_inside"],
       },
       mira_contribution: {
-        enum: ["none", "move", "inspect_source", "share_source", "use_verifier", "follow_move", "regroup_move"],
+        enum: ["none", "move", "inspect_source", "share_source", "use_verifier", "open_service_hatch", "collect_assay_sample", "complete_field_assay", "follow_move", "regroup_move"],
       },
       mira_plan_revision: { maximum: 65_535, minimum: 0, type: "integer" },
+      jonah_contribution: {
+        enum: ["none", "move", "inspect_source", "share_source", "use_verifier", "open_service_hatch", "collect_assay_sample", "complete_field_assay", "follow_move", "regroup_move"],
+      },
+      jonah_plan_revision: { maximum: 65_535, minimum: 0, type: "integer" },
       power: { maximum: 3, minimum: 0, type: "integer" },
       turn: { maximum: 16, minimum: 1, type: "integer" },
     },
     required: [
       "event_type", "committed_action_type", "turn", "location", "power", "outcome_kind",
-      "mira_contribution", "mira_plan_revision",
+      "mira_contribution", "mira_plan_revision", "jonah_contribution", "jonah_plan_revision",
     ],
     type: "object",
   };
 }
 
-function miraStateUpdatedSchema(): CanonicalObject {
+function companionStateUpdatedSchema(): CanonicalObject {
   return {
     additionalProperties: false,
     properties: {
       action_type: { enum: [
         "assign_mira_task", "cancel_mira_task", "set_mira_follow", "set_mira_hold",
         "set_mira_regroup", "request_mira_plan", "prepare_mira_contribution",
-        "defer_mira_contribution", "submit_companion_plan", "expire_mira_plan",
+        "defer_mira_contribution", "submit_companion_plan", "expire_companion_plan",
+        "assign_jonah_task", "cancel_jonah_task", "set_jonah_follow", "set_jonah_hold", "set_jonah_regroup",
+        "request_jonah_plan", "prepare_jonah_contribution", "defer_jonah_contribution",
       ] },
-      event_type: { const: "mira_state_updated" },
+      event_type: { const: "companion_state_updated" },
+      role: { enum: ["mira", "jonah"] },
       planning_status: { enum: ["not_requested", "waiting", "ready", "expired", "complete"] },
       task_revision: { maximum: 65_535, minimum: 0, type: "integer" },
     },
-    required: ["event_type", "action_type", "task_revision", "planning_status"],
+    required: ["event_type", "role", "action_type", "task_revision", "planning_status"],
     type: "object",
   };
 }
@@ -154,14 +162,14 @@ export function reduceArchive(input: CanonicalObject): PackReduceOutput {
       const admittedAt = stringValue(stimulus.admitted_at, "admitted_at");
       const applied = role === "lead"
         ? isMiraLeadControl(actionType)
-          ? applyMiraLeadControl(current, actionType, actionPayload, coreBefore, admittedAt, scheduled)
+          ? applyMiraLeadControl(current, actionType, actionPayload, coreBefore, admittedAt, scheduled, actionType.includes("_jonah_") ? "jonah" : "mira")
           : applyLeadAction(current, actionType, actionPayload, coreBefore, scheduled)
-        : role === "mira" && actionType === "submit_companion_plan"
-        ? submitMiraPlan(current, actionPayload, coreBefore, memberId, admittedAt, scheduled)
+        : (role === "mira" || role === "jonah") && actionType === "submit_companion_plan"
+        ? submitMiraPlan(current, actionPayload, coreBefore, memberId, admittedAt, scheduled, role)
         : (() => { throw new RuleRejection("role_violation", "the acting Role cannot perform this Action"); })();
       return {
         activity_disposition_type: "apply",
-        next_activity_state: stateAsCanonical(applied.state),
+        next_activity_state: stateAsCanonical(isMiraLeadControl(actionType) || actionType === "submit_companion_plan" ? invalidateExtraction(applied.state) : applied.state),
         ordered_domain_events: [applied.event],
         timer_requests: "timerRequests" in applied
           ? applied.timerRequests as readonly CanonicalJson[]
@@ -172,10 +180,10 @@ export function reduceArchive(input: CanonicalObject): PackReduceOutput {
       };
     }
     if (stimulusType === "timer_fired") {
-      const applied = expireMiraOpportunity(current, stimulus);
+      const applied = expireMiraOpportunity(current, stimulus, stimulus.timer_id === JONAH_PLAN_TIMER_ID ? "jonah" : "mira");
       return {
         activity_disposition_type: "apply",
-        next_activity_state: stateAsCanonical(applied.state),
+        next_activity_state: stateAsCanonical(invalidateExtraction(applied.state)),
         ordered_domain_events: [applied.event],
         timer_requests: applied.timerRequests,
         ordered_attention_signals: applied.attentionSignals,
@@ -183,11 +191,12 @@ export function reduceArchive(input: CanonicalObject): PackReduceOutput {
     }
     if (stimulusType === "core_proposed") {
       const reconciled = reconcileMira(current, coreAfter, scheduled);
+      const jonah = reconcileMira(reconciled.state, coreAfter, scheduled, "jonah");
       return {
         activity_disposition_type: "apply",
-        next_activity_state: stateAsCanonical(reconciled.state),
+        next_activity_state: stateAsCanonical(invalidateExtraction(jonah.state)),
         ordered_domain_events: [],
-        timer_requests: reconciled.timerRequests,
+        timer_requests: [...reconciled.timerRequests, ...jonah.timerRequests],
         ordered_attention_signals: [],
       };
     }
@@ -255,7 +264,7 @@ export function validateCoreInvariant(core: CanonicalObject): void {
     const expectedKind = role === "lead" ? "human" : "agent";
     const standingIsValid = role === "lead"
       ? membership.standing === "enabled"
-      : membership.standing === "enabled" || membership.standing === "suspended";
+      : membership.standing === "enabled" || membership.standing === "suspended" || membership.standing === "departed";
     if (
       membership.access_mode !== "participant" ||
       membership.principal_kind !== expectedKind ||
@@ -295,6 +304,7 @@ function cleanRejectionAllowed(stimulusType: string): boolean {
 export default defineActivityPack({
   descriptor: {
     packId: "worldstream.midnight-archive",
+    schemaVersion: 2,
     name: "Midnight Archive",
     version: "0.1.0",
     roles: [
@@ -341,8 +351,8 @@ export default defineActivityPack({
         payloadSchema: {
           additionalProperties: false,
           properties: {
-            power_allowance: { enum: [0, 1] },
-            task_kind: { enum: ["investigate_records", "investigate_conservation"] },
+            power_allowance: { enum: [0, 1, 2] },
+            task_kind: { enum: ["investigate_records", "investigate_conservation", "open_service_hatch", "field_assay"] },
           },
           required: ["task_kind", "power_allowance"],
           type: "object",
@@ -356,6 +366,32 @@ export default defineActivityPack({
       { actionType: "prepare_mira_contribution", payloadSchema: emptyPayloadSchema() },
       { actionType: "defer_mira_contribution", payloadSchema: emptyPayloadSchema() },
       {
+        actionType: "assign_jonah_task",
+        payloadSchema: {
+          additionalProperties: false,
+          properties: {
+            power_allowance: { enum: [0, 1] },
+            task_kind: { enum: ["investigate_records", "investigate_conservation", "open_service_hatch"] },
+          },
+          required: ["task_kind", "power_allowance"],
+          type: "object",
+        },
+      },
+      { actionType: "cancel_jonah_task", payloadSchema: emptyPayloadSchema() },
+      { actionType: "set_jonah_follow", payloadSchema: emptyPayloadSchema() },
+      { actionType: "set_jonah_hold", payloadSchema: emptyPayloadSchema() },
+      { actionType: "set_jonah_regroup", payloadSchema: emptyPayloadSchema() },
+      { actionType: "request_jonah_plan", payloadSchema: emptyPayloadSchema() },
+      { actionType: "prepare_jonah_contribution", payloadSchema: emptyPayloadSchema() },
+      { actionType: "defer_jonah_contribution", payloadSchema: emptyPayloadSchema() },
+      { actionType: "prepare_extraction", payloadSchema: emptyPayloadSchema() },
+      { actionType: "acknowledge_extraction", payloadSchema: {
+        additionalProperties: false, type: "object",
+        properties: { preview_revision: { type: "integer", minimum: 1, maximum: 65535 },
+          left_behind_roles: { type: "array", items: { enum: ["mira", "jonah"] }, minItems: 0, maxItems: 2 } },
+        required: ["preview_revision", "left_behind_roles"],
+      } },
+      {
         actionType: "submit_companion_plan",
         payloadSchema: {
           additionalProperties: false,
@@ -366,9 +402,9 @@ export default defineActivityPack({
                 additionalProperties: false,
                 properties: {
                   destination: { enum: ["none", "atrium", "records", "conservation", "plant", "vault"] },
-                  power_cost: { enum: [0, 1] },
+                  power_cost: { enum: [0, 1, 2] },
                   source_id: { enum: ["none", "records", "conservation"] },
-                  step_type: { enum: ["move", "inspect_source", "share_source", "use_verifier"] },
+                  step_type: { enum: ["move", "inspect_source", "share_source", "use_verifier", "open_service_hatch", "collect_assay_sample", "complete_field_assay"] },
                 },
                 required: ["step_type", "destination", "source_id", "power_cost"],
                 type: "object",
@@ -399,13 +435,18 @@ export default defineActivityPack({
       "plan_invalid",
       "preparation_required",
       "crew_not_regrouped",
+      "turn_conflict", "extraction_preview_required", "extraction_preview_stale",
       "core_role_invariant",
     ],
     events: [
       { eventType: "archive_started", payloadSchema: archiveStartedSchema() },
       { eventType: "action_staged", payloadSchema: actionStagedSchema() },
       { eventType: "turn_committed", payloadSchema: turnCommittedSchema() },
-      { eventType: "mira_state_updated", payloadSchema: miraStateUpdatedSchema() },
+      { eventType: "companion_state_updated", payloadSchema: companionStateUpdatedSchema() },
+      { eventType: "extraction_updated", payloadSchema: { additionalProperties: false, type: "object",
+        properties: { event_type: { const: "extraction_updated" }, status: { enum: ["prepared", "acknowledged"] }, preview_revision: { type: "integer", minimum: 1, maximum: 65535 } },
+        required: ["event_type", "status", "preview_revision"],
+      } },
     ],
     attentionReasons: [MIRA_PLAN_ATTENTION_REASON],
     configurationSchema: {
@@ -455,7 +496,12 @@ export default defineActivityPack({
     const core = record(input.initial_core_state, "initial_core_state");
     const state = initializeArchiveState(configuration);
     return {
-      initial_activity_state: stateAsCanonical({ ...state, mira: initialMiraState(activeMiraMemberId(core)) }),
+      initial_activity_state: stateAsCanonical({ ...state,
+        mira: initialCompanionFromCore(core, "mira"), jonah: initialCompanionFromCore(core, "jonah"),
+        starting_crew: (["lead", "mira", "jonah"] as const).flatMap((role) => Object.values(record(core.memberships, "Core memberships"))
+          .map((value) => record(value, "Membership")).filter((member) => member.role === role)
+          .map((member) => ({ role, member_id: stringValue(member.member_id, "member_id") }))),
+      }),
       timer_requests: [],
     };
   },

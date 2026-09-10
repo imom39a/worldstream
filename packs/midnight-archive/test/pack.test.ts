@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import "./specialists.test.js";
 
 import {
   ACTIVITY_START_SOURCE_ID,
@@ -81,9 +82,9 @@ test("briefing is a complete safe projection with no Action offers", () => {
   assert.equal(view.schema, "participant");
   assert.deepEqual(view.actionOffers, []);
   assert.deepEqual(Object.keys(view.projection).sort(), [
-    "candidates", "carried_candidate", "debrief", "gates", "location", "map", "mira",
+    "candidates", "carried_candidate", "crew_debrief", "debrief", "extraction", "gates", "jonah", "location", "map", "mira",
     "objective", "optional_objectives", "outcome", "phase", "power", "preservation_agreement",
-    "staged_action", "turns_remaining", "turns_used", "verifier_result",
+    "staged_action", "turn_resolution", "turns_remaining", "turns_used", "verifier_result",
   ]);
   assert.equal(view.projection.phase, "briefing");
   assert.equal(view.projection.staged_action, null);
@@ -740,7 +741,7 @@ test("the reducer authenticates Mira's one-shot plan and replays without a provi
     },
   }));
   assert.equal(unauthorized.activity_disposition_type, "reject");
-  assert.equal(unauthorized.declared_code, "role_violation");
+  assert.equal(unauthorized.declared_code, "companion_unavailable");
 
   const submitted = reduceArchive(reduceInput(waiting, {
     stimulus_type: "participant_action",
@@ -847,6 +848,7 @@ test("terminal turns close Mira planning and cancel its one-shot timer", () => {
   ).state;
   state = applyLeadAction(state, "stage_extract", {}, core()).state;
   state = miraControl(state, "defer_mira_contribution", {});
+  state = acknowledgeCurrentExtraction(state, core());
   const input = {
     ...reduceInput(state, {
       stimulus_type: "participant_action",
@@ -875,7 +877,7 @@ test("terminal turns close Mira planning and cancel its one-shot timer", () => {
   }, core(), "mira-1", "2026-09-09T12:00:01.000Z", {}));
 });
 
-test("extraction rejects a prepared companion move away from the Atrium", () => {
+test("extraction requires a preview before a prepared companion move away from the Atrium", () => {
   let state = freshActiveWithMira();
   state = miraControl(state, "assign_mira_task", {
     task_kind: "investigate_records",
@@ -892,7 +894,7 @@ test("extraction rejects a prepared companion move away from the Atrium", () => 
   state = applyLeadAction(state, "stage_extract", {}, core()).state;
   state = miraControl(state, "prepare_mira_contribution", {});
 
-  assertRule("crew_not_regrouped", () => applyLeadAction(state, "commit_turn", {}, core()));
+  assertRule("extraction_preview_required", () => applyLeadAction(state, "commit_turn", {}, core()));
   assert.equal(state.phase, "active");
   assert.equal(state.mira.location, "atrium");
 });
@@ -917,7 +919,7 @@ test("late, stale, and replaced Companion Plans cannot execute", () => {
   const expired = expireMiraOpportunity(state, {
     timer_id: MIRA_PLAN_TIMER_ID,
     canonical_payload: {
-      timer: "mira_plan_opportunity",
+      timer: "companion_plan_opportunity",
       opportunity_revision: 1,
       task_revision: 1,
     },
@@ -940,7 +942,7 @@ test("late, stale, and replaced Companion Plans cannot execute", () => {
   assert.equal(suspended.mira.task.status, "cancelled");
 });
 
-test("task allowance fences verifier use and tasked turns require prepare or defer", () => {
+test("task allowance fences verifier use and unprepared work remains explicitly deferrable", () => {
   let state = freshActiveWithMira();
   state = miraControl(state, "assign_mira_task", {
     task_kind: "investigate_records",
@@ -958,7 +960,7 @@ test("task allowance fences verifier use and tasked turns require prepare or def
     ],
   }, core(), "mira-1", "2026-09-09T12:00:01.000Z", {}));
   state = applyLeadAction(state, "stage_wait", {}, core()).state;
-  assertRule("preparation_required", () => applyLeadAction(state, "commit_turn", {}, core()));
+  assert.equal(applyLeadAction(state, "commit_turn", {}, core()).state.turns_used, 1);
   state = miraControl(state, "defer_mira_contribution", {});
   state = applyLeadAction(state, "commit_turn", {}, core()).state;
   assert.equal(state.turns_used, 1);
@@ -997,7 +999,7 @@ test("regrouping moves one deterministic open edge per lead commit and gates ext
     mira: { ...initialMiraState("mira-1"), location: "plant" as const, mode: "holding" as const },
   };
   state = applyLeadAction(state, "stage_extract", {}, core()).state;
-  assertRule("crew_not_regrouped", () => applyLeadAction(state, "commit_turn", {}, core()));
+  assertRule("extraction_preview_required", () => applyLeadAction(state, "commit_turn", {}, core()));
   state = miraControl(state, "set_mira_regroup", {});
   state = applyLeadAction(state, "stage_wait", {}, core()).state;
   state = applyLeadAction(state, "commit_turn", {}, core()).state;
@@ -1007,6 +1009,7 @@ test("regrouping moves one deterministic open edge per lead commit and gates ext
   assert.equal(state.mira.location, "atrium");
   assert.equal(state.mira.mode, "holding");
   state = applyLeadAction(state, "stage_extract", {}, core()).state;
+  state = acknowledgeCurrentExtraction(state, core());
   state = applyLeadAction(state, "commit_turn", {}, core()).state;
   assert.equal(state.outcome.kind, "no_ledger");
 });
@@ -1020,7 +1023,7 @@ function freshActive(): ArchiveState {
 }
 
 function freshActiveWithMira(): ArchiveState {
-  return { ...freshActive(), mira: initialMiraState("mira-1") };
+  return { ...freshActive(), mira: initialMiraState("mira-1"), starting_crew: [{ role: "lead", member_id: "lead-1" }, { role: "mira", member_id: "mira-1" }] };
 }
 
 function miraControl(state: ArchiveState, actionType: string, actionPayload: CanonicalObject): ArchiveState {
@@ -1039,8 +1042,15 @@ function commit(
   actionType: string,
   actionPayload: CanonicalObject,
 ): ArchiveState {
-  const staged = applyLeadAction(state, actionType, actionPayload).state;
+  let staged = applyLeadAction(state, actionType, actionPayload).state;
+  if (actionType === "stage_extract") staged = acknowledgeCurrentExtraction(staged);
   return applyLeadAction(staged, "commit_turn", {}).state;
+}
+
+function acknowledgeCurrentExtraction(state: ArchiveState, currentCore?: CanonicalObject): ArchiveState {
+  state = applyLeadAction(state, "prepare_extraction", {}, currentCore).state;
+  return applyLeadAction(state, "acknowledge_extraction", { preview_revision: state.extraction.revision,
+    left_behind_roles: [...state.extraction.left_behind_roles] }, currentCore).state;
 }
 
 function play(
@@ -1049,6 +1059,9 @@ function play(
 ): ArchiveState {
   let state = initial;
   for (const action of actions) {
+    if (action.action_type === "commit_turn" && state.staged_action.kind === "extract" && state.extraction.status !== "acknowledged") {
+      state = acknowledgeCurrentExtraction(state);
+    }
     state = applyLeadAction(
       state,
       action.action_type,

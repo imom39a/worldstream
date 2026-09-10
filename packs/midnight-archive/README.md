@@ -3,11 +3,10 @@
 `worldstream.midnight-archive` is a deterministic escape-room Activity Pack.
 One human `lead` explores a small archive, spends a fixed power budget, chooses
 among visible ledger candidates, and extracts before the sixteenth turn ends.
-The mission remains fully playable alone. When the optional agent Role `mira`
-is filled, the lead can delegate a bounded investigation, request a one-shot
-Companion Plan, and prepare one eligible contribution for each human turn.
-The optional `jonah` Role remains reserved for later companion work and cannot
-act in version 0.1.0.
+The mission remains fully playable alone, with Mira, with Jonah, or with both.
+Each optional Agent Participant accepts bounded tasks and authenticated plans.
+Every starting crew member begins in Atrium with the same Standard budget.
+The source now uses schema version 2; retained version-1 Bundles remain immutable.
 
 The current source adds two authored evidence sources and the archivist's
 fixed preservation agreement. A committed Records inspection reveals a
@@ -51,6 +50,8 @@ then sends `commit_turn` to spend one turn. The declared actions are:
 | `stage_recover_candidate` | `{"candidate_id":"<candidate>"}` | Carry or exchange a candidate in the Vault |
 | `stage_protect_source_record` | `{}` | Spend 1 power and one turn in Plant after recovering a ledger |
 | `stage_extract` | `{}` | Resolve extraction in the Atrium |
+| `prepare_extraction` | `{}` | Preview the exact post-resolution extracted crew after staging extraction |
+| `acknowledge_extraction` | `{"preview_revision":N,"left_behind_roles":[...]}` | Acknowledge precisely the starting crew left behind, including an empty set |
 | `stage_wait` | `{}` | Spend a turn without moving |
 | `commit_turn` | `{}` | Commit the currently staged action |
 
@@ -59,21 +60,42 @@ advance the turn by themselves:
 
 | Action | Payload | Effect |
 | --- | --- | --- |
-| `assign_mira_task` | `{"task_kind":"investigate_records|investigate_conservation","power_allowance":0|1}` | Assign or replace Mira's bounded standing investigation |
+| `assign_mira_task` | `{"task_kind":"investigate_records|investigate_conservation|field_assay|open_service_hatch","power_allowance":0|1|2}` | Assign or replace Mira's task; allowance 2 is permitted only for hatch work |
 | `cancel_mira_task` | `{}` | Cancel the task and invalidate its plan and preparation |
 | `set_mira_follow` | `{}` | Have Mira follow one legal edge when the lead moves |
 | `set_mira_hold` | `{}` | Keep Mira at her current location |
-| `set_mira_regroup` | `{}` | Have Mira move one legal edge toward the lead per committed turn |
+| `set_mira_regroup` | `{}` | Have Mira move one legal edge toward Atrium per committed turn |
 | `request_mira_plan` | `{}` | Open a short, revision-fenced planning opportunity for Mira |
 | `prepare_mira_contribution` | `{}` | Select the next eligible plan step for the lead's next commit |
 | `defer_mira_contribution` | `{}` | Explicitly skip Mira's contribution on the lead's next commit |
 
-Mira alone may submit `submit_companion_plan` with one to three typed steps for
+Jonah has corresponding `assign_jonah_task`, `cancel_jonah_task`,
+`set_jonah_follow`, `set_jonah_hold`, `set_jonah_regroup`, `request_jonah_plan`,
+`prepare_jonah_contribution`, and `defer_jonah_contribution` Actions. His task
+allowance is at most 1; `field_assay` is Mira-only. Jonah opens the Plant hatch
+with one prepared work step and one charge. Human and Mira hatch work costs two.
+Mira's zero-charge Vault assay requires `collect_assay_sample` followed by
+`complete_field_assay` on a later committed turn. Sampling reveals no result;
+completion publishes the authored evidence and verified assay result.
+
+Each specialist may submit `submit_companion_plan` with one to three typed steps for
 the exact open task and opportunity revisions. A submitted plan never advances
 the world automatically. The lead must prepare a still-eligible step, and at
 most one prepared step resolves with the next committed human turn. Invalid or
 stale plans, preparations, memberships, locations, and power allowances are
-rejected or invalidated before they can affect Activity State.
+rejected or invalidated before they can affect Activity State. There is at most
+one open planning opportunity in the Room. Unprepared tasks do no work and do
+not block the human's turn. Prepared work reserves shared power and unique
+interactions; disclosed conflicts require restaging or explicit deferral.
+Independent effects resolve in lead–Mira–Jonah order from beginning-of-turn
+prerequisites, so a new gate cannot enable another contribution in that turn.
+
+Extraction requires prepare, acknowledgement and commit. Its preview includes
+companions returning to Atrium on that turn. Orders, plans, preparations,
+staged work, planning expiry and Core reconciliation invalidate an old preview.
+Crew sets use canonical lead–Mira–Jonah order; the acknowledgement must match
+the exact preview revision and left-behind set. Starting crew identity is
+retained from Genesis, so suspension or departure never erases that liability.
 
 The locations are `atrium`, `records`, `conservation`, `plant`, and `vault`.
 Open edges connect Atrium–Records, Atrium–Conservation,
@@ -83,34 +105,41 @@ committed service-hatch action. A gate opened during a commit can be traversed
 starting with the next turn.
 
 Extraction on turn 16 resolves before exhaustion. Its factual outcome is one
-of `success`, `wrong_ledger`, or `no_ledger`; any other sixteenth committed
+of `success`, `partial_extraction`, `wrong_ledger`, or `no_ledger`; full success
+requires both the authentic ledger and every starting crew member. Any other sixteenth committed
 turn ends with `exhausted_inside`.
 
 ## Participant projection
 
 Every participant projection has the same bounded shape, including during
-briefing. Mira is represented by a public, typed summary of her location,
+briefing. Each companion is represented by a typed summary of location,
 mode, task, planning opportunity, plan progress, preparation, disclosed
-knowledge, and last contribution. Private Runner inputs and undisclosed
-evidence do not enter participant or public projections.
+knowledge, last contribution and assay progress. Each specialist sees their own
+unshared evidence; other participants see only explicitly disclosed findings.
+Private plan payloads and Runner inputs are never included in those summaries.
 
 ```text
 phase, objective, location, turns_used, turns_remaining, power,
 gates, map, candidates, staged_action, carried_candidate, debrief,
-verifier_result, preservation_agreement, optional_objectives, mira, outcome
+verifier_result, preservation_agreement, optional_objectives, mira, jonah,
+turn_resolution, extraction, crew_debrief, outcome
 ```
 
 `staged_action` is `null` or an exact staged action object with
 `action_type`, `turn_cost`, `power_cost`, and its required destination or
 candidate. `verifier_result` is `null` or
 `{candidate_id, confidence:"verified"}`. `outcome` is `null` or a one-key
-object naming one of the four terminal outcomes. Candidate IDs and visible
+object naming a terminal outcome. Candidate IDs and visible
 attributes do not identify the authentic ledger by themselves. Every candidate
 also carries a bounded `observed_evidence` list plus an `unknown`, `observed`,
 or `recommended` assessment. Terminal `debrief` reports whether zero, one, or
 both authored sources were inspected, whether the agreement was accepted or
 honored, and the two optional-objective outcomes. Recovery or exchange always
-costs a committed turn and does not reveal hidden authenticity.
+costs a committed turn and does not reveal hidden authenticity. `turn_resolution`
+discloses prepared, deferred and unprepared roles, resource reservations and
+conflict codes. `crew_debrief` retains starting, extracted and left-behind roles
+plus typed, turn-attributed executed companion effects. Plans and advice are
+never counted as completed work.
 
 ## Build and proof
 
@@ -126,7 +155,8 @@ WORLDSTREAM_PACK_HOST="$PWD/target/debug/worldstreamctl" \
 ```
 
 The golden corpus executes the documented fifteen-turn powered-verification
-and agreement route as 30 stage/commit Actions. It preserves the collection,
+and agreement route as 32 Actions, including two free extraction-confirmation
+Actions. It preserves the collection,
 protects the source record, and extracts with zero power left. Focused tests
 also cover the eleven-turn agreement route, independent preservation,
 insufficient power, a recoverable committed wait, exact authored terms,
@@ -138,7 +168,7 @@ prepared step per committed turn, private inspection and explicit sharing,
 allowance and shared-power checks, replacement/suspension invalidation,
 terminal timer cancellation, following and one-edge regrouping.
 
-The current Mira 0.1.0 bundle is
+The retained IMO-202 Mira 0.1.0 bundle (before schema version 2 specialists) is
 [`worldstream-midnight-archive-ea79ce7ff3e90ab5d073409486af1227286b82512daec98db3e921097dd8ac99.wspack`](releases/0.1.0/worldstream-midnight-archive-ea79ce7ff3e90ab5d073409486af1227286b82512daec98db3e921097dd8ac99.wspack).
 Its physical bundle digest is
 `blake3:ea79ce7ff3e90ab5d073409486af1227286b82512daec98db3e921097dd8ac99`,

@@ -17,13 +17,12 @@ import {
   stringValue,
 } from "./model.js";
 import {
-  applyMiraResolution,
   cancelMiraPlanningTimer,
   closeMiraAtTerminal,
   initialMiraState,
-  prepareMiraResolution,
 } from "./companions.js";
 import { legalDestinationsFrom } from "./world.js";
+import { acknowledgeExtraction, emptyExtraction, invalidateExtraction, prepareExtraction, prepareTurn, resolveCompanions, validateExtractionCommit } from "./turn-resolution.js";
 
 export const OBJECTIVE =
   "Recover the authentic ledger, return to the Atrium, and extract before turn 16 ends.";
@@ -143,6 +142,10 @@ export function initializeArchiveState(configuration: CanonicalObject): ArchiveS
     collection_preservation: "unprepared",
     source_record_protected: false,
     mira: initialMiraState(null),
+    jonah: initialMiraState(null, "jonah"),
+    starting_crew: [{ role: "lead", member_id: "none" }],
+    extraction: emptyExtraction(),
+    completed_crew_work: [],
     truth_marker: scenario.authentic_candidate_id,
     verifier_result: "none",
     carried_candidate_id: "none",
@@ -177,8 +180,13 @@ export function applyLeadAction(
 ): AppliedLeadAction {
   if (current.phase !== "active") reject("inactive", "the expedition is not active");
   if (actionType === "commit_turn") return commitTurn(current, payload, core, scheduled);
+  if (actionType === "prepare_extraction" || actionType === "acknowledge_extraction") {
+    if (actionType === "prepare_extraction") exactKeys(payload, []);
+    const state = actionType === "prepare_extraction" ? prepareExtraction(current, core) : acknowledgeExtraction(current, payload, core);
+    return { state, event: asCanonical({ event_type: "extraction_updated", status: state.extraction.status, preview_revision: state.extraction.revision }), timerRequests: [] };
+  }
   const staged = stagedAction(current, actionType, payload);
-  const state = { ...cloneState(current), staged_action: staged };
+  const state = invalidateExtraction({ ...cloneState(current), staged_action: staged });
   return {
     state,
     event: asCanonical({
@@ -372,7 +380,9 @@ function commitTurn(
   }
   const staged = current.staged_action;
   validateStagedAtTurnStart(current, staged);
-  const miraResolution = prepareMiraResolution(current, staged, core);
+  const turnWork = prepareTurn(current, core);
+  if (turnWork.view.status === "conflict") reject("turn_conflict", "resolve or defer conflicting prepared contributions before committing");
+  if (staged.kind === "extract") validateExtractionCommit(current, core);
   let next = cloneState(current) as MutableArchiveState;
   const kind = staged.kind;
   if (kind === "move") {
@@ -415,7 +425,7 @@ function commitTurn(
       next.collection_preservation === "preserved",
   };
 
-  next = applyMiraResolution(current, next, miraResolution) as MutableArchiveState;
+  next = resolveCompanions(current, next, turnWork) as MutableArchiveState;
 
   next.turns_used += 1;
   next.staged_action = emptyStage();
@@ -431,9 +441,10 @@ function commitTurn(
     };
   }
   const timerRequests = next.phase === "complete"
-    ? cancelMiraPlanningTimer(scheduled)
+    ? [...cancelMiraPlanningTimer(scheduled), ...cancelMiraPlanningTimer(scheduled, "jonah")]
     : [];
-  if (next.phase === "complete") next = closeMiraAtTerminal(next) as MutableArchiveState;
+  if (next.phase === "complete") next = closeMiraAtTerminal(closeMiraAtTerminal(next), "jonah") as MutableArchiveState;
+  else next = invalidateExtraction(next) as MutableArchiveState;
   return {
     state: next,
     event: asCanonical({
@@ -447,6 +458,8 @@ function commitTurn(
         ? next.mira.last_contribution.kind
         : "none",
       mira_plan_revision: next.mira.plan.revision,
+      jonah_contribution: next.jonah.last_contribution.turn === next.turns_used ? next.jonah.last_contribution.kind : "none",
+      jonah_plan_revision: next.jonah.plan.revision,
     }),
     timerRequests,
   };
@@ -518,8 +531,10 @@ function extractionOutcome(state: ArchiveState): ArchiveOutcome {
   }
   if (state.carried_candidate_id === state.truth_marker) {
     return {
-      kind: "success",
-      factual_reason: "The extracted ledger matches the archive's authentic record.",
+      kind: state.extraction.left_behind_roles.length === 0 ? "success" : "partial_extraction",
+      factual_reason: state.extraction.left_behind_roles.length === 0
+        ? "The authentic ledger and the entire starting crew were extracted."
+        : "The authentic ledger was extracted, but some starting crew were left behind.",
       extracted_candidate_id: state.carried_candidate_id,
     };
   }
