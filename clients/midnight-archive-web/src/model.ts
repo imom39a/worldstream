@@ -759,7 +759,7 @@ function readCandidates(value: unknown): readonly ArchiveCandidate[] | null {
   return result;
 }
 
-const UTC_MILLISECOND_DEADLINE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
+const UTC_CANONICAL_DEADLINE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/u;
 
 function specialistName(role: CompanionRole): "Mira" | "Jonah" {
   return role === "mira" ? "Mira" : "Jonah";
@@ -1537,9 +1537,23 @@ function byteLength(value: string): number {
 }
 
 function isCanonicalUtcDeadline(value: string): boolean {
-  if (value === "none" || !UTC_MILLISECOND_DEADLINE.test(value)) return false;
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+  const match = UTC_CANONICAL_DEADLINE.exec(value);
+  if (match === null) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const fraction = match[7];
+  return year >= 1 && month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth(year, month)
+    && hour <= 23 && minute <= 59 && second <= 59
+    && (fraction === undefined || !fraction.endsWith("0"));
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) return year % 400 === 0 || (year % 4 === 0 && year % 100 !== 0) ? 29 : 28;
+  return month === 4 || month === 6 || month === 9 || month === 11 ? 30 : 31;
 }
 
 function integerInRange(value: unknown, minimum: number, maximum: number): number | null {

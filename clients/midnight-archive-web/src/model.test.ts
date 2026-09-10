@@ -443,6 +443,52 @@ describe("Midnight Archive strict participant Projection", () => {
     expect(exhausted?.mira.planning.status).toBe("complete");
   });
 
+  it("accepts Core-canonical UTC planning deadlines without truncating fractional precision", () => {
+    const task = {
+      status: "assigned",
+      revision: 4,
+      kind: "investigate_records",
+      power_allowance: 1,
+      power_spent: 0,
+    };
+    const waiting = (deadline: string) => rawProjection({
+      mira: rawMira({
+        presence: "active",
+        location: "atrium",
+        mode: "tasked",
+        task,
+        planning: {
+          status: "waiting",
+          opportunity_revision: 6,
+          plan_revision: 0,
+          steps_total: 0,
+          steps_completed: 0,
+          deadline,
+        },
+      }),
+    });
+    for (const deadline of [
+      "2026-09-09T12:34:56Z",
+      "2026-09-09T12:34:56.1Z",
+      "2026-09-09T12:34:56.12Z",
+      "2026-09-09T12:34:56.123Z",
+      "2026-09-09T12:34:56.123456789Z",
+      "2024-02-29T12:34:56.123456789Z",
+    ]) expect(readMidnightArchiveProjection(waiting(deadline))?.mira.planning.deadline).toBe(deadline);
+
+    for (const deadline of [
+      "2026-09-09T12:34:56.10Z",
+      "0000-01-01T00:00:00Z",
+      "2026-02-29T12:34:56Z",
+      "2024-02-30T12:34:56Z",
+      "2026-09-09T24:00:00Z",
+      "2026-09-09T12:60:00Z",
+      "2026-09-09T12:34:60Z",
+      "2026-09-09T12:34:56+00:00",
+      "2026-09-09T12:34:56.1234567891Z",
+    ]) expect(readMidnightArchiveProjection(waiting(deadline))).toBeNull();
+  });
+
   it("fails closed on private payloads, stale preparation, forged provenance, and impossible Mira spend", () => {
     const assigned = {
       status: "assigned",

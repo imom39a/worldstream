@@ -762,7 +762,7 @@ describe("Midnight Archive mission surface", () => {
         task: { status: "assigned", revision: 3, kind: "investigate_conservation", power_allowance: 0, power_spent: 0 },
         planning: {
           status: "waiting", opportunity_revision: 5, plan_revision: 0,
-          steps_total: 0, steps_completed: 0, deadline: "2026-09-10T00:00:15.000Z",
+          steps_total: 0, steps_completed: 0, deadline: "2026-09-10T00:00:15Z",
         },
       }),
     });
@@ -775,7 +775,7 @@ describe("Midnight Archive mission surface", () => {
     expect(markup).toContain("No Mira plan was recorded before opportunity 4 expired.");
     expect(markup).toContain("No turn or power was spent.");
     expect(markup).toContain("Request plan again");
-    expect(markup).toContain("Jonah&#x27;s planning window is open until 2026-09-10T00:00:15.000Z.");
+    expect(markup).toContain("Jonah&#x27;s planning window is open until 2026-09-10T00:00:15Z.");
     expect(markup).toContain("Defer Jonah this turn");
     expect(markup).toContain("Follow lead");
     expect(markup).toContain("Regroup at Atrium");

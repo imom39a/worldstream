@@ -70,9 +70,10 @@ const bothObjectivesRoute = [
 const proofMode = process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_PROOF_MODE ?? "agreement";
 const liveMiraProof = proofMode === "mira-live";
 const crewLiveProof = proofMode === "crew-live";
-const liveSpecialistRoles = crewLiveProof ? ["mira", "jonah"] : liveMiraProof ? ["mira"] : [];
+const unavailableLiveProof = proofMode === "unavailable-live";
+const liveSpecialistRoles = crewLiveProof || unavailableLiveProof ? ["mira", "jonah"] : liveMiraProof ? ["mira"] : [];
 const liveCompanionProof = liveSpecialistRoles.length > 0;
-const clientReleaseGeneration = "v6";
+const clientReleaseGeneration = "v9";
 const archiveClientRelease = process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_CLIENT_RELEASE;
 const witness = proofMode === "technical"
   ? { route: technicalRoute, turns: 10, turnsRemaining: 6, powerRemaining: 0, candidate: "Violet Ledger", checks: ["ten_turn_phone_witness", "verifier_selected_candidate"] }
@@ -86,6 +87,8 @@ const witness = proofMode === "technical"
           ? { route: [], turns: 5, turnsRemaining: 11, powerRemaining: 3, candidate: "Violet Ledger", checks: ["separate_human_and_mira_memberships", "external_mira_runner_once", "one_recorded_mira_step_per_human_turn", "terminal_partial_outcome"] }
           : crewLiveProof
             ? { route: [], turns: 11, turnsRemaining: 5, powerRemaining: 2, candidate: "Violet Ledger", checks: ["separate_full_party_memberships", "external_specialist_runners_once_each", "one_recorded_specialist_step_per_human_turn", "field_assay_verified_candidate", "full_crew_extraction"] }
+            : unavailableLiveProof
+              ? { route: [], turns: 1, turnsRemaining: 15, powerRemaining: 3, candidate: "Violet Ledger", checks: ["separate_specialist_credentials", "bounded_provider_dispositions", "explicit_reopen_after_expiry", "defer_wait_preserves_standing_plan", "reload_preserves_authoritative_plan"] }
         : (() => { throw new Error(`unknown Midnight Archive proof mode: ${proofMode}`); })();
 const acceptanceStartedAt = Date.now();
 
@@ -126,7 +129,7 @@ try {
   debug("binary preflight and bundle inspection complete");
 
   const releasePath = archiveClientRelease === undefined
-    ? join(workspace, "config/activity-clients/releases/midnight-archive-web-v6.json")
+    ? join(workspace, "config/activity-clients/releases/midnight-archive-web-v9.json")
     : resolve(workspace, archiveClientRelease);
   const release = JSON.parse(await readFile(releasePath, "utf8"));
   const standaloneSurface = release.surfaces.find((surface) => surface.surface_id === "midnight-archive-web");
@@ -292,7 +295,13 @@ try {
   await assertActionControlsDisabled(page);
   await assertViewportFits(page, "desktop briefing");
   if (liveCompanionProof) {
-    for (const role of liveSpecialistRoles) startSpecialistRunner(role, bundleIdentity.revision_digest);
+    for (const role of liveSpecialistRoles) {
+      startSpecialistRunner(role, bundleIdentity.revision_digest, unavailableLiveProof && role === "mira"
+        ? { providerMode: "delayed", providerDelaySeconds: 5 }
+        : unavailableLiveProof && role === "jonah"
+          ? { providerMode: "rejected" }
+          : undefined);
+    }
     await waitForSpecialistRunnerReadiness(room, liveSpecialistRoles);
   }
   await startActivity(room);
@@ -308,6 +317,11 @@ try {
     await assertViewportFits(page, "phone Mira mission");
     await assertPhoneControls(page);
     await runLiveMiraWitness(page, { room, revision: bundleIdentity.revision_digest });
+  } else if (unavailableLiveProof) {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await assertViewportFits(page, "phone unavailable-companion mission");
+    await assertPhoneControls(page);
+    await runUnavailableLiveWitness(page, { revision: bundleIdentity.revision_digest });
   } else {
   await page.setViewportSize({ width: 390, height: 844 });
   await assertViewportFits(page, "phone mission");
@@ -329,7 +343,7 @@ try {
   await page.getByRole("button", { name: "Replay verified", exact: true }).waitFor({ timeout: authorizedProjectionTimeoutMs });
   }
   if (bridgeFailure) throw bridgeFailure;
-  receipt = { status: "passed", pack: "worldstream.midnight-archive@0.1.0", bundle_digest: bundleIdentity.bundle_digest, revision_digest: bundleIdentity.revision_digest, room, turns: witness.turns, turns_remaining: witness.turnsRemaining, power_remaining: witness.powerRemaining, provider_calls: 0, runner_invocations: runnerInvocationReceipt(), checks: ["briefing_projection_before_activity_start", "actions_disabled_until_sync", "desktop_and_phone_layouts", ...witness.checks, ...(liveCompanionProof ? ["authorized_replay_without_runner_or_policy_rerun"] : ["canonical_recovery_payload", "beginning_of_turn_gate_boundary", "terminal_success", "authorized_replay"]), "private_authenticity_non_leakage"] };
+  receipt = { status: "passed", pack: "worldstream.midnight-archive@0.1.0", bundle_digest: bundleIdentity.bundle_digest, revision_digest: bundleIdentity.revision_digest, room, turns: witness.turns, turns_remaining: witness.turnsRemaining, power_remaining: witness.powerRemaining, provider_calls: 0, runner_invocations: runnerInvocationReceipt(), checks: ["briefing_projection_before_activity_start", "actions_disabled_until_sync", "desktop_and_phone_layouts", ...witness.checks, ...(unavailableLiveProof ? ["authoritative_reconnect_without_runner_or_policy_rerun"] : liveCompanionProof ? ["authorized_replay_without_runner_or_policy_rerun"] : ["canonical_recovery_payload", "beginning_of_turn_gate_boundary", "terminal_success", "authorized_replay"]), "private_authenticity_non_leakage"] };
 } catch (error) {
   failure = error;
 } finally {
@@ -351,7 +365,7 @@ async function archiveBundle() {
   if (process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE) return process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE;
   const proof = JSON.parse(await readFile(join(
     workspace,
-    "packs/midnight-archive/evidence/production-proof-0.1.0-specialist-crew-consecutive.json",
+    "packs/midnight-archive/evidence/production-proof-0.1.0-unavailable-companions.json",
   ), "utf8"));
   assert.equal(proof.status, "passed");
   assert.match(proof.bundleDigest, /^blake3:[0-9a-f]{64}$/u);
@@ -885,6 +899,75 @@ async function runLiveCrewWitness(page, { room, revision }) {
   assert.equal(room.length > 0, true, "crew witness lost its Room identity");
 }
 
+async function runUnavailableLiveWitness(page, { revision }) {
+  const mira = specialistCard(page, "mira");
+  const jonah = specialistCard(page, "jonah");
+  await Promise.all([
+    mira.waitFor({ timeout: authorizedProjectionTimeoutMs }),
+    jonah.waitFor({ timeout: authorizedProjectionTimeoutMs }),
+  ]);
+
+  await clickSpecialistAction(page, "mira", "assign_mira_task", "Assign Investigate Records with 0 power allowance");
+  await clickSpecialistAction(page, "mira", "request_mira_plan", "Request a plan");
+  await waitForSpecialistText(mira, /planning window is open until/i, "Mira delayed planning window");
+  // The delayed provider owns the old claimed Activation. A lead cancellation
+  // makes a newer Head before it replies, so no late plan can be admitted.
+  await page.waitForTimeout(250);
+  const browserActionsBeforeCancellation = browserActionRequests;
+  await clickSpecialistAction(page, "mira", "cancel_mira_task", "Cancel current task");
+  assert.equal(browserActionRequests, browserActionsBeforeCancellation + 1, "Mira cancellation must be one explicit lead Action");
+  const delayedResult = await waitForSpecialistRunnerTerminalResult("mira", ["cancelled", "stale_head"]);
+  assert.equal(delayedResult.submitted_actions, 0, "a delayed stale plan must not submit an Action");
+  await waitForSpecialistText(mira, /standing task was cancelled/i, "Mira cancellation projection");
+  assert.equal(specialist("mira").invocations, 1, "the delayed opportunity must invoke Mira exactly once");
+
+  // Reopening is a new lead request and a new Runner invocation; the old
+  // attempt is neither retried nor reused.
+  startSpecialistRunner("mira", revision);
+  await clickSpecialistAction(page, "mira", "assign_mira_task", "Assign Investigate Records with 0 power allowance");
+  await clickSpecialistAction(page, "mira", "request_mira_plan", "Request a plan");
+  const reopenedMira = await waitForSpecialistRunnerResult("mira", revision, 2);
+  assert.deepEqual(reopenedMira, { status: "handled", submitted_actions: 1 }, "Mira reopened opportunity did not accept one plan");
+  await waitForSpecialistText(mira, /ready\s*·\s*revision/i, "Mira reopened accepted plan");
+  await assertSpecialistProgress(mira, "Mira", 0, 3, "Mira accepted plan must remain standing before any turn");
+
+  // Jonah's first scripted provider declines. The Pack-owned opportunity stays
+  // open until its own timer expires; the Runner must make no hidden retry.
+  await clickSpecialistAction(page, "jonah", "assign_jonah_task", "Assign Investigate Records with 0 power allowance");
+  await clickSpecialistAction(page, "jonah", "request_jonah_plan", "Request a plan");
+  const rejectedResult = await waitForSpecialistRunnerTerminalResult("jonah", ["provider_rejected"]);
+  assert.equal(rejectedResult.submitted_actions, 0, "a rejected provider must not submit Jonah's plan");
+  await waitForSpecialistText(jonah, /planning window is open until/i, "Jonah rejected-provider waiting projection");
+  await waitForSpecialistText(jonah, /expired\s*·\s*revision/i, "Jonah Pack-owned opportunity expiry");
+  await waitForSpecialistText(jonah, /No Jonah plan was recorded before opportunity/i, "Jonah expiry continuation notice");
+
+  // A second explicit request is bounded independently. Its missing scripted
+  // provider times out once and leaves the authoritative waiting state intact.
+  startSpecialistRunner("jonah", revision, { providerMode: "missing", providerTimeoutSeconds: 1 });
+  await clickSpecialistAction(page, "jonah", "request_jonah_plan", "Request plan again");
+  const missingResult = await waitForSpecialistRunnerTerminalResult("jonah", ["provider_timeout"]);
+  assert.equal(missingResult.submitted_actions, 0, "a missing provider must not submit Jonah's plan");
+  await waitForSpecialistText(jonah, /planning window is open until/i, "Jonah missing-provider waiting projection");
+  assert.equal(specialist("jonah").invocations, 2, "Jonah must run exactly once for each explicit scripted opportunity");
+
+  // The lead can continue while a recorded plan stands: deferring a companion
+  // and waiting consumes one ordinary lead turn without invalidating that plan.
+  let turns = readMetric(await page.locator("body").innerText(), "Turns remaining");
+  await clickSpecialistAction(page, "mira", "defer_mira_contribution", "Defer Mira this turn");
+  await clickLiveAction(page, page.getByRole("button", { name: /Stage Wait for one turn/i }), "stage_wait");
+  turns = await commitLiveTurn(page, turns, "deferred companion wait turn");
+  assert.equal(turns, 15, "one explicit wait turn must consume exactly one lead turn");
+  await waitForSpecialistText(mira, /ready\s*·\s*revision/i, "Mira standing plan after defer and wait");
+  await assertSpecialistProgress(mira, "Mira", 0, 3, "defer and wait must preserve Mira's eligible plan");
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByText("Projection current", { exact: true }).waitFor({ timeout: authorizedProjectionTimeoutMs });
+  await waitForSpecialistText(specialistCard(page, "mira"), /ready\s*·\s*revision/i, "Mira plan after browser reconnect");
+  await assertSpecialistProgress(specialistCard(page, "mira"), "Mira", 0, 3, "reload must preserve the authoritative standing plan");
+  assert.equal(specialist("mira").invocations, 2, "Mira must run exactly once for the cancelled and reopened opportunities");
+  assert.deepEqual(runnerInvocationReceipt(), { mira: 2, jonah: 2 }, "unavailable-live must invoke each Runner exactly for its scripted opportunities");
+}
+
 function specialistCard(page, role) {
   return page.getByTestId(`${role}-crew-card`);
 }
@@ -993,10 +1076,16 @@ function specialist(role) {
   return runtime;
 }
 
-function startSpecialistRunner(role, revision) {
+function startSpecialistRunner(role, revision, options = {}) {
   const runtime = specialist(role);
   assert.ok(runtime.membershipFile && runtime.runnerFile, `${runtime.name} credentials are unavailable`);
-  assert.equal(runtime.process, undefined, `${runtime.name} Runner was already started`);
+  assert.ok(runtime.process === undefined || runtime.process.child.exitCode !== null, `${runtime.name} Runner is still active`);
+  const providerMode = options.providerMode ?? "deterministic";
+  const providerDelaySeconds = options.providerDelaySeconds ?? 0;
+  const providerTimeoutSeconds = options.providerTimeoutSeconds ?? 10;
+  assert.ok(["deterministic", "delayed", "missing", "rejected"].includes(providerMode), `${runtime.name} scripted provider mode is invalid`);
+  assert.ok(Number.isFinite(providerDelaySeconds) && providerDelaySeconds >= 0, `${runtime.name} provider delay is invalid`);
+  assert.ok(Number.isFinite(providerTimeoutSeconds) && providerTimeoutSeconds > 0, `${runtime.name} provider timeout is invalid`);
   const python = join(workspace, "sdk/python/.venv/bin/python");
   runtime.invocations += 1;
   const child = spawn(python, [
@@ -1005,6 +1094,9 @@ function startSpecialistRunner(role, revision) {
     "--runner-file", runtime.runnerFile,
     "--pack-revision", revision,
     "--wait-seconds", crewLiveProof ? "180" : "90",
+    "--provider-mode", providerMode,
+    "--provider-delay-seconds", String(providerDelaySeconds),
+    "--provider-timeout-seconds", String(providerTimeoutSeconds),
   ], { cwd: workspace, stdio: ["ignore", "pipe", "ignore"] });
   let stdout = "";
   child.stdout.on("data", (chunk) => {
@@ -1014,8 +1106,8 @@ function startSpecialistRunner(role, revision) {
   const completed = new Promise((resolveResult, rejectResult) => {
     child.once("error", () => rejectResult(new Error(`${runtime.name} Runner process could not start`)));
     child.once("exit", (code, signal) => {
-      if (code === 0) resolveResult(stdout);
-      else rejectResult(new Error(`${runtime.name} Runner ended before handling its bounded opportunity (${signal ?? code ?? "unknown"})`));
+      if (signal !== null || code === null) rejectResult(new Error(`${runtime.name} Runner ended without an exit code (${signal ?? "unknown"})`));
+      else resolveResult({ stdout, code });
     });
   });
   void completed.catch(() => undefined);
@@ -1039,16 +1131,35 @@ async function waitForSpecialistRunnerReadiness(room, roles) {
   throw new Error(`Lead and ${roles.join(" and ")} did not all become ready before Activity Start`);
 }
 
-async function waitForSpecialistRunnerResult(role, revision) {
+async function waitForSpecialistRunnerResult(role, revision, expectedInvocations = 1) {
   const runtime = specialist(role);
   assert.ok(runtime.process, `${runtime.name} Runner process was not started before Activity Start`);
-  const output = await runtime.process.completed;
-  assertPrivatePayload(String(output), `${runtime.name} Runner output`);
-  const lines = String(output).trim().split("\n").filter(Boolean);
+  const completed = await runtime.process.completed;
+  assert.equal(completed.code, 0, `${runtime.name} Runner ended before handling its bounded opportunity (${completed.code})`);
+  assertPrivatePayload(completed.stdout, `${runtime.name} Runner output`);
+  const lines = completed.stdout.trim().split("\n").filter(Boolean);
   assert.equal(lines.length, 1, `${runtime.name} Runner emitted more than one bounded result`);
   const result = JSON.parse(lines[0]);
-  assert.equal(runtime.invocations, 1, `${runtime.name} Runner must run only once`);
+  assert.equal(runtime.invocations, expectedInvocations, `${runtime.name} Runner invocation count changed unexpectedly`);
   assert.equal(typeof revision, "string", `${runtime.name} Runner lost the Pack revision fence`);
+  return result;
+}
+
+async function waitForSpecialistRunnerTerminalResult(role, expectedStatuses) {
+  const runtime = specialist(role);
+  assert.ok(runtime.process, `${runtime.name} Runner process was not started before its terminal disposition`);
+  const completed = await runtime.process.completed;
+  assert.equal(completed.code, 2, `${runtime.name} Runner must report its terminal provider disposition with exit code 2`);
+  assertPrivatePayload(completed.stdout, `${runtime.name} Runner terminal output`);
+  const lines = completed.stdout.trim().split("\n").filter(Boolean);
+  assert.equal(lines.length, 1, `${runtime.name} Runner emitted more than one terminal result`);
+  const result = JSON.parse(lines[0]);
+  assert.ok(expectedStatuses.includes(result.status), `${runtime.name} Runner terminal status was ${String(result.status)}`);
+  assert.deepEqual(
+    { status: result.status, submitted_actions: result.submitted_actions, provider_attempts_consumed: result.provider_attempts_consumed },
+    { status: result.status, submitted_actions: 0, provider_attempts_consumed: 1 },
+    `${runtime.name} terminal provider disposition must have one consumed attempt and no submitted Action`,
+  );
   return result;
 }
 
@@ -1064,7 +1175,7 @@ async function stopSpecialistRunnersIfActive() {
 }
 
 function runnerInvocationReceipt() {
-  if (crewLiveProof) return Object.fromEntries(liveSpecialistRoles.map((role) => [role, specialist(role).invocations]));
+  if (crewLiveProof || unavailableLiveProof) return Object.fromEntries(liveSpecialistRoles.map((role) => [role, specialist(role).invocations]));
   return specialist("mira").invocations;
 }
 
