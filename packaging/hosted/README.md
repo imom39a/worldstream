@@ -113,7 +113,7 @@ docker build \
   -t worldstream-hosted-catalog-update:<reviewed-source> .
 ```
 
-Before any deployment, compare the five retained executable SHA-256 values and
+Before any deployment, compare all six retained executable SHA-256 values and
 the raw managed-agent BLAKE3 value with the deployed appliance. Also compare
 the generated Template `16` canonical bytes with the installed immutable
 Template `16`. A mismatch is a release stop, not an approval rotation.
