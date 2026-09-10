@@ -9,14 +9,19 @@ const browser = await chromium.launch({ headless: true, ...await localBrowserOpt
 
 try {
   if ((await fetch(`${host.origin}/agent-heist/`)).status !== 404) throw new Error("unavailable retained Heist path must not serve replacement bytes");
-  await verifySurface("Agent Heist local", "/agent-heist-v8/", "Agent Heist · WorldStream Activity Client", async (page) => {
+  await verifySurface("Agent Heist current local", "/agent-heist-v9/", "Agent Heist · WorldStream Activity Client", async (page) => {
+    await page.getByRole("heading", { name: "Waiting for the mission" }).waitFor();
+    const body = await page.locator("body").innerText();
+    reject(body, /Canal Shift|route_service|Recorded fixture|Fixture mode/i, "Heist live client exposed recorded data");
+  });
+  await verifySurface("Agent Heist current hosted", "/agent-heist-v9/hosted/", "Agent Heist · Hosted Activity Client", async (page) => {
+    await page.getByRole("heading", { name: "Unable to enter this Run" }).waitFor();
+  }, true);
+  await verifySurface("Agent Heist retained v8", "/agent-heist-v8/", "Agent Heist · WorldStream Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
     const body = await page.locator("body").innerText();
     reject(body, /Canal Shift|route_service|Recorded fixture|Fixture mode/i, "Heist live client exposed recorded data");
   });
-  await verifySurface("Agent Heist hosted", "/agent-heist-v8/hosted/", "Agent Heist · Hosted Activity Client", async (page) => {
-    await page.getByRole("heading", { name: "Unable to enter this Run" }).waitFor();
-  }, true);
   await verifySurface("Agent Heist retained v5", "/agent-heist-v5/hosted/", "Agent Heist · Hosted Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Unable to enter this Run" }).waitFor();
   }, true);
@@ -33,10 +38,19 @@ try {
     const body = await page.locator("body").innerText();
     reject(body, /fixture|sample offer|demo negotiation/i, "Negotiate 0.2 live client exposed recorded data");
   });
-  await verifySurface("Midnight Archive current", "/midnight-archive-v12/", "Midnight Archive · WorldStream Activity Client", async (page) => {
+  await verifySurface("Midnight Archive current", "/midnight-archive-v13/", "Midnight Archive · WorldStream Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
     const body = await page.locator("body").innerText();
     reject(body, /authentic_candidate_id|is_authentic|truth_marker|fixture/i, "Midnight Archive live client exposed private or recorded data");
+  });
+  await verifySurface("Midnight Archive retained v12", "/midnight-archive-v12/", "Midnight Archive · WorldStream Activity Client", async (page) => {
+    await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
+  });
+  await verifySurface("Midnight Archive retained v11", "/midnight-archive-v11/", "Midnight Archive · WorldStream Activity Client", async (page) => {
+    await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
+  });
+  await verifySurface("Midnight Archive retained v10", "/midnight-archive-v10/", "Midnight Archive · WorldStream Activity Client", async (page) => {
+    await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
   });
   await verifySurface("Midnight Archive retained v9", "/midnight-archive-v9/", "Midnight Archive · WorldStream Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();

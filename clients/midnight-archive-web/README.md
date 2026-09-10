@@ -33,18 +33,21 @@ projected verifier (one power) and ordinary service hatch (two power) costs, who
 combined cost exceeds Low Reserve's initial budget. Action Offers still determine
 which controls are available; the client neither selects nor rerolls a scenario.
 
-The local `/midnight-archive-v12/` surface uses the existing loopback retained
-session and exposes exact-head verified Replay after a terminal outcome. The
-`/midnight-archive-v12/hosted/` surface uses the authenticated WebSocket session;
-its controller currently has no Replay method, so terminal Replay is visibly
-unavailable there. Neither surface invents a successful server response.
-The immutable v1 through v10 builds remain available at their versioned paths
-for Rooms pinned to their exact Pack revisions.
+The current local `/midnight-archive-v13/` surface uses the existing loopback
+retained session and exposes exact-head verified Replay after a terminal outcome.
+The current `/midnight-archive-v13/hosted/` surface uses the authenticated
+WebSocket session. Its controller currently has no Replay method, so terminal
+Replay is visibly unavailable there. The retained `/midnight-archive-v12/`
+paths remain available
+for Rooms pinned to their exact revision. Neither surface invents a successful
+server response. The retained v1 through v12 builds remain available at their
+versioned paths for Rooms pinned to their exact Pack revisions.
 
 The exact supported Pack identity lives only in [`src/config.ts`](src/config.ts).
-The v12 build requires the v5 session-expiry Projection contract, including the
-retained bounded-dialogue fields, and its exact Pack revision
+The current v13 build requires the v5 session-expiry Projection contract,
+including the retained bounded-dialogue fields, and its exact Pack revision
 `blake3:aea45a1c056c4a7da744be33d38df672499062fd2548302fae43adc49b833b07`.
+The retained v12 build preserves that exact revision for its pinned Rooms.
 The retained v9 build supports the earlier unavailable-companion
 revision `blake3:d398d13df28f50edcc271aa8f6ffa75f1c26eca1851ac78215aa8e0f6017d8e5`.
 The retained v7 and v8 builds target superseded Pack candidates and are

@@ -8,7 +8,7 @@ import { resolve } from "node:path";
 import { chromium } from "playwright";
 
 const origin = "http://127.0.0.1:5180";
-const evidenceDirectory = resolve(".worldstream/evidence/imo-211");
+const evidenceDirectory = resolve(".worldstream/evidence/imo-209");
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
 const page = await context.newPage();
@@ -27,7 +27,7 @@ try {
   await page.getByRole("button", { name: "Create waiting room", exact: true }).waitFor();
   await page.getByRole("button", { name: "Close", exact: true }).click();
   const card = page.locator(".activity-midnight-archive");
-  await card.getByText("Solo adventure", { exact: true }).waitFor();
+  await card.getByText("Optional House Agents", { exact: true }).waitFor();
   await card.getByRole("button", { name: "Enter activity ↗" }).click();
   const dialog = page.getByRole("dialog");
   assert.match(await dialog.innerText(), /16 turns.*3 power/s);
@@ -65,7 +65,7 @@ try {
   const initialDatabase = databaseSnapshot(evidence.run_id);
   assert.equal(initialDatabase.runs_for_launch, 1);
   await entry.click();
-  await page.waitForURL("**/midnight-archive-v12/hosted/**");
+  await page.waitForURL("**/midnight-archive-v13/hosted/**");
   await page.getByText("Projection current", { exact: true }).waitFor();
   assert.equal(new URL(page.url()).hash, "");
   evidence.checks.push("idempotent_start", "exact_client_handoff", "authoritative_projection");
@@ -130,8 +130,8 @@ try {
   assert.ok([200, 201].includes(heistResponse.status()), JSON.stringify(heist));
   evidence.heist_launch_id = heist.launch_id;
   assert.equal(heist.state, "collecting");
-  await mutation(`/api/launches/${heist.launch_id}/cancel`, {});
-  evidence.checks.push("retained_heist_discovery_setup_and_cancel");
+  await mutation(`/api/launches/${heist.launch_id}/close`, {});
+  evidence.checks.push("retained_heist_discovery_setup_and_close");
   assert.deepEqual(errors, []);
   evidence.checks.push("no_browser_errors");
   evidence.completed_at = new Date().toISOString();

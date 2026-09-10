@@ -6,7 +6,8 @@ among visible ledger candidates, and extracts before the sixteenth turn ends.
 The mission remains fully playable alone, with Mira, with Jonah, or with both.
 Each optional Agent Participant accepts bounded tasks and authenticated plans.
 Every starting crew member begins in Atrium with the selected scenario's fixed budget.
-The source now uses schema version 3; retained version-1 and version-2 Bundles remain immutable.
+The source now uses schema version 5; retained schema-version 1 through 4
+Bundles remain immutable.
 
 The current source adds two authored evidence sources and the archivist's
 fixed preservation agreement. A committed Records inspection reveals a
@@ -192,7 +193,18 @@ qualification uses an injected HostClock and the real Runtime scheduler to
 expire a missing reply, reconnects the original agent capabilities, and
 compares the completed mission with authorized Replay.
 
-The current authored-scenarios 0.1.0 bundle is
+The current session-expiry 0.1.0 bundle is
+[`worldstream-midnight-archive-de3cd1d9fa45087b69cb107a663596305864c350f620fe4d7260e0341214d47a.wspack`](releases/0.1.0/worldstream-midnight-archive-de3cd1d9fa45087b69cb107a663596305864c350f620fe4d7260e0341214d47a.wspack).
+Its physical bundle digest is
+`blake3:de3cd1d9fa45087b69cb107a663596305864c350f620fe4d7260e0341214d47a`,
+its semantic revision is
+`blake3:aea45a1c056c4a7da744be33d38df672499062fd2548302fae43adc49b833b07`,
+its Component digest is
+`blake3:7781388b52a2d335d07f5cee7658810bfb036ebe0e3b5c293459c7d38385af0c`,
+and its production proof is
+[`evidence/production-proof-0.1.0-session-expiry.json`](evidence/production-proof-0.1.0-session-expiry.json).
+
+The authored-scenarios 0.1.0 bundle remains retained at
 [`worldstream-midnight-archive-8083201f2d1d6a1afdaab8e6759287a3aeacc1a7908d85d2b758af272c150b47.wspack`](releases/0.1.0/worldstream-midnight-archive-8083201f2d1d6a1afdaab8e6759287a3aeacc1a7908d85d2b758af272c150b47.wspack).
 Its physical bundle digest is
 `blake3:8083201f2d1d6a1afdaab8e6759287a3aeacc1a7908d85d2b758af272c150b47`,

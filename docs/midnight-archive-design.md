@@ -1,10 +1,10 @@
 # Midnight Archive: first playable design
 
 Status: Design decisions adopted, 2026-09-09. The portable Pack, independent
-browser client, optional specialist mechanics, unavailable-companion path, and
-authored Standard/Low Reserve scenarios are implemented and locally qualified.
-Common-platform discovery, reviewed model companions, hosted lifecycle
-qualification, and human playtesting remain. The user accepted Q1–Q12 and
+browser client, authored scenarios, optional specialist mechanics, four
+reviewed Roster Options, private debrief, and session expiry are implemented
+and locally qualified. Deployed Host activation, external-provider evidence,
+phone acceptance, and human playtesting remain. The user accepted Q1–Q12 and
 directed that all remaining grilling questions use the recommended answers.
 The [decision record](second-game-design.md) closes that interview.
 
@@ -369,11 +369,10 @@ placing a new JSON file in the catalog.
 
 | Remaining work | Current source finding |
 | --- | --- |
-| Bounded model companions | Deterministic companion plans and failure continuation work; reviewed House policies, bounded current-context dialogue, and exact live identities remain |
-| Common-platform discovery | The portable Pack/client are exact; the unlisted authenticated library candidate and dependency availability gate remain to be completed |
-| Reviewed roster selection | Solo and all Pack roster variants work locally; named hosted roster options still need exact House revision bindings |
-| Hosted lifecycle | Generic start and client re-entry foundations exist; Archive formation, private terminal status, expiry, and capacity-reuse evidence remain |
-| Publication and results | Archive must stay nonpublic during the experiment while its exact projector records terminal facts without leaking private clues |
+| Deployed model companions | Reviewed Mira/Jonah policies, exact House identities, bounded v4/v5 current-context adapters, failure continuation, and local provider-boundary evidence exist; deployed activation and external-provider latency/quality remain unproved |
+| Common-platform activation | The authenticated unlisted Listing, exact dependency gate, four roster choices, and v13 client are locally wired; a deployed Host journey remains |
+| Hosted return journey | Formation, private terminal status, expiry, and capacity reuse have composed local evidence; restart/re-entry and phone behavior still need candidate-level deployed acceptance |
+| Publication and results | The candidate remains unlisted with public result publication disabled; the exact projector records minimal terminal facts without exposing private clues |
 | Player evidence | Scripted conformance proves rules and Replay; it does not establish comprehension, enjoyment, session length, or replay motivation |
 
 Extend the public TypeScript authoring tools backwards compatibly. Keep

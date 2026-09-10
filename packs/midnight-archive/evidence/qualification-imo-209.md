@@ -37,10 +37,10 @@ not treated as proof of all those behaviors.
 `pnpm archive:rosters -- --node-only` passed under Node 24.18.1:
 
 - hosted TypeScript contract: 23 passed;
-- hosted package and exact artifact tests: 65 passed, with three explicit
+- hosted package and exact artifact tests: 67 passed, with three explicit
   environment-dependent skips;
 - controlled roster/HTTP-provider and rendered-journey tests: 27 passed;
-- platform catalog, formation, BFF, and production-roster tests: 78 passed;
+- platform catalog, formation, BFF, and production-roster tests: 83 passed;
 - Pack tests and deterministic transcript: 86 passed;
 - Activity Client lint and tests: 113 passed.
 
@@ -57,6 +57,45 @@ suite, the retained Agent Heist House-fill suite, and the real local PostgREST
 concurrency harness. The Component phase passes the Listing-pinned Pack Bundle
 path to one ignored-by-default exact Room witness. It does not execute the
 Activity Client artifact; the separate v13 checks cover that browser release.
+
+Both phases passed under Node 24.18.1. The database phase passed 124 pgTAP
+assertions plus its real concurrency witness. The exact Component test
+`current_bundle_completes_all_four_rosters_and_replays_exactly` passed once in
+972.71 seconds, with eight unrelated tests filtered out. It completed solo,
+Mira, Jonah, and full-crew Rooms through the portable Component Host and
+authorized Replay.
+
+The full database suite also passed 524 assertions across thirteen files after
+the creator-closure and private-terminal migrations were composed. It verifies
+that closing work wins while in progress, healthy terminal Rooms remain
+privately reopenable, dependency failures stay distinct, expiry publishes no
+public result, and reconciliation retires capacity once.
+
+Rust and Python companion adapters accept the current v5 participant
+Projection while retaining the reviewed v4 contract and rejecting later or
+mismatched schemas. Rust tests build model context from the genuine current v5
+Pack fixture (SHA-256
+`770053fea77175ff0cf780efd1275f21e4f57b84fbf33cbe4184f3952de894db`)
+without exposing the session deadline. Host catalog tests prove that the
+retained thirty-three House revisions plus Mira and Jonah total thirty-five
+unique identities.
+
+Headless browser verification passed for current Heist v9, current Archive
+v13, and the retained client paths. The signed-in local journey also passed
+against the v13 hosted surface: guest discovery stayed hidden, solo formation
+was idempotent, the ten-turn technical route extracted the authentic ledger,
+the private terminal record published no result, capacity retired, and the
+original participant re-entered the same Room. It then created and closed a
+retained Heist setup through the current closure route without browser errors.
+This used the visible local-development identity and fake provider described
+below; it is not deployed evidence.
+
+`pnpm hosted:dev --check` passed from a cold retained-server start. The local
+launcher tolerates only the Controller-unavailable and incomplete
+Runtime-restart reports while that one start is still converging, for at most
+thirty start attempts separated by one-second pauses. Its browser-artifact
+builds run in production mode; the subsequent client correspondence check
+retained all exact current Release digests.
 
 ## Immutable candidate identities
 
