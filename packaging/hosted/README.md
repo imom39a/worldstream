@@ -85,6 +85,39 @@ docker build \
   -t worldstream-hosted:<clean-git-commit> .
 ```
 
+## Bounded Controller catalog overlay
+
+For the reviewed Listing `0.26.0` release, use
+`Dockerfile.catalog-update` only when the deployed appliance is the exact
+digest declared in that file. It preserves the deployed Runtime, Gateway, MCP,
+managed-agent executable, and managed-agent digest; the separate clean builder
+contributes only `worldstream-studio-supervisor`.
+
+This is a compound artifact, not a rebuilt native Runtime image. Its inherited
+`org.opencontainers.image.revision` continues to identify the deployed Runtime
+source. Read `io.worldstream.base-image`,
+`io.worldstream.controller-source-revision`, and
+`io.worldstream.controller-builder-image` together for the overlay provenance.
+It does not establish a fresh full-native qualification or Hosted Recovery
+Checkpoint claim.
+
+Build the controller-builder image from the reviewed clean source archive, then
+build the overlay from the same source archive:
+
+```text
+docker build \
+  --build-arg WORLDSTREAM_DEPLOYED_RUNTIME_IMAGE=registry.fly.io/worldstream-preview@sha256:8d5a44b2d547b1f0bb970bf2d9a67ba7db4fd7ea66840e93a4e1e1f29a1f0f07 \
+  --build-arg WORLDSTREAM_CONTROLLER_BUILDER_IMAGE=worldstream-hosted-builder:<reviewed-source> \
+  --build-arg CONTROLLER_SOURCE_REVISION=<reviewed-source> \
+  -f packaging/hosted/Dockerfile.catalog-update \
+  -t worldstream-hosted-catalog-update:<reviewed-source> .
+```
+
+Before any deployment, compare the five retained executable SHA-256 values and
+the raw managed-agent BLAKE3 value with the deployed appliance. Also compare
+the generated Template `16` canonical bytes with the installed immutable
+Template `16`. A mismatch is a release stop, not an approval rotation.
+
 ## Planned deployment or checkpoint
 
 The order is deliberate. It closes new platform work before stopping the Room
