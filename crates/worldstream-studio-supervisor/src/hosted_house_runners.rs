@@ -21,7 +21,8 @@ use worldstream_hosted_contract::{
     HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerReservationRequestV1,
     HostedHouseRunnerRetirementDispositionV1, HostedHouseRunnerRetirementReceiptV1,
     HostedHouseRunnerRetirementRequestV1, HostedLaunchRequestV1, HouseAgentRevision,
-    ListingRevision, validate_hosted_house_runner_reservation_receipt,
+    ListingRevision, MAX_REVIEWED_HOSTED_CATALOG_REVISIONS,
+    validate_hosted_house_runner_reservation_receipt,
     validate_hosted_house_runner_reservation_request,
 };
 use worldstream_runtime::{
@@ -57,9 +58,6 @@ const MAX_RECORD_BYTES: usize = 256 * 1024;
 const MAX_RESERVATIONS: usize = 256;
 const MAX_HOUSE_RUNNERS: usize = 4;
 const MAX_HOUSE_RUNNERS_PER_LAUNCH: usize = 2;
-// Listings and House revisions are retained side by side in the reviewed
-// hosted catalog. Keep each catalog class within the same bounded scale.
-const MAX_REVIEWED_HOSTED_CATALOG_REVISIONS: usize = 64;
 const RETIREMENT_SCHEMA_V1: &str = "worldstream/house-runner-retirement/v1";
 const RETIREMENT_RECEIPT_SCHEMA_V1: &str = "worldstream/house-runner-retirement-receipt/v1";
 const RETIREMENT_TAG_DOMAIN: &str = "worldstream/house-runner-retirement-tag/v1";
@@ -2178,6 +2176,27 @@ mod tests {
         )
         .unwrap_or_else(|error| unreachable!("full reviewed catalog: {error:?}"));
         assert_eq!(operations.revisions.len(), revisions.len());
+        let (listing, seat, revision) = listings
+            .iter()
+            .find_map(|listing| {
+                ["navigator", "insider", "broker"]
+                    .into_iter()
+                    .find_map(|seat| {
+                        revisions
+                            .iter()
+                            .find(|revision| {
+                                listing
+                                    .verify_house_agent_for_seat(seat, revision.digest())
+                                    .is_ok()
+                            })
+                            .map(|revision| (listing, seat, revision))
+                    })
+            })
+            .unwrap_or_else(|| unreachable!("reviewed catalog contains a House-enabled seat"));
+        let request = request(1, 1, seat, revision, listing);
+        operations
+            .reserve(&request)
+            .unwrap_or_else(|error| unreachable!("full catalog reservation: {error:?}"));
 
         let mut over_limit = revisions;
         let padding = MAX_REVIEWED_HOSTED_CATALOG_REVISIONS - over_limit.len() + 1;
