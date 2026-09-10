@@ -1,0 +1,64 @@
+{
+  "schema": "worldstream/activity-listing-revision/v1",
+  "listing_id": "worldstream.midnight-archive.internal-solo",
+  "version": "0.2.0",
+  "title": "Midnight Archive",
+  "description": "Identify the authentic ledger, gain access to the vault, and escape through the Atrium. Solo Standard expedition: 16 turns and 3 power charges; reading costs no turns. The session expires 24 hours after Activity Start; closing or re-entering does not pause the deadline. Expiry records no success or loss outcome.",
+  "catalog": {
+    "visibility": "unlisted",
+    "review_status": "reviewed"
+  },
+  "pack": {
+    "id": "worldstream.midnight-archive",
+    "version": "0.1.0",
+    "digest": "blake3:aea45a1c056c4a7da744be33d38df672499062fd2548302fae43adc49b833b07"
+  },
+  "client": {
+    "client_id": "worldstream.midnight-archive.web",
+    "release_digest": "sha256:fae51aaa770810d203f00fd8be7d098b069ce2ef8e6fc9b7f31b80accf53345f",
+    "client_contract": "worldstream/activity-client-protocol/v1",
+    "surface_id": "midnight-archive-hosted-web"
+  },
+  "creator_access": "must_claim_seat",
+  "launch_input_schema": {
+    "schema": "worldstream/launch-input-schema/v1",
+    "accepts": "none",
+    "defaults": {}
+  },
+  "room_setup": {
+    "configuration": {
+      "scenario_id": "standard-v1"
+    }
+  },
+  "seats": [
+    {
+      "seat_id": "lead",
+      "role": "lead",
+      "display_name": "Expedition lead",
+      "required": true,
+      "allowed_participation": [
+        "account_human"
+      ],
+      "allowed_house_agent_revisions": []
+    }
+  ],
+  "pre_start_deadline_seconds": 1800,
+  "public_viewing_policy": "disabled",
+  "result": {
+    "projection": {
+      "schema": "worldstream.midnight-archive/public-projection/v5",
+      "digest": "blake3:c8045ca0762df97d4e82488f562f7a69eea2b480e41f06889eef3dff133086d0"
+    },
+    "projector": {
+      "id": "worldstream.midnight-archive.result",
+      "version": "0.2.0",
+      "digest": "blake3:93bdc21b4b09ec6e7c1ed7a11df80d984e2f80175e9fae01143f3a00c65d4a17"
+    },
+    "publication": {
+      "policy": "disabled",
+      "attribution": "none",
+      "public_output": "none",
+      "suppression": "unhealthy_inconclusive_or_conflict"
+    }
+  }
+}

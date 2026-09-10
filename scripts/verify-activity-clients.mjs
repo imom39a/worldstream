@@ -18,13 +18,13 @@ const buildRoots = new Map([
 const currentReleaseFiles = new Map([
   ["worldstream.agent-heist.web", "agent-heist-web-v7.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
-  ["worldstream.midnight-archive.web", "midnight-archive-web-v11.json"],
+  ["worldstream.midnight-archive.web", "midnight-archive-web-v12.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const currentEvidenceFiles = new Map([
   ["worldstream.agent-heist.web", "agent-heist-web-v7.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
-  ["worldstream.midnight-archive.web", "midnight-archive-web-v11.json"],
+  ["worldstream.midnight-archive.web", "midnight-archive-web-v12.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const expectedChecks = new Map([
@@ -96,7 +96,7 @@ for (const { name, value: evidence } of evidenceDocuments) {
     JSON.stringify(evidence.checks) === JSON.stringify([
       ...expectedChecks.get(evidence.subject.client_id),
       ...(evidence.subject.client_id === "worldstream.midnight-archive.web" ? (
-        ["midnight-archive-web-v5.json", "midnight-archive-web-v6.json", "midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json"].includes(name) ? [
+        ["midnight-archive-web-v5.json", "midnight-archive-web-v6.json", "midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json", "midnight-archive-web-v12.json"].includes(name) ? [
           "fixed-agreement-and-optional-objective-projection-boundaries",
           "all-four-starting-roster-component-host-witnesses",
           "structured-specialist-task-plan-and-private-knowledge-boundaries",
@@ -106,7 +106,7 @@ for (const { name, value: evidence } of evidenceDocuments) {
           "staged-extraction-preview-and-exact-crew-acknowledgement",
           "terminal-full-and-partial-crew-debrief-work-attribution",
           "responsive-specialist-controls",
-          ...(["midnight-archive-web-v10.json", "midnight-archive-web-v11.json"].includes(name) ? [
+          ...(["midnight-archive-web-v10.json", "midnight-archive-web-v11.json", "midnight-archive-web-v12.json"].includes(name) ? [
             "authored-standard-and-low-reserve-scenario-boundaries",
             "closed-genesis-operation-cost-schedule",
           ] : []),
@@ -126,11 +126,12 @@ for (const { name, value: evidence } of evidenceDocuments) {
         "deployment-owned-stream-bootstrap-and-recovery",
         "separate-local-kernel-and-hosted-entrypoints-without-auth-fallback",
       ] : []),
-      ...(["midnight-archive-web-v2.json", "midnight-archive-web-v3.json", "midnight-archive-web-v4.json", "midnight-archive-web-v5.json", "midnight-archive-web-v6.json", "midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json"].includes(name)
+      ...(["midnight-archive-web-v2.json", "midnight-archive-web-v3.json", "midnight-archive-web-v4.json", "midnight-archive-web-v5.json", "midnight-archive-web-v6.json", "midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json", "midnight-archive-web-v12.json"].includes(name)
         ? ["bounded-idempotent-upstream-retry"] : []),
-      ...(["midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json"].includes(name)
+      ...(["midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json", "midnight-archive-web-v12.json"].includes(name)
         ? ["unavailable-companion-plan-continuation-boundaries"] : []),
-      ...(name === "midnight-archive-web-v11.json" ? ["bounded-companion-dialogue-literal-rendering-and-schema-boundaries"] : []),
+      ...(name === "midnight-archive-web-v11.json" || name === "midnight-archive-web-v12.json" ? ["bounded-companion-dialogue-literal-rendering-and-schema-boundaries"] : []),
+      ...(name === "midnight-archive-web-v12.json" ? ["recorded-session-expiry-and-terminal-replay-boundaries"] : []),
     ]),
     `${evidence.subject.client_id} conformance checks do not match the exercised canonical lane`,
   );

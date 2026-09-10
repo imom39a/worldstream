@@ -18,11 +18,10 @@ import {
   stringValue,
 } from "./model.js";
 import {
-  cancelMiraPlanningTimer,
-  closeMiraAtTerminal,
   initialMiraState,
 } from "./companions.js";
 import { legalDestinationsFrom } from "./world.js";
+import { finalizeTerminal, sessionDeadline } from "./session.js";
 import { acknowledgeExtraction, emptyExtraction, invalidateExtraction, prepareExtraction, prepareTurn, resolveCompanions, validateExtractionCommit } from "./turn-resolution.js";
 
 export const OBJECTIVE =
@@ -217,7 +216,7 @@ export function authoredEvidenceSources(state: ArchiveState): readonly AuthoredE
   return state.evidence_records;
 }
 
-function emptyStage(): StagedAction {
+export function emptyStage(): StagedAction {
   return {
     kind: "none",
     destination: "none",
@@ -246,6 +245,8 @@ export function initializeArchiveState(configuration: CanonicalObject): ArchiveS
   validateAuthoredScenario(scenario);
   return {
     phase: "briefing",
+    session_started_at: "none",
+    session_deadline: "none",
     scenario_id: scenario.scenario_id,
     scenario_label: scenario.scenario_label,
     initial_power: scenario.initial_power,
@@ -286,9 +287,9 @@ export function initializeArchiveState(configuration: CanonicalObject): ArchiveS
   };
 }
 
-export function startArchive(state: ArchiveState): ArchiveState {
+export function startArchive(recordedAt: string, state: ArchiveState): ArchiveState {
   if (state.phase !== "briefing") reject("inactive", "the archive briefing is already closed");
-  return { ...cloneState(state), phase: "active" };
+  return { ...cloneState(state), phase: "active", session_started_at: recordedAt, session_deadline: sessionDeadline(recordedAt) };
 }
 
 export interface AppliedLeadAction {
@@ -515,11 +516,9 @@ function commitTurn(
       extracted_candidate_id: "none",
     };
   }
-  const timerRequests = next.phase === "complete"
-    ? [...cancelMiraPlanningTimer(scheduled), ...cancelMiraPlanningTimer(scheduled, "jonah")]
-    : [];
-  if (next.phase === "complete") next = closeMiraAtTerminal(closeMiraAtTerminal(next), "jonah") as MutableArchiveState;
-  else next = invalidateExtraction(next) as MutableArchiveState;
+  const terminal = next.phase === "complete" ? finalizeTerminal(next, scheduled) : null;
+  const timerRequests = terminal?.timerRequests ?? [];
+  next = (terminal?.state ?? invalidateExtraction(next)) as MutableArchiveState;
   return {
     state: next,
     event: asCanonical({
@@ -528,7 +527,7 @@ function commitTurn(
       turn: next.turns_used,
       location: next.location,
       power: next.power_remaining,
-      outcome_kind: next.outcome.kind,
+      outcome_kind: next.outcome?.kind ?? "pending",
       mira_contribution: next.mira.last_contribution.turn === next.turns_used
         ? next.mira.last_contribution.kind
         : "none",

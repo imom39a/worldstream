@@ -38,6 +38,26 @@ describe("Midnight Archive authorized live adapter", () => {
     expect(() => prepareMidnightArchiveAction(state, { action: "stage_wait" })).toThrow(/not accepting/u);
   });
 
+  it("installs expired Reset and Frame facts without enabling an Action or resetting resources", () => {
+    for (const kind of ["projection_reset", "observation"] as const) {
+      const initial = reduceMidnightArchiveObservation(initialMidnightArchiveLiveState(), authorizedBatch());
+      const expired = reduceMidnightArchiveObservation(initial, authorizedBatch({
+        kind, roomSequence: 8, actions: [], projectionValue: rawProjection({ phase: "expired" }),
+      }));
+      expect(expired.kind).toBe("ready");
+      if (expired.kind !== "ready") throw new Error("expected expired facts");
+      expect(expired.projection.phase).toBe("expired");
+      expect(expired.projection.turnsUsed).toBe(1);
+      expect(expired.projection.power).toBe(3);
+      expect(expired.offers).toEqual([]);
+      expect(() => prepareMidnightArchiveAction(expired, { action: "stage_wait" })).toThrow(/not accepting/u);
+      const invalidOffers = reduceMidnightArchiveObservation(initial, authorizedBatch({
+        kind, roomSequence: 8, actions: ["stage_wait"], projectionValue: rawProjection({ phase: "expired" }),
+      }));
+      expect(invalidOffers.kind).toBe("incompatible");
+    }
+  });
+
   it("binds staging and commit to the current offer without local state mutation", () => {
     const initial = reduceMidnightArchiveObservation(initialMidnightArchiveLiveState(), authorizedBatch());
     if (initial.kind !== "ready") throw new Error("expected ready state");

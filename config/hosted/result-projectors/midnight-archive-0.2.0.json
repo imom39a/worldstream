@@ -1,0 +1,52 @@
+{
+  "schema": "worldstream/result-projector-revision/v1",
+  "projector_id": "worldstream.midnight-archive.result",
+  "version": "0.2.0",
+  "runtime": {
+    "id": "worldstream.result-projector.declarative",
+    "version": "1.0.0",
+    "digest": "blake3:7278757ac8f047330292e399ac3c8f4ed49225b05ecb6b997b75500784b0526e"
+  },
+  "input": {
+    "pack": {
+      "id": "worldstream.midnight-archive",
+      "version": "0.1.0",
+      "digest": "blake3:aea45a1c056c4a7da744be33d38df672499062fd2548302fae43adc49b833b07"
+    },
+    "listing_schema": "worldstream/activity-listing-revision/v1",
+    "complete_head_schema": "worldstream/complete-head/v1",
+    "projection": {
+      "schema": "worldstream.midnight-archive/public-projection/v5",
+      "digest": "blake3:c8045ca0762df97d4e82488f562f7a69eea2b480e41f06889eef3dff133086d0"
+    }
+  },
+  "program": {
+    "schema": "worldstream/result-projector-program/v1",
+    "terminal": {
+      "field": "lifecycle",
+      "equals": "terminal"
+    },
+    "outcome_field": "outcome",
+    "summary_fields": [
+      {
+        "output": "outcome",
+        "source": "kind",
+        "kind": "enum",
+        "values": [
+          "success",
+          "partial_extraction",
+          "wrong_ledger",
+          "no_ledger",
+          "exhausted_inside"
+        ]
+      }
+    ]
+  },
+  "output": {
+    "schema": "midnight-archive/terminal-summary/v1",
+    "schema_digest": "blake3:dc4772ec95b72de7fe6d937a51844d9d1ff48cd01c01a2227408ef474b8d792e",
+    "canonicalizer": "worldstream/canonical-json/v1",
+    "maximum_bytes": 1024
+  },
+  "maximum_input_bytes": 65536
+}

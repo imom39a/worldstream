@@ -7,6 +7,7 @@ import {
 
 import {
   midnightArchiveListingBase64,
+  retainedMidnightArchiveListing01Base64,
   agentHeistListingBase64,
   retainedAgentHeistListing023Base64,
   retainedAgentHeistListing022Base64,
@@ -245,15 +246,28 @@ const reviewedMidnightArchive: ReviewedHostedActivity = Object.freeze({
     publicViewingAvailable: false,
     resultPublication: "Private debrief in the activity; no public result publication.",
     attribution: "Anonymous viewing is disabled.",
-    clientPath: "/midnight-archive-v10/hosted/",
+    clientPath: "/midnight-archive-v12/hosted/",
     publicViewerClientPath: null,
     houseTerms: null,
   }),
 });
+const retainedMidnightArchive = (() => {
+  const retainedListing = readListingRevision(decode(retainedMidnightArchiveListing01Base64));
+  return Object.freeze({
+    ...reviewedMidnightArchive,
+    listing: retainedListing,
+    public: Object.freeze({
+      ...reviewedMidnightArchive.public,
+      availabilityMessage: "Retained revision with its original client",
+      clientPath: "/midnight-archive-v10/hosted/",
+    }),
+  } satisfies ReviewedHostedActivity);
+})();
 const currentReviewedActivities = [reviewedAgentHeist, reviewedMidnightArchive];
 const reviewedBySlug = new Map(currentReviewedActivities.map((activity) => [activity.slug, activity]));
 const reviewedByDigest = new Map(
-  [...currentReviewedActivities, ...retainedAgentHeist].map((activity) => [activity.listing.digest, activity]),
+  [...currentReviewedActivities, ...retainedAgentHeist, retainedMidnightArchive]
+    .map((activity) => [activity.listing.digest, activity]),
 );
 
 const negotiatePublic = Object.freeze({

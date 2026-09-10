@@ -25,6 +25,7 @@ import {
 } from "./schemas.js";
 import {
   applyLeadAction,
+  emptyStage,
   initializeArchiveState,
   payload,
   startArchive,
@@ -43,6 +44,7 @@ import {
 } from "./companions.js";
 import { JONAH_PLAN_TIMER_ID } from "./companions.js";
 import { invalidateExtraction } from "./turn-resolution.js";
+import { finalizeTerminal, isCurrentSessionExpiry, requireSessionAdmission, SESSION_TIMER_ID } from "./session.js";
 
 export const ACTIVITY_START_INPUT_TYPE =
   "worldstream.midnight-archive/briefing-opened/v1";
@@ -161,6 +163,7 @@ export function reduceArchive(input: CanonicalObject): PackReduceOutput {
       const role = roleForMember(coreBefore, memberId);
       const actionPayload = payload(stimulus.canonical_payload);
       const admittedAt = stringValue(stimulus.admitted_at, "admitted_at");
+      requireSessionAdmission(current, admittedAt);
       // A request must still reject while another window is open. A proposal
       // consumes its own exact window. Every other accepted edit supersedes it.
       const editing = actionType === "request_mira_plan" || actionType === "request_jonah_plan" || actionType === "submit_companion_plan"
@@ -186,7 +189,23 @@ export function reduceArchive(input: CanonicalObject): PackReduceOutput {
       };
     }
     if (stimulusType === "timer_fired") {
+      if (current.phase !== "active" || stimulus.timer_id === SESSION_TIMER_ID) {
+        if (stimulus.timer_id === SESSION_TIMER_ID && isCurrentSessionExpiry(current, stimulus)) {
+          const terminal = finalizeTerminal({ ...current, phase: "expired", outcome: null,
+            staged_action: emptyStage(), extraction: { ...current.extraction, status: "none", for_turn: 0,
+              contribution_fingerprint: "none", extracted_roles: [], left_behind_roles: [] } }, scheduled, SESSION_TIMER_ID);
+          return { activity_disposition_type: "apply", next_activity_state: stateAsCanonical(terminal.state),
+            ordered_domain_events: [{ event_type: "archive_session_expired", deadline: current.session_deadline! }],
+            timer_requests: terminal.timerRequests, ordered_attention_signals: [] };
+        }
+        return { activity_disposition_type: "apply", next_activity_state: stateAsCanonical(current),
+          ordered_domain_events: [], timer_requests: [], ordered_attention_signals: [] };
+      }
       const applied = expireMiraOpportunity(current, stimulus, stimulus.timer_id === JONAH_PLAN_TIMER_ID ? "jonah" : "mira");
+      if (canonicalStringify(stateAsCanonical(applied.state)) === canonicalStringify(stateAsCanonical(current))) {
+        return { activity_disposition_type: "apply", next_activity_state: stateAsCanonical(current),
+          ordered_domain_events: [], timer_requests: [], ordered_attention_signals: [] };
+      }
       return {
         activity_disposition_type: "apply",
         next_activity_state: stateAsCanonical(invalidateExtraction(applied.state)),
@@ -235,12 +254,13 @@ function applyActivityStart(
   ) {
     throw new RuleRejection("inactive", "Activity Start does not match the briefing contract");
   }
-  const next = startArchive(current);
+  const next = startArchive(stringValue(stimulus.recorded_at, "recorded_at"), current);
   return {
     activity_disposition_type: "apply",
     next_activity_state: stateAsCanonical(next),
     ordered_domain_events: [{ event_type: "archive_started", phase: "active" }],
-    timer_requests: [],
+    timer_requests: [{ timer_request_type: "schedule_next", timer_id: SESSION_TIMER_ID,
+      due: next.session_deadline!, canonical_payload: { timer: "archive_session", deadline: next.session_deadline! } }],
     ordered_attention_signals: [],
   };
 }
@@ -311,7 +331,7 @@ function cleanRejectionAllowed(stimulusType: string): boolean {
 export default defineActivityPack({
   descriptor: {
     packId: "worldstream.midnight-archive",
-    schemaVersion: 4,
+    schemaVersion: 5,
     name: "Midnight Archive",
     version: "0.1.0",
     roles: [
@@ -447,6 +467,9 @@ export default defineActivityPack({
       "core_role_invariant",
     ],
     events: [
+      { eventType: "archive_session_expired", payloadSchema: { additionalProperties: false, type: "object",
+        properties: { event_type: { const: "archive_session_expired" }, deadline: { type: "string", minLength: 20, maxLength: 30 } },
+        required: ["event_type", "deadline"] } },
       { eventType: "companion_dialogue_recorded", payloadSchema: { ...dialogueRecordSchema(), properties: { ...record(dialogueRecordSchema().properties, "properties"), event_type: { const: "companion_dialogue_recorded" } }, required: [...dialogueRecordSchema().required as string[], "event_type"] } },
       { eventType: "archive_started", payloadSchema: archiveStartedSchema() },
       { eventType: "action_staged", payloadSchema: actionStagedSchema() },

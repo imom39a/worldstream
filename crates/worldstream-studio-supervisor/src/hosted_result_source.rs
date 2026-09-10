@@ -461,16 +461,25 @@ mod tests {
     use crate::secrets::{FileSecretVaultV1, SecretKindV1};
 
     #[test]
-    fn private_current_evidence_does_not_request_historical_replay() -> anyhow::Result<()> {
+    fn private_current_archive_evidence_uses_the_exact_listing_projection() -> anyhow::Result<()> {
         let directory = tempfile::tempdir()?;
         let vault = FileSecretVaultV1::open(&directory.path().join("vault"))?;
         let reference = vault.store(SecretKindV1::MembershipAuthority, &[0xab; 32])?;
         let room_id = "01JY0000000000000000000000";
-        let digest = format!("blake3:{}", "a".repeat(64));
+        let listing_bytes = worldstream_core::CanonicalJsonV1::parse(include_bytes!(
+            "../../../config/hosted/listings/midnight-archive-0.2.0.json"
+        ))?
+        .to_bytes()?;
+        let listing =
+            worldstream_hosted_contract::ListingRevision::from_canonical_bytes(&listing_bytes)?;
+        let pack = listing.pack();
+        let digest = pack.digest.clone();
+        let projection_schema = listing.public_projection_schema().to_owned();
         let authorized = json!({
-            "projection_schema": "fixture/current-public/v1",
+            "projection_schema": projection_schema,
             "authorized_core": {"access_mode":"spectator","role":null,"room_status":"active","standing":"enabled","viewer_class":"public"},
-            "projection": {"phase":"active","outcome":null}, "action_offers": []
+            "projection": {"phase":"expired","lifecycle":"terminal","session_deadline":"2026-09-10T12:00:00Z",
+                "location":"records","turns_used":2,"outcome":null}, "action_offers": []
         });
         let hash = worldstream_core::projection_hash_for_canonical_bytes(&super::canonical_bytes(
             &authorized,
@@ -514,8 +523,8 @@ mod tests {
                 member_id: "01ARZ3NDEKTSV4RRFFQ69G5FB1".to_owned(),
                 principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FB2".to_owned(),
                 pack: worldstream_protocol::PackReference {
-                    id: "fixture.pack".to_owned(),
-                    version: "1".to_owned(),
+                    id: pack.id.clone(),
+                    version: pack.version.clone(),
                     digest,
                 },
                 secret_reference: reference,
@@ -526,7 +535,11 @@ mod tests {
             .join()
             .map_err(|_| anyhow::anyhow!("mock transport panicked"))??;
         assert!(observed.replay.is_none());
-        assert_eq!(observed.projection_schema, "fixture/current-public/v1");
+        assert_eq!(observed.projection_schema, projection_schema);
+        assert_eq!(
+            observed.public_projection.projection_schema,
+            listing.public_projection_schema()
+        );
         assert_eq!(observed.projection_hash, hash.to_string());
         Ok(())
     }

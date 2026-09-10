@@ -60,9 +60,11 @@ export function authorizedView(
       schema,
       projection: {
         phase: state.phase,
+        lifecycle: state.phase === "complete" || state.phase === "expired" ? "terminal" : "nonterminal",
+        session_deadline: state.session_deadline,
         location: state.location,
         turns_used: state.turns_used,
-        outcome: state.outcome.kind === "pending" ? null : { kind: state.outcome.kind },
+        outcome: state.outcome === null || state.outcome.kind === "pending" ? null : { kind: state.outcome.kind },
       },
       actionOffers: [],
     };
@@ -86,6 +88,7 @@ export function participantProjection(state: ArchiveState, role: Role, core?: Ca
       (item.speaker_member_id === viewerMemberId || item.lead_member_id === viewerMemberId))
       .slice(-4).map((item) => ({ speaker: item.speaker_role, turn: item.turn, text: item.text })),
     phase: state.phase,
+    session_deadline: state.session_deadline,
     scenario: { id: state.scenario_id, label: state.scenario_label },
     objective: `${state.objective} ${state.role_notes[role]}`,
     location: state.location,
@@ -128,12 +131,12 @@ export function participantProjection(state: ArchiveState, role: Role, core?: Ca
       extracted_roles: [...state.extraction.extracted_roles], left_behind_roles: [...state.extraction.left_behind_roles] },
     crew_debrief: crewDebrief(state),
     debrief: debriefProjection(state),
-    outcome: state.outcome.kind === "pending" ? null : { kind: state.outcome.kind },
+    outcome: state.outcome === null || state.outcome.kind === "pending" ? null : { kind: state.outcome.kind },
   };
 }
 
 function debriefProjection(state: ArchiveState): CanonicalJson {
-  if (state.outcome.kind === "pending") return null;
+  if (state.phase !== "complete" && state.phase !== "expired") return null;
   const observed = Object.values(state.evidence).filter((status) => status === "observed").length;
   const evidence = observed === 0
     ? { evidence_status: "none", message: "No authored source was inspected." }
@@ -246,7 +249,7 @@ function miraProjection(state: ArchiveState, companionRole: CompanionRole = "mir
   const status = planningStatus(companion);
   const visiblePlan = status === "ready" || status === "complete";
   return {
-    dialogue_allowed: dialogueAllowed(state, companionRole),
+    dialogue_allowed: state.phase === "active" && dialogueAllowed(state, companionRole),
     field_assay: { steps_completed: companion.field_assay.steps_completed, result: companion.field_assay.result === "none" ? null : { candidate_id: companion.field_assay.result, confidence: "verified" } },
     presence: companion.presence,
     location: companion.location,

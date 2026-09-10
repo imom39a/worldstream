@@ -18,7 +18,7 @@ function core(roles = ["lead", "mira", "jonah"]): CanonicalObject {
 }
 
 function fresh(roles?: string[], scenarioId: "standard-v1" | "low-reserve-v1" = "standard-v1"): ArchiveState {
-  return startArchive(pack.initialize({ configuration: { scenario_id: scenarioId }, initial_core_state: core(roles) }).initial_activity_state as unknown as ArchiveState);
+  return startArchive("2026-09-10T12:00:00Z", pack.initialize({ configuration: { scenario_id: scenarioId }, initial_core_state: core(roles) }).initial_activity_state as unknown as ArchiveState);
 }
 
 function action(state: ArchiveState, member: string, actionType: string, payload: CanonicalObject = {}, currentCore = core()): ArchiveState {
@@ -65,7 +65,7 @@ test("every supported roster completes the same fifteen-turn route with its enti
     let state = fresh(roles);
     const currentCore = core(roles);
     for (const item of bothObjectivesRouteActions) state = action(state, "lead", item.action_type, item.canonical_payload, currentCore);
-    assert.equal(state.outcome.kind, "success");
+    assert.equal(state.outcome?.kind, "success");
     assert.equal(state.turns_used, 15);
     assert.equal(state.power_remaining, 0);
     assert.deepEqual(state.extraction.extracted_roles, roles);
@@ -261,7 +261,7 @@ test("extraction includes same-turn returns, requires exact acknowledgement, and
   assert.equal(state.extraction.status, "none");
   rejectAction(state, "lead", "commit_turn", "extraction_preview_required");
   const final = action(acknowledged, "lead", "commit_turn");
-  assert.equal(final.outcome.kind, "partial_extraction");
+  assert.equal(final.outcome?.kind, "partial_extraction");
   assert.equal(final.mira.location, "atrium");
   assert.equal(final.jonah.location, "records");
   assert.deepEqual(final.completed_crew_work.map((work) => work.role), ["mira", "jonah"]);
@@ -375,7 +375,7 @@ test("terminal full and partial extraction facts survive Core retirement and lat
     state = action(state, "lead", "acknowledge_extraction", { preview_revision: state.extraction.revision,
       left_behind_roles: [...state.extraction.left_behind_roles] });
     state = action(state, "lead", "commit_turn");
-    assert.equal(state.outcome.kind, partial ? "partial_extraction" : "success");
+    assert.equal(state.outcome?.kind, partial ? "partial_extraction" : "success");
     assert.deepEqual(state.completed_crew_work, [{ role: "mira", kind: "regroup_move", turn: 1 }]);
     const terminalFacts = (value: ArchiveState, currentCore: CanonicalObject) => canonicalStringify({
       outcome: value.outcome as unknown as CanonicalObject,

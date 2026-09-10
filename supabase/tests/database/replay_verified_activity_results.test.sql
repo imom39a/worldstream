@@ -874,5 +874,114 @@ select ok(
   ),
   'ten terminal-without-outcome Runs cannot starve published integrity rechecks'
 );
+-- A terminal disposition without an Outcome must free the creator's active
+-- slot through the ordinary RPC, before any result or operator cleanup exists.
+reset role;
+insert into platform_store.platform_accounts(account_id)
+values ('70000000-0000-4000-8000-000000000002');
+insert into platform_store.launch_requests
+select (jsonb_populate_record(null::platform_store.launch_requests,
+  to_jsonb(launches) || jsonb_build_object(
+    'launch_request_id', '71000000-0000-4000-8000-000000000002',
+    'creator_account_id', '70000000-0000-4000-8000-000000000002',
+    'idempotency_namespace', 'terminal-without-outcome-test',
+    'room_setup_operation_id', 'terminal-without-outcome-test'
+  ))).*
+from platform_store.launch_requests launches
+where launch_request_id = '71000000-0000-4000-8000-000000000001';
+insert into platform_store.activity_runs
+select (jsonb_populate_record(null::platform_store.activity_runs,
+  to_jsonb(runs) || jsonb_build_object(
+    'activity_run_id', '72000000-0000-4000-8000-000000000002',
+    'launch_request_id', '71000000-0000-4000-8000-000000000002',
+    'creator_account_id', '70000000-0000-4000-8000-000000000002',
+    'room_setup_operation_id', 'terminal-without-outcome-test',
+    'room_id', '01ARZ3NDEKTSV4RRFFQ69G5FBA', 'public_id', null
+  ))).*
+from platform_store.activity_runs runs
+where activity_run_id = '72000000-0000-4000-8000-000000000001';
+insert into platform_store.activity_run_memberships
+select (jsonb_populate_record(null::platform_store.activity_run_memberships,
+  to_jsonb(memberships) || jsonb_build_object(
+    'activity_run_id', '72000000-0000-4000-8000-000000000002',
+    'membership_id', '01ARZ3NDEKTSV4RRFFQ69G5FBB',
+    'principal_id', '01ARZ3NDEKTSV4RRFFQ69G5FBC'
+  ))).*
+from platform_store.activity_run_memberships memberships
+where activity_run_id = '72000000-0000-4000-8000-000000000001';
+insert into platform_store.capacity_reservations
+  (launch_request_id, kind, controlling_account_id, activity_run_id)
+values ('71000000-0000-4000-8000-000000000002', 'active_run',
+  '70000000-0000-4000-8000-000000000002', '72000000-0000-4000-8000-000000000002');
+
+-- Retain a subsequent frozen launch so authorization exercises the real
+-- account capacity gate both before and after terminal evidence is recorded.
+insert into platform_store.launch_requests
+select (jsonb_populate_record(null::platform_store.launch_requests,
+  to_jsonb(launches) || jsonb_build_object(
+    'launch_request_id', '71000000-0000-4000-8000-000000000003',
+    'idempotency_namespace', 'terminal-capacity-reuse-test',
+    'room_setup_operation_id', 'terminal-capacity-reuse-test',
+    'state', 'provisioning', 'host_mutation_started_at', null,
+    'created_at', now(), 'last_transition_at', now(), 'roster_frozen_at', now(),
+    'expires_at', now() + interval '24 hours'
+  ))).*
+from platform_store.launch_requests launches
+where launch_request_id = '71000000-0000-4000-8000-000000000002';
+insert into platform_store.capacity_reservations
+  (launch_request_id, kind, controlling_account_id)
+values ('71000000-0000-4000-8000-000000000003', 'pre_genesis',
+  '70000000-0000-4000-8000-000000000002');
+
+create temporary table without_outcome_document as
+select convert_to((convert_from(document, 'utf8')::jsonb || jsonb_build_object(
+  'run_id', '72000000-0000-4000-8000-000000000002',
+  'room_id', '01ARZ3NDEKTSV4RRFFQ69G5FBA',
+  'result_indexer_membership_id', '01ARZ3NDEKTSV4RRFFQ69G5FBB',
+  'projector_status', 'terminal_without_outcome',
+  'source_head', (convert_from(document, 'utf8')::jsonb -> 'source_head') ||
+    jsonb_build_object('room_id', '01ARZ3NDEKTSV4RRFFQ69G5FBA')
+))::text, 'utf8') as document
+from terminal_documents where name = 'initial';
+grant select on without_outcome_document to service_role;
+set local role service_role;
+select throws_ok(
+  $$select platform_api.authorize_host_mutation_v1(
+    '70000000-0000-4000-8000-000000000002', '71000000-0000-4000-8000-000000000003',
+    'result-test-host', 'terminal-capacity-reuse-test')$$,
+  '55000', 'account_active_run_capacity_unavailable',
+  'the subsequent launch is blocked while the previous Run occupies active capacity'
+);
+select is((platform_api.record_run_terminal_v1(
+  '72000000-0000-4000-8000-000000000002', document, extensions.digest(document, 'sha256')
+) ->> 'disposition'), 'applied', 'terminal without Outcome is recorded by the normal terminal RPC')
+from without_outcome_document;
+create temporary table first_without_outcome_release as
+select reservation_id, released_at from platform_store.capacity_reservations
+where activity_run_id = '72000000-0000-4000-8000-000000000002';
+select is((platform_api.record_run_terminal_v1(
+  '72000000-0000-4000-8000-000000000002', document, extensions.digest(document, 'sha256')
+) ->> 'disposition'), 'duplicate', 'duplicate terminal-without-outcome evidence is idempotent')
+from without_outcome_document;
+select ok(platform_api.authorize_host_mutation_v1(
+  '70000000-0000-4000-8000-000000000002', '71000000-0000-4000-8000-000000000003',
+  'result-test-host', 'terminal-capacity-reuse-test'
+), 'the subsequent launch reuses active capacity without cleanup or a public result');
+select ok((select reservations.released_at is not null
+  and reservations.released_at = first_release.released_at
+  and reservations.release_reason = 'projector_terminal'
+  from platform_store.capacity_reservations reservations
+  join first_without_outcome_release first_release using (reservation_id)),
+  'duplicate evidence preserves the original capacity release');
+select is((select count(*)::integer from platform_store.activity_run_terminal_evidence
+  where activity_run_id = '72000000-0000-4000-8000-000000000002'
+  and projector_status = 'terminal_without_outcome'), 1,
+  'one immutable terminal-without-outcome evidence row remains');
+select is((select count(*)::integer from platform_store.indexed_activity_results
+  where activity_run_id = '72000000-0000-4000-8000-000000000002'), 0,
+  'terminal expiry does not invent an indexed result');
+select is((select principal_id from platform_store.activity_run_memberships
+  where activity_run_id = '72000000-0000-4000-8000-000000000002'),
+  '01ARZ3NDEKTSV4RRFFQ69G5FBC', 'terminal expiry retains the original Membership and Principal');
 select finish();
 rollback;

@@ -16,7 +16,7 @@ export const ARCHIVE_LOCATIONS = [
 export type ArchiveLocation = typeof ARCHIVE_LOCATIONS[number];
 export type ArchiveGate = "archive_gate" | "service_hatch";
 export type GateState = "closed" | "open";
-export type ArchivePhase = "briefing" | "active" | "complete";
+export type ArchivePhase = "briefing" | "active" | "complete" | "expired";
 export type ArchiveCandidateId = "ledger-amber" | "ledger-cobalt" | "ledger-violet";
 export type ArchiveOutcomeKind =
   | "success"
@@ -270,6 +270,7 @@ export interface MidnightArchiveProjection {
   readonly methodCosts: { readonly verifier: 1; readonly ordinaryServiceHatch: 2 };
   readonly operationCosts: Readonly<Record<ArchiveOperation, ArchiveActionCost>>;
   readonly phase: ArchivePhase;
+  readonly sessionDeadline: string | null;
   readonly objective: string;
   readonly location: ArchiveLocation;
   readonly turnsUsed: number;
@@ -385,6 +386,7 @@ const ROOT_KEYS = [
   "outcome",
   "optional_objectives",
   "phase",
+  "session_deadline",
   "power",
   "preservation_agreement",
   "staged_action",
@@ -416,6 +418,9 @@ export function readMidnightArchiveProjection(
   const methodCosts = readMethodCosts(source.method_costs);
   const operationCosts = readOperationCosts(source.operation_costs);
   const phase = readPhase(source.phase);
+  const sessionDeadline = source.session_deadline === "none" ? null
+    : typeof source.session_deadline === "string" && isCanonicalUtcDeadline(source.session_deadline)
+      ? source.session_deadline : undefined;
   const objective = boundedText(source.objective, MAX_OBJECTIVE_BYTES);
   const location = readLocation(source.location);
   const turnsUsed = integerInRange(source.turns_used, 0, 16);
@@ -444,7 +449,8 @@ export function readMidnightArchiveProjection(
   if (
     companionDialogue === null || scenario === null || initialPower === null || methodCosts === null || operationCosts === null
     || initialPower !== (scenario.id === "standard-v1" ? 3 : 2)
-    || phase === null || objective === null || location === null
+    || phase === null || sessionDeadline === undefined || objective === null || location === null
+    || (phase === "briefing") !== (sessionDeadline === null)
     || turnsUsed === null || turnsRemaining === null || power === null
     || power > initialPower
     || gates === null || map === null || candidates === null || mira === null || jonah === null
@@ -487,7 +493,10 @@ export function readMidnightArchiveProjection(
     || (phase === "briefing" && (turnsUsed !== 0 || stagedAction !== null || outcome !== null))
     || (phase === "active" && (outcome !== null || debrief !== null))
     || (phase === "complete" && (outcome === null || debrief === null))
-    || (phase === "complete" && debrief?.evidenceStatus !== expectedDebriefStatus)
+    || (phase === "expired" && (outcome !== null || debrief === null || stagedAction !== null || extraction.status !== "none"))
+    || ((phase === "complete" || phase === "expired") && [mira, jonah].some((companion) =>
+      companion.planning.status === "waiting" || companion.preparation.status !== "none"))
+    || ((phase === "complete" || phase === "expired") && debrief?.evidenceStatus !== expectedDebriefStatus)
     || (optionalObjectives.sourceRecordProtected.status !== "locked" && carriedCandidate === null)
     || (optionalObjectives.sourceRecordProtected.status === "locked" && carriedCandidate !== null)
     || (debrief !== null && (
@@ -510,6 +519,7 @@ export function readMidnightArchiveProjection(
     methodCosts,
     operationCosts,
     phase,
+    sessionDeadline,
     objective,
     location,
     turnsUsed,
@@ -1115,11 +1125,12 @@ function crewStateIsConsistent(
   if (COMPANION_ORDER.some((role) => (companions[role].presence === "absent") === starting.has(role))) return false;
   if (debrief.completedWork.some((item) => !starting.has(item.role) || item.turn > turnsUsed)) return false;
 
-  const expectedPrepared = phase === "complete" ? [] : COMPANION_ORDER.filter((role) => companions[role].presence === "active"
+  const terminal = phase === "complete" || phase === "expired";
+  const expectedPrepared = terminal ? [] : COMPANION_ORDER.filter((role) => companions[role].presence === "active"
     && companions[role].mode === "tasked" && companions[role].preparation.status === "prepared");
-  const expectedDeferred = phase === "complete" ? [] : COMPANION_ORDER.filter((role) => companions[role].presence === "active"
+  const expectedDeferred = terminal ? [] : COMPANION_ORDER.filter((role) => companions[role].presence === "active"
     && companions[role].mode === "tasked" && companions[role].preparation.status === "deferred");
-  const expectedUnprepared = phase === "complete" ? [] : COMPANION_ORDER.filter((role) => companions[role].presence === "active"
+  const expectedUnprepared = terminal ? [] : COMPANION_ORDER.filter((role) => companions[role].presence === "active"
     && companions[role].mode === "tasked" && companions[role].preparation.status === "none");
   if (!sameArray(turn.preparedRoles, expectedPrepared) || !sameArray(turn.deferredRoles, expectedDeferred)
     || !sameArray(turn.unpreparedRoles, expectedUnprepared)) return false;
@@ -1169,6 +1180,8 @@ function crewStateIsConsistent(
   if (phase === "complete") {
     if (!sameArray(debrief.extractedRoles, extracted)
       || !sameArray([...debrief.extractedRoles, ...debrief.leftBehindRoles].sort(roleComparator), debrief.startingRoles)) return false;
+  } else if (phase === "expired") {
+    if (debrief.extractedRoles.length !== 0 || debrief.leftBehindRoles.length !== 0) return false;
   } else if (debrief.extractedRoles.length !== 0 || debrief.leftBehindRoles.length !== 0) return false;
   return true;
 }
@@ -1483,7 +1496,7 @@ function agreementStateIsConsistent(
 }
 
 function readPhase(value: unknown): ArchivePhase | null {
-  return value === "briefing" || value === "active" || value === "complete" ? value : null;
+  return value === "briefing" || value === "active" || value === "complete" || value === "expired" ? value : null;
 }
 
 function readLocation(value: unknown): ArchiveLocation | null {

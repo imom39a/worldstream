@@ -78,7 +78,7 @@ export function emptyExtraction(revision = 0): ExtractionPreview {
 
 export function invalidateExtraction(state: ArchiveState): ArchiveState {
   // Once resolved, extraction is a historical fact, not a reusable preparation.
-  if (state.phase === "complete") return state;
+  if (state.phase === "complete" || state.phase === "expired") return state;
   return { ...state, extraction: emptyExtraction(state.extraction.revision + 1) };
 }
 
@@ -132,8 +132,10 @@ export function validateExtractionCommit(state: ArchiveState, core?: CanonicalOb
 }
 
 export function crewDebrief(state: ArchiveState): CanonicalObject {
-  const extracted = state.phase === "complete" && state.outcome.kind !== "exhausted_inside" ? state.extraction.extracted_roles : [];
+  const extracted = state.phase === "complete" && state.outcome?.kind !== "exhausted_inside" ? state.extraction.extracted_roles : [];
   return asCanonical({ starting_roles: state.starting_crew.map((member) => member.role), extracted_roles: extracted,
+    // Operational expiry records no extraction result. Only a gameplay
+    // completion partitions the starting crew into extracted/left behind.
     left_behind_roles: state.phase === "complete" ? state.starting_crew.filter((member) => !extracted.includes(member.role)).map((member) => member.role) : [],
     completed_work: state.completed_crew_work.map((item) => ({ ...item })) });
 }

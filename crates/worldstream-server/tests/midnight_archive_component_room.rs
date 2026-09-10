@@ -35,6 +35,9 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 const PACK_ID: &str = "worldstream.midnight-archive";
 const PACK_VERSION: &str = "0.1.0";
+// Back-to-back candidate proofs can compile portable Components between
+// WebSocket messages; keep the transport wait above that local build latency.
+const STREAM_READ_TIMEOUT: Duration = Duration::from_secs(180);
 const CURRENT_BUNDLE_DIGEST: &str =
     "blake3:4325846eb61ee4b821d4e7d95a0a3e9c5f78aeaddbc2649cf308b33efcc68812";
 const CURRENT_REVISION_DIGEST: &str =
@@ -73,7 +76,7 @@ const FORBIDDEN_PRIVATE_KEYS: &[&str] = &["authentic_candidate_id", "is_authenti
 
 fn client_binding_identity() -> TestResult<(String, String)> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config/activity-clients/releases/midnight-archive-web-v11.json");
+        .join("../../config/activity-clients/releases/midnight-archive-web-v12.json");
     let release: Value = serde_json::from_slice(&fs::read(path)?)?;
     let release_digest = release["release_digest"]
         .as_str()
@@ -83,7 +86,7 @@ fn client_binding_identity() -> TestResult<(String, String)> {
         .as_array()
         .and_then(|surfaces| {
             surfaces.iter().find_map(|surface| {
-                (surface["entrypoint"] == "/midnight-archive-v11/")
+                (surface["entrypoint"] == "/midnight-archive-v12/")
                     .then(|| surface["surface_id"].as_str())
                     .flatten()
             })
@@ -272,12 +275,22 @@ async fn unavailable_companions_expire_reconnect_and_allow_explicit_partial_extr
     run_archive_witness(&["mira", "jonah"], Scenario::Unavailable).await
 }
 
+/// Candidate qualification is separate from the retained Release witnesses.
+/// Run explicitly after building the reviewed source candidate into a temporary Bundle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires WORLDSTREAM_ARCHIVE_EXPIRY_BUNDLE source candidate; no retained Release is rewritten"]
+async fn session_expiry_cancels_pending_reply_retains_facts_and_replays_exactly() -> TestResult {
+    let bundle = PathBuf::from(env::var("WORLDSTREAM_ARCHIVE_EXPIRY_BUNDLE")?);
+    run_archive_witness_with_bundle(&["mira", "jonah"], Scenario::SessionExpiry, Some(bundle)).await
+}
+
 #[derive(Clone, Copy)]
 enum Scenario {
     Complete,
     Partial,
     Unavailable,
     LowReserve,
+    SessionExpiry,
 }
 
 struct QualificationClock(Mutex<HostClockSampleV1>);
@@ -420,7 +433,7 @@ impl LiveWitness {
             .ok_or("old agent stream missing")?
             .close(None)?;
         let stream = TcpStream::connect(address)?;
-        stream.set_read_timeout(Some(Duration::from_secs(15)))?;
+        stream.set_read_timeout(Some(STREAM_READ_TIMEOUT))?;
         let mut request = format!("ws://{address}/v1/stream").into_client_request()?;
         request
             .headers_mut()
@@ -455,6 +468,18 @@ impl LiveWitness {
         let mut expected = self.state.clone();
         // The role note is personalized even before either agent investigates.
         expected["objective"] = self.agent_objectives[role].clone();
+        // Dialogue is frozen to the original speaker and lead Memberships. A
+        // companion reconnect must therefore retain only that companion's own
+        // accepted utterances rather than copying the lead's combined view.
+        expected["companion_dialogue"] = Value::Array(
+            expected["companion_dialogue"]
+                .as_array()
+                .ok_or("lead companion dialogue missing")?
+                .iter()
+                .filter(|entry| entry["speaker"] == role)
+                .cloned()
+                .collect(),
+        );
         actual
             .as_object_mut()
             .ok_or("reconnect projection missing")?
@@ -673,6 +698,90 @@ fn low_reserve_route(live: &mut LiveWitness) -> TestResult {
 
 fn plan_step(kind: &str, destination: &str, source: &str, power: u64) -> Value {
     json!({"step_type":kind,"destination":destination,"source_id":source,"power_cost":power})
+}
+
+fn session_expiry_route(live: &mut LiveWitness, clock: &QualificationClock) -> TestResult {
+    let deadline = live.state["session_deadline"]
+        .as_str()
+        .ok_or("candidate must expose the v5 session deadline")?
+        .to_owned();
+    let deadline_time =
+        time::OffsetDateTime::parse(&deadline, &time::format_description::well_known::Rfc3339)?;
+    let admitted = time::OffsetDateTime::parse(
+        clock.sample()?.as_str(),
+        &time::format_description::well_known::Rfc3339,
+    )?;
+    assert!(deadline_time > admitted);
+    assert!(deadline_time - admitted < time::Duration::days(1));
+    live.task(
+        "mira",
+        "investigate_records",
+        0,
+        json!([plan_step("move", "records", "none", 0)]),
+    )?;
+    live.act("lead", "stage_wait", json!({}))?;
+    live.prepare("mira")?;
+    live.act("lead", "commit_turn", json!({}))?;
+    assert_eq!(live.state["turns_used"], 1);
+    assert_eq!(
+        live.state["crew_debrief"]["completed_work"][0]["kind"],
+        "move"
+    );
+    live.act(
+        "lead",
+        "assign_jonah_task",
+        json!({"task_kind":"investigate_records","power_allowance":0}),
+    )?;
+    clock.advance_to(
+        &(deadline_time - time::Duration::seconds(5))
+            .format(&time::format_description::well_known::Rfc3339)?,
+    )?;
+    live.act("lead", "request_jonah_plan", json!({}))?;
+    let stale_reply = json!({"task_revision":live.state["jonah"]["task"]["revision"],
+        "opportunity_revision":live.state["jonah"]["planning"]["opportunity_revision"],
+        "dialogue":"Recommend Records.","steps":[plan_step("move","records","none",0)]});
+    let before = live.state.clone();
+    let head = live.sequence;
+    clock.advance_to(&deadline)?;
+    let expired = receive(&mut live.lead, "observation.deliver")?;
+    live.install_observation(expired, head + 1)?;
+    assert_eq!(live.state["phase"], "expired");
+    assert_eq!(live.state["outcome"], Value::Null);
+    assert_eq!(live.state["session_deadline"], deadline);
+    assert_eq!(live.state["jonah"]["planning"]["status"], "expired");
+    assert!(live.offers.is_empty());
+    for field in [
+        "turns_used",
+        "turns_remaining",
+        "power",
+        "location",
+        "gates",
+        "candidates",
+        "carried_candidate",
+        "verifier_result",
+        "preservation_agreement",
+        "optional_objectives",
+        "companion_dialogue",
+    ] {
+        assert_eq!(
+            live.state[field], before[field],
+            "session expiry changed {field}"
+        );
+    }
+    assert_eq!(
+        live.state["crew_debrief"]["completed_work"],
+        before["crew_debrief"]["completed_work"]
+    );
+    assert_eq!(live.state["crew_debrief"]["extracted_roles"], json!([]));
+    assert_eq!(
+        live.state["crew_debrief"]["left_behind_roles"],
+        json!([]),
+        "operational expiry must not manufacture a gameplay loss"
+    );
+    live.reject_agent("jonah", stale_reply, live.sequence, "action_not_allowed")?;
+    live.reject("stage_wait", json!({}), false)?;
+    reject_private(&live.state);
+    Ok(())
 }
 
 fn unavailable_route(live: &mut LiveWitness, clock: &QualificationClock) -> TestResult {
@@ -1000,21 +1109,34 @@ fn specialist_route(live: &mut LiveWitness, roles: &[&str], partial: bool) -> Te
 }
 
 async fn run_archive_witness(roles: &[&str], scenario: Scenario) -> TestResult {
+    run_archive_witness_with_bundle(roles, scenario, None).await
+}
+
+async fn run_archive_witness_with_bundle(
+    roles: &[&str],
+    scenario: Scenario,
+    candidate_bundle: Option<PathBuf>,
+) -> TestResult {
     let (client_release_digest, client_surface_id) = client_binding_identity()?;
-    let verified =
-        PackBundleVerifierV1.inspect(Arc::<[u8]>::from(fs::read(current_bundle_path())?))?;
+    let candidate = candidate_bundle.is_some();
+    let verified = PackBundleVerifierV1.inspect(Arc::<[u8]>::from(fs::read(
+        candidate_bundle.unwrap_or_else(current_bundle_path),
+    )?))?;
     assert_eq!(verified.inspection().pack_id, PACK_ID);
     assert_eq!(verified.inspection().explanatory_version, PACK_VERSION);
-    assert_eq!(verified.bundle_digest().to_string(), CURRENT_BUNDLE_DIGEST);
-    assert_eq!(
-        verified.revision_digest().to_string(),
-        CURRENT_REVISION_DIGEST
-    );
-    assert_eq!(
-        verified.component_digest().to_string(),
-        CURRENT_COMPONENT_DIGEST
-    );
+    if !candidate {
+        assert_eq!(verified.bundle_digest().to_string(), CURRENT_BUNDLE_DIGEST);
+        assert_eq!(
+            verified.revision_digest().to_string(),
+            CURRENT_REVISION_DIGEST
+        );
+        assert_eq!(
+            verified.component_digest().to_string(),
+            CURRENT_COMPONENT_DIGEST
+        );
+    }
     let revision = verified.revision_digest().clone();
+    let revision_wire = revision.to_string();
     let configuration: Value = if matches!(scenario, Scenario::LowReserve) {
         json!({"scenario_id":"low-reserve-v1"})
     } else {
@@ -1126,25 +1248,28 @@ async fn run_archive_witness(roles: &[&str], scenario: Scenario) -> TestResult {
         )?,
         "2026-08-15T12:00:00Z".parse()?,
     )?;
-    // Activity Start currently uses authority wall time. Start the injected
-    // Action/Timer clock beyond it, then advance only when the witness directs.
-    let clock_anchor =
-        (time::OffsetDateTime::now_utc() + time::Duration::days(1)).replace_nanosecond(0)?;
+    // Activity Start uses authority wall time. Align the injected clock again
+    // after its receipt; jumping ahead one day would make a 24-hour session overdue.
+    let clock_anchor = time::OffsetDateTime::now_utc();
     let clock = Arc::new(QualificationClock(Mutex::new(HostClockSampleV1::new(
         clock_anchor.format(&time::format_description::well_known::Rfc3339)?,
     )?)));
-    let backend = Arc::new(if matches!(scenario, Scenario::Unavailable) {
-        SqliteGatewayBackend::with_host_clock(store, Arc::new(registry), clock.clone())
-            .with_timer_authority(host_bearer)?
-    } else {
-        SqliteGatewayBackend::new(store, Arc::new(registry))
-    });
+    let backend = Arc::new(
+        if matches!(scenario, Scenario::Unavailable | Scenario::SessionExpiry) {
+            SqliteGatewayBackend::with_host_clock(store, Arc::new(registry), clock.clone())
+                .with_timer_authority(host_bearer)?
+        } else {
+            SqliteGatewayBackend::new(store, Arc::new(registry))
+        },
+    );
     let state = OperatorState::new(EffectiveConfig::default())?.with_backend(backend);
-    let routes = operator_router(if matches!(scenario, Scenario::Unavailable) {
-        state.with_scheduler()?
-    } else {
-        state
-    });
+    let routes = operator_router(
+        if matches!(scenario, Scenario::Unavailable | Scenario::SessionExpiry) {
+            state.with_scheduler()?
+        } else {
+            state
+        },
+    );
     let host_header = format!("Bearer {}", BearerWireV1::from_bytes([0xc1; 32]).to_wire());
     let roster = std::iter::once("lead")
         .chain(roles.iter().copied())
@@ -1157,7 +1282,7 @@ async fn run_archive_witness(roles: &[&str], scenario: Scenario) -> TestResult {
     let members = roster.iter().zip(&principals).map(|(role, principal)| json!({"principal_id":principal,
         "principal_kind":if *role == "lead" { "human" } else { "agent" },"role":role,"access_mode":"participant"})).collect::<Vec<_>>();
     let created: CreateRoomResponse = serde_json::from_value(post(&routes, &host_header, "/v1/rooms", json!({
-        "pack":{"id":PACK_ID,"version":PACK_VERSION,"digest":CURRENT_REVISION_DIGEST},"configuration":configuration,
+        "pack":{"id":PACK_ID,"version":PACK_VERSION,"digest":revision_wire},"configuration":configuration,
         "members":members,"idempotency_key":"midnight-archive-live-witness"
     })).await?)?;
     assert_eq!(created.member_ids.len(), roster.len());
@@ -1207,7 +1332,7 @@ async fn run_archive_witness(roles: &[&str], scenario: Scenario) -> TestResult {
         .collect::<Vec<_>>();
     let result = tokio::task::spawn_blocking(move || -> TestResult<(u64, Value)> {
         let stream = TcpStream::connect(address)?;
-        stream.set_read_timeout(Some(Duration::from_secs(15)))?;
+        stream.set_read_timeout(Some(STREAM_READ_TIMEOUT))?;
         let mut request = format!("ws://{address}/v1/hosted/browser-stream").into_client_request()?;
         request.headers_mut().insert("origin", "https://arena.example".parse()?);
         request.headers_mut().insert("sec-websocket-protocol", worldstream_protocol::WEBSOCKET_SUBPROTOCOL.parse()?);
@@ -1221,8 +1346,10 @@ async fn run_archive_witness(roles: &[&str], scenario: Scenario) -> TestResult {
         send(&mut socket, "room.sync_ack", &json!({"through_frame_head":attached["frame_head"],"sync_token":attached["sync_token"]}), "00000000000000000000000400")?;
         receive(&mut socket, "room.sync_acked")?;
         let launch = tokio::runtime::Handle::current().block_on(post(&blocking_routes, &host_header,
-            &format!("/v1/operator/rooms/{room}/lobby/launch"), json!({"input_id":"00000000000000000000000401","based_on_room_seq":0,"pack_digest":CURRENT_REVISION_DIGEST})))?;
+            &format!("/v1/operator/rooms/{room}/lobby/launch"), json!({"input_id":"00000000000000000000000401","based_on_room_seq":0,"pack_digest":revision_wire})))?;
         assert_eq!(launch["room_head"]["room_seq"], 1);
+        clock.advance_to(&(time::OffsetDateTime::now_utc() + time::Duration::seconds(1))
+            .format(&time::format_description::well_known::Rfc3339)?)?;
         let active = receive(&mut socket, "observation.deliver")?;
         let state = projection(&active);
         assert_eq!(state["phase"], "active");
@@ -1240,7 +1367,7 @@ async fn run_archive_witness(roles: &[&str], scenario: Scenario) -> TestResult {
             assert_eq!(state[role]["location"], "atrium");
             let (member, bearer) = capabilities.get(role).ok_or("companion authority missing")?;
             let stream = TcpStream::connect(address)?;
-            stream.set_read_timeout(Some(Duration::from_secs(15)))?;
+            stream.set_read_timeout(Some(STREAM_READ_TIMEOUT))?;
             let mut request = format!("ws://{address}/v1/stream").into_client_request()?;
             request.headers_mut().insert("authorization", format!("Bearer {bearer}").parse()?);
             request.headers_mut().insert("sec-websocket-protocol", worldstream_protocol::WEBSOCKET_SUBPROTOCOL.parse()?);
@@ -1263,7 +1390,12 @@ async fn run_archive_witness(roles: &[&str], scenario: Scenario) -> TestResult {
             offers: action_offers(&active).cloned().ok_or("initial offers missing")?, sequence: room_seq(&active), next_id: 1000, descriptor_actions };
         live.reject("stage_move", json!({"destination":"vault"}), false)?;
         live.reject("stage_wait", json!({}), true)?;
-        if matches!(scenario, Scenario::LowReserve) {
+        if matches!(scenario, Scenario::SessionExpiry) {
+            session_expiry_route(&mut live, &clock)?;
+            for role in ["mira", "jonah"] {
+                live.reconnect_agent(address, role, &capabilities.get(role).ok_or("original agent capability missing")?.1)?;
+            }
+        } else if matches!(scenario, Scenario::LowReserve) {
             low_reserve_route(&mut live)?;
         } else if owned_roles.is_empty() {
             for expected in witness {

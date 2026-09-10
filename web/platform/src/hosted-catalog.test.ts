@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { test } from "vitest";
 
 import { encodeCanonical } from "@worldstream/pack-sdk";
-import { deriveRoomSetup } from "@worldstream/hosted-contract";
+import { deriveRoomSetup, readListingRevision } from "@worldstream/hosted-contract";
 
 import {
   AGENT_HEIST_LISTING_DIGEST,
@@ -71,30 +71,59 @@ test("client selection is a reviewed client-contract concern, not a Pack branch"
   assert.equal(reviewedPublicViewerClientPath(current.public), "/agent-heist-v7/hosted/");
 });
 
-test("solo Archive pins exact artifacts and is excluded from public discovery", async () => {
+test("solo Archive pins the exact Host projection and is excluded from public discovery", async () => {
   const activity = reviewedActivityBySlug("midnight-archive");
   assert.ok(activity);
   assert.equal(activity.listing.digest, MIDNIGHT_ARCHIVE_LISTING_DIGEST);
+  assert.equal(activity.listing.value.version, "0.2.0");
   assert.equal(activity.listing.value.catalog.visibility, "unlisted");
   assert.equal(activity.listing.value.public_viewing_policy, "disabled");
   assert.equal(activity.listing.value.result.publication.policy, "disabled");
+  assert.equal(activity.listing.value.result.projector.version, "0.2.0");
   assert.equal(activity.listing.value.seats.length, 1);
   assert.deepEqual(activity.listing.value.seats[0]?.allowed_participation, ["account_human"]);
   assert.deepEqual(activity.listing.value.room_setup.configuration, { scenario_id: "standard-v1" });
+  assert.equal(activity.listing.value.launch_input_schema.schema, "worldstream/launch-input-schema/v1");
+  assert.match(activity.listing.value.description, /expires 24 hours after Activity Start/u);
+  assert.match(activity.listing.value.description, /closing or re-entering does not pause the deadline/u);
+  assert.match(activity.listing.value.description, /Expiry records no success or loss outcome/u);
   assert.equal(activity.houseAgents.size, 0);
   assert.deepEqual(reviewedInternalActivities([]), []);
   assert.deepEqual(reviewedInternalActivities([MIDNIGHT_ARCHIVE_LISTING_DIGEST]), [activity]);
   assert.equal(listPublicHostedActivities(true).some(({ slug }) => slug === activity.slug), false);
-  const release = JSON.parse(await readFile(resolve("../..", "config/activity-clients/releases/midnight-archive-web-v10.json"), "utf8"));
+  const release = JSON.parse(await readFile(
+    resolve("../..", "config/activity-clients/releases/midnight-archive-web-v12.json"),
+    "utf8",
+  ));
   assert.equal(activity.listing.value.client.release_digest, release.release_digest);
   assert.equal(activity.public.clientPath, release.surfaces.find((surface: { surface_id: string }) =>
     surface.surface_id === activity.listing.value.client.surface_id)?.entrypoint);
-  const proof = JSON.parse(await readFile(resolve("../..", "packs/midnight-archive/evidence/production-proof-0.1.0-authored-scenarios.json"), "utf8"));
+  const proof = JSON.parse(await readFile(
+    resolve("../..", "packs/midnight-archive/evidence/production-proof-0.1.0-session-expiry.json"),
+    "utf8",
+  ));
   const bundle = resolve("../..", `packs/midnight-archive/releases/0.1.0/worldstream-midnight-archive-${proof.bundleDigest.slice(7)}.wspack`);
   const descriptor = JSON.parse(execFileSync("tar", ["-xOf", bundle, "descriptor.json"], { encoding: "utf8" }));
   assert.equal(activity.listing.value.pack.digest, proof.revisionDigest);
+  // Host result-source evidence preserves the Runtime's Pack projection
+  // schema. Pin the Listing directly to the exact proven Bundle descriptor.
   assert.equal(activity.listing.value.result.projection.schema, descriptor.projection_schemas.public.schema_id);
   assert.equal(activity.listing.value.result.projection.digest, descriptor.projection_schemas.public.schema_digest);
+
+  const retainedSource = JSON.parse(await readFile(
+    resolve("../..", "config/hosted/listings/midnight-archive-0.1.0.json"),
+    "utf8",
+  ));
+  const retainedListing = readListingRevision(encodeCanonical(retainedSource));
+  const retained = reviewedActivityByDigest(retainedListing.digest);
+  assert.ok(retained);
+  assert.equal(retained.listing.value.version, "0.1.0");
+  assert.equal(retained.public.clientPath, "/midnight-archive-v10/hosted/");
+  const retainedRelease = JSON.parse(await readFile(
+    resolve("../..", "config/activity-clients/releases/midnight-archive-web-v10.json"),
+    "utf8",
+  ));
+  assert.equal(retained.listing.value.client.release_digest, retainedRelease.release_digest);
 });
 
 test("new discovery retains old exact Listing resolution without replacing its client", () => {

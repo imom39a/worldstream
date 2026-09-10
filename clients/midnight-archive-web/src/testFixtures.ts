@@ -125,10 +125,11 @@ export function rawProjection(overrides: Record<string, unknown> = {}): Record<s
     ...(jonah.presence === "absent" ? [] : ["jonah"]),
   ];
   const turnResolution = defaultTurnResolution(mira, jonah, stagedAction, power);
-  const terminal = phase === "complete";
+  const terminal = phase === "complete" || phase === "expired";
+  const completed = phase === "complete";
   const exhausted = (overrides.outcome as Record<string, unknown> | null)?.kind === "exhausted_inside";
-  const terminalExtracted = terminal && !exhausted ? startingRoles : [];
-  const terminalLeft = terminal ? startingRoles.filter((role) => !terminalExtracted.includes(role)) : [];
+  const terminalExtracted = completed && !exhausted ? startingRoles : [];
+  const terminalLeft = completed ? startingRoles.filter((role) => !terminalExtracted.includes(role)) : [];
   return {
     scenario: { id: "standard-v1", label: "Standard" },
     initial_power: 3,
@@ -155,6 +156,7 @@ export function rawProjection(overrides: Record<string, unknown> = {}): Record<s
       jonah_open_service_hatch: { turn_cost: 0, power_cost: 1 },
     },
     phase,
+    session_deadline: phase === "briefing" ? "none" : "2026-09-11T12:00:00.123456789Z",
     objective: "Recover the authentic ledger and return to the Atrium before the archive seals.",
     location: "records",
     turns_used: turnsUsed,
@@ -216,7 +218,7 @@ export function rawProjection(overrides: Record<string, unknown> = {}): Record<s
     mira,
     jonah,
     turn_resolution: turnResolution,
-    extraction: terminal && !exhausted ? {
+    extraction: completed && !exhausted ? {
       status: "acknowledged",
       revision: 1,
       for_turn: turnsUsed,
@@ -274,7 +276,7 @@ export function rawProjection(overrides: Record<string, unknown> = {}): Record<s
         power_cost: 1,
       },
     },
-    debrief: overrides.phase === "complete"
+    debrief: terminal
       ? {
         evidence_status: "none",
         message: "No authored source was inspected.",

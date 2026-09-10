@@ -11,6 +11,7 @@ use worldstream_hosted_contract::{HouseAgentRevision, ListingRevision};
 pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAgentRevision>)> {
     const LISTINGS: &[&[u8]] = &[
         include_bytes!("../../../config/hosted/listings/midnight-archive-0.1.0.json"),
+        include_bytes!("../../../config/hosted/listings/midnight-archive-0.2.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.4.0.json"),
@@ -164,8 +165,26 @@ mod tests {
             .iter()
             .filter(|listing| !listing.allows_result_publication())
             .collect();
-        assert_eq!(private.len(), 1);
-        assert!(!private[0].allows_anonymous_viewing());
+        assert_eq!(private.len(), 2);
+        assert!(
+            private
+                .iter()
+                .all(|listing| !listing.allows_anonymous_viewing())
+        );
+        let versions = private
+            .iter()
+            .map(|listing| -> anyhow::Result<_> {
+                let value: serde_json::Value = serde_json::from_slice(listing.canonical_bytes())?;
+                Ok(value["version"]
+                    .as_str()
+                    .context("Listing version missing")?
+                    .to_owned())
+            })
+            .collect::<anyhow::Result<BTreeSet<_>>>()?;
+        assert_eq!(
+            versions,
+            BTreeSet::from(["0.1.0".to_owned(), "0.2.0".to_owned()])
+        );
         Ok(())
     }
 

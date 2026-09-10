@@ -2,6 +2,7 @@
   "schema": "worldstream/client-declaration-import/v1",
   "release_files": [
     "./releases/midnight-archive-web-v10.json",
+    "./releases/midnight-archive-web-v12.json",
     "./releases/agent-heist-web-v7.json",
     "./releases/inspector-web-v2.json"
   ],

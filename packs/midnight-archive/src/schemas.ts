@@ -152,14 +152,16 @@ function schemaParts() {
     type: "object",
   };
   const outcome = {
-    additionalProperties: false,
-    properties: {
-      extracted_candidate_id: candidateOrNone,
-      factual_reason: { maxLength: 256, type: "string" },
-      kind: { enum: ["pending", "success", "partial_extraction", "wrong_ledger", "no_ledger", "exhausted_inside"] },
-    },
-    required: ["kind", "factual_reason", "extracted_candidate_id"],
-    type: "object",
+    enum: [null,
+      { kind: "pending", factual_reason: "The expedition is still inside the archive.", extracted_candidate_id: "none" },
+      { kind: "no_ledger", factual_reason: "The crew extracted without a ledger.", extracted_candidate_id: "none" },
+      { kind: "exhausted_inside", factual_reason: "The turn budget ended with the crew inside the archive.", extracted_candidate_id: "none" },
+      ...["ledger-amber", "ledger-cobalt", "ledger-violet"].flatMap((candidate) => [
+        { kind: "success", factual_reason: "The authentic ledger and the entire starting crew were extracted.", extracted_candidate_id: candidate },
+        { kind: "partial_extraction", factual_reason: "The authentic ledger was extracted, but some starting crew were left behind.", extracted_candidate_id: candidate },
+        { kind: "wrong_ledger", factual_reason: "The extracted ledger does not match the archive's authentic record.", extracted_candidate_id: candidate },
+      ]),
+    ],
   };
   const visibleCandidate = {
     additionalProperties: false,
@@ -454,6 +456,9 @@ function schemaParts() {
 }
 
 export function dialogueTextSchema(): CanonicalObject { return { type: "string", maxLength: 160 }; }
+function sessionTimestampSchema(): CanonicalObject {
+  return { type: "string", minLength: 4, maxLength: 30 };
+}
 export function dialogueRecordSchema(): CanonicalObject {
   return closed({ speaker_role: { enum: ["mira", "jonah"] },
     speaker_member_id: { type: "string", minLength: 1, maxLength: 64 },
@@ -483,7 +488,9 @@ export function stateSchema(): CanonicalObject {
       completed_crew_work: part.completedWork,
       objective: { maxLength: 256, minLength: 1, type: "string" },
       outcome: part.outcome,
-      phase: { enum: ["briefing", "active", "complete"] },
+      session_started_at: sessionTimestampSchema(),
+      session_deadline: sessionTimestampSchema(),
+      phase: { enum: ["briefing", "active", "complete", "expired"] },
       power_remaining: { maximum: 3, minimum: 0, type: "integer" },
       initial_power: { enum: [2, 3] },
       scenario_label: { enum: ["Standard", "Low Reserve"] },
@@ -501,7 +508,7 @@ export function stateSchema(): CanonicalObject {
       truth_marker: part.candidate,
     },
     required: [
-      "phase", "scenario_id", "scenario_label", "initial_power", "evidence_records", "method_costs", "operation_costs", "objective", "location", "turn_limit", "turns_used",
+      "phase", "session_started_at", "session_deadline", "scenario_id", "scenario_label", "initial_power", "evidence_records", "method_costs", "operation_costs", "objective", "location", "turn_limit", "turns_used",
       "power_remaining", "gates", "candidates", "evidence", "preservation_agreement",
       "collection_preservation", "source_record_protected", "mira", "jonah", "companion_dialogue", "starting_crew", "extraction", "completed_crew_work", "truth_marker", "verifier_result",
       "carried_candidate_id", "carried_confidence", "staged_action", "outcome", "role_notes",
@@ -574,9 +581,10 @@ export function participantProjectionSchema(): CanonicalObject {
       extraction: part.extraction,
       companion_dialogue: arrayOf(closed({ speaker: { enum: ["mira", "jonah"] }, turn: { type: "integer", minimum: 0, maximum: 16 }, text: dialogueTextSchema() }), 4),
       crew_debrief: part.crewDebrief,
+      session_deadline: sessionTimestampSchema(),
       objective: { maxLength: 384, minLength: 1, type: "string" },
       outcome: part.outcomeProjection,
-      phase: { enum: ["briefing", "active", "complete"] },
+      phase: { enum: ["briefing", "active", "complete", "expired"] },
       power: { maximum: 3, minimum: 0, type: "integer" },
       initial_power: { enum: [2, 3] },
       scenario: { additionalProperties: false, properties: { id: { enum: ["standard-v1", "low-reserve-v1"] }, label: { enum: ["Standard", "Low Reserve"] } }, required: ["id", "label"], type: "object" },
@@ -588,7 +596,7 @@ export function participantProjectionSchema(): CanonicalObject {
       verifier_result: part.verifierResultProjection,
     },
     required: [
-      "phase", "scenario", "objective", "location", "turns_used", "turns_remaining", "power", "initial_power", "method_costs", "operation_costs",
+      "phase", "session_deadline", "scenario", "objective", "location", "turns_used", "turns_remaining", "power", "initial_power", "method_costs", "operation_costs",
       "gates", "map", "candidates", "staged_action", "carried_candidate", "debrief",
       "preservation_agreement", "optional_objectives", "mira", "jonah", "turn_resolution", "extraction", "crew_debrief", "companion_dialogue",
       "verifier_result", "outcome",
@@ -602,12 +610,14 @@ export function publicProjectionSchema(): CanonicalObject {
   return {
     additionalProperties: false,
     properties: {
+      lifecycle: { enum: ["nonterminal", "terminal"] },
+      session_deadline: sessionTimestampSchema(),
       location: part.location,
       outcome: part.outcomeProjection,
-      phase: { enum: ["briefing", "active", "complete"] },
+      phase: { enum: ["briefing", "active", "complete", "expired"] },
       turns_used: { maximum: 16, minimum: 0, type: "integer" },
     },
-    required: ["phase", "location", "turns_used", "outcome"],
+    required: ["phase", "lifecycle", "session_deadline", "location", "turns_used", "outcome"],
     type: "object",
   } as CanonicalObject;
 }

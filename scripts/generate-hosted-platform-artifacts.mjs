@@ -8,9 +8,12 @@ const outputPath = join(
   "web/platform/src/hosted-artifacts.generated.ts",
 );
 const sources = {
-  midnightArchiveListing: "config/hosted/listings/midnight-archive-0.1.0.json",
-  midnightArchiveResultProjector: "config/hosted/result-projectors/midnight-archive-0.1.0.json",
-  midnightArchivePublicProjectionSchema: "config/hosted/schemas/midnight-archive-public-projection-v1.schema.json",
+  midnightArchiveListing: "config/hosted/listings/midnight-archive-0.2.0.json",
+  retainedMidnightArchiveListing01: "config/hosted/listings/midnight-archive-0.1.0.json",
+  midnightArchiveResultProjector: "config/hosted/result-projectors/midnight-archive-0.2.0.json",
+  retainedMidnightArchiveResultProjector01: "config/hosted/result-projectors/midnight-archive-0.1.0.json",
+  midnightArchivePublicProjectionSchema: "config/hosted/schemas/midnight-archive-public-projection-v2.schema.json",
+  retainedMidnightArchivePublicProjectionSchema01: "config/hosted/schemas/midnight-archive-public-projection-v1.schema.json",
   midnightArchiveTerminalSummarySchema: "config/hosted/schemas/midnight-archive-terminal-summary-v1.schema.json",
   agentHeistListing: "config/hosted/listings/agent-heist-0.24.0.json",
   retainedAgentHeistListing023: "config/hosted/listings/agent-heist-0.23.0.json",
@@ -102,7 +105,8 @@ function oneArtifact(predicate, kind) {
 const schemaArtifacts = {
   "agent-heist/projection/v1": "agentHeistPublicProjectionSchema",
   "worldstream/result-summary/v1": "resultSummarySchema",
-  "worldstream.midnight-archive/public-projection/v3": "midnightArchivePublicProjectionSchema",
+  "worldstream.midnight-archive/public-projection/v3": "retainedMidnightArchivePublicProjectionSchema01",
+  "worldstream.midnight-archive/public-projection/v5": "midnightArchivePublicProjectionSchema",
   "midnight-archive/terminal-summary/v1": "midnightArchiveTerminalSummarySchema",
 };
 

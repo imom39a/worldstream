@@ -3,6 +3,7 @@ import test from "node:test";
 import "./specialists.test.js";
 import "./unavailable.test.js";
 import "./dialogue.test.js";
+import "./expiry.test.js";
 
 import {
   ACTIVITY_START_SOURCE_ID,
@@ -85,7 +86,7 @@ test("briefing is a complete safe projection with no Action offers", () => {
   assert.deepEqual(view.actionOffers, []);
   assert.deepEqual(Object.keys(view.projection).sort(), [
     "candidates", "carried_candidate", "companion_dialogue", "crew_debrief", "debrief", "extraction", "gates", "initial_power", "jonah", "location", "map", "method_costs", "mira",
-    "objective", "operation_costs", "optional_objectives", "outcome", "phase", "power", "preservation_agreement", "scenario",
+    "objective", "operation_costs", "optional_objectives", "outcome", "phase", "power", "preservation_agreement", "scenario", "session_deadline",
     "staged_action", "turn_resolution", "turns_remaining", "turns_used", "verifier_result",
   ]);
   assert.equal(view.projection.phase, "briefing");
@@ -101,6 +102,7 @@ test("only the exact Activity Start input leaves briefing", () => {
   const prior = freshBriefing();
   const accepted = reduceArchive(reduceInput(prior, {
     stimulus_type: "external_input",
+    recorded_at: "2026-09-10T12:00:00Z",
     source_id: ACTIVITY_START_SOURCE_ID,
     input_type: ACTIVITY_START_INPUT_TYPE,
     canonical_payload: { opened_by: "host" },
@@ -226,7 +228,7 @@ test("Low Reserve solo evidence and agreement route completes both optional obje
     state = commit(state, action[0], action[1]);
   }
   assert.equal(state.turns_used, 16);
-  assert.equal(state.outcome.kind, "success");
+  assert.equal(state.outcome?.kind, "success");
   assert.equal(state.collection_preservation, "preserved");
   assert.equal(state.source_record_protected, true);
   assert.equal(state.power_remaining, 0);
@@ -294,7 +296,7 @@ test("reducer witnesses prove the four solo authentication and access combinatio
     assert.match(witness.name, /authentication/);
     assert.equal(state.turns_used, witness.expectedTurns);
     assert.equal(state.power_remaining, witness.expectedPower);
-    assert.equal(state.outcome.kind, "success");
+    assert.equal(state.outcome?.kind, "success");
     assert.deepEqual(state.extraction.extracted_roles, ["lead"]);
     if (witness.scenarioId === "low-reserve-v1" && witness.name.includes("evidence")) {
       assert.equal(state.carried_candidate_id, "ledger-cobalt");
@@ -330,7 +332,7 @@ test("each authored scenario extracts every supported starting roster through th
   for (const scenarioId of ["standard-v1", "low-reserve-v1"] as const) {
     for (const roster of rosters) {
       const state = reducerRoute(scenarioId, roster, routes[scenarioId]);
-      assert.equal(state.outcome.kind, "success");
+      assert.equal(state.outcome?.kind, "success");
       assert.deepEqual(state.extraction.extracted_roles, roster);
       assert.deepEqual(state.extraction.left_behind_roles, []);
     }
@@ -383,7 +385,7 @@ test("the fifteen-turn powered agreement route completes both optional objective
   assert.equal(first.phase, "complete");
   assert.equal(first.turns_used, 15);
   assert.equal(first.power_remaining, 0);
-  assert.equal(first.outcome.kind, "success");
+  assert.equal(first.outcome?.kind, "success");
   assert.equal(first.carried_candidate_id, "ledger-violet");
   assert.equal(first.carried_confidence, "verified");
   assert.equal(first.preservation_agreement, "accepted");
@@ -398,7 +400,7 @@ test("the fifteen-turn powered agreement route completes both optional objective
 
 test("extraction distinguishes wrong and missing ledgers without early truth leaks", () => {
   const missing = commit(freshActive(), "stage_extract", {});
-  assert.equal(missing.outcome.kind, "no_ledger");
+  assert.equal(missing.outcome?.kind, "no_ledger");
 
   const wrongActions = bothObjectivesRouteActions.map((action) =>
     action.action_type === "stage_recover_candidate"
@@ -406,7 +408,7 @@ test("extraction distinguishes wrong and missing ledgers without early truth lea
       : action
   );
   const wrong = play(freshActive(), wrongActions);
-  assert.equal(wrong.outcome.kind, "wrong_ledger");
+  assert.equal(wrong.outcome?.kind, "wrong_ledger");
   assert.equal(wrong.carried_confidence, "unverified");
 
   let unverified = freshActive();
@@ -427,7 +429,7 @@ test("turn exhaustion is factual, while turn-16 extraction resolves first", () =
     exhausted = commit(exhausted, "stage_wait", {});
   }
   assert.equal(exhausted.phase, "complete");
-  assert.equal(exhausted.outcome.kind, "exhausted_inside");
+  assert.equal(exhausted.outcome?.kind, "exhausted_inside");
 
   let lastTurn = freshActive();
   for (let index = 0; index < 15; index += 1) {
@@ -435,7 +437,7 @@ test("turn exhaustion is factual, while turn-16 extraction resolves first", () =
   }
   lastTurn = commit(lastTurn, "stage_extract", {});
   assert.equal(lastTurn.turns_used, 16);
-  assert.equal(lastTurn.outcome.kind, "no_ledger");
+  assert.equal(lastTurn.outcome?.kind, "no_ledger");
 });
 
 test("malformed, illegal, companion, and stale commits reject without mutation", () => {
@@ -630,7 +632,7 @@ test("the eleven-turn powered agreement route succeeds with one charge and one o
   for (const [actionType, payload] of route) state = commit(state, actionType, payload);
   assert.equal(state.turns_used, 11);
   assert.equal(state.power_remaining, 1);
-  assert.equal(state.outcome.kind, "success");
+  assert.equal(state.outcome?.kind, "success");
   assert.equal(state.collection_preservation, "preserved");
   assert.equal(state.source_record_protected, false);
   assert.deepEqual(participantProjection(state, "lead").debrief, {
@@ -697,7 +699,7 @@ test("insufficient power rejects preservation while a committed wait remains a r
   ] as const;
   for (const [actionType, payload] of route) recovered = commit(recovered, actionType, payload);
   assert.equal(recovered.turns_used, 12);
-  assert.equal(recovered.outcome.kind, "success");
+  assert.equal(recovered.outcome?.kind, "success");
 });
 
 test("participant, public, operator, and final views never serialize private truth", () => {
@@ -795,7 +797,7 @@ test("the twelve-turn solo evidence and service witness succeeds without the ver
   let state = freshActive();
   for (const [actionType, actionPayload] of route) state = commit(state, actionType, actionPayload);
   assert.equal(state.turns_used, 12);
-  assert.equal(state.outcome.kind, "success");
+  assert.equal(state.outcome?.kind, "success");
   assert.equal(state.carried_candidate_id, "ledger-violet");
   assert.equal(state.carried_confidence, "unverified");
   assert.equal(state.gates.conservation_vault_open, false);
@@ -824,7 +826,7 @@ test("an unverified mistaken recovery can be exchanged later for another paid tu
   partial = commit(partial, "stage_move", { destination: "records" });
   partial = commit(partial, "stage_move", { destination: "atrium" });
   partial = commit(partial, "stage_extract", {});
-  assert.equal(partial.outcome.kind, "wrong_ledger");
+  assert.equal(partial.outcome?.kind, "wrong_ledger");
   assert.deepEqual(participantProjection(partial, "lead").debrief, {
     evidence_status: "partial",
     message: "Only one authored source was inspected; it did not uniquely identify a candidate.",
@@ -1232,7 +1234,7 @@ test("regrouping moves one deterministic open edge per lead commit and gates ext
   state = applyLeadAction(state, "stage_extract", {}, core()).state;
   state = acknowledgeCurrentExtraction(state, core());
   state = applyLeadAction(state, "commit_turn", {}, core()).state;
-  assert.equal(state.outcome.kind, "no_ledger");
+  assert.equal(state.outcome?.kind, "no_ledger");
 });
 
 function freshBriefing(): ArchiveState {
@@ -1240,11 +1242,11 @@ function freshBriefing(): ArchiveState {
 }
 
 function freshActive(): ArchiveState {
-  return startArchive(freshBriefing());
+  return startArchive("2026-09-10T12:00:00Z", freshBriefing());
 }
 
 function freshLowReserveActive(): ArchiveState {
-  return startArchive(initializeArchiveState({ scenario_id: "low-reserve-v1" }));
+  return startArchive("2026-09-10T12:00:00Z", initializeArchiveState({ scenario_id: "low-reserve-v1" }));
 }
 
 function reducerRoute(
@@ -1253,7 +1255,7 @@ function reducerRoute(
   actions: readonly (readonly [string, unknown])[],
 ): ArchiveState {
   const currentCore = reducerCore(roles);
-  let state = startArchive(pack.initialize({
+  let state = startArchive("2026-09-10T12:00:00Z", pack.initialize({
     configuration: { scenario_id: scenarioId },
     initial_core_state: currentCore,
   }).initial_activity_state as unknown as ArchiveState);

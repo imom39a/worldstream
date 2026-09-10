@@ -138,7 +138,7 @@ export const goldenFixture = {
 } as const satisfies CanonicalJson;
 
 export function bothObjectivesRouteFinalState(): ArchiveState {
-  let state = startArchive({
+  let state = startArchive("2026-09-09T12:00:01Z", {
     ...initializeArchiveState({ scenario_id: "standard-v1" }),
     mira: initialMiraState(MIRA_MEMBER_ID),
     jonah: initialMiraState(JONAH_MEMBER_ID, "jonah"),

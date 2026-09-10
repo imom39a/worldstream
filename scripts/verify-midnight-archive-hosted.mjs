@@ -8,7 +8,7 @@ import { resolve } from "node:path";
 import { chromium } from "playwright";
 
 const origin = "http://127.0.0.1:5180";
-const evidenceDirectory = resolve(".worldstream/evidence/imo-207");
+const evidenceDirectory = resolve(".worldstream/evidence/imo-211");
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
 const page = await context.newPage();
@@ -65,7 +65,7 @@ try {
   const initialDatabase = databaseSnapshot(evidence.run_id);
   assert.equal(initialDatabase.runs_for_launch, 1);
   await entry.click();
-  await page.waitForURL("**/midnight-archive-v10/hosted/**");
+  await page.waitForURL("**/midnight-archive-v12/hosted/**");
   await page.getByText("Projection current", { exact: true }).waitFor();
   assert.equal(new URL(page.url()).hash, "");
   evidence.checks.push("idempotent_start", "exact_client_handoff", "authoritative_projection");

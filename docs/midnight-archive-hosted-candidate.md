@@ -1,91 +1,76 @@
 # Midnight Archive internal hosted candidate
 
-IMO-207 is implemented and locally verified. This registration is a development
-candidate, not a production approval or deployment.
+IMO-207 established the first local hosted candidate. IMO-211 advances it with
+a new immutable revision under the retained Listing ID without publishing it.
+The current reviewed revision is `worldstream.midnight-archive.internal-solo` version
+`0.2.0`, with digest
+`blake3:efa4b63c9da251431343fbaab03e85ee2de053722345f9bd7b1434c2762283f3`.
+Version `0.1.0` remains retained for exact old-Run resolution.
 
-The initial Listing is `worldstream.midnight-archive.internal-solo` version
-`0.1.0`, with digest
-`blake3:fbe603c57e281038a0dca6cb4066d3dfcfdbf420d905e5a70893c1bdefbfc27b`.
-It pins the authored-scenarios Pack Revision
-`blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64`
-and the v10 hosted client release
-`sha256:9be6d6548f2d62baba805ec461b27fbd1021ed0d61fbd0e8ffd1d779616bc534`.
-The only seat is the human expedition lead; configuration is fixed to
-`standard-v1` and no launch input is accepted. Anonymous viewing and result
-publication are disabled.
+This is an intermediate, unlisted solo qualification revision. It is not the
+four-option first Archive release specified by ADR 0027. IMO-209 must publish a
+new immutable Listing revision with solo, Mira, Jonah, and full-crew options
+plus their exact reviewed House Agent identities before that release exists.
 
-The BFF's authenticated `/api/catalog/internal` route includes a nonpublic
-Listing only when its exact digest appears in the deployment's
-`internalCandidateListingDigests`. Its launch button remains unavailable
-unless `hostedActivityAvailable` verifies the exact approved Pack, client
-release, surface and Client Binding. A missing checker, negative result, or
-service error fails closed. Public discovery remains unchanged. Production
-construction does not supply this candidate opt-in. `pnpm hosted:dev` reads
-`config/hosted/internal-candidates.json`, approves and installs its exact Pack
-for the local Host, imports the exact hosted client, and provides a fail-closed
-availability checker. That checker compares installed and running selectable
-Pack inventories, approved default Participant Bindings, ready Deployment,
-exact Release and every served artifact file. It grants no approval itself.
-An empty `candidates` array starts the public-only library; its empty serialized
-allowlist requires no candidate checker configuration and leaves retained
-Heist discovery available. Nonempty malformed allowlists still fail closed.
+The current Listing pins:
 
-The exact Result Projector interprets the Pack's minimal Public Projection
-`worldstream.midnight-archive/public-projection/v3`. Reconciliation records
-terminal evidence and retires capacity without copying the Outcome into an
-Indexed Activity Result. My Games shows `terminal_private` and retains entry
-through the original Run Membership Correspondence; the private debrief stays
-inside the Activity Client's Participant Projection.
+- Pack Revision
+  `blake3:aea45a1c056c4a7da744be33d38df672499062fd2548302fae43adc49b833b07`
+  in Bundle
+  `blake3:de3cd1d9fa45087b69cb107a663596305864c350f620fe4d7260e0341214d47a`.
+- Activity Client v12 Release
+  `sha256:fae51aaa770810d203f00fd8be7d098b069ce2ef8e6fc9b7f31b80accf53345f`
+  with artifact
+  `sha256:c3c200e2ecb55c53bac24ddb31153fb667be1f64999d6ab00a601dd2ad670065`.
+- Result Projector 0.2.0
+  `blake3:93bdc21b4b09ec6e7c1ed7a11df80d984e2f80175e9fae01143f3a00c65d4a17`
+  and Public Projection v5
+  `blake3:c8045ca0762df97d4e82488f562f7a69eea2b480e41f06889eef3dff133086d0`.
 
-The Host uses current authorized public evidence for Listings with disabled
-publication. Publishable Listings retain their existing Replay path. This is
-necessary because portable Packs can declare a distinct historical Projection
-schema: the current Replay response omits that identifier, and the existing
-Host adapter reconstructs its hash with the current schema. Private terminal
-disposition does not require that publication proof. General publication for
-portable Packs with distinct historical schemas remains a separate protocol
-follow-up; no Replay mismatch is treated as verified.
+The only current seat is the human expedition lead. Configuration is fixed to
+`standard-v1`, launch input is empty, and no House Agent revision is allowed by
+this Listing. Anonymous viewing and result publication are disabled.
 
-Validation completed for this slice:
+Before launch, the Listing discloses that an active expedition expires 24 hours
+after the Host records Activity Start. Closing a tab, disconnecting, or
+re-entering does not pause or reset that deadline. The deadline applies only
+while the Pack is nonterminal. The recorded Pack timer moves an active Room to
+the terminal `expired` phase with a null Outcome. It preserves discoveries,
+resources, completed specialist work, and the fixed deadline while recording no
+crew extraction or left-behind result. Every terminal path cancels outstanding
+session and companion-response timers; stale timers and late replies are inert.
 
-- Platform tests: 158 passed, one live acceptance test skipped.
-- Demos tests: 32 passed; platform and demos TypeScript checks passed.
-- Local pgTAP: 25 tests passed for candidate registration and My Games,
-  including unhealthy and conflicted private terminal suppression.
-- Generated artifact correspondence and exact bundle Public Projection schema
-  checks passed; local security advisors found no error-level issues.
-- Hosted startup/availability tests: 20 passed, including mismatched Pack,
-  pending inventory, disabled Binding, revoked Deployment and altered served
-  client bytes. BFF tests separately verify unavailable candidates reject new
-  launches.
-- Rust hosted-contract tests: 22 passed; seven focused Host artifact,
-  result-source and retained publishable-source tests passed.
+The 0.2.0 Result Projector uses the minimal authorized Public Projection and
+classifies `lifecycle: terminal`. An expired Projection therefore records
+`terminal_without_outcome`. Existing terminal retirement releases the Run's
+active-capacity reservation once while retaining the Run, Membership identity,
+and consumed allowance. It does not create an Indexed Activity Result or
+suspend a resumable Runner. My Games can reopen the retained private terminal
+Room through the original Membership correspondence.
 
-Run `node scripts/verify-midnight-archive-hosted.mjs` against the local stack
-for the real signed-in solo launch/start/play/debrief acceptance journey.
-The witness covers retry identity, private terminal re-entry and retained
-Heist setup. It uses the visible local development sign-in substitute, real
-Supabase, BFF, Gateway, Runtime, installed Component and immutable v10 client.
+The BFF's authenticated `/api/catalog/internal` route includes this nonpublic
+Listing only when its exact digest appears in
+`internalCandidateListingDigests`. Its launch button remains unavailable unless
+`hostedActivityAvailable` verifies the exact approved Pack, client Release,
+surface, Client Binding, running inventory, and served artifact bytes. Missing,
+pending, mismatched, or unhealthy dependencies fail closed. Production
+construction does not opt into this internal candidate.
 
-The fresh journey passed at `2026-09-10T09:44:46.174Z`:
+`pnpm hosted:dev` reads `config/hosted/internal-candidates.json`, approves and
+installs the exact Bundle, imports the exact hosted client, and configures the
+local availability check. An empty candidate list still starts the public-only
+library. Retained Listing 0.1.0 resolves with its original v10 client and
+Projector 0.1.0, but it is not the current discovery entry.
 
-- Launch `a14d7d85-c900-43a9-ac9b-27f2709ee8d4`; Run
-  `cbf5aafe-616e-4b1e-b331-3ff91693ee17`; Room
-  `01M25B8F8GHDNHC7R39KP6MVE1`.
-- Anonymous catalog excludes the candidate; the same signed-in library offers
-  Archive and retained Heist. Solo setup omits role/fill controls.
-- Repeated create/start retained one Run. Ten committed turns recovered Violet
-  Ledger and extracted the lead with six turns and zero power remaining.
-- My Games showed `terminal_private`, no public result, and reopened the same
-  terminal Room with unchanged original Participant correspondence.
-- Database checks confirmed one terminal evidence row, no indexed result or
-  public identifier, and no remaining active capacity reservation.
-- Retained Heist discovery, role/fill setup and pre-Genesis cancellation passed;
-  browser execution reported no page errors.
+Qualification evidence is recorded in
+`packs/midnight-archive/evidence/qualification-imo-211.md`. The evidence uses a
+real Component Host, SQLite Room, WebSocket streams, injected Host clock,
+recorded scheduler, exact Replay, hosted projector runtime, local Postgres RPCs,
+and the durable Host allowance ledger. These are composed boundary proofs; no
+24-hour wall-clock wait or deployed production run was performed.
 
-Local evidence is `.worldstream/evidence/imo-207/journey.json` and
-`terminal.png`. `recovered-original-journey.json` also records successful
-completion of the first retained Room after the integration fixes. No Room or
-database reset was used. The local Client Host now includes the exact configured
-Gateway HTTP/WebSocket origins in its connection policy, so the streamed
-Participant Projection can connect through the same hosted browser handoff.
+Run `node scripts/verify-midnight-archive-hosted.mjs` against `pnpm hosted:dev`
+for the current signed-in solo launch/play/debrief journey. The script targets
+the exact v12 hosted client. Historical IMO-207 journey artifacts remain under
+`.worldstream/evidence/imo-207`; new runs write under
+`.worldstream/evidence/imo-211`.

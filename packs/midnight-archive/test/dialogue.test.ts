@@ -11,7 +11,7 @@ function core() { return { room_status: "active", memberships: Object.fromEntrie
   member_id: role, principal_id: `${role}-principal`, principal_kind: role === "lead" ? "human" : "agent",
   access_mode: "participant", role, standing: "enabled",
 }])) } as CanonicalObject; }
-function fresh() { return startArchive(pack.initialize({ configuration: { scenario_id: "standard-v1" }, initial_core_state: core() }).initial_activity_state as unknown as ArchiveState); }
+function fresh() { return startArchive("2026-09-10T12:00:00Z", pack.initialize({ configuration: { scenario_id: "standard-v1" }, initial_core_state: core() }).initial_activity_state as unknown as ArchiveState); }
 function reduce(state: ArchiveState, member: string, action: string, payload: CanonicalObject = {}) {
   return reduceArchive({ prior_activity_state: state as unknown as CanonicalObject, core_before: core(), proposed_core_after: core(), scheduled_timers: {},
     recorded_stimulus: { stimulus_type: "participant_action", member_id: member, action_type: action, canonical_payload: payload, admitted_at: "2026-09-10T12:00:01Z" } });

@@ -12,7 +12,7 @@ export type EvidenceSourceId = "records" | "conservation";
 
 export type Role = "lead" | "mira" | "jonah";
 export type CompanionRole = "mira" | "jonah";
-export type Phase = "briefing" | "active" | "complete";
+export type Phase = "briefing" | "active" | "complete" | "expired";
 export type OutcomeKind = "pending" | "success" | "partial_extraction" | "wrong_ledger" | "no_ledger" | "exhausted_inside";
 export type StagedKind =
   | "none"
@@ -175,6 +175,8 @@ export interface CompanionDialogue {
 }
 
 export interface ArchiveState {
+  readonly session_started_at: string;
+  readonly session_deadline: string;
   readonly companion_dialogue: readonly CompanionDialogue[];
   readonly phase: Phase;
   readonly scenario_id: "standard-v1" | "low-reserve-v1";
@@ -212,7 +214,7 @@ export interface ArchiveState {
   readonly carried_candidate_id: CandidateReference;
   readonly carried_confidence: "none" | "unverified" | "verified";
   readonly staged_action: StagedAction;
-  readonly outcome: ArchiveOutcome;
+  readonly outcome: ArchiveOutcome | null;
   readonly role_notes: Readonly<Record<Role, string>>;
 }
 

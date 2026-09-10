@@ -146,7 +146,7 @@ function ReadyArchive({
         </div>
         <div className="hero-seal" aria-hidden="true"><span>MA</span><i /></div>
         <div className="session-pill">
-          <i className={connection === "live" && actionsEnabled ? "is-live" : ""} />
+          <i className={connection === "live" && actionsEnabled && active ? "is-live" : ""} />
           {sessionLabel(connection, actionsEnabled, projection.phase)}
         </div>
       </header>
@@ -164,7 +164,7 @@ function ReadyArchive({
           <span aria-hidden="true">⌛</span>
           <div><strong>Preparing the archive</strong><p>The Room is synchronized for readiness. Gameplay begins only after the Host records Activity Start.</p></div>
         </section>
-      ) : !actionsEnabled && projection.phase !== "complete" ? (
+      ) : !actionsEnabled && projection.phase === "active" ? (
         <section className="archive-notice connection-notice" role="status">
           <span aria-hidden="true">↻</span>
           <div><strong>Actions are locked</strong><p>{message ?? "Wait for the current authorized Projection to be acknowledged."}</p></div>
@@ -172,9 +172,13 @@ function ReadyArchive({
       ) : null}
 
       <ResourceStrip projection={projection} />
+      {projection.sessionDeadline === null ? null : <p className="archive-notice">
+        Session deadline: <time dateTime={projection.sessionDeadline}>{projection.sessionDeadline}</time>
+        {projection.phase === "active" ? " · This session ends 24 hours after Activity Start. Re-entry does not pause the deadline." : ""}
+      </p>}
       <ScenarioBriefing projection={projection} />
       <ArchiveOutcomePanel projection={projection} />
-      {projection.phase === "complete" ? (
+      {projection.phase === "complete" || projection.phase === "expired" ? (
         <ReplayPanel replay={replay} onOpenReplay={onOpenReplay} />
       ) : null}
 
@@ -582,7 +586,7 @@ function TurnCommitPanel({
         <span>{submitting ? "Submitting…" : "Commit Turn"}</span>
         <small>{staged === null ? "Stage an Action first" : `Apply ${staged.turnCost} turn · ${staged.powerCost} power`}</small>
       </button>
-      <p className="commit-explainer">Only Commit Turn advances danger. The Room validates the action and returns the next authoritative state.</p>
+      <p className="commit-explainer">Commit Turn spends the staged turn and power. The recorded session deadline continues between turns.</p>
     </section>
   );
 }
@@ -678,6 +682,7 @@ function sessionLabel(
   if (connection !== "live") return "Reconnect required";
   if (phase === "briefing") return "Preparing archive";
   if (phase === "complete") return "Expedition complete";
+  if (phase === "expired") return "Session expired";
   return current ? "Projection current" : "Catching up";
 }
 

@@ -1,0 +1,67 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "lifecycle": {
+      "enum": [
+        "nonterminal",
+        "terminal"
+      ]
+    },
+    "session_deadline": {
+      "maxLength": 30,
+      "minLength": 4,
+      "type": "string"
+    },
+    "location": {
+      "enum": [
+        "atrium",
+        "records",
+        "conservation",
+        "plant",
+        "vault"
+      ]
+    },
+    "outcome": {
+      "enum": [
+        null,
+        {
+          "kind": "success"
+        },
+        {
+          "kind": "partial_extraction"
+        },
+        {
+          "kind": "wrong_ledger"
+        },
+        {
+          "kind": "no_ledger"
+        },
+        {
+          "kind": "exhausted_inside"
+        }
+      ]
+    },
+    "phase": {
+      "enum": [
+        "briefing",
+        "active",
+        "complete",
+        "expired"
+      ]
+    },
+    "turns_used": {
+      "maximum": 16,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "phase",
+    "lifecycle",
+    "session_deadline",
+    "location",
+    "turns_used",
+    "outcome"
+  ],
+  "type": "object"
+}

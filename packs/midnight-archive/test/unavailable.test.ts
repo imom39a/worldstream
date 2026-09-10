@@ -19,7 +19,7 @@ class Expedition {
     member_id: role, principal_id: `${role}-principal`, principal_kind: role === "lead" ? "human" : "agent",
     access_mode: "participant", role, standing: "enabled",
   }])) };
-  state = startArchive(pack.initialize({ configuration: { scenario_id: "standard-v1" }, initial_core_state: this.core }).initial_activity_state as unknown as ArchiveState);
+  state = startArchive("2026-09-10T12:00:00Z", pack.initialize({ configuration: { scenario_id: "standard-v1" }, initial_core_state: this.core }).initial_activity_state as unknown as ArchiveState);
   scheduled: Record<string, CanonicalObject> = {};
   generations = new Map<string, number>();
   transcript: CanonicalObject[] = [];
@@ -115,6 +115,7 @@ test("planning deadlines are canonical and preserve the full fifteen seconds thr
     ["2028-02-29T23:59:59.999999999Z", "2028-03-01T00:00:14.999999999Z"],
   ]) {
     const expedition = new Expedition();
+    expedition.state = startArchive(opened!, { ...expedition.state, phase: "briefing" });
     expedition.assign("mira");
     const result = expedition.apply({ stimulus_type: "participant_action", member_id: "lead",
       action_type: "request_mira_plan", canonical_payload: {}, admitted_at: opened! });
@@ -219,7 +220,7 @@ test("extraction preview binds the cancelled-window state and a rejected edit le
   assert.equal(expedition.state.mira.opportunity.status, "none");
   expedition.act("lead", "acknowledge_extraction", { preview_revision: expedition.state.extraction.revision, left_behind_roles: [] });
   expedition.act("lead", "commit_turn");
-  assert.equal(expedition.state.outcome.kind, "no_ledger");
+  assert.equal(expedition.state.outcome?.kind, "no_ledger");
 });
 
 test("cancelled or expired companion replies and obsolete timers cannot consume the other window", () => {
@@ -356,7 +357,7 @@ test("zero allowance and missing replies leave disclosed follow/regroup and part
   assert.deepEqual(expedition.state.extraction.left_behind_roles, ["mira"]);
   expedition.act("lead", "acknowledge_extraction", { preview_revision: expedition.state.extraction.revision, left_behind_roles: ["mira"] });
   expedition.act("lead", "commit_turn");
-  assert.equal(expedition.state.outcome.kind, "partial_extraction");
+  assert.equal(expedition.state.outcome?.kind, "partial_extraction");
   assert.deepEqual(expedition.state.extraction.extracted_roles, ["lead", "jonah"]);
   assert.equal(expedition.state.power_remaining, 0);
   assert.ok(expedition.state.completed_crew_work.every((work) => work.kind === "follow_move" || work.kind === "regroup_move"));

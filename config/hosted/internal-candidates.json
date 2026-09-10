@@ -1,11 +1,11 @@
 {
   "schema": "worldstream/local-hosted-candidates/v1",
   "candidates": [{
-    "listing_file": "config/hosted/listings/midnight-archive-0.1.0.json",
-    "listing_digest": "blake3:fbe603c57e281038a0dca6cb4066d3dfcfdbf420d905e5a70893c1bdefbfc27b",
-    "bundle_file": "packs/midnight-archive/releases/0.1.0/worldstream-midnight-archive-8083201f2d1d6a1afdaab8e6759287a3aeacc1a7908d85d2b758af272c150b47.wspack",
-    "bundle_digest": "blake3:8083201f2d1d6a1afdaab8e6759287a3aeacc1a7908d85d2b758af272c150b47",
-    "client_release_file": "config/activity-clients/releases/midnight-archive-web-v10.json",
-    "client_artifact_directory": "config/activity-clients/artifacts/midnight-archive-web-v10"
+    "listing_file": "config/hosted/listings/midnight-archive-0.2.0.json",
+    "listing_digest": "blake3:efa4b63c9da251431343fbaab03e85ee2de053722345f9bd7b1434c2762283f3",
+    "bundle_file": "packs/midnight-archive/releases/0.1.0/worldstream-midnight-archive-de3cd1d9fa45087b69cb107a663596305864c350f620fe4d7260e0341214d47a.wspack",
+    "bundle_digest": "blake3:de3cd1d9fa45087b69cb107a663596305864c350f620fe4d7260e0341214d47a",
+    "client_release_file": "config/activity-clients/releases/midnight-archive-web-v12.json",
+    "client_artifact_directory": "config/activity-clients/artifacts/midnight-archive-web-v12"
   }]
 }

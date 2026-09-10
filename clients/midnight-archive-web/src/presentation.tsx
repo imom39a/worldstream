@@ -179,14 +179,17 @@ export function CarriedLedgerCard({ projection }: { readonly projection: Midnigh
 }
 
 export function ArchiveOutcomePanel({ projection }: { readonly projection: MidnightArchiveProjection }) {
-  if (projection.outcome === null) return null;
-  const copy = OUTCOME_COPY[projection.outcome.kind];
+  const expired = projection.phase === "expired";
+  if (projection.outcome === null && !expired) return null;
+  const copy = expired ? { mark: "⌛", title: "Session expired",
+    description: "The 24-hour session deadline passed. No extraction outcome was recorded. Your discoveries, resources, and completed work remain available below." }
+    : OUTCOME_COPY[projection.outcome!.kind];
   const ledger = candidateById(projection, projection.carriedCandidate);
   return (
-    <section className={`archive-outcome outcome-${projection.outcome.kind}`} role="status" aria-labelledby="outcome-title">
+    <section className={`archive-outcome outcome-${expired ? "expired" : projection.outcome!.kind}`} role="status" aria-labelledby="outcome-title">
       <span className="outcome-mark" aria-hidden="true">{copy.mark}</span>
       <div>
-        <p className="archive-kicker">Expedition complete</p>
+        <p className="archive-kicker">{expired ? "Session ended" : "Expedition complete"}</p>
         <h2 id="outcome-title">{copy.title}</h2>
         <p>{copy.description}</p>
         {projection.debrief === null ? null : <p className={`evidence-debrief debrief-${projection.debrief.evidenceStatus}`}><strong>Evidence debrief:</strong> {projection.debrief.message}</p>}
@@ -209,9 +212,11 @@ export function ArchiveOutcomePanel({ projection }: { readonly projection: Midni
                 label="Source record protected"
                 value={projection.debrief.optionalObjectives.sourceRecordProtected ? "Yes" : "No"}
               />
-              <Fact label="Crew extracted" value={crewNames(projection.crewDebrief.extractedRoles)} />
-              <Fact label="Crew left behind" value={projection.crewDebrief.leftBehindRoles.length === 0
-                ? "No one" : crewNames(projection.crewDebrief.leftBehindRoles)} />
+              {expired ? null : <>
+                <Fact label="Crew extracted" value={crewNames(projection.crewDebrief.extractedRoles)} />
+                <Fact label="Crew left behind" value={projection.crewDebrief.leftBehindRoles.length === 0
+                  ? "No one" : crewNames(projection.crewDebrief.leftBehindRoles)} />
+              </>}
             </>
           )}
         </dl>
