@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from examples.midnight_archive import companion_runner
+from examples.midnight_archive import companion_runner, run_jonah, run_mira
 
 PACK = {
     "id": companion_runner.PACK_ID,
@@ -144,6 +145,62 @@ def test_shared_activation_path_submits_once_at_the_claimed_head_then_completes(
         companion_runner.ACTION,
         TEST_PLAN,
         expected_room_seq=8,
+    )
+    runner.complete.assert_awaited_once_with("activation", "claim", 1, "handled")
+
+
+@pytest.mark.parametrize("schema_version", [4, 5])
+@pytest.mark.parametrize("scenario", ["standard-v1", "low-reserve-v1"])
+@pytest.mark.parametrize("role", ["mira", "jonah"])
+def test_actual_pack_projection_reaches_each_companion_provider(
+    schema_version, scenario, role
+):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "crates/worldstream-studio-supervisor/src/house_model/fixtures"
+        / f"archive-v{schema_version}-model-context.json"
+    )
+    fixture = json.loads(fixture_path.read_text())
+    room, runner, client, projection = transport()
+    pack = {**PACK, "digest": fixture["provenance"]["pack_revision_digest"]}
+    projection["activity"] = fixture["projections"][scenario][role]
+    projection["action_offers"][0]["payload_schema_digest"] = (
+        fixture["payload_schema"]["schema_digest"]
+    )
+    if schema_version == 5:
+        assert projection["activity"]["session_deadline"] == "2026-09-10T12:00:00Z"
+    context = runner.claim.return_value["context"]
+    context["projection_schema"] = (
+        f"worldstream.midnight-archive/participant-projection/v{schema_version}"
+    )
+    context["projection"] = copy.deepcopy(projection)
+    context["action_offers"] = copy.deepcopy(projection["action_offers"])
+    context["room_head"]["pack_digest"] = pack["digest"]
+    client.projection.return_value["projection"] = copy.deepcopy(projection)
+    client.projection.return_value["room_head"]["pack_digest"] = pack["digest"]
+    room.member_id = f"{role}-member"
+    runner.poll_offers.return_value["offers"][0]["member_id"] = room.member_id
+    room.act.return_value["room_head"]["pack_digest"] = pack["digest"]
+    adapter = run_mira if role == "mira" else run_jonah
+    expected_plan = adapter.select_plan(projection)
+    provider = SimpleNamespace(propose=AsyncMock(return_value=expected_plan))
+    attempt = companion_runner.ProviderInvocationAttempt()
+    role_policy = companion_runner.CompanionRunnerPolicy(
+        expected_role=role,
+        select_plan=adapter.select_plan,
+        contract_error=RunnerContractError,
+        mismatch_code="test_contract_mismatch",
+    )
+    result = asyncio.run(companion_runner.answer_once(
+        room, runner, client, pack, role_policy,
+        provider=provider, provider_attempt=attempt, provider_timeout_seconds=1,
+    ))
+    assert result == {"status": "handled", "submitted_actions": 1}
+    assert attempt.consumed is True
+    provider.propose.assert_awaited_once()
+    assert provider.propose.call_args.args[0].projection == projection
+    room.act.assert_awaited_once_with(
+        companion_runner.ACTION, expected_plan, expected_room_seq=8,
     )
     runner.complete.assert_awaited_once_with("activation", "claim", 1, "handled")
 
@@ -482,6 +539,8 @@ def test_malformed_provider_result_is_failed_without_action_submission(provider_
     ("lease_generation", True),
     ("deadline", "2026-09-09T12:00:16.000Z"),
     ("projection_schema", "worldstream.midnight-archive/participant-projection/v1"),
+    ("projection_schema", "worldstream.midnight-archive/participant-projection/v6"),
+    ("projection_schema", "worldstream.midnight-archive/participant-observation/v5"),
 ])
 def test_shared_claim_context_mismatch_records_malformed_without_submission(field, value):
     room, runner, client, _ = transport()

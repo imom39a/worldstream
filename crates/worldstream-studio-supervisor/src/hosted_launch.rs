@@ -2822,7 +2822,7 @@ mod tests {
             current_house_request("hosted-full-reviewed-catalog", CURRENT_PLANNER);
         assert_eq!(
             house_agents.len(),
-            33,
+            35,
             "update this regression when the catalog grows"
         );
         assert!(listings.len() <= MAX_REVIEWED_HOSTED_CATALOG_REVISIONS);

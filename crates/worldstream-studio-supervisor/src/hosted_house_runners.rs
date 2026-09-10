@@ -2387,7 +2387,7 @@ mod tests {
             .unwrap_or_else(|error| unreachable!("reviewed catalog: {error}"));
         assert_eq!(
             revisions.len(),
-            33,
+            35,
             "update this regression when the catalog grows"
         );
         assert!(listings.len() <= MAX_REVIEWED_HOSTED_CATALOG_REVISIONS);

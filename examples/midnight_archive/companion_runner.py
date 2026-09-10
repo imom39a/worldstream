@@ -37,6 +37,10 @@ ACTION = "submit_companion_plan"
 ACTION_OFFER_DOMAIN = "worldstream/action-offer/v1"
 REASON = "companion_plan_requested"
 PROJECTION_SCHEMA = "worldstream.midnight-archive/participant-projection/v4"
+PROJECTION_SCHEMAS = (
+    PROJECTION_SCHEMA,
+    "worldstream.midnight-archive/participant-projection/v5",
+)
 DIGEST = re.compile(r"blake3:[0-9a-f]{64}\Z")
 UTC_TIMESTAMP = re.compile(
     r"(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})"
@@ -518,7 +522,7 @@ async def answer_once(
             and context.get("reason_code") == REASON
             and context.get("cause_room_seq") == offer["cause_room_seq"]
             and context.get("deadline") == offer.get("deadline")
-            and context.get("projection_schema") == PROJECTION_SCHEMA,
+            and context.get("projection_schema") in PROJECTION_SCHEMAS,
         )
         result_limit = validate_execution_bounds(
             policy,

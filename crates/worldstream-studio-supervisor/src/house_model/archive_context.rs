@@ -7,9 +7,13 @@ use super::HouseModelErrorV1;
 const PACK_ID: &str = "worldstream.midnight-archive";
 const PROJECTION_SCHEMA: &str = "worldstream.midnight-archive/participant-projection/v4";
 const OBSERVATION_SCHEMA: &str = "worldstream.midnight-archive/participant-observation/v4";
+const PROJECTION_SCHEMA_V5: &str = "worldstream.midnight-archive/participant-projection/v5";
+const OBSERVATION_SCHEMA_V5: &str = "worldstream.midnight-archive/participant-observation/v5";
 
 // Deliberately closed: future projection fields require
 // review before they become model input. The Pack remains the visibility owner.
+// v5's session deadline remains Pack timer metadata; companion plans use the
+// same reviewed facts and current planning opportunity as retained v4.
 const ACTIVITY_FIELDS: &[&str] = &[
     "phase",
     "scenario",
@@ -61,7 +65,10 @@ pub(super) fn current_context(
         // The assignment helper independently checks stream ordering and hashes.
         // Never fall back to an older reset when the latest frame is unusable.
         if latest["frame_seq"].as_u64() != Some(frame_head)
-            || latest["observation_schema"] != OBSERVATION_SCHEMA
+            || !matches!(
+                latest["observation_schema"].as_str(),
+                Some(OBSERVATION_SCHEMA | OBSERVATION_SCHEMA_V5)
+            )
         {
             return Err(HouseModelErrorV1::InvalidInput);
         }
@@ -69,7 +76,10 @@ pub(super) fn current_context(
     } else {
         let reset = &observation["projection_reset"];
         if reset["baseline_frame_head"].as_u64() != Some(frame_head)
-            || reset["projection_schema"] != PROJECTION_SCHEMA
+            || !matches!(
+                reset["projection_schema"].as_str(),
+                Some(PROJECTION_SCHEMA | PROJECTION_SCHEMA_V5)
+            )
         {
             return Err(HouseModelErrorV1::InvalidInput);
         }
@@ -153,26 +163,27 @@ mod tests {
     use super::*;
 
     fn revision(role: &str) -> Result<HouseAgentRevision, Box<dyn Error>> {
-        let mut document: Value = serde_json::from_slice(include_bytes!(
-            "../../../../config/hosted/house-agents/cooperative-planner-17.json"
-        ))?;
-        document["behavior_policy"] = serde_json::from_slice(if role == "mira" {
-            include_bytes!("../../../../config/hosted/house-policies/mira-1.json").as_slice()
+        let document: Value = serde_json::from_slice(if role == "mira" {
+            include_bytes!("../../../../config/hosted/house-agents/mira-1.json").as_slice()
         } else {
-            include_bytes!("../../../../config/hosted/house-policies/jonah-1.json").as_slice()
+            include_bytes!("../../../../config/hosted/house-agents/jonah-1.json").as_slice()
         })?;
         let canonical = CanonicalJsonV1::parse(&serde_json::to_vec(&document)?)?.to_bytes()?;
         Ok(HouseAgentRevision::from_canonical_bytes(&canonical)?)
     }
 
     fn offers() -> Value {
+        offers_from_fixture(&complete_fixture())
+    }
+
+    fn offers_from_fixture(fixture: &Value) -> Value {
         json!({"schema":"worldstream/assignment-action-offer-list/v1",
             "precondition":{"room_seq":65535,"head_hash":format!("blake3:{}", "b".repeat(64))},
             "offers":[{
-            "offer_id":format!("65535:0:{}", complete_fixture()["payload_schema"]["schema_digest"].as_str().expect("schema digest")),
+            "offer_id":format!("65535:0:{}", fixture["payload_schema"]["schema_digest"].as_str().expect("schema digest")),
             "action_type":"submit_companion_plan",
-            "eligibility_window":complete_fixture()["eligibility_window"],
-            "payload_schema": complete_fixture()["payload_schema"]
+            "eligibility_window":fixture["eligibility_window"],
+            "payload_schema": fixture["payload_schema"]
         }]})
     }
 
@@ -232,17 +243,32 @@ mod tests {
 
     #[test]
     fn current_reset_is_accepted_but_stale_or_unusable_latest_frame_never_falls_back() {
-        let mut input = observation("mira");
-        assert!(current_context("worldstream.house.mira", "1", &input).is_ok());
-        input["projection_reset"]["baseline_frame_head"] = json!(1);
-        assert!(current_context("worldstream.house.mira", "1", &input).is_err());
-        input = observation("mira");
-        input["observations"] = json!([{"frame_seq":1,"observation_schema":OBSERVATION_SCHEMA,
-            "observation":activity("mira")}]);
-        assert!(current_context("worldstream.house.mira", "1", &input).is_err());
-        input["observations"][0]["frame_seq"] = json!(2);
-        input["observations"][0]["observation_schema"] = json!(PROJECTION_SCHEMA);
-        assert!(current_context("worldstream.house.mira", "1", &input).is_err());
+        for (projection_schema, observation_schema) in [
+            (PROJECTION_SCHEMA, OBSERVATION_SCHEMA),
+            (PROJECTION_SCHEMA_V5, OBSERVATION_SCHEMA_V5),
+        ] {
+            let mut input = observation("mira");
+            input["projection_reset"]["projection_schema"] = json!(projection_schema);
+            assert!(current_context("worldstream.house.mira", "1", &input).is_ok());
+            input["projection_reset"]["baseline_frame_head"] = json!(1);
+            assert!(current_context("worldstream.house.mira", "1", &input).is_err());
+            input["projection_reset"]["baseline_frame_head"] = json!(2);
+            input["observations"] = json!([{"frame_seq":1,"observation_schema":observation_schema,
+                "observation":activity("mira")}]);
+            assert!(current_context("worldstream.house.mira", "1", &input).is_err());
+            input["observations"][0]["frame_seq"] = json!(2);
+            for unsupported in [
+                projection_schema,
+                "worldstream.midnight-archive/participant-observation/v6",
+            ] {
+                input["observations"][0]["observation_schema"] = json!(unsupported);
+                assert!(current_context("worldstream.house.mira", "1", &input).is_err());
+            }
+            input["observations"] = json!([]);
+            input["projection_reset"]["projection_schema"] =
+                json!("worldstream.midnight-archive/participant-projection/v6");
+            assert!(current_context("worldstream.house.mira", "1", &input).is_err());
+        }
     }
 
     #[test]
@@ -295,6 +321,45 @@ mod tests {
     fn complete_provider_request_keeps_exact_offers_but_not_retained_history()
     -> Result<(), Box<dyn Error>> {
         let fixture = complete_fixture();
+        assert_provider_requests(&fixture, PROJECTION_SCHEMA, OBSERVATION_SCHEMA)
+    }
+
+    #[test]
+    fn current_v5_pack_projections_and_observations_reach_both_reviewed_companion_providers()
+    -> Result<(), Box<dyn Error>> {
+        let fixture: Value =
+            serde_json::from_slice(include_bytes!("fixtures/archive-v5-model-context.json"))?;
+        let listing: Value = serde_json::from_slice(include_bytes!(
+            "../../../../config/hosted/listings/midnight-archive-0.3.0.json"
+        ))?;
+        assert_eq!(
+            fixture["provenance"]["pack_revision_digest"],
+            listing["pack"]["digest"]
+        );
+        assert_eq!(fixture["projection_schema"], PROJECTION_SCHEMA_V5);
+        assert_eq!(fixture["observation_schema"], OBSERVATION_SCHEMA_V5);
+        assert_eq!(
+            fixture["payload_schema"]["schema_id"],
+            "worldstream.midnight-archive/action-submit_companion_plan/v5"
+        );
+        for scenario in ["standard-v1", "low-reserve-v1"] {
+            for role in ["mira", "jonah"] {
+                assert_eq!(
+                    fixture["projections"][scenario][role]["session_deadline"],
+                    "2026-09-10T12:00:00Z"
+                );
+            }
+        }
+        assert_provider_requests(&fixture, PROJECTION_SCHEMA_V5, OBSERVATION_SCHEMA_V5)?;
+        assert_dialogue_provider_dispatch(&fixture, PROJECTION_SCHEMA_V5)
+    }
+
+    fn assert_provider_requests(
+        fixture: &Value,
+        projection_schema: &str,
+        observation_schema: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        let offers = offers_from_fixture(fixture);
         let schema = &fixture["payload_schema"]["schema"];
         let canonical_schema = CanonicalJsonV1::parse(&serde_json::to_vec(schema)?)?.to_bytes()?;
         assert_eq!(
@@ -305,6 +370,7 @@ mod tests {
         for scenario in ["standard-v1", "low-reserve-v1"] {
             for role in ["mira", "jonah"] {
                 let mut input = observation(role);
+                input["projection_reset"]["projection_schema"] = json!(projection_schema);
                 let activity = &fixture["projections"][scenario][role];
                 assert_eq!(
                     activity["map"]["locations"].as_array().ok_or("map")?.len(),
@@ -340,13 +406,11 @@ mod tests {
                     );
                 }
                 input["projection_reset"]["projection"]["activity"] = activity.clone();
-                let (reset_request, _) =
-                    build_provider_request(&revision(role)?, &input, &offers())?;
+                let (reset_request, _) = build_provider_request(&revision(role)?, &input, &offers)?;
                 input["observations"] = json!([
                 {"frame_seq":1,"observation":{"irrelevant": "x".repeat(24_000)}},
-                {"frame_seq":2,"observation_schema":OBSERVATION_SCHEMA,"observation":activity}]);
-                let (frame_request, _) =
-                    build_provider_request(&revision(role)?, &input, &offers())?;
+                {"frame_seq":2,"observation_schema":observation_schema,"observation":activity}]);
+                let (frame_request, _) = build_provider_request(&revision(role)?, &input, &offers)?;
                 assert_eq!(reset_request.body(), frame_request.body());
                 let request_bytes = frame_request.body().len();
                 assert!(
@@ -358,7 +422,12 @@ mod tests {
                 let invocation: Value = serde_json::from_str(
                     body["messages"][1]["content"].as_str().ok_or("content")?,
                 )?;
-                assert_eq!(invocation["action_offers"], offers());
+                assert_eq!(invocation["action_offers"], offers);
+                assert!(
+                    invocation["projection"]["activity"]
+                        .get("session_deadline")
+                        .is_none()
+                );
                 assert_eq!(body["provider"]["only"], json!(["deepinfra/bf16"]));
                 assert_eq!(body["provider"]["allow_fallbacks"], false);
                 assert_eq!(body["provider"]["zdr"], true);
@@ -434,9 +503,17 @@ mod tests {
     #[test]
     fn dialogue_proposals_are_independently_validated_and_failed_paid_attempts_stay_consumed()
     -> Result<(), Box<dyn Error>> {
+        assert_dialogue_provider_dispatch(&complete_fixture(), PROJECTION_SCHEMA)
+    }
+
+    fn assert_dialogue_provider_dispatch(
+        fixture: &Value,
+        projection_schema: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        let offers = offers_from_fixture(fixture);
         for role in ["mira", "jonah"] {
-            let fixture = complete_fixture();
             let mut input = observation(role);
+            input["projection_reset"]["projection_schema"] = json!(projection_schema);
             input["projection_reset"]["projection"]["activity"] =
                 fixture["projections"]["standard-v1"][role].clone();
             let context = current_context(&format!("worldstream.house.{role}"), "1", &input)?
@@ -453,7 +530,7 @@ mod tests {
                 ]
             });
             validate_proposal(&context, &payload)?;
-            let offer_id = offers()["offers"][0]["offer_id"]
+            let offer_id = offers["offers"][0]["offer_id"]
                 .as_str()
                 .ok_or("offer")?
                 .to_owned();
@@ -494,7 +571,7 @@ mod tests {
                 &revision(role)?,
                 &identity,
                 &input,
-                &offers(),
+                &offers,
                 period,
             )?;
             assert_eq!(completion.action.payload, payload);
@@ -507,7 +584,7 @@ mod tests {
                         &revision(role)?,
                         &identity,
                         &input,
-                        &offers(),
+                        &offers,
                         period
                     )
                     .is_err()
@@ -544,7 +621,7 @@ mod tests {
                         &revision(role)?,
                         &identity,
                         &input,
-                        &offers(),
+                        &offers,
                         period
                     )
                     .err(),
