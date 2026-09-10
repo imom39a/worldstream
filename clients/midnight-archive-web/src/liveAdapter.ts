@@ -99,6 +99,9 @@ export function prepareMidnightArchiveAction(
   if (intent.action === "commit_turn" && state.projection.stagedAction === null) {
     throw new Error("There is no staged Action to commit.");
   }
+  if (intent.action === "commit_turn" && !commitIsPrepared(state.projection)) {
+    throw new Error("The shared turn is not prepared for commitment.");
+  }
   const offer = state.offers.find((candidate) => candidate.actionType === intent.action);
   if (offer === undefined) {
     throw new Error("The requested Midnight Archive Action is not offered at this Head.");
@@ -222,8 +225,13 @@ function offersMatchPhase(
 ): boolean {
   if (projection.phase !== "active") return offers.length === 0;
   const hasCommit = offers.some((offer) => offer.actionType === "commit_turn");
-  return (projection.stagedAction === null && !hasCommit)
-    || (projection.stagedAction !== null && hasCommit);
+  return hasCommit === commitIsPrepared(projection);
+}
+
+function commitIsPrepared(projection: MidnightArchiveProjection): boolean {
+  return projection.stagedAction !== null
+    && projection.turnResolution.status === "clear"
+    && (projection.stagedAction.actionType !== "stage_extract" || projection.extraction.status === "acknowledged");
 }
 
 function renumberOffers(

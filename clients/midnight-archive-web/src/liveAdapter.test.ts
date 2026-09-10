@@ -95,6 +95,58 @@ describe("Midnight Archive authorized live adapter", () => {
     expect(JSON.stringify(second)).not.toContain('"confidence":"verified"');
   });
 
+  it("offers commit only after the exact extraction preview is acknowledged", () => {
+    const staged = {
+      location: "atrium",
+      staged_action: { action_type: "stage_extract", turn_cost: 1, power_cost: 0 },
+    };
+    const prepared = reduceMidnightArchiveObservation(initialMidnightArchiveLiveState(), authorizedBatch({
+      projectionValue: rawProjection({
+        ...staged,
+        extraction: { status: "prepared", revision: 2, for_turn: 2, extracted_roles: ["lead"], left_behind_roles: [] },
+      }),
+      actions: ["acknowledge_extraction"],
+    }));
+    expect(prepared.kind).toBe("ready");
+    const invalidCommit = reduceMidnightArchiveObservation(initialMidnightArchiveLiveState(), authorizedBatch({
+      projectionValue: rawProjection({
+        ...staged,
+        extraction: { status: "prepared", revision: 2, for_turn: 2, extracted_roles: ["lead"], left_behind_roles: [] },
+      }),
+      actions: ["commit_turn"],
+    }));
+    expect(invalidCommit.kind).toBe("incompatible");
+    const acknowledged = reduceMidnightArchiveObservation(initialMidnightArchiveLiveState(), authorizedBatch({
+      projectionValue: rawProjection({
+        ...staged,
+        extraction: { status: "acknowledged", revision: 2, for_turn: 2, extracted_roles: ["lead"], left_behind_roles: [] },
+      }),
+      actions: ["commit_turn"],
+    }));
+    expect(acknowledged.kind).toBe("ready");
+  });
+
+  it("permits a clear committed turn while a tasked specialist remains unprepared", () => {
+    const mira = {
+      presence: "active", location: "records", mode: "tasked",
+      task: { status: "assigned", revision: 1, kind: "investigate_records", power_allowance: 0, power_spent: 0 },
+      planning: { status: "not_requested", opportunity_revision: 0, plan_revision: 0, steps_total: 0, steps_completed: 0, deadline: "none" },
+      preparation: { status: "none", for_turn: 0, summary: "none" },
+      knowledge: { records: "unknown", conservation: "unknown", verifier_result: null },
+      field_assay: { steps_completed: 0, result: null },
+      last_contribution: { turn: 0, kind: "none", summary: "No Mira contribution has completed." },
+    };
+    const state = reduceMidnightArchiveObservation(initialMidnightArchiveLiveState(), authorizedBatch({
+      projectionValue: rawProjection({
+        staged_action: { action_type: "stage_wait", turn_cost: 1, power_cost: 0 },
+        mira,
+        crew_debrief: { starting_roles: ["lead", "mira"], extracted_roles: [], left_behind_roles: [], completed_work: [] },
+      }),
+      actions: ["commit_turn"],
+    }));
+    expect(state.kind).toBe("ready");
+  });
+
   it("fails closed for wrong identity, wrong authorization, and malformed projections", () => {
     const wrongPack = authorizedBatch();
     wrongPack.pack.id = "worldstream.agent-heist";

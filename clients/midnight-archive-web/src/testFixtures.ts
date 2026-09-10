@@ -36,6 +36,7 @@ export function rawMira(overrides: Record<string, unknown> = {}): Record<string,
     },
     preparation: { status: "none", for_turn: 0, summary: "none" },
     knowledge: { records: "unknown", conservation: "unknown", verifier_result: null },
+    field_assay: { steps_completed: 0, result: null },
     last_contribution: {
       turn: 0,
       kind: "none",
@@ -45,15 +46,49 @@ export function rawMira(overrides: Record<string, unknown> = {}): Record<string,
   };
 }
 
-export function rawProjection(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  const carriedCandidate = overrides.carried_candidate ?? null;
+export function rawJonah(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    phase: "active",
+    ...rawMira({
+      last_contribution: {
+        turn: 0,
+        kind: "none",
+        summary: "No Jonah contribution has completed.",
+      },
+    }),
+    ...overrides,
+  };
+}
+
+export function rawProjection(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const phase = (overrides.phase ?? "active") as string;
+  const outcomeKind = (overrides.outcome as Record<string, unknown> | null)?.kind;
+  const defaultTerminalCandidate = phase === "complete"
+    && (outcomeKind === "success" || outcomeKind === "partial_extraction" || outcomeKind === "wrong_ledger")
+    ? "ledger-violet" : null;
+  const carriedCandidate = Object.hasOwn(overrides, "carried_candidate")
+    ? overrides.carried_candidate : defaultTerminalCandidate;
+  const mira = (overrides.mira ?? rawMira()) as Record<string, unknown>;
+  const jonah = (overrides.jonah ?? rawJonah()) as Record<string, unknown>;
+  const stagedAction = (overrides.staged_action ?? null) as Record<string, unknown> | null;
+  const turnsUsed = (overrides.turns_used ?? 1) as number;
+  const power = (overrides.power ?? 3) as number;
+  const startingRoles = [
+    "lead",
+    ...(mira.presence === "absent" ? [] : ["mira"]),
+    ...(jonah.presence === "absent" ? [] : ["jonah"]),
+  ];
+  const turnResolution = defaultTurnResolution(mira, jonah, stagedAction, power);
+  const terminal = phase === "complete";
+  const exhausted = (overrides.outcome as Record<string, unknown> | null)?.kind === "exhausted_inside";
+  const terminalExtracted = terminal && !exhausted ? startingRoles : [];
+  const terminalLeft = terminal ? startingRoles.filter((role) => !terminalExtracted.includes(role)) : [];
+  return {
+    phase,
     objective: "Recover the authentic ledger and return to the Atrium before the archive seals.",
     location: "records",
-    turns_used: 1,
+    turns_used: turnsUsed,
     turns_remaining: 15,
-    power: 3,
+    power,
     gates: { archive_gate: "closed", service_hatch: "closed" },
     map: {
       locations: [
@@ -107,7 +142,24 @@ export function rawProjection(overrides: Record<string, unknown> = {}): Record<s
         ],
       },
     ],
-    mira: rawMira(),
+    mira,
+    jonah,
+    turn_resolution: turnResolution,
+    extraction: terminal && !exhausted ? {
+      status: "acknowledged",
+      revision: 1,
+      for_turn: turnsUsed,
+      extracted_roles: terminalExtracted,
+      left_behind_roles: terminalLeft.filter((role) => role !== "lead"),
+    } : {
+      status: "none", revision: 0, for_turn: 0, extracted_roles: [], left_behind_roles: [],
+    },
+    crew_debrief: {
+      starting_roles: startingRoles,
+      extracted_roles: terminalExtracted,
+      left_behind_roles: terminalLeft,
+      completed_work: [],
+    },
     preservation_agreement: {
       speaker: "Archivist",
       statement: "Preserve the threatened collection and I will open the Conservation–Vault gate.",
@@ -161,11 +213,64 @@ export function rawProjection(overrides: Record<string, unknown> = {}): Record<s
         },
       }
       : null,
-    staged_action: null,
+    staged_action: stagedAction,
     carried_candidate: carriedCandidate,
     verifier_result: null,
     outcome: null,
     ...overrides,
+  };
+}
+
+function defaultTurnResolution(
+  mira: Record<string, unknown>,
+  jonah: Record<string, unknown>,
+  staged: Record<string, unknown> | null,
+  power: number,
+) {
+  const companions = { mira, jonah } as const;
+  const prepared_roles: string[] = [];
+  const deferred_roles: string[] = [];
+  const unprepared_roles: string[] = [];
+  const reservations: Array<{ role: string; power: number; interaction: string }> = [];
+  if (staged !== null) reservations.push({
+    role: "lead",
+    power: Number(staged.power_cost),
+    interaction: staged.action_type === "stage_open_service_hatch" ? "service_hatch"
+      : staged.action_type === "stage_use_verifier" ? "catalog_verifier" : "none",
+  });
+  for (const role of ["mira", "jonah"] as const) {
+    const companion = companions[role];
+    const preparation = companion.preparation as Record<string, unknown>;
+    const tasked = companion.presence === "active" && companion.mode === "tasked";
+    if (!tasked) continue;
+    if (preparation.status === "prepared") {
+      prepared_roles.push(role);
+      const summary = String(preparation.summary);
+      reservations.push({
+        role,
+        power: summary.includes("catalog verifier") ? 1
+          : summary.includes("service hatch") ? (role === "mira" ? 2 : 1) : 0,
+        interaction: summary.includes("catalog verifier") ? "catalog_verifier"
+          : summary.includes("service hatch") ? "service_hatch" : "none",
+      });
+    } else if (preparation.status === "deferred") deferred_roles.push(role);
+    else unprepared_roles.push(role);
+  }
+  const conflicts: Array<{ code: string; roles: string[] }> = [];
+  const reserved = reservations.reduce((sum, item) => sum + item.power, 0);
+  if (reserved > power) conflicts.push({ code: "shared_power", roles: reservations.filter((item) => item.power > 0).map((item) => item.role) });
+  for (const interaction of ["service_hatch", "catalog_verifier"]) {
+    const roles = reservations.filter((item) => item.interaction === interaction).map((item) => item.role);
+    if (roles.length > 1) conflicts.push({ code: interaction, roles });
+  }
+  return {
+    status: conflicts.length === 0 ? "clear" : "conflict",
+    power_reserved: reserved,
+    prepared_roles,
+    deferred_roles,
+    unprepared_roles,
+    reservations,
+    conflicts,
   };
 }
 

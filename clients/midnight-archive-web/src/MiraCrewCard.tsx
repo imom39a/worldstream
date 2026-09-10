@@ -7,6 +7,27 @@ import {
   type MiraTaskKind,
 } from "./model";
 import { CostPills } from "./presentation";
+import {
+  SpecialistCrewCard,
+  type SpecialistCrewCardDefinition,
+} from "./SpecialistCrewCard";
+
+const MIRA_CARD: SpecialistCrewCardDefinition = {
+  name: "Mira",
+  titleId: "mira-crew-title",
+  testId: "mira-crew-card",
+  classNames: {
+    card: "mira-crew-card",
+    presence: "mira-presence",
+    facts: "mira-facts",
+    planStatus: "mira-plan-status",
+    preparation: "mira-preparation",
+    lastContribution: "mira-last-contribution",
+    controls: "mira-controls",
+  },
+  controlsLabel: "Mira task controls",
+  waitingMessage: "Mira is preparing a bounded plan. You may continue staging your own turn.",
+};
 
 export function MiraCrewCard({
   projection,
@@ -27,50 +48,32 @@ export function MiraCrewCard({
     ? "No accepted steps"
     : `${mira.planning.stepsCompleted} of ${mira.planning.stepsTotal} complete`;
   return (
-    <section className="mira-crew-card" aria-labelledby="mira-crew-title" data-testid="mira-crew-card">
-      <header>
-        <div>
-          <p className="archive-kicker">Agent companion</p>
-          <h2 id="mira-crew-title">Mira</h2>
-        </div>
-        <span className={`mira-presence presence-${mira.presence}`}>{mira.presence}</span>
-      </header>
-
-      <dl className="mira-facts">
-        <Fact label="Location" value={locationLabel(projection, mira.location)} />
-        <Fact label="Mode" value={modeLabel(mira.mode)} />
-        <Fact label="Task" value={taskKind} />
-        <Fact label="Task status" value={mira.task.status} />
-        <Fact label="Task revision" value={String(mira.task.revision)} />
-        <Fact label="Power allowance" value={`${mira.task.powerSpent} spent · ${mira.task.powerAllowance} allowed`} />
-        <Fact label="Plan" value={`${planningLabel(mira.planning.status)} · revision ${mira.planning.planRevision}`} />
-        <Fact label="Opportunity" value={`revision ${mira.planning.opportunityRevision}`} />
-        <Fact label="Progress" value={planProgress} />
-      </dl>
-
-      {mira.planning.status === "waiting" ? (
-        <p className="mira-plan-status" role="status">Mira is preparing a bounded plan. You may continue staging your own turn.</p>
-      ) : null}
-
-      <div className={`mira-preparation preparation-${mira.preparation.status}`}>
-        <small>Prepared contribution</small>
-        <strong>{preparationLabel(mira.preparation.summary)}</strong>
-        {mira.preparation.status === "none" ? null : (
-          <span>Fenced to turn {mira.preparation.forTurn}</span>
-        )}
-      </div>
-
-      <MiraKnowledge projection={projection} />
-
-      <div className="mira-last-contribution">
-        <small>Last recorded contribution · turn {mira.lastContribution.turn}</small>
-        <p>{mira.lastContribution.summary}</p>
-      </div>
-
-      <div className="mira-controls" aria-label="Mira task controls">
+    <SpecialistCrewCard
+      definition={MIRA_CARD}
+      view={{
+        presence: mira.presence,
+        location: locationLabel(projection, mira.location),
+        mode: modeLabel(mira.mode),
+        task: taskKind,
+        taskStatus: mira.task.status,
+        taskRevision: mira.task.revision,
+        powerAllowance: `${mira.task.powerSpent} spent · ${mira.task.powerAllowance} allowed`,
+        plan: `${planningLabel(mira.planning.status)} · revision ${mira.planning.planRevision}`,
+        opportunity: `revision ${mira.planning.opportunityRevision}`,
+        progress: planProgress,
+        waiting: mira.planning.status === "waiting",
+        preparation: {
+          status: mira.preparation.status,
+          summary: preparationLabel(mira.preparation.summary),
+          forTurn: mira.preparation.status === "none" ? null : mira.preparation.forTurn,
+        },
+        lastContribution: mira.lastContribution,
+      }}
+      knowledge={<MiraKnowledge projection={projection} />}
+      controls={<>
         {!active ? <p className="mira-unavailable">Mira's current Membership cannot accept crew orders.</p> : null}
         <h3>Standing task</h3>
-        <p>Choose a Pack-defined investigation and a maximum shared-power allowance.</p>
+        <p>Choose Pack-defined specialist work and its maximum shared-power allowance.</p>
         {offerTypes.has("assign_mira_task") ? null : (
           <p className="mira-unavailable">Task assignment is unavailable at this Room Head.</p>
         )}
@@ -79,6 +82,8 @@ export function MiraCrewCard({
           <TaskButton kind="investigate_records" allowance={1} current={mira.task.kind} enabled={active && enabled} offered={offerTypes.has("assign_mira_task")} onAction={onAction} />
           <TaskButton kind="investigate_conservation" allowance={0} current={mira.task.kind} enabled={active && enabled} offered={offerTypes.has("assign_mira_task")} onAction={onAction} />
           <TaskButton kind="investigate_conservation" allowance={1} current={mira.task.kind} enabled={active && enabled} offered={offerTypes.has("assign_mira_task")} onAction={onAction} />
+          <TaskButton kind="open_service_hatch" allowance={2} current={mira.task.kind} enabled={active && enabled} offered={offerTypes.has("assign_mira_task")} onAction={onAction} />
+          <TaskButton kind="field_assay" allowance={0} current={mira.task.kind} enabled={active && enabled} offered={offerTypes.has("assign_mira_task")} onAction={onAction} />
         </div>
         <ControlButton
           action="cancel_mira_task"
@@ -124,8 +129,8 @@ export function MiraCrewCard({
           />
         </div>
         <p className="mira-control-note">Crew controls cost no turn or power. A prepared contribution resolves beside your staged personal Action only when you commit.</p>
-      </div>
-    </section>
+      </>}
+    />
   );
 }
 
@@ -150,13 +155,17 @@ function MiraKnowledge({ projection }: { readonly projection: MidnightArchivePro
       {verifierCandidate === null ? null : (
         <p className="mira-verified">Catalog verifier disclosed: {verifierCandidate.label} · verified</p>
       )}
+      <p>Vault field assay: {projection.mira.fieldAssay.stepsCompleted} of 2 work steps complete.</p>
+      {projection.mira.fieldAssay.result === null ? null : (
+        <p className="mira-verified">Field assay disclosed: {candidateById(projection, projection.mira.fieldAssay.result.candidateId)?.label ?? "Known candidate"} · verified</p>
+      )}
     </div>
   );
 }
 
 function TaskButton({ kind, allowance, current, enabled, offered, onAction }: {
   readonly kind: Exclude<MiraTaskKind, "none">;
-  readonly allowance: 0 | 1;
+  readonly allowance: 0 | 1 | 2;
   readonly current: MiraTaskKind;
   readonly enabled: boolean;
   readonly offered: boolean;
@@ -181,7 +190,14 @@ function TaskButton({ kind, allowance, current, enabled, offered, onAction }: {
 }
 
 function ControlButton({ action, label, enabled, offered, reason, onAction }: {
-  readonly action: Exclude<MidnightArchiveActionType, `stage_${string}` | "commit_turn" | "assign_mira_task">;
+  readonly action:
+    | "cancel_mira_task"
+    | "set_mira_follow"
+    | "set_mira_hold"
+    | "set_mira_regroup"
+    | "request_mira_plan"
+    | "prepare_mira_contribution"
+    | "defer_mira_contribution";
   readonly label: string;
   readonly enabled: boolean;
   readonly offered: boolean;
@@ -204,10 +220,6 @@ function ControlButton({ action, label, enabled, offered, reason, onAction }: {
   );
 }
 
-function Fact({ label, value }: { readonly label: string; readonly value: string }) {
-  return <div><dt>{label}</dt><dd>{value}</dd></div>;
-}
-
 function locationLabel(projection: MidnightArchiveProjection, location: ArchiveLocation | "none"): string {
   if (location === "none") return "Not in expedition";
   return projection.map.locations.find((candidate) => candidate.id === location)?.name ?? location;
@@ -216,6 +228,8 @@ function locationLabel(projection: MidnightArchiveProjection, location: ArchiveL
 function taskLabel(kind: MiraTaskKind): string {
   if (kind === "investigate_records") return "Investigate Records";
   if (kind === "investigate_conservation") return "Investigate Conservation";
+  if (kind === "open_service_hatch") return "Open service hatch";
+  if (kind === "field_assay") return "Field assay";
   return "No standing task";
 }
 

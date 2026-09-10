@@ -10,7 +10,7 @@ import {
   moveOptions,
   readMidnightArchiveProjection,
 } from "./model";
-import { projection, rawMira, rawProjection } from "./testFixtures";
+import { projection, rawJonah, rawMira, rawProjection } from "./testFixtures";
 
 describe("Midnight Archive strict participant Projection", () => {
   it("accepts the exact five-location, finite-resource contract", () => {
@@ -21,6 +21,181 @@ describe("Midnight Archive strict participant Projection", () => {
       "atrium", "conservation", "plant", "records", "vault",
     ]);
     expect(parsed.turnsUsed + parsed.turnsRemaining).toBe(16);
+  });
+
+  it("decodes the v2 specialist, turn-resolution, extraction, and crew-debrief contract", () => {
+    const parsed = readMidnightArchiveProjection(rawProjection({
+      jonah: rawJonah({ presence: "active", location: "plant", mode: "following" }),
+      crew_debrief: {
+        starting_roles: ["lead", "jonah"],
+        extracted_roles: [],
+        left_behind_roles: [],
+        completed_work: [],
+      },
+    }));
+    expect(parsed?.jonah.location).toBe("plant");
+    expect(parsed?.jonah.fieldAssay).toEqual({ stepsCompleted: 0, result: null });
+    expect(parsed?.turnResolution.status).toBe("clear");
+    expect(parsed?.extraction.status).toBe("none");
+    expect(parsed?.crewDebrief.startingRoles).toEqual(["lead", "jonah"]);
+  });
+
+  it("fails closed on specialist privacy, conflicting reservations, and stale extraction acknowledgement", () => {
+    const invalid = [
+      rawProjection({ jonah: rawJonah({ private_plan: [{ step_type: "move" }] }) }),
+      rawProjection({
+        turn_resolution: {
+          status: "clear", power_reserved: 4,
+          prepared_roles: ["mira", "jonah"], deferred_roles: [], unprepared_roles: [],
+          reservations: [
+            { role: "mira", power: 2, interaction: "service_hatch" },
+            { role: "jonah", power: 1, interaction: "service_hatch" },
+          ],
+          conflicts: [],
+        },
+      }),
+      rawProjection({
+        staged_action: { action_type: "stage_extract", turn_cost: 1, power_cost: 0 },
+        location: "atrium",
+        extraction: {
+          status: "acknowledged", revision: 4, for_turn: 1,
+          extracted_roles: ["lead"], left_behind_roles: ["mira"],
+        },
+        crew_debrief: {
+          starting_roles: ["lead"], extracted_roles: [], left_behind_roles: [], completed_work: [],
+        },
+      }),
+    ];
+    for (const value of invalid) expect(readMidnightArchiveProjection(value)).toBeNull();
+  });
+
+  it("accepts an all-three acknowledged extraction only in canonical role order", () => {
+    const allThree = rawProjection({
+      location: "atrium",
+      staged_action: { action_type: "stage_extract", turn_cost: 1, power_cost: 0 },
+      mira: rawMira({ presence: "active", location: "atrium", mode: "following" }),
+      jonah: rawJonah({ presence: "active", location: "atrium", mode: "following" }),
+      extraction: {
+        status: "acknowledged", revision: 3, for_turn: 2,
+        extracted_roles: ["lead", "mira", "jonah"], left_behind_roles: [],
+      },
+      crew_debrief: {
+        starting_roles: ["lead", "mira", "jonah"], extracted_roles: [], left_behind_roles: [], completed_work: [],
+      },
+    });
+    expect(readMidnightArchiveProjection(allThree)?.extraction.extractedRoles).toEqual(["lead", "mira", "jonah"]);
+    expect(readMidnightArchiveProjection({
+      ...allThree,
+      extraction: { ...(allThree.extraction as Record<string, unknown>), extracted_roles: ["lead", "jonah", "mira"] },
+    })).toBeNull();
+  });
+
+  it("rejects a non-positive or conflicted extraction preview", () => {
+    const staged = {
+      location: "atrium",
+      staged_action: { action_type: "stage_extract", turn_cost: 1, power_cost: 0 },
+      extraction: { status: "prepared", revision: 0, for_turn: 2, extracted_roles: ["lead"], left_behind_roles: [] },
+    };
+    expect(readMidnightArchiveProjection(rawProjection(staged))).toBeNull();
+    expect(readMidnightArchiveProjection(rawProjection({
+      ...staged,
+      extraction: { ...(staged.extraction as Record<string, unknown>), revision: 1 },
+      turn_resolution: {
+        status: "conflict", power_reserved: 0, prepared_roles: [], deferred_roles: [], unprepared_roles: [], reservations: [],
+        conflicts: [{ code: "ineligible_contribution", roles: ["mira"] }],
+      },
+    }))).toBeNull();
+  });
+
+  it("rejects absent assay facts, stale terminal turns, unordered work, and invalid conflict provenance", () => {
+    const terminal = rawProjection({ phase: "complete", turns_used: 8, turns_remaining: 8, outcome: { kind: "success" }, carried_candidate: "ledger-violet" });
+    const crew = terminal.crew_debrief as Record<string, unknown>;
+    const invalid = [
+      rawProjection({ mira: rawMira({ field_assay: { steps_completed: 1, result: null } }) }),
+      { ...terminal, extraction: { ...(terminal.extraction as Record<string, unknown>), for_turn: 7 } },
+      rawProjection({
+        mira: rawMira({ presence: "active", location: "atrium", mode: "following" }),
+        jonah: rawJonah({ presence: "active", location: "atrium", mode: "following" }),
+        crew_debrief: {
+          starting_roles: ["lead", "mira", "jonah"], extracted_roles: [], left_behind_roles: [],
+          completed_work: [
+            { role: "mira", kind: "move", turn: 2 },
+            { role: "jonah", kind: "move", turn: 1 },
+          ],
+        },
+      }),
+      rawProjection({
+        turn_resolution: {
+          status: "conflict", power_reserved: 0, prepared_roles: [], deferred_roles: [], unprepared_roles: [], reservations: [],
+          conflicts: [
+            { code: "ineligible_contribution", roles: ["mira"] },
+            { code: "ineligible_contribution", roles: ["mira"] },
+          ],
+        },
+      }),
+      { ...terminal, crew_debrief: { ...crew, starting_roles: ["lead", "jonah", "mira"] } },
+    ];
+    for (const value of invalid) expect(readMidnightArchiveProjection(value)).toBeNull();
+  });
+
+  it("requires terminal outcomes to match ledger and starting-crew extraction facts", () => {
+    const mira = rawMira({ presence: "suspended", location: "atrium", mode: "unavailable" });
+    const partialCrew = {
+      starting_roles: ["lead", "mira"], extracted_roles: ["lead"], left_behind_roles: ["mira"], completed_work: [],
+    };
+    const extraction = {
+      status: "acknowledged", revision: 2, for_turn: 8, extracted_roles: ["lead"], left_behind_roles: ["mira"],
+    };
+    expect(readMidnightArchiveProjection(rawProjection({
+      phase: "complete", turns_used: 8, turns_remaining: 8, outcome: { kind: "success" },
+      carried_candidate: "ledger-violet", mira, extraction, crew_debrief: partialCrew,
+    }))).toBeNull();
+    expect(readMidnightArchiveProjection(rawProjection({
+      phase: "complete", turns_used: 8, turns_remaining: 8, outcome: { kind: "no_ledger" },
+      carried_candidate: "ledger-violet",
+    }))).toBeNull();
+  });
+
+  it("accepts terminal retained tasked state with an intentionally empty turn resolution", () => {
+    const mira = rawMira({
+      presence: "active", location: "atrium", mode: "tasked",
+      task: { status: "assigned", revision: 2, kind: "field_assay", power_allowance: 0, power_spent: 0 },
+      planning: { status: "ready", opportunity_revision: 3, plan_revision: 3, steps_total: 2, steps_completed: 1, deadline: "none" },
+    });
+    expect(readMidnightArchiveProjection(rawProjection({
+      phase: "complete", turns_used: 8, turns_remaining: 8, outcome: { kind: "success" },
+      mira,
+      turn_resolution: {
+        status: "clear", power_reserved: 0, prepared_roles: [], deferred_roles: [], unprepared_roles: [], reservations: [], conflicts: [],
+      },
+      extraction: { status: "acknowledged", revision: 2, for_turn: 8, extracted_roles: ["lead", "mira"], left_behind_roles: [] },
+      crew_debrief: { starting_roles: ["lead", "mira"], extracted_roles: ["lead", "mira"], left_behind_roles: [], completed_work: [] },
+    }))).not.toBeNull();
+  });
+
+  it("decodes Mira's two-step Vault assay without revealing a result after the first step", () => {
+    const mira = rawMira({
+      presence: "active", location: "vault", mode: "tasked",
+      task: { status: "assigned", revision: 2, kind: "field_assay", power_allowance: 0, power_spent: 0 },
+      planning: { status: "ready", opportunity_revision: 3, plan_revision: 3, steps_total: 2, steps_completed: 1, deadline: "none" },
+      field_assay: { steps_completed: 1, result: null },
+      last_contribution: { turn: 1, kind: "collect_assay_sample", summary: "Mira collected a Vault assay sample; no result is available yet." },
+    });
+    const parsed = readMidnightArchiveProjection(rawProjection({
+      mira,
+      crew_debrief: {
+        starting_roles: ["lead", "mira"], extracted_roles: [], left_behind_roles: [],
+        completed_work: [{ role: "mira", kind: "collect_assay_sample", turn: 1 }],
+      },
+    }));
+    expect(parsed?.mira.fieldAssay).toEqual({ stepsCompleted: 1, result: null });
+    expect(readMidnightArchiveProjection(rawProjection({
+      mira: rawMira({ ...mira, field_assay: { steps_completed: 1, result: { candidate_id: "ledger-violet", confidence: "verified" } } }),
+      crew_debrief: {
+        starting_roles: ["lead", "mira"], extracted_roles: [], left_behind_roles: [],
+        completed_work: [{ role: "mira", kind: "collect_assay_sample", turn: 1 }],
+      },
+    }))).toBeNull();
   });
 
   it("fails closed for drift, malformed resources, hidden truth, bad costs, and dangling references", () => {
@@ -381,6 +556,21 @@ describe("technical route semantics", () => {
       power_allowance: 1,
     })).toEqual({ task_kind: "investigate_records", power_allowance: 1 });
     expect(actionCost("request_mira_plan")).toEqual({ turns: 0, power: 0 });
+    expect(actionPayload({
+      action: "assign_jonah_task",
+      task_kind: "open_service_hatch",
+      power_allowance: 1,
+    })).toEqual({ task_kind: "open_service_hatch", power_allowance: 1 });
+    expect(actionPayload({
+      action: "acknowledge_extraction",
+      preview_revision: 7,
+      left_behind_roles: ["mira", "jonah"],
+    })).toEqual({ preview_revision: 7, left_behind_roles: ["mira", "jonah"] });
+    expect(() => actionPayload({
+      action: "acknowledge_extraction",
+      preview_revision: 7,
+      left_behind_roles: ["jonah", "mira"],
+    })).toThrow(/canonical role order/u);
     expect(moveOptions(current).map((option) => option.destination).sort()).toEqual([
       "atrium", "conservation", "plant",
     ]);

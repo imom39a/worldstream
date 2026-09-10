@@ -20,6 +20,7 @@ export type ArchivePhase = "briefing" | "active" | "complete";
 export type ArchiveCandidateId = "ledger-amber" | "ledger-cobalt" | "ledger-violet";
 export type ArchiveOutcomeKind =
   | "success"
+  | "partial_extraction"
   | "wrong_ledger"
   | "no_ledger"
   | "exhausted_inside";
@@ -30,7 +31,15 @@ export type AgreementConditionId =
   | "equipment_energized";
 export type MiraPresence = "absent" | "active" | "suspended";
 export type MiraMode = "unavailable" | "following" | "holding" | "tasked" | "regrouping";
-export type MiraTaskKind = "none" | "investigate_records" | "investigate_conservation";
+export type ArchiveRole = "lead" | "mira" | "jonah";
+export type CompanionRole = Exclude<ArchiveRole, "lead">;
+export type SpecialistTaskKind =
+  | "none"
+  | "investigate_records"
+  | "investigate_conservation"
+  | "open_service_hatch"
+  | "field_assay";
+export type MiraTaskKind = SpecialistTaskKind;
 export type MiraTaskStatus = "none" | "assigned" | "complete" | "cancelled";
 export type MiraPlanningStatus = "not_requested" | "waiting" | "ready" | "expired" | "complete";
 export type MiraPreparationStatus = "none" | "prepared" | "deferred";
@@ -42,9 +51,12 @@ export type MiraContributionKind =
   | "share_source"
   | "use_verifier"
   | "follow_move"
-  | "regroup_move";
+  | "regroup_move"
+  | "open_service_hatch"
+  | "collect_assay_sample"
+  | "complete_field_assay";
 
-export interface MiraCrewState {
+export interface SpecialistCrewState {
   readonly presence: MiraPresence;
   readonly location: ArchiveLocation | "none";
   readonly mode: MiraMode;
@@ -52,8 +64,8 @@ export interface MiraCrewState {
     readonly status: MiraTaskStatus;
     readonly revision: number;
     readonly kind: MiraTaskKind;
-    readonly powerAllowance: 0 | 1;
-    readonly powerSpent: 0 | 1;
+    readonly powerAllowance: 0 | 1 | 2;
+    readonly powerSpent: 0 | 1 | 2;
   };
   readonly planning: {
     readonly status: MiraPlanningStatus;
@@ -66,13 +78,7 @@ export interface MiraCrewState {
   readonly preparation: {
     readonly status: MiraPreparationStatus;
     readonly forTurn: number;
-    readonly summary:
-      | "none"
-      | "Mira will move one open passage."
-      | "Mira will inspect the assigned source."
-      | "Mira will share one inspected source."
-      | "Mira will run the catalog verifier."
-      | "Mira will not contribute this turn.";
+    readonly summary: string;
   };
   readonly knowledge: {
     readonly records: MiraKnowledgeStatus;
@@ -82,11 +88,56 @@ export interface MiraCrewState {
       readonly confidence: "verified";
     };
   };
+  readonly fieldAssay: {
+    readonly stepsCompleted: 0 | 1 | 2;
+    readonly result: null | {
+      readonly candidateId: ArchiveCandidateId;
+      readonly confidence: "verified";
+    };
+  };
   readonly lastContribution: {
     readonly turn: number;
     readonly kind: MiraContributionKind;
     readonly summary: string;
   };
+}
+
+export type MiraCrewState = SpecialistCrewState;
+
+export interface ArchiveTurnResolution {
+  readonly status: "clear" | "conflict";
+  readonly powerReserved: number;
+  readonly preparedRoles: readonly CompanionRole[];
+  readonly deferredRoles: readonly CompanionRole[];
+  readonly unpreparedRoles: readonly CompanionRole[];
+  readonly reservations: readonly {
+    readonly role: ArchiveRole;
+    readonly power: 0 | 1 | 2;
+    readonly interaction: "none" | "service_hatch" | "catalog_verifier";
+  }[];
+  readonly conflicts: readonly {
+    readonly code: "shared_power" | "service_hatch" | "catalog_verifier" | "ineligible_contribution";
+    readonly roles: readonly ArchiveRole[];
+  }[];
+}
+
+export interface ArchiveExtractionPreview {
+  readonly status: "none" | "prepared" | "acknowledged";
+  readonly revision: number;
+  readonly forTurn: number;
+  readonly extractedRoles: readonly ArchiveRole[];
+  readonly leftBehindRoles: readonly CompanionRole[];
+}
+
+export interface ArchiveCrewDebrief {
+  readonly startingRoles: readonly ArchiveRole[];
+  readonly extractedRoles: readonly ArchiveRole[];
+  readonly leftBehindRoles: readonly ArchiveRole[];
+  readonly completedWork: readonly {
+    readonly role: CompanionRole;
+    readonly kind: MiraContributionKind;
+    readonly turn: number;
+  }[];
 }
 
 export interface PreservationAgreementCondition {
@@ -213,6 +264,10 @@ export interface MidnightArchiveProjection {
   readonly preservationAgreement: PreservationAgreement;
   readonly optionalObjectives: ArchiveOptionalObjectives;
   readonly mira: MiraCrewState;
+  readonly jonah: SpecialistCrewState;
+  readonly turnResolution: ArchiveTurnResolution;
+  readonly extraction: ArchiveExtractionPreview;
+  readonly crewDebrief: ArchiveCrewDebrief;
   readonly debrief: null | {
     readonly evidenceStatus: "none" | "partial" | "complete";
     readonly message: string;
@@ -248,7 +303,7 @@ export type MidnightArchiveActionIntent =
   | {
       readonly action: "assign_mira_task";
       readonly task_kind: Exclude<MiraTaskKind, "none">;
-      readonly power_allowance: 0 | 1;
+      readonly power_allowance: 0 | 1 | 2;
     }
   | { readonly action: "cancel_mira_task" }
   | { readonly action: "set_mira_follow" }
@@ -256,7 +311,25 @@ export type MidnightArchiveActionIntent =
   | { readonly action: "set_mira_regroup" }
   | { readonly action: "request_mira_plan" }
   | { readonly action: "prepare_mira_contribution" }
-  | { readonly action: "defer_mira_contribution" };
+  | { readonly action: "defer_mira_contribution" }
+  | {
+      readonly action: "assign_jonah_task";
+      readonly task_kind: Exclude<SpecialistTaskKind, "none" | "field_assay">;
+      readonly power_allowance: 0 | 1;
+    }
+  | { readonly action: "cancel_jonah_task" }
+  | { readonly action: "set_jonah_follow" }
+  | { readonly action: "set_jonah_hold" }
+  | { readonly action: "set_jonah_regroup" }
+  | { readonly action: "request_jonah_plan" }
+  | { readonly action: "prepare_jonah_contribution" }
+  | { readonly action: "defer_jonah_contribution" }
+  | { readonly action: "prepare_extraction" }
+  | {
+      readonly action: "acknowledge_extraction";
+      readonly preview_revision: number;
+      readonly left_behind_roles: readonly CompanionRole[];
+    };
 
 export interface ArchiveActionCost {
   readonly turns: 0 | 1;
@@ -274,12 +347,15 @@ const MAX_LABEL_BYTES = 64;
 const MAX_DESCRIPTION_BYTES = 256;
 const ROOT_KEYS = [
   "candidates",
+  "crew_debrief",
   "debrief",
   "carried_candidate",
+  "extraction",
   "gates",
   "location",
   "map",
   "mira",
+  "jonah",
   "objective",
   "outcome",
   "optional_objectives",
@@ -288,6 +364,7 @@ const ROOT_KEYS = [
   "preservation_agreement",
   "staged_action",
   "turns_remaining",
+  "turn_resolution",
   "turns_used",
   "verifier_result",
 ] as const;
@@ -361,7 +438,11 @@ export function readMidnightArchiveProjection(
   const gates = readGates(source.gates);
   const map = readMap(source.map);
   const candidates = readCandidates(source.candidates);
-  const mira = readMira(source.mira);
+  const mira = readSpecialist(source.mira, "mira");
+  const jonah = readSpecialist(source.jonah, "jonah");
+  const turnResolution = readTurnResolution(source.turn_resolution);
+  const extraction = readExtraction(source.extraction);
+  const crewDebrief = readCrewDebrief(source.crew_debrief);
   const preservationAgreement = readPreservationAgreement(source.preservation_agreement);
   const optionalObjectives = readOptionalObjectives(source.optional_objectives);
   const debrief = readDebrief(source.debrief);
@@ -375,7 +456,8 @@ export function readMidnightArchiveProjection(
   if (
     phase === null || objective === null || location === null
     || turnsUsed === null || turnsRemaining === null || power === null
-    || gates === null || map === null || candidates === null || mira === null
+    || gates === null || map === null || candidates === null || mira === null || jonah === null
+    || turnResolution === null || extraction === null || crewDebrief === null
     || preservationAgreement === null || optionalObjectives === null
     || debrief === undefined
     || stagedAction === undefined || carriedCandidate === undefined
@@ -393,7 +475,9 @@ export function readMidnightArchiveProjection(
     || (stagedAction?.actionType === "stage_recover_candidate"
       && !candidateIds.has(stagedAction.candidateId))
     || !agreementStateIsConsistent(preservationAgreement, optionalObjectives, gates)
-    || !miraStateFitsProjection(mira, turnsUsed, power, candidates, verifierResult)
+    || !specialistStateFitsProjection(mira, "mira", turnsUsed, power, candidates, verifierResult)
+    || !specialistStateFitsProjection(jonah, "jonah", turnsUsed, power, candidates, verifierResult)
+    || !crewStateIsConsistent(mira, jonah, turnResolution, extraction, crewDebrief, phase, turnsUsed, power, stagedAction)
     || !stagedActionFitsProjection(
       stagedAction,
       location,
@@ -419,6 +503,9 @@ export function readMidnightArchiveProjection(
         (optionalObjectives.sourceRecordProtected.status === "complete")
     ))
     || (outcome?.kind === "exhausted_inside" && turnsRemaining !== 0)
+    || (phase === "complete" && outcome !== null && !terminalOutcomeIsConsistent(
+      outcome.kind, carriedCandidate, extraction, crewDebrief,
+    ))
   ) return null;
 
   return {
@@ -432,6 +519,10 @@ export function readMidnightArchiveProjection(
     map,
     candidates,
     mira,
+    jonah,
+    turnResolution,
+    extraction,
+    crewDebrief,
     preservationAgreement,
     optionalObjectives,
     debrief,
@@ -456,6 +547,16 @@ export function actionCost(action: MidnightArchiveActionType): ArchiveActionCost
     case "request_mira_plan":
     case "prepare_mira_contribution":
     case "defer_mira_contribution":
+    case "assign_jonah_task":
+    case "cancel_jonah_task":
+    case "set_jonah_follow":
+    case "set_jonah_hold":
+    case "set_jonah_regroup":
+    case "request_jonah_plan":
+    case "prepare_jonah_contribution":
+    case "defer_jonah_contribution":
+    case "prepare_extraction":
+    case "acknowledge_extraction":
     case "commit_turn": return { turns: 0, power: 0 };
     default: return { turns: 1, power: 0 };
   }
@@ -468,9 +569,20 @@ export function actionPayload(intent: MidnightArchiveActionIntent): JsonValue {
     case "stage_recover_candidate":
       return { candidate_id: intent.candidate_id };
     case "assign_mira_task":
+    case "assign_jonah_task":
       return {
         task_kind: intent.task_kind,
         power_allowance: intent.power_allowance,
+      };
+    case "acknowledge_extraction":
+      if (!Number.isSafeInteger(intent.preview_revision) || intent.preview_revision < 1
+        || !isCanonicalRoleOrder(intent.left_behind_roles, COMPANION_ORDER)
+        || new Set(intent.left_behind_roles).size !== intent.left_behind_roles.length) {
+        throw new Error("Extraction acknowledgement must use the canonical role order and current positive preview revision.");
+      }
+      return {
+        preview_revision: intent.preview_revision,
+        left_behind_roles: [...intent.left_behind_roles],
       };
     default:
       return {};
@@ -647,28 +759,48 @@ function readCandidates(value: unknown): readonly ArchiveCandidate[] | null {
   return result;
 }
 
-const MIRA_PREPARATION_SUMMARIES = new Set([
-  "none",
-  "Mira will move one open passage.",
-  "Mira will inspect the assigned source.",
-  "Mira will share one inspected source.",
-  "Mira will run the catalog verifier.",
-  "Mira will not contribute this turn.",
-]);
-const MIRA_CONTRIBUTION_SUMMARIES: Readonly<Record<MiraContributionKind, string>> = {
-  none: "No Mira contribution has completed.",
-  move: "Mira moved one open passage.",
-  inspect_source: "Mira inspected the assigned source privately.",
-  share_source: "Mira shared one inspected source with the crew.",
-  use_verifier: "Mira ran the catalog verifier and disclosed its result.",
-  follow_move: "Mira followed the lead through one open passage.",
-  regroup_move: "Mira moved one open passage toward the Atrium.",
-};
 const UTC_MILLISECOND_DEADLINE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 
-function readMira(value: unknown): MiraCrewState | null {
+function specialistName(role: CompanionRole): "Mira" | "Jonah" {
+  return role === "mira" ? "Mira" : "Jonah";
+}
+
+function preparationSummaries(role: CompanionRole): ReadonlySet<string> {
+  const name = specialistName(role);
+  return new Set([
+    "none",
+    `${name} will move one open passage.`,
+    `${name} will inspect the assigned source.`,
+    `${name} will share one inspected source.`,
+    `${name} will run the catalog verifier.`,
+    `${name} will open the Plant service hatch.`,
+    `${name} will not contribute this turn.`,
+    ...(role === "mira" ? [
+      "Mira will collect a Vault assay sample.",
+      "Mira will complete and disclose the Vault assay.",
+    ] : []),
+  ]);
+}
+
+function contributionSummary(role: CompanionRole, kind: MiraContributionKind): string {
+  const name = specialistName(role);
+  switch (kind) {
+    case "none": return `No ${name} contribution has completed.`;
+    case "move": return `${name} moved one open passage.`;
+    case "inspect_source": return `${name} inspected the assigned source privately.`;
+    case "share_source": return `${name} shared one inspected source with the crew.`;
+    case "use_verifier": return `${name} ran the catalog verifier and disclosed its result.`;
+    case "follow_move": return `${name} followed the lead through one open passage.`;
+    case "regroup_move": return `${name} moved one open passage toward the Atrium.`;
+    case "open_service_hatch": return `${name} opened the Plant service hatch.`;
+    case "collect_assay_sample": return "Mira collected a Vault assay sample; no result is available yet.";
+    case "complete_field_assay": return "Mira completed the Vault assay and disclosed the verified result.";
+  }
+}
+
+function readSpecialist(value: unknown, role: CompanionRole): SpecialistCrewState | null {
   const source = exactRecord(value, [
-    "knowledge", "last_contribution", "location", "mode", "planning", "preparation", "presence", "task",
+    "field_assay", "knowledge", "last_contribution", "location", "mode", "planning", "preparation", "presence", "task",
   ]);
   if (source === null) return null;
   const presence = source.presence;
@@ -680,18 +812,22 @@ function readMira(value: unknown): MiraCrewState | null {
   ]);
   const preparation = exactRecord(source.preparation, ["for_turn", "status", "summary"]);
   const knowledge = exactRecord(source.knowledge, ["conservation", "records", "verifier_result"]);
+  const fieldAssay = exactRecord(source.field_assay, ["result", "steps_completed"]);
   const lastContribution = exactRecord(source.last_contribution, ["kind", "summary", "turn"]);
   if (
     (presence !== "absent" && presence !== "active" && presence !== "suspended")
     || location === null
     || (mode !== "unavailable" && mode !== "following" && mode !== "holding"
       && mode !== "tasked" && mode !== "regrouping")
-    || task === null || planning === null || preparation === null || knowledge === null
+    || task === null || planning === null || preparation === null || knowledge === null || fieldAssay === null
     || lastContribution === null
-    || !isMiraTaskStatus(task.status) || !isMiraTaskKind(task.kind)
+    || !isMiraTaskStatus(task.status) || !isSpecialistTaskKind(task.kind)
+    || (role === "jonah" && task.kind === "field_assay")
     || integerInRange(task.revision, 0, 65_535) === null
-    || (task.power_allowance !== 0 && task.power_allowance !== 1)
-    || (task.power_spent !== 0 && task.power_spent !== 1)
+    || integerInRange(task.power_allowance, 0, 2) === null
+    || integerInRange(task.power_spent, 0, 2) === null
+    || (role === "jonah" && (task.power_allowance === 2 || task.power_spent === 2))
+    || ((task.power_allowance === 2 || task.power_spent === 2) && task.kind !== "open_service_hatch")
     || !isMiraPlanningStatus(planning.status)
     || integerInRange(planning.opportunity_revision, 0, 65_535) === null
     || integerInRange(planning.plan_revision, 0, 65_535) === null
@@ -700,14 +836,16 @@ function readMira(value: unknown): MiraCrewState | null {
     || typeof planning.deadline !== "string" || byteLength(planning.deadline) > 64
     || !isMiraPreparationStatus(preparation.status)
     || integerInRange(preparation.for_turn, 0, 16) === null
-    || typeof preparation.summary !== "string" || !MIRA_PREPARATION_SUMMARIES.has(preparation.summary)
+    || typeof preparation.summary !== "string" || !preparationSummaries(role).has(preparation.summary)
     || !isMiraKnowledgeStatus(knowledge.records) || !isMiraKnowledgeStatus(knowledge.conservation)
     || !isMiraContributionKind(lastContribution.kind)
     || integerInRange(lastContribution.turn, 0, 16) === null
-    || lastContribution.summary !== MIRA_CONTRIBUTION_SUMMARIES[lastContribution.kind]
+    || lastContribution.summary !== contributionSummary(role, lastContribution.kind)
+    || integerInRange(fieldAssay.steps_completed, 0, 2) === null
   ) return null;
   const verifierResult = readVerifierResult(knowledge.verifier_result);
-  if (verifierResult === undefined) return null;
+  const assayResult = readVerifierResult(fieldAssay.result);
+  if (verifierResult === undefined || assayResult === undefined) return null;
   return {
     presence,
     location,
@@ -716,8 +854,8 @@ function readMira(value: unknown): MiraCrewState | null {
       status: task.status,
       revision: task.revision as number,
       kind: task.kind,
-      powerAllowance: task.power_allowance,
-      powerSpent: task.power_spent,
+      powerAllowance: task.power_allowance as 0 | 1 | 2,
+      powerSpent: task.power_spent as 0 | 1 | 2,
     },
     planning: {
       status: planning.status,
@@ -737,6 +875,10 @@ function readMira(value: unknown): MiraCrewState | null {
       conservation: knowledge.conservation,
       verifierResult,
     },
+    fieldAssay: {
+      stepsCompleted: fieldAssay.steps_completed as 0 | 1 | 2,
+      result: assayResult,
+    },
     lastContribution: {
       turn: lastContribution.turn as number,
       kind: lastContribution.kind,
@@ -745,8 +887,9 @@ function readMira(value: unknown): MiraCrewState | null {
   };
 }
 
-function miraStateFitsProjection(
-  mira: MiraCrewState,
+function specialistStateFitsProjection(
+  mira: SpecialistCrewState,
+  role: CompanionRole,
   turnsUsed: number,
   power: number,
   candidates: readonly ArchiveCandidate[],
@@ -777,8 +920,8 @@ function miraStateFitsProjection(
     ? preparation.forTurn === 0 && preparation.summary === "none"
     : preparation.forTurn === turnsUsed + 1 && (
       preparation.status === "deferred"
-        ? preparation.summary === "Mira will not contribute this turn."
-        : preparation.summary !== "none" && preparation.summary !== "Mira will not contribute this turn."
+        ? preparation.summary === `${specialistName(role)} will not contribute this turn.`
+        : preparation.summary !== "none" && preparation.summary !== `${specialistName(role)} will not contribute this turn.`
           && planning.status === "ready"
     );
   const sourceIsShared = (source: "records" | "conservation") => candidates.every((candidate) => (
@@ -792,6 +935,7 @@ function miraStateFitsProjection(
     && preparation.status === "none"
     && knowledge.records === "unknown" && knowledge.conservation === "unknown"
     && knowledge.verifierResult === null
+    && mira.fieldAssay.stepsCompleted === 0 && mira.fieldAssay.result === null
     && lastContribution.turn === 0 && lastContribution.kind === "none"
   );
   return absenceIsCanonical
@@ -817,7 +961,235 @@ function miraStateFitsProjection(
     && (knowledge.verifierResult === null || (
       mira.presence !== "absent"
       && verifierResult?.candidateId === knowledge.verifierResult.candidateId
-    ));
+    ))
+    && (role !== "jonah" || (mira.fieldAssay.stepsCompleted === 0 && mira.fieldAssay.result === null))
+    && (mira.fieldAssay.result === null
+      ? mira.fieldAssay.stepsCompleted < 2
+      : mira.fieldAssay.stepsCompleted === 2 && candidates.some((candidate) => (
+        candidate.candidateId === mira.fieldAssay.result?.candidateId
+        && candidate.evidenceAssessment === "recommended"
+      )));
+}
+
+const ROLE_ORDER: readonly ArchiveRole[] = ["lead", "mira", "jonah"];
+const COMPANION_ORDER: readonly CompanionRole[] = ["mira", "jonah"];
+
+function readTurnResolution(value: unknown): ArchiveTurnResolution | null {
+  const source = exactRecord(value, [
+    "conflicts", "deferred_roles", "power_reserved", "prepared_roles", "reservations", "status", "unprepared_roles",
+  ]);
+  if (source === null || (source.status !== "clear" && source.status !== "conflict")
+    || integerInRange(source.power_reserved, 0, 5) === null
+    || !Array.isArray(source.reservations) || source.reservations.length > 3
+    || !Array.isArray(source.conflicts) || source.conflicts.length > 5) return null;
+  const preparedRoles = readOrderedRoles(source.prepared_roles, COMPANION_ORDER);
+  const deferredRoles = readOrderedRoles(source.deferred_roles, COMPANION_ORDER);
+  const unpreparedRoles = readOrderedRoles(source.unprepared_roles, COMPANION_ORDER);
+  if (preparedRoles === null || deferredRoles === null || unpreparedRoles === null) return null;
+  const reservations: ArchiveTurnResolution["reservations"][number][] = [];
+  const reservationRoles = new Set<ArchiveRole>();
+  for (const value of source.reservations) {
+    const item = exactRecord(value, ["interaction", "power", "role"]);
+    if (item === null || !isArchiveRole(item.role) || reservationRoles.has(item.role)
+      || integerInRange(item.power, 0, 2) === null
+      || (item.interaction !== "none" && item.interaction !== "service_hatch" && item.interaction !== "catalog_verifier")) return null;
+    reservationRoles.add(item.role);
+    reservations.push({ role: item.role, power: item.power as 0 | 1 | 2, interaction: item.interaction });
+  }
+  if (!isCanonicalRoleOrder(reservations.map((item) => item.role), ROLE_ORDER)) return null;
+  const conflicts: ArchiveTurnResolution["conflicts"][number][] = [];
+  const seenConflicts = new Set<string>();
+  for (const value of source.conflicts) {
+    const item = exactRecord(value, ["code", "roles"]);
+    const roles = item === null ? null : readOrderedRoles(item.roles, ROLE_ORDER);
+    const conflictKey = item === null || roles === null ? "invalid" : `${String(item.code)}:${roles.join(",")}`;
+    if (item === null || roles === null || roles.length === 0 || seenConflicts.has(conflictKey)
+      || (item.code !== "shared_power" && item.code !== "service_hatch"
+        && item.code !== "catalog_verifier" && item.code !== "ineligible_contribution")) return null;
+    seenConflicts.add(conflictKey);
+    conflicts.push({ code: item.code, roles });
+  }
+  if ((source.status === "clear") !== (conflicts.length === 0)) return null;
+  return {
+    status: source.status,
+    powerReserved: source.power_reserved as number,
+    preparedRoles,
+    deferredRoles,
+    unpreparedRoles,
+    reservations,
+    conflicts,
+  };
+}
+
+function readExtraction(value: unknown): ArchiveExtractionPreview | null {
+  const source = exactRecord(value, ["extracted_roles", "for_turn", "left_behind_roles", "revision", "status"]);
+  if (source === null || (source.status !== "none" && source.status !== "prepared" && source.status !== "acknowledged")
+    || integerInRange(source.revision, 0, 65_535) === null || integerInRange(source.for_turn, 0, 16) === null) return null;
+  const extractedRoles = readOrderedRoles(source.extracted_roles, ROLE_ORDER);
+  const leftBehindRoles = readOrderedRoles(source.left_behind_roles, COMPANION_ORDER);
+  return extractedRoles === null || leftBehindRoles === null ? null : {
+    status: source.status,
+    revision: source.revision as number,
+    forTurn: source.for_turn as number,
+    extractedRoles,
+    leftBehindRoles,
+  };
+}
+
+function readCrewDebrief(value: unknown): ArchiveCrewDebrief | null {
+  const source = exactRecord(value, ["completed_work", "extracted_roles", "left_behind_roles", "starting_roles"]);
+  if (source === null || !Array.isArray(source.completed_work) || source.completed_work.length > 32) return null;
+  const startingRoles = readOrderedRoles(source.starting_roles, ROLE_ORDER);
+  const extractedRoles = readOrderedRoles(source.extracted_roles, ROLE_ORDER);
+  const leftBehindRoles = readOrderedRoles(source.left_behind_roles, ROLE_ORDER);
+  if (startingRoles === null || extractedRoles === null || leftBehindRoles === null || startingRoles[0] !== "lead") return null;
+  const completedWork: ArchiveCrewDebrief["completedWork"][number][] = [];
+  const seen = new Set<string>();
+  for (const value of source.completed_work) {
+    const item = exactRecord(value, ["kind", "role", "turn"]);
+    if (item === null || !isCompanionRole(item.role) || !isMiraContributionKind(item.kind)
+      || item.kind === "none" || integerInRange(item.turn, 1, 16) === null
+      || (item.role === "jonah" && (item.kind === "collect_assay_sample" || item.kind === "complete_field_assay"))) return null;
+    const key = `${item.role}:${item.turn}`;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    completedWork.push({ role: item.role, kind: item.kind, turn: item.turn as number });
+  }
+  if (completedWork.some((item, index) => index > 0 && (
+    completedWork[index - 1]!.turn > item.turn
+    || (completedWork[index - 1]!.turn === item.turn
+      && COMPANION_ORDER.indexOf(completedWork[index - 1]!.role) >= COMPANION_ORDER.indexOf(item.role))
+  ))) return null;
+  return { startingRoles, extractedRoles, leftBehindRoles, completedWork };
+}
+
+function crewStateIsConsistent(
+  mira: SpecialistCrewState,
+  jonah: SpecialistCrewState,
+  turn: ArchiveTurnResolution,
+  extraction: ArchiveExtractionPreview,
+  debrief: ArchiveCrewDebrief,
+  phase: ArchivePhase,
+  turnsUsed: number,
+  power: number,
+  staged: ArchiveStagedAction | null,
+): boolean {
+  const companions = { mira, jonah } as const;
+  const starting = new Set(debrief.startingRoles);
+  if (COMPANION_ORDER.some((role) => (companions[role].presence === "absent") === starting.has(role))) return false;
+  if (debrief.completedWork.some((item) => !starting.has(item.role) || item.turn > turnsUsed)) return false;
+
+  const expectedPrepared = phase === "complete" ? [] : COMPANION_ORDER.filter((role) => companions[role].presence === "active"
+    && companions[role].mode === "tasked" && companions[role].preparation.status === "prepared");
+  const expectedDeferred = phase === "complete" ? [] : COMPANION_ORDER.filter((role) => companions[role].presence === "active"
+    && companions[role].mode === "tasked" && companions[role].preparation.status === "deferred");
+  const expectedUnprepared = phase === "complete" ? [] : COMPANION_ORDER.filter((role) => companions[role].presence === "active"
+    && companions[role].mode === "tasked" && companions[role].preparation.status === "none");
+  if (!sameArray(turn.preparedRoles, expectedPrepared) || !sameArray(turn.deferredRoles, expectedDeferred)
+    || !sameArray(turn.unpreparedRoles, expectedUnprepared)) return false;
+
+  const ineligible = new Set(turn.conflicts.filter((item) => item.code === "ineligible_contribution").flatMap((item) => item.roles));
+  if (turn.conflicts.some((item) => item.code === "ineligible_contribution"
+    && (item.roles.length !== 1 || !isCompanionRole(item.roles[0]) || !expectedPrepared.includes(item.roles[0])))) return false;
+  for (const code of ["shared_power", "service_hatch", "catalog_verifier"] as const) {
+    if (turn.conflicts.filter((item) => item.code === code).length > 1) return false;
+  }
+  const expectedReservations: ArchiveTurnResolution["reservations"][number][] = [];
+  if (staged !== null) expectedReservations.push({
+    role: "lead",
+    power: staged.powerCost,
+    interaction: interactionForAction(staged.actionType),
+  });
+  for (const role of expectedPrepared) {
+    if (ineligible.has(role)) continue;
+    const reservation = turn.reservations.find((item) => item.role === role);
+    if (reservation === undefined || !reservationFitsTask(reservation, companions[role], role)) return false;
+    expectedReservations.push(reservation);
+  }
+  if (JSON.stringify(turn.reservations) !== JSON.stringify(expectedReservations)
+    || turn.powerReserved !== turn.reservations.reduce((sum, item) => sum + item.power, 0)) return false;
+  const conflictsBy = (code: ArchiveTurnResolution["conflicts"][number]["code"]) => turn.conflicts.filter((item) => item.code === code);
+  const poweredRoles = turn.reservations.filter((item) => item.power > 0).map((item) => item.role);
+  if ((turn.powerReserved > power) !== (conflictsBy("shared_power").length === 1)
+    || (turn.powerReserved > power && !sameArray(conflictsBy("shared_power")[0]!.roles, poweredRoles))) return false;
+  for (const interaction of ["service_hatch", "catalog_verifier"] as const) {
+    const roles = turn.reservations.filter((item) => item.interaction === interaction).map((item) => item.role);
+    const conflict = conflictsBy(interaction);
+    if ((roles.length > 1) !== (conflict.length === 1) || (roles.length > 1 && !sameArray(conflict[0]!.roles, roles))) return false;
+  }
+
+  const extracted = extraction.extractedRoles;
+  const left = extraction.leftBehindRoles;
+  if (extraction.status === "none") {
+    if (extraction.forTurn !== 0 || extracted.length !== 0 || left.length !== 0) return false;
+  } else {
+    if (extraction.revision < 1 || turn.status !== "clear") return false;
+    if (extraction.forTurn !== (phase === "complete" ? turnsUsed : turnsUsed + 1)) return false;
+    if (!sameArray([...extracted, ...left].sort(roleComparator), [...debrief.startingRoles].sort(roleComparator))
+      || !extracted.includes("lead") || (phase === "active" && (staged?.actionType !== "stage_extract"))) return false;
+  }
+  if (phase === "complete") {
+    if (!sameArray(debrief.extractedRoles, extracted)
+      || !sameArray([...debrief.extractedRoles, ...debrief.leftBehindRoles].sort(roleComparator), debrief.startingRoles)) return false;
+  } else if (debrief.extractedRoles.length !== 0 || debrief.leftBehindRoles.length !== 0) return false;
+  return true;
+}
+
+function terminalOutcomeIsConsistent(
+  kind: ArchiveOutcomeKind,
+  carried: ArchiveCandidateId | null,
+  extraction: ArchiveExtractionPreview,
+  debrief: ArchiveCrewDebrief,
+): boolean {
+  if (kind === "exhausted_inside") {
+    return extraction.status === "none" && debrief.extractedRoles.length === 0
+      && sameArray(debrief.leftBehindRoles, debrief.startingRoles);
+  }
+  if (extraction.status !== "acknowledged") return false;
+  if (kind === "no_ledger") return carried === null;
+  if (carried === null) return false;
+  if (kind === "success") return debrief.leftBehindRoles.length === 0;
+  if (kind === "partial_extraction") return debrief.leftBehindRoles.length > 0;
+  return kind === "wrong_ledger";
+}
+
+function reservationFitsTask(
+  reservation: ArchiveTurnResolution["reservations"][number],
+  specialist: SpecialistCrewState,
+  role: CompanionRole,
+): boolean {
+  const remainingAllowance = specialist.task.powerAllowance - specialist.task.powerSpent;
+  if (reservation.interaction === "service_hatch") {
+    const cost = role === "mira" ? 2 : 1;
+    return specialist.task.kind === "open_service_hatch" && reservation.power === cost && cost <= remainingAllowance;
+  }
+  if (reservation.interaction === "catalog_verifier") {
+    return specialist.task.kind === "investigate_records" && reservation.power === 1 && remainingAllowance >= 1;
+  }
+  return reservation.power === 0;
+}
+
+function interactionForAction(action: ArchiveStagedAction["actionType"]): ArchiveTurnResolution["reservations"][number]["interaction"] {
+  return action === "stage_open_service_hatch" ? "service_hatch"
+    : action === "stage_use_verifier" ? "catalog_verifier" : "none";
+}
+
+function readOrderedRoles<T extends ArchiveRole>(value: unknown, order: readonly T[]): T[] | null {
+  if (!Array.isArray(value) || value.some((item) => !order.includes(item as T))) return null;
+  const result = value as T[];
+  return new Set(result).size === result.length && isCanonicalRoleOrder(result, order) ? result : null;
+}
+
+function isCanonicalRoleOrder<T extends ArchiveRole>(roles: readonly T[], order: readonly T[]): boolean {
+  return roles.every((role, index) => index === 0 || order.indexOf(roles[index - 1]!) < order.indexOf(role));
+}
+
+function roleComparator(left: ArchiveRole, right: ArchiveRole): number {
+  return ROLE_ORDER.indexOf(left) - ROLE_ORDER.indexOf(right);
+}
+
+function sameArray(left: readonly unknown[], right: readonly unknown[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
 function readPreservationAgreement(value: unknown): PreservationAgreement | null {
@@ -1099,7 +1471,7 @@ function readGateState(value: unknown): GateState | null {
 }
 
 function isOutcomeKind(value: unknown): value is ArchiveOutcomeKind {
-  return value === "success" || value === "wrong_ledger"
+  return value === "success" || value === "partial_extraction" || value === "wrong_ledger"
     || value === "no_ledger" || value === "exhausted_inside";
 }
 
@@ -1111,8 +1483,17 @@ function isMiraTaskStatus(value: unknown): value is MiraTaskStatus {
   return value === "none" || value === "assigned" || value === "complete" || value === "cancelled";
 }
 
-function isMiraTaskKind(value: unknown): value is MiraTaskKind {
-  return value === "none" || value === "investigate_records" || value === "investigate_conservation";
+function isArchiveRole(value: unknown): value is ArchiveRole {
+  return value === "lead" || value === "mira" || value === "jonah";
+}
+
+function isCompanionRole(value: unknown): value is CompanionRole {
+  return value === "mira" || value === "jonah";
+}
+
+function isSpecialistTaskKind(value: unknown): value is SpecialistTaskKind {
+  return value === "none" || value === "investigate_records" || value === "investigate_conservation"
+    || value === "open_service_hatch" || value === "field_assay";
 }
 
 function isMiraPlanningStatus(value: unknown): value is MiraPlanningStatus {
@@ -1129,7 +1510,10 @@ function isMiraKnowledgeStatus(value: unknown): value is MiraKnowledgeStatus {
 }
 
 function isMiraContributionKind(value: unknown): value is MiraContributionKind {
-  return Object.hasOwn(MIRA_CONTRIBUTION_SUMMARIES, String(value));
+  return value === "none" || value === "move" || value === "inspect_source"
+    || value === "share_source" || value === "use_verifier" || value === "follow_move"
+    || value === "regroup_move" || value === "open_service_hatch"
+    || value === "collect_assay_sample" || value === "complete_field_assay";
 }
 
 function candidateId(value: unknown): ArchiveCandidateId | undefined {

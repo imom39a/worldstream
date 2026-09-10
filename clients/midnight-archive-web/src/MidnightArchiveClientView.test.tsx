@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MidnightArchiveClientView } from "./MidnightArchiveClientView";
-import { projection, rawMira, rawProjection, readyState } from "./testFixtures";
+import { projection, rawJonah, rawMira, rawProjection, readyState } from "./testFixtures";
 
 afterEach(() => {
   document.body.innerHTML = "";
@@ -487,6 +487,149 @@ describe("Midnight Archive mission surface", () => {
     expect(markup).not.toContain("data-testid=\"mira-crew-card\"");
     expect(markup).toContain("Commit Turn");
     expect(markup).toContain("Stage action");
+  });
+
+  it("renders authored specialists in fixed order and hides the crew panel for solo play", () => {
+    const solo = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState()} connection="live" actionsEnabled onAction={vi.fn()} />,
+    );
+    expect(solo).not.toContain("data-testid=\"crew-panel\"");
+
+    const both = projection({
+      mira: rawMira({ presence: "active", location: "records", mode: "following" }),
+      jonah: rawJonah({ presence: "active", location: "plant", mode: "following" }),
+      crew_debrief: {
+        starting_roles: ["lead", "mira", "jonah"], extracted_roles: [], left_behind_roles: [], completed_work: [],
+      },
+    });
+    const markup = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState(both, ["assign_jonah_task", "stage_wait"])} connection="live" actionsEnabled onAction={vi.fn()} />,
+    );
+    expect(markup.indexOf(">Mira<")).toBeLessThan(markup.indexOf(">Jonah<"));
+    expect(markup).toContain("data-testid=\"jonah-crew-card\"");
+    expect(markup).toContain("Open service hatch");
+    expect(markup).toContain("Field assay");
+  });
+
+  it("shows turn conflicts and submits the exact extraction acknowledgement without typed IDs", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const onAction = vi.fn().mockResolvedValue(undefined);
+    const current = projection({
+      location: "atrium",
+      staged_action: { action_type: "stage_extract", turn_cost: 1, power_cost: 0 },
+      mira: rawMira({ presence: "active", location: "atrium", mode: "following" }),
+      jonah: rawJonah({ presence: "active", location: "plant", mode: "holding" }),
+      crew_debrief: {
+        starting_roles: ["lead", "mira", "jonah"], extracted_roles: [], left_behind_roles: [], completed_work: [],
+      },
+      extraction: {
+        status: "prepared", revision: 5, for_turn: 2,
+        extracted_roles: ["lead", "mira"], left_behind_roles: ["jonah"],
+      },
+    });
+    await act(async () => root.render(<MidnightArchiveClientView
+      state={readyState(current, ["acknowledge_extraction"])} connection="live" actionsEnabled onAction={onAction}
+    />));
+    expect(host.textContent).toContain("Jonah will be left behind");
+    expect(host.querySelector("input")).toBeNull();
+    const acknowledge = host.querySelector<HTMLButtonElement>('button[data-action-type="acknowledge_extraction"]');
+    await act(async () => acknowledge?.click());
+    expect(onAction).toHaveBeenCalledWith({
+      action: "acknowledge_extraction", preview_revision: 5, left_behind_roles: ["jonah"],
+    });
+    await act(async () => root.unmount());
+  });
+
+  it("uses the post-resolution preview when a regrouping specialist returns this turn", () => {
+    const current = projection({
+      location: "atrium",
+      staged_action: { action_type: "stage_extract", turn_cost: 1, power_cost: 0 },
+      jonah: rawJonah({ presence: "active", location: "records", mode: "regrouping" }),
+      extraction: {
+        status: "prepared", revision: 3, for_turn: 2,
+        extracted_roles: ["lead", "jonah"], left_behind_roles: [],
+      },
+      crew_debrief: { starting_roles: ["lead", "jonah"], extracted_roles: [], left_behind_roles: [], completed_work: [] },
+    });
+    const markup = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState(current, ["acknowledge_extraction"])} connection="live" actionsEnabled onAction={vi.fn()} />,
+    );
+    expect(markup).toContain("The entire starting crew will extract.");
+    expect(markup).toContain("Lead, Jonah");
+  });
+
+  it("renders Pack-resolved power conflicts and ordered prepared effects", () => {
+    const current = projection({
+      power: 2,
+      staged_action: { action_type: "stage_use_verifier", turn_cost: 1, power_cost: 1 },
+      mira: rawMira({
+        presence: "active", location: "plant", mode: "tasked",
+        task: { status: "assigned", revision: 1, kind: "open_service_hatch", power_allowance: 2, power_spent: 0 },
+        planning: { status: "ready", opportunity_revision: 1, plan_revision: 1, steps_total: 1, steps_completed: 0, deadline: "none" },
+        preparation: { status: "prepared", for_turn: 2, summary: "Mira will open the Plant service hatch." },
+      }),
+      crew_debrief: { starting_roles: ["lead", "mira"], extracted_roles: [], left_behind_roles: [], completed_work: [] },
+    });
+    const markup = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState(current, ["defer_mira_contribution"])} connection="live" actionsEnabled onAction={vi.fn()} />,
+    );
+    expect(markup).toContain("Turn has conflicts");
+    expect(markup).toContain("Shared power is over-reserved");
+    expect(markup.indexOf("Lead · 1 power")).toBeLessThan(markup.indexOf("Mira · 2 power"));
+    expect(markup).toContain("Defer Mira this turn");
+  });
+
+  it("dispatches Jonah's authored task and bounded crew controls", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const onAction = vi.fn().mockResolvedValue(undefined);
+    const current = projection({
+      jonah: rawJonah({ presence: "active", location: "atrium", mode: "following" }),
+      crew_debrief: { starting_roles: ["lead", "jonah"], extracted_roles: [], left_behind_roles: [], completed_work: [] },
+    });
+    await act(async () => root.render(<MidnightArchiveClientView state={readyState(current, [
+      "assign_jonah_task", "set_jonah_hold", "stage_wait",
+    ])} connection="live" actionsEnabled onAction={onAction} />));
+    const assign = host.querySelector<HTMLButtonElement>(
+      'button[data-action-type="assign_jonah_task"][aria-label="Assign Open service hatch with 1 power allowance"]',
+    );
+    await act(async () => assign?.click());
+    expect(onAction).toHaveBeenLastCalledWith({
+      action: "assign_jonah_task", task_kind: "open_service_hatch", power_allowance: 1,
+    });
+    const hold = host.querySelector<HTMLButtonElement>('button[data-action-type="set_jonah_hold"]');
+    await act(async () => hold?.click());
+    expect(onAction).toHaveBeenLastCalledWith({ action: "set_jonah_hold" });
+    await act(async () => root.unmount());
+  });
+
+  it("attributes only completed specialist work in the terminal debrief", () => {
+    const current = projection({
+      phase: "complete", turns_used: 8, turns_remaining: 8,
+      outcome: { kind: "partial_extraction" }, carried_candidate: "ledger-violet",
+      mira: rawMira({ presence: "suspended", location: "atrium", mode: "unavailable" }),
+      jonah: rawJonah({ presence: "suspended", location: "plant", mode: "unavailable" }),
+      extraction: { status: "acknowledged", revision: 4, for_turn: 8, extracted_roles: ["lead", "mira"], left_behind_roles: ["jonah"] },
+      crew_debrief: {
+        starting_roles: ["lead", "mira", "jonah"], extracted_roles: ["lead", "mira"], left_behind_roles: ["jonah"],
+        completed_work: [
+          { role: "jonah", kind: "open_service_hatch", turn: 3 },
+          { role: "mira", kind: "complete_field_assay", turn: 5 },
+        ],
+      },
+    });
+    const markup = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState(current, [])} connection="live" actionsEnabled={false} onAction={vi.fn()} />,
+    );
+    expect(markup).toContain("Crew extracted");
+    expect(markup).toContain("Lead, Mira");
+    expect(markup).toContain("Crew left behind");
+    expect(markup).toContain("Jonah");
+    expect(markup).toContain("Mira · complete field assay · turn 5");
+    expect(markup).toContain("Jonah · open service hatch · turn 3");
   });
 
   it("shows Mira waiting and ready progress without rendering private plan payloads", () => {

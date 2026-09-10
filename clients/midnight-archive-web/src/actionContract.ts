@@ -20,6 +20,16 @@ export const MIDNIGHT_ARCHIVE_ACTION_TYPES = [
   "request_mira_plan",
   "prepare_mira_contribution",
   "defer_mira_contribution",
+  "assign_jonah_task",
+  "cancel_jonah_task",
+  "set_jonah_follow",
+  "set_jonah_hold",
+  "set_jonah_regroup",
+  "request_jonah_plan",
+  "prepare_jonah_contribution",
+  "defer_jonah_contribution",
+  "prepare_extraction",
+  "acknowledge_extraction",
 ] as const;
 
 export type MidnightArchiveActionType = typeof MIDNIGHT_ARCHIVE_ACTION_TYPES[number];

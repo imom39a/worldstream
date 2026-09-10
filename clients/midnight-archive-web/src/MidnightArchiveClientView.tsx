@@ -21,7 +21,9 @@ import {
   SectionHeading,
 } from "./presentation";
 import type { MidnightArchiveReplayState } from "./replay";
-import { MiraCrewCard } from "./MiraCrewCard";
+import { CrewPanel } from "./CrewPanel";
+import { ExtractionPreviewPanel } from "./ExtractionPreviewPanel";
+import { TurnResolutionPanel } from "./TurnResolutionPanel";
 
 export type MidnightArchiveConnection =
   | "connecting"
@@ -183,12 +185,13 @@ function ReadyArchive({
 
         <aside className="archive-turn-column" id="archive-actions" aria-label="Turn controls">
           <CarriedLedgerCard projection={projection} />
-          <MiraCrewCard
+          <CrewPanel
             projection={projection}
             enabled={canAct}
             offerTypes={offerTypes}
             onAction={act}
           />
+          <TurnResolutionPanel projection={projection} />
           <OptionalObjectivesPanel projection={projection} />
           {projection.location === "conservation" ? (
             <ArchivistAgreementCard projection={projection} />
@@ -205,6 +208,12 @@ function ReadyArchive({
           )}
           <ContextActions
             state={state}
+            enabled={canAct}
+            offerTypes={offerTypes}
+            onAction={act}
+          />
+          <ExtractionPreviewPanel
+            projection={projection}
             enabled={canAct}
             offerTypes={offerTypes}
             onAction={act}

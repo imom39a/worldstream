@@ -184,9 +184,18 @@ export function ArchiveOutcomePanel({ projection }: { readonly projection: Midni
                 label="Source record protected"
                 value={projection.debrief.optionalObjectives.sourceRecordProtected ? "Yes" : "No"}
               />
+              <Fact label="Crew extracted" value={crewNames(projection.crewDebrief.extractedRoles)} />
+              <Fact label="Crew left behind" value={projection.crewDebrief.leftBehindRoles.length === 0
+                ? "No one" : crewNames(projection.crewDebrief.leftBehindRoles)} />
             </>
           )}
         </dl>
+        {projection.crewDebrief.completedWork.length === 0 ? null : <div className="crew-debrief-work">
+          <h3>Completed specialist work</h3>
+          <ul>{projection.crewDebrief.completedWork.map((work) => <li key={`${work.turn}:${work.role}`}>
+            {crewNames([work.role])} · {work.kind.replaceAll("_", " ")} · turn {work.turn}
+          </li>)}</ul>
+        </div>}
       </div>
     </section>
   );
@@ -249,6 +258,10 @@ function gateName(gate: ArchiveGate | null): string {
       : "Passage";
 }
 
+function crewNames(roles: readonly ("lead" | "mira" | "jonah")[]): string {
+  return roles.map((role) => role === "lead" ? "Lead" : role === "mira" ? "Mira" : "Jonah").join(", ");
+}
+
 const OUTCOME_COPY: Readonly<Record<ArchiveOutcomeKind, {
   readonly mark: string;
   readonly title: string;
@@ -258,6 +271,11 @@ const OUTCOME_COPY: Readonly<Record<ArchiveOutcomeKind, {
     mark: "✦",
     title: "The authentic ledger is out",
     description: "You escaped through the Atrium with the verified archive record before the doors sealed.",
+  },
+  partial_extraction: {
+    mark: "◇",
+    title: "The ledger is out, but the crew is split",
+    description: "The authentic ledger reached the Atrium, but one or more starting specialists were left inside.",
   },
   wrong_ledger: {
     mark: "≠",
