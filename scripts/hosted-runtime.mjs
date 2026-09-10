@@ -13,6 +13,7 @@ import {
 } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 const DEFAULT_VOLUME_ROOT = "/var/lib/worldstream";
 const DEFAULT_ASSET_ROOT = "/opt/worldstream/hosted";
@@ -75,6 +76,7 @@ export function hostedRuntimeLayout(environment = process.env) {
     managedAgentHostDigest: join(assetRoot, "managed-agent-host.blake3"),
     artifactDigest: join(binaryRoot, "worldstream-hosted-artifact-digest"),
     clientRelease: join(assetRoot, "agent-heist-web.json"),
+    retainedClientReleaseV9: join(assetRoot, "agent-heist-web-v9.json"),
     retainedClientReleaseV8: join(assetRoot, "agent-heist-web-v8.json"),
     retainedClientRelease: join(assetRoot, "agent-heist-web-v7.json"),
     archiveClientRelease: join(assetRoot, "midnight-archive-web.json"),
@@ -267,6 +269,74 @@ export async function retainRunnerExecutable({ source, retainedRoot, digest, sou
   return target;
 }
 
+/**
+ * Preserve an installed immutable Runner Template across appliance upgrades.
+ * A new image may carry different Host bytes, but an existing exact template
+ * identity remains pinned to its independently retained executable.
+ */
+export async function reuseExactInstalledRunnerTemplate({
+  stateDirectory,
+  retainedRoot,
+  expected,
+  digestExecutable,
+}) {
+  const installedPath = join(
+    stateDirectory,
+    "runner-templates/installed",
+    `${expected.template_id}--${expected.revision}.json`,
+  );
+  let metadata;
+  try {
+    metadata = await lstat(installedPath);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return expected;
+    throw error;
+  }
+  if (
+    !metadata.isFile() || metadata.isSymbolicLink() || metadata.size < 2 ||
+    metadata.size > MAX_CAPTURE_BYTES || (metadata.mode & 0o077) !== 0
+  ) {
+    throw new Error("retained_runner_template_invalid");
+  }
+  let installed;
+  try {
+    installed = JSON.parse(await readFile(installedPath, "utf8"));
+  } catch {
+    throw new Error("retained_runner_template_invalid");
+  }
+  if (installed === null || typeof installed !== "object" || Array.isArray(installed)) {
+    throw new Error("retained_runner_template_invalid");
+  }
+  const { executable: installedExecutable, ...installedContract } = installed;
+  const { executable: _currentExecutable, ...expectedContract } = expected;
+  if (
+    !isDeepStrictEqual(installedContract, expectedContract) ||
+    installedExecutable === null || typeof installedExecutable !== "object" ||
+    typeof installedExecutable.path !== "string" ||
+    typeof installedExecutable.blake3 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(installedExecutable.blake3) ||
+    installedExecutable.path !== join(
+      retainedRoot,
+      `blake3-${installedExecutable.blake3}`,
+      "worldstream-managed-agent-host",
+    )
+  ) {
+    throw new Error("retained_runner_template_invalid");
+  }
+  const executableMetadata = await lstat(installedExecutable.path).catch(() => null);
+  if (
+    executableMetadata === null || !executableMetadata.isFile() ||
+    executableMetadata.isSymbolicLink() || executableMetadata.size < 1 ||
+    (executableMetadata.mode & 0o077) !== 0
+  ) {
+    throw new Error("retained_runner_executable_invalid");
+  }
+  if (await digestExecutable(installedExecutable.path) !== installedExecutable.blake3) {
+    throw new Error("retained_runner_executable_digest_mismatch");
+  }
+  return installed;
+}
+
 export function hostedStatusReady(value) {
   return value !== null && typeof value === "object" &&
     value.status === "complete" && value.code === "complete" &&
@@ -370,6 +440,7 @@ async function prepareLayout(layout) {
     layout.managedAgentHostDigest,
     layout.artifactDigest,
     layout.clientRelease,
+    layout.retainedClientReleaseV9,
     layout.retainedClientReleaseV8,
     layout.retainedClientRelease,
     layout.archiveClientRelease,
@@ -428,13 +499,26 @@ async function writeInitializationImports(layout) {
   if ((await run(layout.artifactDigest, [retainedRunner], process.env)).stdout.trim() !== runnerDigest) {
     throw new Error("retained_managed_agent_host_digest_mismatch");
   }
+  const digestExecutable = async (path) => (await run(layout.artifactDigest, [path], process.env)).stdout.trim();
+  const houseRunner = await reuseExactInstalledRunnerTemplate({
+    stateDirectory: layout.controllerState,
+    retainedRoot: layout.retainedRunnerRoot,
+    expected: renderHouseRunnerTemplate(retainedRunner, runnerDigest),
+    digestExecutable,
+  });
+  const archiveHouseRunner = await reuseExactInstalledRunnerTemplate({
+    stateDirectory: layout.controllerState,
+    retainedRoot: layout.retainedRunnerRoot,
+    expected: renderArchiveHouseRunnerTemplate(retainedRunner, runnerDigest),
+    digestExecutable,
+  });
   const runner = await writeJson(
     join(layout.generatedRoot, "openrouter-house-runner.json"),
-    renderHouseRunnerTemplate(retainedRunner, runnerDigest),
+    houseRunner,
   );
   const archiveRunner = await writeJson(
     join(layout.generatedRoot, "openrouter-house-archive-runner.json"),
-    renderArchiveHouseRunnerTemplate(retainedRunner, runnerDigest),
+    archiveHouseRunner,
   );
   const provider = await writeJson(join(layout.generatedRoot, "openrouter-provider.json"), {
     schema: "worldstream/model-provider-credential-import/v1",
@@ -556,7 +640,7 @@ export async function writeHostedClientImport(
     inspectorDeployment === undefined ||
     !Array.isArray(inspectorDeployment.surfaces) ||
     !Array.isArray(heistDeployments) ||
-    heistDeployments.length !== 3 ||
+    heistDeployments.length !== 4 ||
     heistDeployments.some((deployment) => !Array.isArray(deployment.surfaces)) ||
     !Array.isArray(archiveDeployments) ||
     archiveDeployments.length !== 3 ||
@@ -573,6 +657,7 @@ export async function writeHostedClientImport(
   }));
   const heistReleases = [
     await readJson(layout.clientRelease),
+    await readJson(layout.retainedClientReleaseV9),
     await readJson(layout.retainedClientReleaseV8),
     await readJson(layout.retainedClientRelease),
   ];
@@ -613,13 +698,17 @@ export async function writeHostedClientImport(
     join(layout.generatedRoot, "agent-heist-web.json"),
     heistReleases[0],
   );
+  const retainedHeistReleaseV9 = await writeJson(
+    join(layout.generatedRoot, "agent-heist-web-v9.json"),
+    heistReleases[1],
+  );
   const retainedHeistRelease = await writeJson(
     join(layout.generatedRoot, "agent-heist-web-v8.json"),
-    heistReleases[1],
+    heistReleases[2],
   );
   const legacyHeistRelease = await writeJson(
     join(layout.generatedRoot, "agent-heist-web-v7.json"),
-    heistReleases[2],
+    heistReleases[3],
   );
   const archiveRelease = await writeJson(
     join(layout.generatedRoot, "midnight-archive-web.json"),
@@ -641,6 +730,7 @@ export async function writeHostedClientImport(
     schema: "worldstream/client-declaration-import/v1",
     release_files: [
       heistRelease,
+      retainedHeistReleaseV9,
       retainedHeistRelease,
       legacyHeistRelease,
       archiveRelease,

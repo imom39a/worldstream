@@ -266,8 +266,8 @@ export async function readRecentResults(): Promise<RecentResults> {
   return value as unknown as RecentResults;
 }
 
-export async function readLaunch(launchId: string): Promise<HostedLaunch> {
-  return requestLaunch(`/api/launches/${encodeURIComponent(launchId)}`);
+export async function readLaunch(launchId: string, signal?: AbortSignal): Promise<HostedLaunch> {
+  return requestLaunch(`/api/launches/${encodeURIComponent(launchId)}`, signal);
 }
 
 export async function readMyGames(cursor?: MyGamesIndex["next"], signal?: AbortSignal): Promise<MyGamesIndex> {
@@ -369,8 +369,8 @@ export function githubSignIn(returnTarget: "/" | "/join" | "/my-games"): void {
   window.location.assign(`/api/auth/github/start?return_to=${encodeURIComponent(returnTarget)}`);
 }
 
-async function requestLaunch(path: string): Promise<HostedLaunch> {
-  const response = await fetch(path, { credentials: "same-origin" });
+async function requestLaunch(path: string, signal?: AbortSignal): Promise<HostedLaunch> {
+  const response = await fetch(path, { credentials: "same-origin", signal });
   const value = await safeJson(response);
   if (!response.ok || value.version !== "hosted_launch.v1") {
     throw new Error(errorCode(value) ?? "launch_unavailable");

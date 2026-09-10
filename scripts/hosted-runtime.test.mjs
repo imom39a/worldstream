@@ -1,8 +1,8 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -16,6 +16,7 @@ import {
   renderHouseRunnerTemplate,
   renderHouseAgentProfiles,
   retainRunnerExecutable,
+  reuseExactInstalledRunnerTemplate,
   verifyManagedAgentHostDigest,
   validateHostedRuntimeEnvironment,
 } from "./hosted-runtime.mjs";
@@ -110,6 +111,7 @@ test("runtime configuration fixes internal listeners and persistent children", (
   assert.equal(layout.runtimeData, "/var/lib/worldstream/runtime");
   assert.equal(layout.controllerState, "/var/lib/worldstream/studio");
   assert.equal(layout.retainedClientReleaseV8, "/opt/worldstream/hosted/agent-heist-web-v8.json");
+  assert.equal(layout.retainedClientReleaseV9, "/opt/worldstream/hosted/agent-heist-web-v9.json");
   assert.equal(layout.retainedClientRelease, "/opt/worldstream/hosted/agent-heist-web-v7.json");
   assert.equal(layout.archiveClientRelease, "/opt/worldstream/hosted/midnight-archive-web.json");
   assert.equal(layout.retainedArchiveClientReleaseV12, "/opt/worldstream/hosted/midnight-archive-web-v12.json");
@@ -138,6 +140,7 @@ test("the hosted image packages the same current client as hosted bindings", asy
   const bindings = JSON.parse(await readFile(new URL("../config/activity-clients/hosted-local-bindings.json", import.meta.url), "utf8"));
   const deployment = bindings.deployments.find(value => value.client_id === release.client_id && value.release_digest === release.release_digest);
   assert.equal(deployment.release_digest, release.release_digest);
+  assert.match(dockerfile, /COPY config\/activity-clients\/releases\/agent-heist-web-v9\.json \/opt\/worldstream\/hosted\/agent-heist-web-v9\.json/u);
   assert.match(dockerfile, /COPY config\/activity-clients\/releases\/agent-heist-web-v8\.json \/opt\/worldstream\/hosted\/agent-heist-web-v8\.json/u);
   assert.match(dockerfile, /COPY config\/activity-clients\/releases\/agent-heist-web-v7\.json \/opt\/worldstream\/hosted\/agent-heist-web-v7\.json/u);
   assert.match(dockerfile, /COPY config\/activity-clients\/releases\/midnight-archive-web-v13\.json \/opt\/worldstream\/hosted\/midnight-archive-web\.json/u);
@@ -156,7 +159,8 @@ test("Fly initialization imports current and retained Archive client identities"
     generatedRoot,
     clientBindings: resolve("config/activity-clients/hosted-local-bindings.json"),
     inspectorRelease: resolve("config/activity-clients/releases/inspector-web-v2.json"),
-    clientRelease: resolve("config/activity-clients/releases/agent-heist-web-v9.json"),
+    clientRelease: resolve("config/activity-clients/releases/agent-heist-web-v10.json"),
+    retainedClientReleaseV9: resolve("config/activity-clients/releases/agent-heist-web-v9.json"),
     retainedClientReleaseV8: resolve("config/activity-clients/releases/agent-heist-web-v8.json"),
     retainedClientRelease: resolve("config/activity-clients/releases/agent-heist-web-v7.json"),
     archiveClientRelease: resolve("config/activity-clients/releases/midnight-archive-web-v13.json"),
@@ -166,8 +170,8 @@ test("Fly initialization imports current and retained Archive client identities"
   const declarationPath = await writeHostedClientImport(layout, "https://arena.example");
   const declaration = JSON.parse(await readFile(declarationPath, "utf8"));
   const bindings = JSON.parse(await readFile(declaration.bindings_file, "utf8"));
-  assert.equal(declaration.release_files.length, 7);
-  assert.equal(bindings.deployments.length, 7);
+  assert.equal(declaration.release_files.length, 8);
+  assert.equal(bindings.deployments.length, 8);
   const archive = bindings.deployments.filter(({ client_id }) =>
     client_id === "worldstream.midnight-archive.web");
   assert.equal(archive.length, 3);
@@ -371,6 +375,86 @@ test("r12 through r15 keep their retained executable bytes after r16 installs", 
     /retained_runner_digest_collision/u,
     "a retained r12 digest address is never overwritten with successor bytes",
   );
+});
+
+test("immutable Runner imports reuse installed exact manifests across image rebuilds", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "worldstream-installed-runner-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const stateDirectory = join(root, "studio");
+  const installedRoot = join(stateDirectory, "runner-templates/installed");
+  const retainedRoot = join(root, "retained-runner-executables");
+  const oldDigest = "a".repeat(64);
+  const archiveDigest = "b".repeat(64);
+  const currentDigest = "c".repeat(64);
+  const retainedPath = (digest) => join(
+    retainedRoot,
+    `blake3-${digest}`,
+    "worldstream-managed-agent-host",
+  );
+  const writeExecutable = async (digest, bytes) => {
+    const path = retainedPath(digest);
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    await chmod(dirname(path), 0o700);
+    await writeFile(path, bytes, { mode: 0o700 });
+    await chmod(path, 0o700);
+    return path;
+  };
+  const knownDigests = new Map([
+    ["retained Heist bytes", oldDigest],
+    ["retained Archive bytes", archiveDigest],
+    ["current image bytes", currentDigest],
+  ]);
+  const digestExecutable = async (path) => knownDigests.get(await readFile(path, "utf8")) ?? "f".repeat(64);
+  const currentPath = await writeExecutable(currentDigest, "current image bytes");
+  const currentHeist = renderHouseRunnerTemplate(currentPath, currentDigest);
+  const currentArchive = renderArchiveHouseRunnerTemplate(currentPath, currentDigest);
+
+  assert.deepEqual(await reuseExactInstalledRunnerTemplate({
+    stateDirectory, retainedRoot, expected: currentHeist, digestExecutable,
+  }), currentHeist, "a fresh installation uses the current image executable");
+
+  await mkdir(installedRoot, { recursive: true, mode: 0o700 });
+  await chmod(installedRoot, 0o700);
+  const retainedHeist = renderHouseRunnerTemplate(
+    await writeExecutable(oldDigest, "retained Heist bytes"),
+    oldDigest,
+  );
+  const heistManifest = join(installedRoot, "openrouter-house--16.json");
+  await writeFile(heistManifest, JSON.stringify(retainedHeist), { mode: 0o600 });
+  await chmod(heistManifest, 0o600);
+  assert.deepEqual(await reuseExactInstalledRunnerTemplate({
+    stateDirectory, retainedRoot, expected: currentHeist, digestExecutable,
+  }), retainedHeist, "the existing Heist revision keeps its older retained bytes");
+  assert.deepEqual(await reuseExactInstalledRunnerTemplate({
+    stateDirectory, retainedRoot, expected: currentArchive, digestExecutable,
+  }), currentArchive, "a new Archive identity still uses the current image bytes");
+
+  const retainedArchive = renderArchiveHouseRunnerTemplate(
+    await writeExecutable(archiveDigest, "retained Archive bytes"),
+    archiveDigest,
+  );
+  const archiveManifest = join(installedRoot, "openrouter-house-archive--1.json");
+  await writeFile(archiveManifest, JSON.stringify(retainedArchive), { mode: 0o600 });
+  await chmod(archiveManifest, 0o600);
+  assert.deepEqual(await reuseExactInstalledRunnerTemplate({
+    stateDirectory, retainedRoot, expected: currentArchive, digestExecutable,
+  }), retainedArchive, "a later image rebuild keeps the installed Archive revision too");
+
+  await writeFile(heistManifest, JSON.stringify({ ...retainedHeist, display_name: "changed" }), { mode: 0o600 });
+  await assert.rejects(reuseExactInstalledRunnerTemplate({
+    stateDirectory, retainedRoot, expected: currentHeist, digestExecutable,
+  }), /retained_runner_template_invalid/u, "an immutable contract change fails closed");
+  await writeFile(heistManifest, JSON.stringify(retainedHeist), { mode: 0o600 });
+  await writeFile(retainedHeist.executable.path, "corrupt bytes", { mode: 0o700 });
+  await assert.rejects(reuseExactInstalledRunnerTemplate({
+    stateDirectory, retainedRoot, expected: currentHeist, digestExecutable,
+  }), /retained_runner_executable_digest_mismatch/u, "changed retained bytes fail closed");
+
+  await rm(heistManifest);
+  await symlink(archiveManifest, heistManifest);
+  await assert.rejects(reuseExactInstalledRunnerTemplate({
+    stateDirectory, retainedRoot, expected: currentHeist, digestExecutable,
+  }), /retained_runner_template_invalid/u, "a symlinked installed manifest fails closed");
 });
 
 test("managed status requires the complete ready contract", () => {

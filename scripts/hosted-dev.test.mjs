@@ -385,6 +385,7 @@ test("local and Fly gateways retain public Listings and Fly admits the exact int
   const localPublic = new Set(hostedDevelopmentListingAllowlist().split(","));
   assert.equal(admitted.size, localPublic.size + 1);
   for (const digest of localPublic) assert.ok(admitted.has(digest));
+  assert.ok(admitted.has("blake3:c2e07bc3c8ff2b36a549127d1f9f6403c52dcaca45065cb5923debe705111de2"));
   assert.ok(admitted.has("blake3:cc1c92ebc6ba7cccc9474186ff8107cf97f6bd0ce2676c6d1a2aa203c2a62d35"));
   assert.ok(admitted.has("blake3:8be1c66c9c69a4a67800dadf8e60d66bdf8a8b9118fb3baa96b5e8cdaf272b7d"));
   assert.ok(admitted.has("blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397"));

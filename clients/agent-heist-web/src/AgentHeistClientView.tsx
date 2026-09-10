@@ -19,10 +19,39 @@ export function AgentHeistClientView({ state, connection, message, actionsEnable
   readonly actionsEnabled?: boolean; readonly agentAssist?: AgentHeistAgentAssist;
   readonly onAct: (action: ActivityClientAction) => Promise<void>; readonly onReconnect?: () => Promise<void>;
 }) {
-  if (state.kind === "awaiting") return <Boundary title="Waiting for the mission" detail={message ?? "Your mission will appear when this connection is ready."} />;
+  if (state.kind === "awaiting") return <MissionConnection connection={connection} message={message} onReconnect={onReconnect} />;
   if (state.kind === "incompatible") return <Boundary title="Mission display unavailable" detail={state.reason} />;
   return <MissionFocus state={state} connection={connection} message={message} agentAssist={agentAssist}
     actionsEnabled={actionsEnabled ?? connection === "live"} onAct={onAct} onReconnect={onReconnect} />;
+}
+
+function MissionConnection({ connection, message, onReconnect }: {
+  readonly connection: AgentHeistClientConnection; readonly message?: string | null;
+  readonly onReconnect?: () => Promise<void>;
+}) {
+  const pending = useRef(false);
+  const [retrying, setRetrying] = useState(false);
+  const [retryFailed, setRetryFailed] = useState(false);
+  const retry = async () => {
+    if (pending.current || onReconnect === undefined) return;
+    pending.current = true;
+    setRetrying(true);
+    setRetryFailed(false);
+    try { await onReconnect(); } catch { setRetryFailed(true); }
+    finally { pending.current = false; setRetrying(false); }
+  };
+  const requiresEntry = connection === "setup_required";
+  return <main className="heist-boundary-shell" aria-busy={retrying || connection === "connecting"}>
+    <span className="eyebrow">Agent Heist Activity Client</span>
+    <h1>{requiresEntry ? "Re-enter your mission" : "Waiting for the mission"}</h1>
+    <p role="status">{retrying ? "Reconnecting to this mission…" : message ?? "Your mission will appear when this connection is ready."}</p>
+    {requiresEntry
+      ? <p>Return to My games and choose Return to game. This restores access to the same Room; it does not restart the game.</p>
+      : <p>Reconnect does not resend a move. Your mission will appear only after the Room confirms this connection.</p>}
+    {connection === "disconnected" && onReconnect !== undefined
+      ? <button type="button" disabled={retrying} onClick={() => void retry()}>Reconnect</button> : null}
+    {retryFailed ? <p role="alert">The connection is still unavailable. Try again, or return to My games to re-enter.</p> : null}
+  </main>;
 }
 
 function MissionFocus({ state, connection, message, actionsEnabled, agentAssist, onAct, onReconnect }: {

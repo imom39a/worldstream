@@ -493,14 +493,38 @@ impl FixedHostAdapterBackend {
         let body = CanonicalJsonV1::parse(&encoded)
             .and_then(|value| value.to_bytes())
             .map_err(|_| HostedGatewayError::Rejected)?;
-        fixed_http_request(
+        let started = Instant::now();
+        let result = fixed_http_request(
             self.upstream,
             self.timeout,
             "POST",
             path,
             &self.controller_authority,
             &body,
-        )
+        );
+        let operation = match path {
+            "/api/v1/hosted-browser-handoffs:issue" => Some("issue"),
+            "/api/v1/hosted-browser-handoffs:redeem" => Some("redeem"),
+            "/api/v1/hosted-browser-sessions:status" => Some("status"),
+            "/api/v1/hosted-browser-sessions:logout" => Some("logout"),
+            "/api/v1/hosted-browser-sessions:stream-ticket" => Some("stream_ticket"),
+            _ => None,
+        };
+        if let Some(operation) = operation {
+            let status = result.as_ref().ok().map(|(status, _)| *status);
+            tracing::info!(
+                operation,
+                status,
+                elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                outcome = if status.is_some() {
+                    "http_response"
+                } else {
+                    "transport_failure"
+                },
+                "hosted browser Controller request"
+            );
+        }
+        result
     }
 }
 

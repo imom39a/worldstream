@@ -45,6 +45,7 @@ use crate::{
         CurrentMembershipSnapshotV1, HumanSeatAuthorityV1, ParticipantConsoleGatewayErrorV1,
         ParticipantConsoleGatewayV1, ParticipantHandoffAuthorityErrorV1,
     },
+    session_diagnostics::{self as diagnostic, Operation, Stage},
 };
 
 const HANDOFF_TTL_LIMIT: Duration = Duration::from_mins(5);
@@ -190,15 +191,24 @@ impl HostedBrowserSessionBrokerV1 {
         &self,
         request: HostedBrowserHandoffRequestV1,
     ) -> Result<HostedBrowserHandoffResponseV1, HostedBrowserSessionErrorV1> {
+        diagnostic::operation(Operation::Issue, || self.issue_inner(request))
+    }
+
+    fn issue_inner(
+        &self,
+        request: HostedBrowserHandoffRequestV1,
+    ) -> Result<HostedBrowserHandoffResponseV1, HostedBrowserSessionErrorV1> {
         validate_hosted_browser_handoff_request(&request)
             .map_err(|_| HostedBrowserSessionErrorV1::Invalid)?;
         if request.host_installation_id != self.inner.host_installation_id {
             return Err(HostedBrowserSessionErrorV1::Rejected);
         }
-        let authority = self.resolve_authority(&request)?;
+        let authority = diagnostic::stage(Stage::Authority, || self.resolve_authority(&request))?;
         let current = self.current_membership(&authority)?;
         require_exact_membership(&request, &current)?;
-        let candidate = self.resolve_pinned_client(&request, &current)?;
+        let candidate = diagnostic::stage(Stage::Client, || {
+            self.resolve_pinned_client(&request, &current)
+        })?;
         let launch = exact_launch_url(&self.inner.client_origin, &candidate.launch_url)?;
         let mut state = self.lock();
         prune_expired(&mut state);
@@ -229,6 +239,13 @@ impl HostedBrowserSessionBrokerV1 {
     /// A consumed, expired, changed, or mismatched handoff always fails closed
     /// and can never be retried.
     pub fn redeem(
+        &self,
+        request: &HostedBrowserHandoffRedeemRequestV1,
+    ) -> Result<HostedBrowserHandoffRedeemResponseV1, HostedBrowserSessionErrorV1> {
+        diagnostic::operation(Operation::Redeem, || self.redeem_inner(request))
+    }
+
+    fn redeem_inner(
         &self,
         request: &HostedBrowserHandoffRedeemRequestV1,
     ) -> Result<HostedBrowserHandoffRedeemResponseV1, HostedBrowserSessionErrorV1> {
@@ -280,6 +297,13 @@ impl HostedBrowserSessionBrokerV1 {
         &self,
         request: &HostedBrowserSessionRequestV1,
     ) -> Result<HostedBrowserSessionStatusV1, HostedBrowserSessionErrorV1> {
+        diagnostic::operation(Operation::Status, || self.status_inner(request))
+    }
+
+    fn status_inner(
+        &self,
+        request: &HostedBrowserSessionRequestV1,
+    ) -> Result<HostedBrowserSessionStatusV1, HostedBrowserSessionErrorV1> {
         validate_hosted_browser_session_request(request)
             .map_err(|_| HostedBrowserSessionErrorV1::Invalid)?;
         let record = {
@@ -314,6 +338,13 @@ impl HostedBrowserSessionBrokerV1 {
         &self,
         request: &HostedBrowserSessionRequestV1,
     ) -> Result<HostedBrowserSessionLogoutV1, HostedBrowserSessionErrorV1> {
+        diagnostic::operation(Operation::Logout, || self.logout_inner(request))
+    }
+
+    fn logout_inner(
+        &self,
+        request: &HostedBrowserSessionRequestV1,
+    ) -> Result<HostedBrowserSessionLogoutV1, HostedBrowserSessionErrorV1> {
         validate_hosted_browser_session_request(request)
             .map_err(|_| HostedBrowserSessionErrorV1::Invalid)?;
         self.retire_session(&request.session, false)?;
@@ -330,6 +361,15 @@ impl HostedBrowserSessionBrokerV1 {
     /// Missing, expired, revoked, changed, or capacity-limited sessions fail
     /// closed without exposing any retained target or Membership credential.
     pub fn stream_ticket(
+        &self,
+        request: &HostedBrowserStreamTicketRequestV1,
+    ) -> Result<HostedBrowserStreamTicketResponseV1, HostedBrowserSessionErrorV1> {
+        diagnostic::operation(Operation::StreamTicket, || {
+            self.stream_ticket_inner(request)
+        })
+    }
+
+    fn stream_ticket_inner(
         &self,
         request: &HostedBrowserStreamTicketRequestV1,
     ) -> Result<HostedBrowserStreamTicketResponseV1, HostedBrowserSessionErrorV1> {
@@ -372,15 +412,16 @@ impl HostedBrowserSessionBrokerV1 {
         // retrying could mint a second admission value. The safe restart
         // recovery seam is the cursor-independent membership read above;
         // callers can obtain a fresh ticket only after that revalidation.
-        let response = self
-            .inner
-            .gateway
-            .issue_hosted_browser_stream_ticket(
-                &authority,
-                &runtime_request,
-                &self.inner.client_origin,
-            )
-            .map_err(map_gateway_error)?;
+        let response = diagnostic::stage(Stage::RuntimeTicket, || {
+            self.inner
+                .gateway
+                .issue_hosted_browser_stream_ticket(
+                    &authority,
+                    &runtime_request,
+                    &self.inner.client_origin,
+                )
+                .map_err(map_gateway_error)
+        })?;
         let still_current = {
             let mut state = self.lock();
             prune_expired(&mut state);
@@ -408,10 +449,13 @@ impl HostedBrowserSessionBrokerV1 {
         &self,
         target: &RetainedHostedTargetV1,
     ) -> Result<HumanSeatAuthorityV1, HostedBrowserSessionErrorV1> {
-        let authority = self.resolve_authority(&target.binding)?;
+        let authority =
+            diagnostic::stage(Stage::Authority, || self.resolve_authority(&target.binding))?;
         let current = self.current_membership(&authority)?;
         require_exact_membership(&target.binding, &current)?;
-        let candidate = self.resolve_active_client(&target.binding, &current, &target.candidate)?;
+        let candidate = diagnostic::stage(Stage::Client, || {
+            self.resolve_active_client(&target.binding, &current, &target.candidate)
+        })?;
         if candidate != target.candidate
             || exact_launch_url(&self.inner.client_origin, &candidate.launch_url).is_err()
         {
@@ -431,6 +475,15 @@ impl HostedBrowserSessionBrokerV1 {
     }
 
     fn current_membership(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+    ) -> Result<CurrentMembershipSnapshotV1, HostedBrowserSessionErrorV1> {
+        diagnostic::stage(Stage::Membership, || {
+            self.current_membership_inner(authority)
+        })
+    }
+
+    fn current_membership_inner(
         &self,
         authority: &HumanSeatAuthorityV1,
     ) -> Result<CurrentMembershipSnapshotV1, HostedBrowserSessionErrorV1> {
@@ -552,6 +605,18 @@ pub enum HostedBrowserSessionErrorV1 {
     Missing,
     Capacity,
     Unavailable,
+}
+
+impl From<HostedBrowserSessionErrorV1> for diagnostic::Category {
+    fn from(error: HostedBrowserSessionErrorV1) -> Self {
+        match error {
+            HostedBrowserSessionErrorV1::Invalid => Self::Invalid,
+            HostedBrowserSessionErrorV1::Rejected => Self::Rejected,
+            HostedBrowserSessionErrorV1::Missing => Self::Missing,
+            HostedBrowserSessionErrorV1::Capacity => Self::Capacity,
+            HostedBrowserSessionErrorV1::Unavailable => Self::Unavailable,
+        }
+    }
 }
 
 /// Builds the exact service-authenticated Controller surface used only by the
@@ -1177,6 +1242,50 @@ mod tests {
             schema: "worldstream/hosted-browser-session-request/v1".to_owned(),
             session: session.to_owned(),
         }
+    }
+
+    #[test]
+    fn failed_membership_trace_identifies_stage_without_retaining_private_material() {
+        let fixture = fixture(Duration::from_mins(1), Duration::from_mins(1));
+        *fixture
+            .gateway
+            .membership_failures
+            .lock()
+            .expect("diagnostic test fixture") = 3;
+        let (result, events) = diagnostic::capture(|| fixture.broker.issue(request()));
+        assert_eq!(result.err(), Some(HostedBrowserSessionErrorV1::Unavailable));
+        assert!(
+            events
+                .iter()
+                .any(|event| event["stage"] == "membership" && event["category"] == "unavailable")
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| event["call"] == events[0]["call"])
+        );
+        let wire = serde_json::to_string(&events).expect("diagnostic test fixture");
+        for private in [
+            ACCOUNT,
+            ROOM,
+            PRINCIPAL,
+            MEMBER,
+            CLIENT_ORIGIN,
+            "wsh1:",
+            "wss1:",
+            "wst1:",
+            "Bearer",
+        ] {
+            assert!(!wire.contains(private));
+        }
+        assert!(
+            fixture
+                .gateway
+                .stream_requests
+                .lock()
+                .expect("diagnostic test fixture")
+                .is_empty()
+        );
     }
 
     #[test]

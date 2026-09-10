@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   enterRun,
@@ -22,6 +22,7 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
   const [countdownNow, setCountdownNow] = useState(() => Date.now());
   const [invitation, setInvitation] = useState<{ seat: string; url: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [refreshAttempt, setRefreshAttempt] = useState(0);
   const authenticatedCsrf = session.state === "authenticated" ? session.csrf : null;
   const launchState = launch?.state ?? null;
   const houseFillState = launch?.house_fill?.state ?? null;
@@ -29,26 +30,42 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
     ? launch?.house_fill?.claim_window_closes_at ?? null
     : null;
 
-  const refresh = useCallback(async () => {
-    if (session.state !== "authenticated") return;
-    try {
-      const value = await readLaunch(launchId);
-      setLaunch(value);
-      setState("ready");
-    } catch (cause) {
-      setError(friendlyError(cause));
-      setState("unavailable");
-    }
-  }, [launchId, session.state]);
+  useEffect(() => {
+    setLaunch(null);
+    setState("loading");
+    setError(null);
+    setInvitation(null);
+    setStartRequested(false);
+  }, [launchId, authenticatedCsrf]);
 
   useEffect(() => {
-    if (session.state !== "authenticated" || (launch !== null && isTerminalLaunchState(launch.state))) {
-      return undefined;
-    }
-    if (launch === null) void refresh();
-    const timer = window.setInterval(() => void refresh(), 2_000);
-    return () => window.clearInterval(timer);
-  }, [launch?.state, refresh, session.state]);
+    if (authenticatedCsrf === null || busy !== null) return undefined;
+    let disposed = false;
+    let timer: number | undefined;
+    const controller = new AbortController();
+    const refresh = async () => {
+      let delay = 2_000;
+      try {
+        const value = await readLaunch(launchId, controller.signal);
+        if (disposed) return;
+        setLaunch(value);
+        setState("ready");
+        if (isTerminalLaunchState(value.state)) return;
+      } catch (cause) {
+        if (disposed) return;
+        setError(friendlyError(cause));
+        setState("unavailable");
+        delay = 5_000;
+      }
+      if (!disposed) timer = window.setTimeout(() => void refresh(), delay);
+    };
+    void refresh();
+    return () => {
+      disposed = true;
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [launchId, authenticatedCsrf, busy, refreshAttempt]);
 
   useEffect(() => {
     if (
@@ -118,7 +135,10 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
     return <MessagePage onNavigate={onNavigate} title="Opening the waiting room…" />;
   }
   if (session.state === "unavailable" || state === "unavailable" || launch === null) {
-    return <MessagePage onNavigate={onNavigate} title="This waiting room is not available" detail="The room service did not supply a safe fallback." />;
+    return <MessagePage onNavigate={onNavigate} title="This waiting room is not available"
+      detail="The connection could not be confirmed. Retry to check this same room."
+      actionLabel={session.state === "authenticated" ? "Retry connection" : undefined}
+      onAction={() => { setState("loading"); setRefreshAttempt((attempt) => attempt + 1); }} />;
   }
 
   const terminal = isTerminalLaunchState(launch.state);
@@ -217,7 +237,6 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
                 .catch((cause) => {
                   setError(friendlyError(cause));
                   setBusy(null);
-                  void refresh();
                 });
             }}>{busy === "close" ? "Closing safely…" : closeActionLabel(closeAction)}</button>
           )}
