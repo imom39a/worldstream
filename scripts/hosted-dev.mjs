@@ -18,6 +18,7 @@ import {
 import { createConnection, createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   renderHouseAgentProfiles,
@@ -301,6 +302,9 @@ secret_file = ${JSON.stringify(secretFile)}
 async function main() {
   const options = hostedDevelopmentArguments(process.argv.slice(2));
   assertHostedDevelopmentAllowed();
+  const rosterFixture = process.env.WORLDSTREAM_ROSTER_FIXTURE_QUALIFICATION === DEVELOPMENT_MODE;
+  if (process.env.WORLDSTREAM_ROSTER_FIXTURE_QUALIFICATION !== undefined && !rosterFixture) throw new Error("invalid_roster_fixture_opt_in");
+  if (rosterFixture && options.acceptance) throw new Error("roster_fixture_is_separate_from_heist_acceptance");
   const ports = hostedDevelopmentPorts();
   const productOrigin = `http://127.0.0.1:${ports.product}`;
   const gateway = hostedDevelopmentGatewayConfiguration();
@@ -470,13 +474,25 @@ async function main() {
         environment: commonEnvironment,
       });
     }
-    await importHostedDeclarations(
+    const fixtureImport = await importHostedDeclarations(
       ctl,
       stateDirectory,
       stateRoot,
       providerSecretFile,
       native.managedAgentHost,
+      rosterFixture,
     );
+    if (fixtureImport !== undefined) {
+      commonEnvironment.WORLDSTREAM_LOCAL_HOSTED_FIXTURE_DIRECTORY = join(fixtureImport.directory, "host");
+      const { rosterFixtureRegistrationSql } = await import("./hosted-roster-fixture-registration.mjs");
+      const sql = await rosterFixtureRegistrationSql({ stateDirectory, installationId: HOST_INSTALLATION_ID,
+        importReceipt: fixtureImport.receipt, environment: commonEnvironment });
+      const path = join(fixtureImport.directory, "register-local.sql");
+      await writeFile(path, sql, { mode: 0o600 });
+      await run("psql", [requiredSupabase(supabase, "DB_URL"), "-q", "-v", "ON_ERROR_STOP=1", "-f", path], {
+        capture: true, sensitive: true, environment: { ...commonEnvironment, PGOPTIONS: "-c worldstream.development_seed=visible-local-only" },
+      });
+    }
 
     for (const candidate of internalCandidates) {
       const bundle = resolve(REPOSITORY_ROOT, candidate.bundle_file);
@@ -516,7 +532,8 @@ async function main() {
       WORLDSTREAM_DEVELOPMENT_OPENROUTER_KEY: FAKE_OPENROUTER_KEY,
       WORLDSTREAM_LOCAL_PLATFORM_BFF_TARGET: platformOrigin,
       WORLDSTREAM_LOCAL_ACTIVITY_CLIENT_TARGET: heistOrigin,
-      WORLDSTREAM_LOCAL_INTERNAL_LISTING_DIGESTS: internalCandidates.map((candidate) => candidate.listing.digest).join(","),
+      WORLDSTREAM_LOCAL_INTERNAL_LISTING_DIGESTS: [...internalCandidates.map((candidate) => candidate.listing.digest),
+        ...(fixtureImport === undefined ? [] : [fixtureImport.descriptor.listing_digest])].join(","),
       WORLDSTREAM_LOCAL_ACTIVITY_AVAILABILITY_SCRIPT: join(REPOSITORY_ROOT, "scripts/hosted-internal-candidates.mjs"),
       WORLDSTREAM_LOCAL_CTL: worldstreamctl,
       WORLDSTREAM_LOCAL_CONFIG: configFile,
@@ -536,13 +553,13 @@ async function main() {
       startChild(
         "Platform BFF",
         "node",
-        [join(REPOSITORY_ROOT, "web", "platform", "dist", "dev-server.js")],
+        [rosterFixture ? join(REPOSITORY_ROOT, "scripts/hosted-roster-fixture-platform.mjs") : join(REPOSITORY_ROOT, "web", "platform", "dist", "dev-server.js")],
         childEnvironment,
       ),
       startChild(
         "fake OpenRouter",
         "node",
-        [join(REPOSITORY_ROOT, "scripts", "hosted-fake-openrouter.mjs")],
+        [join(REPOSITORY_ROOT, "scripts", rosterFixture ? "hosted-roster-fixture-provider.mjs" : "hosted-fake-openrouter.mjs")],
         childEnvironment,
       ),
       startChild(
@@ -574,7 +591,8 @@ async function main() {
           WORLDSTREAM_HOSTED_CLIENT_ORIGIN: productOrigin,
           WORLDSTREAM_PUBLIC_AUTHORITY: gateway.publicAuthority,
           WORLDSTREAM_VERCEL_SERVICE_AUTHORITY: SERVICE_AUTHORITY,
-          WORLDSTREAM_LISTING_ALLOWLIST: hostedDevelopmentListingAllowlist(internalCandidates.map((candidate) => candidate.listing.digest)),
+          WORLDSTREAM_LISTING_ALLOWLIST: hostedDevelopmentListingAllowlist([...internalCandidates.map((candidate) => candidate.listing.digest),
+            ...(fixtureImport === undefined ? [] : [fixtureImport.descriptor.listing_digest])]),
           WORLDSTREAM_DEPLOYMENT_VERSION: "hosted-local-development",
           RUST_LOG: "worldstream_hosted_gateway=info",
         },
@@ -767,6 +785,7 @@ async function importHostedDeclarations(
   stateRoot,
   providerSecretFile,
   managedHost,
+  rosterFixture = false,
 ) {
   const declaration = await hostedClientDeclaration(stateDirectory, stateRoot);
   const { taggedBlake3 } = await import(
@@ -792,10 +811,32 @@ async function importHostedDeclarations(
   const cooperative = join(generated, "cooperative-planner.json");
   const skeptical = join(generated, "skeptical-auditor.json");
   const profiles = renderHouseAgentProfiles();
+  let houseRunner = renderHouseRunnerTemplate(retainedRunner, executableDigest);
+  if (rosterFixture) {
+    // Qualification must not repin a pre-existing Heist Runner revision to the
+    // current build. Its independently retained executable remains authoritative.
+    const installedPath = join(stateDirectory, "runner-templates/installed", `${houseRunner.template_id}--${houseRunner.revision}.json`);
+    let installed;
+    try {
+      installed = await readRegularJson(installedPath);
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+    if (installed !== undefined) {
+      const { executable: installedExecutable, ...installedContract } = installed;
+      const { executable: _currentExecutable, ...expectedContract } = houseRunner;
+      if (!isDeepStrictEqual(installedContract, expectedContract)
+        || typeof installedExecutable?.path !== "string"
+        || taggedBlake3(await readFile(installedExecutable.path)) !== `blake3:${installedExecutable.blake3}`) {
+        throw new Error("retained Heist Runner contract or executable does not match its exact revision");
+      }
+      houseRunner = installed;
+    }
+  }
   await Promise.all([
     writeFile(
       runner,
-      `${JSON.stringify(renderHouseRunnerTemplate(retainedRunner, executableDigest))}\n`,
+      `${JSON.stringify(houseRunner)}\n`,
       { mode: 0o600 },
     ),
     writeFile(
@@ -828,6 +869,25 @@ async function importHostedDeclarations(
     "--agent-profile", skeptical,
     "--client-declaration", declaration,
   ];
+  let fixture;
+  if (rosterFixture) {
+    const { renderRosterFixtureDirectory } = await import("./render-hosted-roster-fixture.mjs");
+    const directory = join(stateRoot, "roster-fixture");
+    let fixtureExecutable = { executable: retainedRunner, digest: executableDigest };
+    let previousTemplate;
+    try { previousTemplate = await readRegularJson(join(directory, "imports/runner-template.json")); }
+    catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
+    if (previousTemplate !== undefined) {
+      // This fixture revision is immutable across ordinary restarts/builds too.
+      // A changed Runner must receive a new reviewed fixture revision.
+      if (taggedBlake3(await readFile(previousTemplate.executable.path)) !== `blake3:${previousTemplate.executable.blake3}`)
+        throw new Error("retained qualification Runner executable changed");
+      fixtureExecutable = { executable: previousTemplate.executable.path, digest: previousTemplate.executable.blake3 };
+    }
+    const descriptor = await renderRosterFixtureDirectory(directory, fixtureExecutable);
+    selected.push("--runner-template", join(directory, "imports/runner-template.json"), "--agent-profile", join(directory, "imports/profile.json"));
+    fixture = { directory, descriptor };
+  }
   const preview = await ctl([...selected, "--preview"], { capture: true });
   let digest;
   try {
@@ -838,7 +898,8 @@ async function importHostedDeclarations(
   if (typeof digest !== "string" || !/^blake3:[0-9a-f]{64}$/u.test(digest)) {
     throw new Error("worldstreamctl client import review omitted its exact digest");
   }
-  await ctl([...selected, "--approve-imports", digest]);
+  const applied = await ctl([...selected, "--approve-imports", digest], { capture: rosterFixture });
+  if (fixture !== undefined) return { ...fixture, receipt: JSON.parse(applied.stdout) };
 }
 
 async function hostedClientDeclaration(stateDirectory, stateRoot) {

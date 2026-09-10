@@ -6,6 +6,7 @@ import { readListingRevision } from "@worldstream/hosted-contract";
 
 import {
   HostedFormationCoordinator,
+  HostedFormationRejectedError,
   HostedFormationUnavailableError,
   HttpHostedFormationGateway,
   taggedSha256,
@@ -856,4 +857,35 @@ test("a lost first Host request is recovered with the original authorization and
   assert.equal(data.freezeCalls, 1);
   assert.equal(data.authorizeCalls, 1);
   assert.deepEqual(launches[0], launches[1]);
+});
+
+test("a frozen v2 solo choice survives uncertain Genesis and coordinator restart without another setup", async () => {
+  const fixture = { ...DEFAULT_FORMATION_FIXTURE, claims: DEFAULT_FORMATION_FIXTURE.claims.slice(0, 1) };
+  const base = reviewedFormationFixture(DEFAULT_FORMATION_FIXTURE);
+  const listing = readListingRevision(encodeCanonical({
+    ...base.listing.value,
+    seats: base.listing.value.seats.map((seat, index) => ({ ...seat, required: index === 0 })),
+    launch_input_schema: { schema: "worldstream/launch-input-schema/v2", accepts: "roster_option", defaults: { roster_option: "solo" },
+      roster_options: [{ option_id: "solo", label: "Solo", seat_ids: [fixture.creatorSeatId], configuration: { fixed: "solo" }, house_agent_assignments: [] }] },
+  } as unknown as CanonicalObject));
+  const reviewed = { ...base, listing };
+  const data = new HumanFormationData(fixture);
+  data.material = { ...data.material, listingRevisionDigest: listing.digest, launchInputs: { roster_option: "solo" } };
+  const gateway = new RecordingGateway();
+  gateway.roomSetupComplete = false;
+  const makeCoordinator = () => new HostedFormationCoordinator(data, gateway, "hosted-preview-1", (digest) => digest === listing.digest ? reviewed : null);
+  assert.equal((await makeCoordinator().advance(ACCOUNT_ID, LAUNCH_ID)).state, "reconciling");
+  const retained = structuredClone(gateway.launches[0]!);
+  assert.deepEqual((retained.frozen_launch_request as CanonicalObject).inputs, { roster_option: "solo" });
+  assert.deepEqual((retained.frozen_room_setup_specification as CanonicalObject).configuration, { fixed: "solo" });
+  assert.equal(((retained.frozen_room_setup_specification as CanonicalObject).seats as unknown[]).length, 1);
+  await assert.rejects(() => makeCoordinator().advance("wrong-account", LAUNCH_ID), HostedFormationRejectedError);
+  assert.equal((await makeCoordinator().recover(LAUNCH_ID))?.state, "reconciling");
+  assert.deepEqual(gateway.launches[1], retained);
+  gateway.roomSetupComplete = true;
+  assert.equal((await makeCoordinator().recover(LAUNCH_ID))?.state, "run_created");
+  assert.equal(data.freezeCalls, 1);
+  assert.equal(data.authorizeCalls, 1);
+  assert.equal(data.runId, RUN_ID);
+  assert.ok(gateway.launches.every((launch) => JSON.stringify(launch) === JSON.stringify(retained)));
 });

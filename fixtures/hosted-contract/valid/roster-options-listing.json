@@ -1,0 +1,159 @@
+{
+  "schema": "worldstream/activity-listing-revision/v1",
+  "listing_id": "worldstream.roster-contract.fixture",
+  "version": "0.1.0",
+  "title": "Reviewed roster contract fixture",
+  "description": "Identify the authentic ledger, gain access to the vault, and escape through the Atrium. Solo Standard expedition: 16 turns and 3 power charges; reading costs no turns.",
+  "catalog": {
+    "visibility": "private",
+    "review_status": "reviewed"
+  },
+  "pack": {
+    "id": "worldstream.midnight-archive",
+    "version": "0.1.0",
+    "digest": "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64"
+  },
+  "client": {
+    "client_id": "worldstream.midnight-archive.web",
+    "release_digest": "sha256:9be6d6548f2d62baba805ec461b27fbd1021ed0d61fbd0e8ffd1d779616bc534",
+    "client_contract": "worldstream/activity-client-protocol/v1",
+    "surface_id": "midnight-archive-hosted-web"
+  },
+  "creator_access": "must_claim_seat",
+  "launch_input_schema": {
+    "schema": "worldstream/launch-input-schema/v2",
+    "accepts": "roster_option",
+    "defaults": {
+      "roster_option": "solo"
+    },
+    "roster_options": [
+      {
+        "option_id": "solo",
+        "label": "Solo",
+        "seat_ids": [
+          "lead"
+        ],
+        "configuration": {
+          "scenario_id": "standard-v1"
+        },
+        "house_agent_assignments": []
+      },
+      {
+        "option_id": "first",
+        "label": "One supplied agent",
+        "seat_ids": [
+          "lead",
+          "mira"
+        ],
+        "configuration": {
+          "scenario_id": "standard-v1"
+        },
+        "house_agent_assignments": [
+          {
+            "seat_id": "mira",
+            "house_agent_revision_digest": "blake3:a664f616c754f03b484f40b930822411aba8579325731c48ee0cd72302805e81"
+          }
+        ]
+      },
+      {
+        "option_id": "second",
+        "label": "Other supplied agent",
+        "seat_ids": [
+          "lead",
+          "jonah"
+        ],
+        "configuration": {
+          "scenario_id": "standard-v1"
+        },
+        "house_agent_assignments": [
+          {
+            "seat_id": "jonah",
+            "house_agent_revision_digest": "blake3:05639c75dcf556f45429bc5e0fcca8a7b7bcb002ced56c3a28af9a211930bb0a"
+          }
+        ]
+      },
+      {
+        "option_id": "both",
+        "label": "Two supplied agents",
+        "seat_ids": [
+          "lead",
+          "mira",
+          "jonah"
+        ],
+        "configuration": {
+          "scenario_id": "standard-v1"
+        },
+        "house_agent_assignments": [
+          {
+            "seat_id": "mira",
+            "house_agent_revision_digest": "blake3:a664f616c754f03b484f40b930822411aba8579325731c48ee0cd72302805e81"
+          },
+          {
+            "seat_id": "jonah",
+            "house_agent_revision_digest": "blake3:05639c75dcf556f45429bc5e0fcca8a7b7bcb002ced56c3a28af9a211930bb0a"
+          }
+        ]
+      }
+    ]
+  },
+  "room_setup": {
+    "configuration": {
+      "scenario_id": "standard-v1"
+    }
+  },
+  "seats": [
+    {
+      "seat_id": "lead",
+      "role": "lead",
+      "display_name": "Expedition lead",
+      "required": true,
+      "allowed_participation": [
+        "account_human"
+      ],
+      "allowed_house_agent_revisions": []
+    },
+    {
+      "seat_id": "mira",
+      "role": "mira",
+      "display_name": "Mira",
+      "required": false,
+      "allowed_participation": [
+        "house_agent_fill"
+      ],
+      "allowed_house_agent_revisions": [
+        "blake3:a664f616c754f03b484f40b930822411aba8579325731c48ee0cd72302805e81"
+      ]
+    },
+    {
+      "seat_id": "jonah",
+      "role": "jonah",
+      "display_name": "Jonah",
+      "required": false,
+      "allowed_participation": [
+        "house_agent_fill"
+      ],
+      "allowed_house_agent_revisions": [
+        "blake3:05639c75dcf556f45429bc5e0fcca8a7b7bcb002ced56c3a28af9a211930bb0a"
+      ]
+    }
+  ],
+  "pre_start_deadline_seconds": 1800,
+  "public_viewing_policy": "disabled",
+  "result": {
+    "projection": {
+      "schema": "worldstream.midnight-archive/public-projection/v3",
+      "digest": "blake3:d6042c76a9f09bc4bc1ea3fac8c443bc6f7f154f39aed4cd7aad5b60b956949f"
+    },
+    "projector": {
+      "id": "worldstream.midnight-archive.result",
+      "version": "0.1.0",
+      "digest": "blake3:099bb9dc1b0e1fa76ebfe3d67d8b1c0e239e53ec72c88b65e0892bf79f268821"
+    },
+    "publication": {
+      "policy": "disabled",
+      "attribution": "none",
+      "public_output": "none",
+      "suppression": "unhealthy_inconclusive_or_conflict"
+    }
+  }
+}

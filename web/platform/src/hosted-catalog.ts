@@ -300,8 +300,12 @@ export function reviewedInternalActivities(allowedDigests: readonly string[]): r
     activity.listing.value.catalog.visibility !== "public" && allowed.has(activity.listing.digest));
 }
 
-export function reviewedActivityByDigest(digest: string): ReviewedHostedActivity | null {
-  return reviewedByDigest.get(digest) ?? null;
+export function reviewedActivityByDigest(
+  digest: string,
+  additionalActivities: readonly ReviewedHostedActivity[] = [],
+): ReviewedHostedActivity | null {
+  return additionalActivities.find((activity) => activity.listing.digest === digest)
+    ?? reviewedByDigest.get(digest) ?? null;
 }
 
 /**
@@ -313,6 +317,25 @@ export function reviewedPublicViewerClientPath(
   client: Pick<PublicHostedActivity, "publicViewerClientPath">,
 ): string | null {
   return client.publicViewerClientPath;
+}
+
+/** Public option labels and opaque seat keys; exact configuration stays server-side. */
+export function publicRosterOptions(activity: ReviewedHostedActivity) {
+  const schema = activity.listing.value.launch_input_schema;
+  if (schema.accepts === "none") return {};
+  return {
+    rosterOptions: schema.roster_options.map((option) => ({
+      key: option.option_id,
+      label: option.label,
+      seatKeys: option.seat_ids.map((id) => reviewedSeatKey(activity, id)!),
+      creatorSeatKeys: option.seat_ids.filter((id) =>
+        !option.house_agent_assignments.some((assignment) => assignment.seat_id === id)
+        && activity.listing.value.seats.some((seat) => seat.seat_id === id && seat.allowed_participation.includes("account_human")))
+        .map((id) => reviewedSeatKey(activity, id)!),
+      suppliedAgents: option.house_agent_assignments.length,
+    })),
+    defaultRosterOption: schema.defaults.roster_option,
+  };
 }
 
 export function reviewedSeatId(activity: ReviewedHostedActivity, publicKey: string): string | null {

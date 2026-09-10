@@ -539,7 +539,25 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
     ) {
         (None, None) => None,
         (Some(installation_id), Some(authority)) => {
-            let (listings, house_agents) = reviewed_hosted_artifacts()?;
+            let (mut listings, mut house_agents) = reviewed_hosted_artifacts()?;
+            if let Ok(directory) = env::var("WORLDSTREAM_LOCAL_HOSTED_FIXTURE_DIRECTORY") {
+                if env::var("WORLDSTREAM_DEPLOYMENT_ENVIRONMENT").as_deref() != Ok("development")
+                    || env::var("WORLDSTREAM_DEVELOPMENT_FAKE_OPENROUTER").as_deref()
+                        != Ok("visible-local-only")
+                    || env::var("NODE_ENV").as_deref() == Ok("production")
+                    || env::var("VERCEL_ENV").as_deref() == Ok("production")
+                    || !args.bind.ip().is_loopback()
+                    || !args.daemon.ip().is_loopback()
+                {
+                    anyhow::bail!("local hosted fixture requires explicit loopback development");
+                }
+                let (fixture_listings, fixture_agents) =
+                    worldstream_studio_supervisor::hosted_artifacts::read_local_hosted_fixture(
+                        std::path::Path::new(&directory),
+                    )?;
+                listings.extend(fixture_listings);
+                house_agents.extend(fixture_agents);
+            }
             let development_house_provider = development_house_provider_address()?;
             let result_source = if let Some(ownership) = &managed_transport_ownership {
                 HttpHostedResultSourceV1::new_managed(

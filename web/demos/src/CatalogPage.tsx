@@ -166,10 +166,17 @@ function LaunchPanel({
   onNavigate: Navigate;
   session: ReturnType<typeof usePlatformSession>["session"];
 }) {
-  const firstSeat = activity.seats[0]?.key ?? "";
-  const solo = activity.seats.length === 1 && !activity.creatorMaySpectate;
+  const [rosterOption, setRosterOption] = useState(activity.defaultRosterOption);
+  const selectedOption = activity.rosterOptions?.find(({ key }) => key === rosterOption);
+  const selectableSeats = selectedOption === undefined ? activity.seats
+    : activity.seats.filter(({ key }) => selectedOption.creatorSeatKeys.includes(key));
+  const firstSeat = selectableSeats[0]?.key ?? "";
+  const solo = (selectedOption?.seatKeys.length ?? activity.seats.length) === 1 && !activity.creatorMaySpectate;
   const [seat, setSeat] = useState(firstSeat);
   const [fillMode, setFillMode] = useState<"people_only" | "house_agents">(activity.houseFillAvailable ? "house_agents" : "people_only");
+  const chosenFillMode = selectedOption === undefined ? fillMode
+    : selectedOption.suppliedAgents > 0 ? "house_agents" : "people_only";
+  const launchKeyScope = `${activity.slug}${rosterOption === undefined ? "" : `:${rosterOption}`}`;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -186,8 +193,8 @@ function LaunchPanel({
     };
   }, []);
   const idempotencyKey = useMemo(
-    () => retainedLaunchKey(activity.slug, seat, fillMode),
-    [activity.slug, seat, fillMode],
+    () => retainedLaunchKey(launchKeyScope, seat, chosenFillMode),
+    [launchKeyScope, seat, chosenFillMode],
   );
 
   const beginLaunch = async () => {
@@ -199,10 +206,11 @@ function LaunchPanel({
         listingSlug: activity.slug,
         creatorAccess: "seat",
         creatorSeat: seat,
-        fillMode,
+        fillMode: chosenFillMode,
+        ...(rosterOption === undefined ? {} : { rosterOption }),
         idempotencyKey,
       });
-      clearRetainedLaunchKey(activity.slug, seat, fillMode, idempotencyKey);
+      clearRetainedLaunchKey(launchKeyScope, seat, chosenFillMode, idempotencyKey);
       onNavigate(`/launches/${launch.launch_id}`);
     } catch (cause) {
       setError(friendlyError(cause));
@@ -222,12 +230,24 @@ function LaunchPanel({
         <span className="eyebrow">Your next activity / live room</span>
         <h2 id="launch-title">{activity.title}</h2>
         <p className="launch-summary">{activity.description}</p>
-        <p>{solo ? `Play solo as ${activity.seats[0]?.label}.` : "Choose your role and who you want to play with."}</p>
+        <p>{solo ? `Play solo as ${selectableSeats[0]?.label}.` : selectableSeats.length === 1
+          ? `You will participate as ${selectableSeats[0]?.label}.` : "Choose your role and who you want to play with."}</p>
 
-        {!solo ? <fieldset>
+        {activity.rosterOptions !== undefined ? <fieldset>
+          <legend>Choose your participants</legend>
+          <div className="choice-stack">
+            {activity.rosterOptions.map((option) => <label key={option.key}>
+              <input type="radio" name="roster-option" checked={option.key === rosterOption}
+                onChange={() => { setRosterOption(option.key); setSeat(option.creatorSeatKeys[0] ?? ""); }} />
+              <span>{option.label}</span>
+            </label>)}
+          </div>
+        </fieldset> : null}
+
+        {selectableSeats.length > 1 ? <fieldset>
           <legend>Choose your role</legend>
           <div className="choice-grid">
-            {activity.seats.map((candidate) => (
+            {selectableSeats.map((candidate) => (
               <label key={candidate.key} className={seat === candidate.key ? "choice-selected" : ""}>
                 <input type="radio" name="seat" value={candidate.key} checked={seat === candidate.key} onChange={() => setSeat(candidate.key)} />
                 <strong>{candidate.label}</strong>
@@ -237,7 +257,7 @@ function LaunchPanel({
           </div>
         </fieldset> : null}
 
-        {!solo && activity.houseFillAvailable ? <fieldset>
+        {selectedOption === undefined && !solo && activity.houseFillAvailable ? <fieldset>
           <legend>Fill open seats</legend>
           <div className="choice-stack">
             {activity.houseFillAvailable ? <label className={fillMode === "house_agents" ? "choice-selected" : ""}>
@@ -254,7 +274,7 @@ function LaunchPanel({
         <div className="terms-card">
           <strong>Before you join</strong>
           <p>{activity.resultPublication} {activity.attribution}</p>
-          {fillMode === "house_agents" && activity.houseTerms !== null ? (
+          {chosenFillMode === "house_agents" && activity.houseTerms !== null ? (
             <p>
               House Runs are permanent exhibitions. Each House Agent has at most {activity.houseTerms.maximumCallsPerAgent} model calls, {activity.houseTerms.maximumInputTokensPerAgent.toLocaleString()} input tokens, and {activity.houseTerms.maximumOutputTokensPerAgent.toLocaleString()} output tokens.
             </p>

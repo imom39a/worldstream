@@ -97,6 +97,7 @@ enum CatalogReviewStatus {
 #[serde(rename_all = "snake_case")]
 enum LaunchInputKind {
     None,
+    RosterOption,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -105,6 +106,31 @@ struct LaunchInputSchema {
     schema: String,
     accepts: LaunchInputKind,
     defaults: BTreeMap<String, Value>,
+    #[serde(default, deserialize_with = "deserialize_roster_options")]
+    roster_options: Option<Vec<RosterOption>>,
+}
+
+fn deserialize_roster_options<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<RosterOption>>, D::Error> {
+    Vec::<RosterOption>::deserialize(deserializer).map(Some)
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RosterOption {
+    option_id: String,
+    label: String,
+    seat_ids: Vec<String>,
+    configuration: Value,
+    house_agent_assignments: Vec<RosterHouseAssignment>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RosterHouseAssignment {
+    seat_id: String,
+    house_agent_revision_digest: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -242,7 +268,7 @@ pub struct ListingRevision {
 }
 
 impl ListingRevision {
-    /// Reads canonical Listing Revision bytes and enforces every v1 bound.
+    /// Reads canonical Listing Revision bytes and enforces supported input bounds.
     ///
     /// # Errors
     /// Returns a closed contract error for noncanonical, unsupported, malformed,
@@ -645,9 +671,7 @@ fn validate_decimal_price(value: &str) -> Result<(), ContractError> {
 }
 
 fn validate_listing(document: &ListingDocument) -> Result<(), ContractError> {
-    if document.schema != "worldstream/activity-listing-revision/v1"
-        || document.launch_input_schema.schema != "worldstream/launch-input-schema/v1"
-    {
+    if document.schema != "worldstream/activity-listing-revision/v1" {
         return Err(ContractError::Unsupported);
     }
     let _ = (
@@ -658,9 +682,7 @@ fn validate_listing(document: &ListingDocument) -> Result<(), ContractError> {
         document.public_viewing_policy,
         document.result.publication.suppression,
     );
-    if !document.launch_input_schema.defaults.is_empty() {
-        return Err(ContractError::InvalidShape);
-    }
+    validate_roster_options(document)?;
     validate_identifier(&document.listing_id, 128)?;
     validate_version(&document.version)?;
     validate_text(&document.title, 128)?;
@@ -734,6 +756,122 @@ fn validate_listing(document: &ListingDocument) -> Result<(), ContractError> {
         let _ = seat.required;
     }
     Ok(())
+}
+
+fn validate_roster_options(document: &ListingDocument) -> Result<(), ContractError> {
+    let schema = &document.launch_input_schema;
+    match (&*schema.schema, schema.accepts) {
+        ("worldstream/launch-input-schema/v1", LaunchInputKind::None) => {
+            if !schema.defaults.is_empty() || schema.roster_options.is_some() {
+                return Err(ContractError::InvalidShape);
+            }
+            return Ok(());
+        }
+        ("worldstream/launch-input-schema/v2", LaunchInputKind::RosterOption) => {}
+        _ => return Err(ContractError::Unsupported),
+    }
+    let options = schema
+        .roster_options
+        .as_ref()
+        .ok_or(ContractError::InvalidShape)?;
+    if options.is_empty() || options.len() > 16 {
+        return Err(ContractError::Unbounded);
+    }
+    let mut ids = BTreeSet::new();
+    for option in options {
+        validate_seat_label(&option.option_id)?;
+        validate_text(&option.label, 128)?;
+        validate_json(&option.configuration)?;
+        let selected = option.seat_ids.iter().collect::<BTreeSet<_>>();
+        if !ids.insert(&option.option_id)
+            || selected.is_empty()
+            || selected.len() > MAX_SEATS
+            || selected.len() != option.seat_ids.len()
+            || selected
+                .iter()
+                .any(|id| !document.seats.iter().any(|seat| &seat.seat_id == *id))
+            || document
+                .seats
+                .iter()
+                .any(|seat| seat.required && !selected.contains(&seat.seat_id))
+        {
+            return Err(ContractError::InvalidShape);
+        }
+        if option.house_agent_assignments.len() > 2 {
+            return Err(ContractError::Unbounded);
+        }
+        let mut assigned_seats = BTreeSet::new();
+        let mut revisions = BTreeSet::new();
+        for assignment in &option.house_agent_assignments {
+            validate_digest(&assignment.house_agent_revision_digest, "blake3")?;
+            let seat = document
+                .seats
+                .iter()
+                .find(|seat| seat.seat_id == assignment.seat_id)
+                .ok_or(ContractError::InvalidShape)?;
+            if !selected.contains(&assignment.seat_id)
+                || !assigned_seats.insert(&assignment.seat_id)
+                || !revisions.insert(&assignment.house_agent_revision_digest)
+                || !seat
+                    .allowed_participation
+                    .contains(&ParticipationKind::HouseAgentFill)
+                || !seat
+                    .allowed_house_agent_revisions
+                    .contains(&assignment.house_agent_revision_digest)
+            {
+                return Err(ContractError::InvalidShape);
+            }
+        }
+        if selected.iter().any(|id| {
+            !assigned_seats.contains(id)
+                && !document.seats.iter().any(|seat| {
+                    &seat.seat_id == *id
+                        && seat.allowed_participation.iter().any(|kind| {
+                            matches!(
+                                kind,
+                                ParticipationKind::AccountHuman
+                                    | ParticipationKind::AccountExternalAgent
+                            )
+                        })
+                })
+        }) {
+            return Err(ContractError::InvalidShape);
+        }
+    }
+    if schema.defaults.len() != 1
+        || !schema
+            .defaults
+            .get("roster_option")
+            .and_then(Value::as_str)
+            .is_some_and(|id| ids.iter().any(|option_id| option_id.as_str() == id))
+    {
+        return Err(ContractError::InvalidShape);
+    }
+    Ok(())
+}
+
+fn resolve_roster_option<'a>(
+    listing: &'a ListingRevision,
+    inputs: &BTreeMap<String, Value>,
+) -> Result<Option<&'a RosterOption>, ContractError> {
+    match listing.document.launch_input_schema.accepts {
+        LaunchInputKind::None if inputs.is_empty() => Ok(None),
+        LaunchInputKind::RosterOption if inputs.len() == 1 => {
+            let id = inputs
+                .get("roster_option")
+                .and_then(Value::as_str)
+                .ok_or(ContractError::InvalidShape)?;
+            listing
+                .document
+                .launch_input_schema
+                .roster_options
+                .as_ref()
+                .and_then(|options| options.iter().find(|option| option.option_id == id))
+                .map(Some)
+                .ok_or(ContractError::Unsupported)
+        }
+        _ => Err(ContractError::InvalidShape),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -892,11 +1030,12 @@ pub fn derive_room_setup_with_house_agents(
     {
         return Err(ContractError::ReferenceMismatch);
     }
-    if !launch.inputs.is_empty() || roster.members.len() > listing.document.seats.len() {
+    let option = resolve_roster_option(listing, &launch.inputs)?;
+    if roster.members.len() > listing.document.seats.len() {
         return Err(ContractError::InvalidShape);
     }
     validate_public_reference(&launch.creator.principal_reference, 128)?;
-    let (mut members, mut principal_references) = index_frozen_members(roster.members)?;
+    let (members, mut principal_references) = index_frozen_members(roster.members)?;
     validate_house_assignments(&members, house_agents)?;
     let creator_spectator_reference = resolve_creator_spectator(
         listing.document.creator_access,
@@ -905,33 +1044,7 @@ pub fn derive_room_setup_with_house_agents(
         &principal_references,
     )?;
 
-    let mut seats = Vec::with_capacity(listing.document.seats.len());
-    for listed in &listing.document.seats {
-        let member = members.remove(&listed.seat_id);
-        if listed.required && member.is_none() {
-            return Err(ContractError::InvalidShape);
-        }
-        let (display_name, principal, assignment) = match member {
-            None => (listed.display_name.clone(), None, None),
-            Some(member) => {
-                if !listed.allowed_participation.contains(&member.participation) {
-                    return Err(ContractError::Unsupported);
-                }
-                setup_participation(listed, member)?
-            }
-        };
-        seats.push(SetupSeat {
-            label: listed.seat_id.clone(),
-            role: listed.role.clone(),
-            required: listed.required,
-            display_name,
-            principal,
-            assignment,
-        });
-    }
-    if !members.is_empty() {
-        return Err(ContractError::InvalidShape);
-    }
+    let seats = derive_setup_seats(&listing.document, option, members)?;
     let mut spectators = Vec::with_capacity(3);
     append_setup_spectator(
         &mut spectators,
@@ -964,7 +1077,10 @@ pub fn derive_room_setup_with_house_agents(
     let setup = RoomSetupSpecification {
         schema: "worldstream/room-setup/v2",
         pack: listing.document.pack.clone(),
-        configuration: listing.document.room_setup.configuration.clone(),
+        configuration: option.map_or_else(
+            || listing.document.room_setup.configuration.clone(),
+            |option| option.configuration.clone(),
+        ),
         seats,
         spectators,
         operator_view: false,
@@ -974,6 +1090,61 @@ pub fn derive_room_setup_with_house_agents(
         return Err(ContractError::OutputTooLarge);
     }
     Ok(DerivedRoomSetup(bytes))
+}
+
+fn derive_setup_seats(
+    document: &ListingDocument,
+    option: Option<&RosterOption>,
+    mut members: BTreeMap<String, FrozenMember>,
+) -> Result<Vec<SetupSeat>, ContractError> {
+    let mut seats = Vec::with_capacity(document.seats.len());
+    for listed in &document.seats {
+        if option.is_some_and(|option| !option.seat_ids.contains(&listed.seat_id)) {
+            continue;
+        }
+        let member = members.remove(&listed.seat_id);
+        if (listed.required || option.is_some()) && member.is_none() {
+            return Err(ContractError::InvalidShape);
+        }
+        if let (Some(option), Some(member)) = (option, &member) {
+            let assigned = option
+                .house_agent_assignments
+                .iter()
+                .find(|assignment| assignment.seat_id == listed.seat_id);
+            let valid = match assigned {
+                None => member.participation != ParticipationKind::HouseAgentFill,
+                Some(assigned) => {
+                    member.participation == ParticipationKind::HouseAgentFill
+                        && member.house_agent_revision_digest.as_ref()
+                            == Some(&assigned.house_agent_revision_digest)
+                }
+            };
+            if !valid {
+                return Err(ContractError::InvalidShape);
+            }
+        }
+        let (display_name, principal, assignment) = match member {
+            None => (listed.display_name.clone(), None, None),
+            Some(member) => {
+                if !listed.allowed_participation.contains(&member.participation) {
+                    return Err(ContractError::Unsupported);
+                }
+                setup_participation(listed, member)?
+            }
+        };
+        seats.push(SetupSeat {
+            label: listed.seat_id.clone(),
+            role: listed.role.clone(),
+            required: listed.required,
+            display_name,
+            principal,
+            assignment,
+        });
+    }
+    if !members.is_empty() {
+        return Err(ContractError::InvalidShape);
+    }
+    Ok(seats)
 }
 
 fn validate_house_assignments(

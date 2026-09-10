@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { internalCandidateAvailable, readInternalCandidates } from "./hosted-internal-candidates.mjs";
+import { candidateBrowserSeats, internalCandidateAvailable, readInternalCandidates } from "./hosted-internal-candidates.mjs";
 
 test("local candidate availability requires exact running Pack, approved Binding, ready Deployment and served bytes", async () => {
   const [candidate] = await readInternalCandidates();
@@ -58,4 +58,14 @@ test("local candidate availability requires exact running Pack, approved Binding
     await new Promise((done) => server.close(done));
     await rm(root, { recursive: true, force: true });
   }
+});
+
+
+test("browser availability checks only the selected account seats and never a supplied-agent surface", async () => {
+  const { readRosterFixture } = await import("./hosted-roster-fixture.mjs");
+  const { listing } = await readRosterFixture();
+  assert.deepEqual((await candidateBrowserSeats(listing)).map((seat) => seat.seat_id), ["lead"]);
+  assert.deepEqual((await candidateBrowserSeats(listing, { roster_option: "supplied" })).map((seat) => seat.seat_id), ["lead"]);
+  await assert.rejects(candidateBrowserSeats(listing, { roster_option: "unreviewed" }));
+  await assert.rejects(candidateBrowserSeats(listing, { roster_option: "solo", role: "mira" }));
 });

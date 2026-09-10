@@ -1,0 +1,220 @@
+{
+  "schema": "worldstream/roster-fixture-journey/v1",
+  "status": "passed",
+  "execution": "visible-local-controlled-provider-only",
+  "authentication": "visible-local-development-identity",
+  "listing_digest": "blake3:61913551e45b01ffb99ec0fb85b78d92efc9fb49dfd0ec6788b87ed76d93454f",
+  "house_agent_digest": "blake3:92d2c28744483cd38384b993f8fdf2e6ee52e9f9830287e2c4ca485939a2aec2",
+  "pack": {
+    "digest": "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64",
+    "id": "worldstream.midnight-archive",
+    "version": "0.1.0"
+  },
+  "client": {
+    "client_contract": "worldstream/activity-client-protocol/v1",
+    "client_id": "worldstream.midnight-archive.web",
+    "release_digest": "sha256:9be6d6548f2d62baba805ec461b27fbd1021ed0d61fbd0e8ffd1d779616bc534",
+    "surface_id": "midnight-archive-hosted-web"
+  },
+  "runs": [
+    {
+      "option": "solo",
+      "initial": {
+        "active_capacity": 1,
+        "assignments": [],
+        "frozen_roster_digest": "72c64a3ec7e11f7641115b1dfa668ada278960cf496c3f3944aad8b611cb3bde",
+        "indexed_results": 0,
+        "launch_id": "419a9f05-a6ff-43c2-bd28-4b3bde952cff",
+        "launch_input_digest": "6acc4a0f422bbfb96b4741592be77a8a72d89824342944d5f4659485d5d842f4",
+        "memberships": [
+          {
+            "assignment_id": null,
+            "membership_id": "01M25K9V1AG337KCQ38V8QY7SN",
+            "participation_source": "account_human",
+            "principal_id": "1GMKSVDRNXT170RM9F9316G21T",
+            "role": "lead"
+          }
+        ],
+        "pack_revision_digest": "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64",
+        "room_id": "01M25K9V1A0PAF7XG9NAD952NX",
+        "room_setup_specification_digest": "blake3:2999ffbe884671fee80d09f2c5d28dd867dc76c08fa986f6f5e47a58bd5343b0",
+        "roster_option": "solo",
+        "run_id": "54118515-e084-4e2a-9d1a-cf5c7d082f16",
+        "runs_for_launch": 1
+      },
+      "checks": [
+        "authenticated_option_selection",
+        "idempotent_launch",
+        "changed_option_refused",
+        "idempotent_start",
+        "one_genesis",
+        "exact_memberships_assignments",
+        "partial_extraction",
+        "active_capacity_released",
+        "no_public_result",
+        "no_optional_assignment",
+        "same_terminal_membership_reentry"
+      ],
+      "terminal": {
+        "active_capacity": 0,
+        "assignments": [],
+        "frozen_roster_digest": "72c64a3ec7e11f7641115b1dfa668ada278960cf496c3f3944aad8b611cb3bde",
+        "indexed_results": 0,
+        "launch_id": "419a9f05-a6ff-43c2-bd28-4b3bde952cff",
+        "launch_input_digest": "6acc4a0f422bbfb96b4741592be77a8a72d89824342944d5f4659485d5d842f4",
+        "memberships": [
+          {
+            "assignment_id": null,
+            "membership_id": "01M25K9V1AG337KCQ38V8QY7SN",
+            "participation_source": "account_human",
+            "principal_id": "1GMKSVDRNXT170RM9F9316G21T",
+            "role": "lead"
+          }
+        ],
+        "pack_revision_digest": "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64",
+        "room_id": "01M25K9V1A0PAF7XG9NAD952NX",
+        "room_setup_specification_digest": "blake3:2999ffbe884671fee80d09f2c5d28dd867dc76c08fa986f6f5e47a58bd5343b0",
+        "roster_option": "solo",
+        "run_id": "54118515-e084-4e2a-9d1a-cf5c7d082f16",
+        "runs_for_launch": 1
+      },
+      "turns_remaining": 15
+    },
+    {
+      "option": "supplied",
+      "initial": {
+        "active_capacity": 1,
+        "assignments": [
+          {
+            "assignment_id": "a7ca6d07-dc10-4c02-927d-ddff52291eca",
+            "house_agent_revision_digest": "blake3:92d2c28744483cd38384b993f8fdf2e6ee52e9f9830287e2c4ca485939a2aec2",
+            "principal_reference": "house:82a2daed-017e-4234-be8b-a9d7d1860b1d:mira",
+            "profile_id": "qualification-archive-assistant",
+            "profile_revision": "1",
+            "reservation_operation_id": "ddafd227-6ac1-40cf-8a64-4acbbfb07425",
+            "runner_unit_id": "house-05364c7461e95a3b1e1eead7a0ef8037",
+            "seat_id": "mira",
+            "template_id": "qualification-archive-house",
+            "template_revision": "1"
+          }
+        ],
+        "frozen_roster_digest": "54b5105a0cb07d9cb293f1bb30f245c123963987a0f83c2e588a67f3094f02a5",
+        "indexed_results": 0,
+        "launch_id": "82a2daed-017e-4234-be8b-a9d7d1860b1d",
+        "launch_input_digest": "6d3c5ce33be6dc4caf8cae07027fee83e847c393b015fa6ad67111dcace72f42",
+        "memberships": [
+          {
+            "assignment_id": null,
+            "membership_id": "01M25KBKXCD9R1DZ55D3HRXK47",
+            "participation_source": "account_human",
+            "principal_id": "0FCXTE6MHKAWYKYC5DB5Q18WDA",
+            "role": "lead"
+          },
+          {
+            "assignment_id": "a7ca6d07-dc10-4c02-927d-ddff52291eca",
+            "membership_id": "01M25KBKXC0YVFFX6SJ8WZ6K95",
+            "participation_source": "platform_house_agent",
+            "principal_id": "11T0B5CMSNYBZDFC8BT35S9XY0",
+            "role": "mira"
+          }
+        ],
+        "pack_revision_digest": "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64",
+        "room_id": "01M25KBKXCT8AJ1BRZPBC8WVNP",
+        "room_setup_specification_digest": "blake3:30beb966a49ff8b491b05aba08dde8402e197ea1b63b23a3226d9acbc2e1a42a",
+        "roster_option": "supplied",
+        "run_id": "234da3cb-3184-482d-826b-0563442ac773",
+        "runs_for_launch": 1
+      },
+      "checks": [
+        "authenticated_option_selection",
+        "idempotent_launch",
+        "changed_option_refused",
+        "idempotent_start",
+        "one_genesis",
+        "exact_memberships_assignments",
+        "controlled_provider_plan",
+        "two_committed_companion_steps",
+        "partial_extraction",
+        "active_capacity_released",
+        "no_public_result",
+        "one_bounded_provider_attempt",
+        "durable_runner_retirement",
+        "consumed_allowance_preserved_on_reentry",
+        "same_terminal_membership_reentry"
+      ],
+      "terminal": {
+        "active_capacity": 0,
+        "assignments": [
+          {
+            "assignment_id": "a7ca6d07-dc10-4c02-927d-ddff52291eca",
+            "house_agent_revision_digest": "blake3:92d2c28744483cd38384b993f8fdf2e6ee52e9f9830287e2c4ca485939a2aec2",
+            "principal_reference": "house:82a2daed-017e-4234-be8b-a9d7d1860b1d:mira",
+            "profile_id": "qualification-archive-assistant",
+            "profile_revision": "1",
+            "reservation_operation_id": "ddafd227-6ac1-40cf-8a64-4acbbfb07425",
+            "runner_unit_id": "house-05364c7461e95a3b1e1eead7a0ef8037",
+            "seat_id": "mira",
+            "template_id": "qualification-archive-house",
+            "template_revision": "1"
+          }
+        ],
+        "frozen_roster_digest": "54b5105a0cb07d9cb293f1bb30f245c123963987a0f83c2e588a67f3094f02a5",
+        "indexed_results": 0,
+        "launch_id": "82a2daed-017e-4234-be8b-a9d7d1860b1d",
+        "launch_input_digest": "6d3c5ce33be6dc4caf8cae07027fee83e847c393b015fa6ad67111dcace72f42",
+        "memberships": [
+          {
+            "assignment_id": null,
+            "membership_id": "01M25KBKXCD9R1DZ55D3HRXK47",
+            "participation_source": "account_human",
+            "principal_id": "0FCXTE6MHKAWYKYC5DB5Q18WDA",
+            "role": "lead"
+          },
+          {
+            "assignment_id": "a7ca6d07-dc10-4c02-927d-ddff52291eca",
+            "membership_id": "01M25KBKXC0YVFFX6SJ8WZ6K95",
+            "participation_source": "platform_house_agent",
+            "principal_id": "11T0B5CMSNYBZDFC8BT35S9XY0",
+            "role": "mira"
+          }
+        ],
+        "pack_revision_digest": "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64",
+        "room_id": "01M25KBKXCT8AJ1BRZPBC8WVNP",
+        "room_setup_specification_digest": "blake3:30beb966a49ff8b491b05aba08dde8402e197ea1b63b23a3226d9acbc2e1a42a",
+        "roster_option": "supplied",
+        "run_id": "234da3cb-3184-482d-826b-0563442ac773",
+        "runs_for_launch": 1
+      },
+      "execution": {
+        "runner_unit_id": "house-05364c7461e95a3b1e1eead7a0ef8037",
+        "bindings": {
+          "profile_revision_digest": "blake3:1cc22c3bffbfbc73fce6a906e4ed24df87c5b53089512eedc6ab5c0b1e25c1e1",
+          "runner_template_revision_digest": "blake3:34a0c09f255aa2c54877d4984a215a29b86c94b2cc4bf5d97a22d4cfc1f61f97",
+          "executable_digest": "blake3:4c754b0229d31f54ebb4aee3d5be83e502a8cde87366341de4a40bbd87903c23"
+        },
+        "allowance": {
+          "revision_digest": "blake3:92d2c28744483cd38384b993f8fdf2e6ee52e9f9830287e2c4ca485939a2aec2",
+          "consumed_input_units": 10895,
+          "consumed_output_units": 331,
+          "attempts": [
+            {
+              "attempt_digest": "blake3:ea53cfa05c9a4a5951026a834cb805bb3377d6be5a69dcca55d18d56ef6a0f59",
+              "state": "completed",
+              "input_units": 10895,
+              "output_units": 331,
+              "response_digest": "blake3:b87fbc955ee3761ee5aca6d3cfd40ca88092b3ecaa55459a371c464fc6bfe24f"
+            }
+          ]
+        },
+        "retirement": {
+          "schema": "worldstream/house-runner-retirement-receipt/v1",
+          "disposition": "run_terminal",
+          "assignment_id": "a7ca6d07-dc10-4c02-927d-ddff52291eca",
+          "reservation_operation_id": "ddafd227-6ac1-40cf-8a64-4acbbfb07425",
+          "allowance_reset": false
+        }
+      },
+      "turns_remaining": 11
+    }
+  ]
+}

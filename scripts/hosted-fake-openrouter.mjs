@@ -6,7 +6,7 @@ export const DEVELOPMENT_FAKE_OPENROUTER_MODE = "visible-local-only";
 const MAX_BODY_BYTES = 64 * 1024;
 const RESPONSE_TEXT = "DEVELOPMENT_FAKE_RESPONSE";
 
-export function createDevelopmentFakeOpenRouter(environment = process.env) {
+export function createDevelopmentFakeOpenRouter(environment = process.env, { controlledCompletion } = {}) {
   const bind = required(environment, "WORLDSTREAM_FAKE_OPENROUTER_BIND");
   const port = portValue(required(environment, "WORLDSTREAM_FAKE_OPENROUTER_PORT"));
   const apiKey = required(environment, "WORLDSTREAM_DEVELOPMENT_OPENROUTER_KEY");
@@ -16,7 +16,7 @@ export function createDevelopmentFakeOpenRouter(environment = process.env) {
     bind,
     port,
     server: createServer((request, response) => {
-      void dispatch(request, response, apiKey, state);
+      void dispatch(request, response, apiKey, state, controlledCompletion);
     }),
   };
 }
@@ -36,7 +36,7 @@ export function assertDevelopmentFakeOpenRouterAllowed(environment, bind, apiKey
   }
 }
 
-async function dispatch(request, response, apiKey, state) {
+async function dispatch(request, response, apiKey, state, controlledCompletion) {
   response.setHeader("x-worldstream-development-substitute", "fake-openrouter");
   response.setHeader("cache-control", "no-store");
   if (request.method === "GET" && request.url === "/healthz") {
@@ -72,7 +72,7 @@ async function dispatch(request, response, apiKey, state) {
     return json(response, 400, error("invalid_request"));
   }
   if (!validCompletion(input)) return json(response, 400, error("invalid_request"));
-  const house = deterministicHouseCompletion(input);
+  const house = controlledCompletion?.(input) ?? deterministicHouseCompletion(input);
   state.completionCount += 1;
   if (house !== null) state.houseCompletionCount += 1;
   const content = house?.content ?? RESPONSE_TEXT;

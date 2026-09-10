@@ -55,7 +55,7 @@ export interface HouseFillReservation {
   readonly reservationOperationId: string;
   readonly seatId: string;
   readonly houseAgentRevisionDigest: string;
-  readonly state: "pending" | "ambiguous" | "succeeded" | "terminal_failed";
+  readonly state: "pending" | "ambiguous" | "succeeded" | "terminal_failed" | "released";
 }
 
 export interface HouseFillRecord {

@@ -89,6 +89,41 @@ pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAge
     Ok((listings, house_agents))
 }
 
+/// Reads a bounded, explicitly selected local qualification fixture. This does
+/// not approve its Pack, Profiles, Runner Templates, credentials, or client.
+///
+/// # Errors
+/// Rejects symlinks, oversized files, public Listings, and invalid contracts.
+pub fn read_local_hosted_fixture(
+    directory: &std::path::Path,
+) -> Result<(Vec<ListingRevision>, Vec<HouseAgentRevision>)> {
+    fn read(directory: &std::path::Path, name: &str) -> Result<Vec<u8>> {
+        let path = directory.join(name);
+        let metadata = std::fs::symlink_metadata(&path)?;
+        anyhow::ensure!(
+            metadata.is_file() && metadata.len() <= 262_144,
+            "invalid fixture file"
+        );
+        Ok(CanonicalJsonV1::parse(&std::fs::read(path)?)?.to_bytes()?)
+    }
+    let listing_bytes = read(directory, "listing.json")?;
+    let value: serde_json::Value = serde_json::from_slice(&listing_bytes)?;
+    anyhow::ensure!(
+        value["catalog"]["visibility"] == "private" || value["catalog"]["visibility"] == "unlisted",
+        "fixture cannot be public"
+    );
+    let listing = ListingRevision::from_canonical_bytes(&listing_bytes)?;
+    let mut agents = Vec::new();
+    for name in ["house-agent-1.json", "house-agent-2.json"] {
+        if directory.join(name).try_exists()? {
+            agents.push(HouseAgentRevision::from_canonical_bytes(&read(
+                directory, name,
+            )?)?);
+        }
+    }
+    Ok((vec![listing], agents))
+}
+
 #[cfg(test)]
 mod tests {
     use super::reviewed_hosted_artifacts;

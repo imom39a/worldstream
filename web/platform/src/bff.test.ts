@@ -1904,3 +1904,58 @@ test("development identity substitute fails closed outside loopback development"
     else process.env.NODE_ENV = priorNodeEnvironment;
   }
 });
+
+test("reviewed roster choices expose labels and freeze only exact option input through authenticated API", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { encodeCanonical } = await import("@worldstream/pack-sdk");
+  const { readListingRevision, resolveRosterOption } = await import("@worldstream/hosted-contract");
+  const { reviewedActivityByDigest } = await import("./hosted-catalog.js");
+  const listing = readListingRevision(encodeCanonical(JSON.parse(readFileSync(
+    new URL("../../../fixtures/hosted-contract/valid/roster-options-listing.json", import.meta.url), "utf8"))));
+  const base = reviewedActivityByDigest(MIDNIGHT_ARCHIVE_LISTING_DIGEST)!;
+  const reviewed = { ...base, slug: "roster-test", listing, public: { ...base.public,
+    slug: "roster-test", houseFillAvailable: true,
+    seats: listing.value.seats.map((seat, index) => ({ key: `seat-${index + 1}`, label: seat.display_name, required: seat.required })),
+  } };
+  const accepted: Array<Parameters<HostedFormationData["createLaunchRequest"]>[0]> = [];
+  const launchId = "d8000000-0000-4000-8000-000000000001";
+  const data = {
+    createLaunchRequest: async (input: Parameters<HostedFormationData["createLaunchRequest"]>[0]) => {
+      accepted.push(input);
+      return { launchRequestId: launchId, state: "collecting_roster", expiresAt: "2099-01-01T00:00:00Z", wasCreated: true };
+    },
+    readLaunchRequest: async () => {
+      const input = accepted.at(-1)!;
+      const option = resolveRosterOption(listing, JSON.parse(new TextDecoder().decode(input.canonicalLaunchInput)))!;
+      return { launchRequestId: launchId, listingRevisionDigest: listing.digest, state: "collecting_roster", expiresAt: "2099-01-01T00:00:00Z",
+        creatorAccessChoice: "seat", creatorSeatId: "lead", houseFillChoice: input.houseFillChoice, rosterFrozen: false, canManage: true,
+        seats: option.seat_ids.map((id) => ({ seatId: id, displayName: id, required: true, participationKind: id === "lead" ? "account_human" : null,
+          claimedByRequester: id === "lead", claimed: id === "lead" })) };
+    },
+    readHouseFill: async () => null,
+  } as unknown as HostedFormationData;
+  const { bff } = harness(undefined, undefined, undefined, {
+    reviewedActivities: [reviewed], internalCandidateListingDigests: [listing.digest], hostedActivityAvailable: async () => true,
+    hostedFormationData: data, hostedFormationGateway: {} as HostedFormationGateway,
+    hostedFormationHostInstallationId: "roster-test", hostedBrowserSessions: {} as HostedBrowserSessionClient,
+  });
+  const signedIn = await signIn(bff);
+  const token = await csrf(bff, signedIn.sessionCookie);
+  const catalog = await bff.fetch(new Request(`${ORIGIN}/api/catalog/internal`, { headers: { cookie: `__Host-worldstream-session=${signedIn.sessionCookie}` } }));
+  const summary = (await catalog.json()).activities.find((activity: { slug: string }) => activity.slug === "roster-test");
+  assert.deepEqual(summary.rosterOptions.map((option: { label: string }) => option.label), ["Solo", "One supplied agent", "Other supplied agent", "Two supplied agents"]);
+  assert.equal(JSON.stringify(summary).includes("house_agent_revision_digest"), false);
+  assert.equal(JSON.stringify(summary).includes("configuration"), false);
+  const body = { listing_slug: "roster-test", creator_access: "seat", creator_seat: "seat-1", fill_mode: "people_only", idempotency_key: "r".repeat(32), roster_option: "solo" };
+  for (const invalid of [null, { ...body, roster_option: "unreviewed" }, { ...body, roster_option: "first" },
+    { ...body, creator_seat: "seat-2" }, { ...body, provider: "arbitrary" }, { ...body, listing_slug: "agent-heist" }]) {
+    assert.equal((await bff.fetch(mutation("/api/launches", signedIn.sessionCookie, token, JSON.stringify(invalid)))).status, 400);
+  }
+  assert.equal(accepted.length, 0);
+  for (const [option, fill] of [["solo", "people_only"], ["first", "house_agents"]]) {
+    const response = await bff.fetch(mutation("/api/launches", signedIn.sessionCookie, token, JSON.stringify({ ...body, roster_option: option, fill_mode: fill })));
+    assert.equal(response.status, 201);
+    assert.deepEqual(JSON.parse(new TextDecoder().decode(accepted.at(-1)!.canonicalLaunchInput)), { roster_option: option });
+    assert.equal(accepted.at(-1)!.listingRevisionDigest, listing.digest);
+  }
+});

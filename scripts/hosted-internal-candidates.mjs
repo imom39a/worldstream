@@ -58,7 +58,7 @@ export async function internalCandidateAvailable(options) {
     const deployments = await records(join(root, "deployments"));
     const bindings = await records(join(root, "bindings"));
     const expectedUrl = new URL(candidate.surface.entrypoint, options.clientOrigin).href;
-    for (const seat of candidate.listing.value.seats) {
+    for (const seat of await candidateBrowserSeats(candidate.listing, options.launchInputs)) {
       let selectable = false;
       for (const binding of bindings) {
         if (binding.pack.digest !== candidate.listing.value.pack.digest
@@ -95,6 +95,16 @@ export async function internalCandidateAvailable(options) {
   }
 }
 
+/** Browser readiness belongs only to the selected account seats, never supplied agents. */
+export async function candidateBrowserSeats(listing, inputs) {
+  const { resolveRosterOption } = await import(pathToFileURL(resolve(repository, "sdk/typescript-hosted-contract/dist/index.js")));
+  const option = resolveRosterOption(listing, inputs ?? listing.value.launch_input_schema.defaults);
+  return listing.value.seats.filter((seat) =>
+    seat.allowed_participation.some((kind) => kind === "account_human" || kind === "account_external_agent")
+    && (option === null || (option.seat_ids.includes(seat.seat_id)
+      && !option.house_agent_assignments.some((assignment) => assignment.seat_id === seat.seat_id))));
+}
+
 async function records(directory) {
   const names = (await readdir(directory)).filter((name) => name.endsWith(".json"));
   if (names.length > 128) throw new Error("unbounded_client_inventory");
@@ -115,8 +125,9 @@ function repositoryPath(value) {
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === resolve(import.meta.filename)) {
-  const [ctl, config, stateDirectory, controller, clientOrigin, clientHostOrigin, listingDigest] = process.argv.slice(2);
+  const [ctl, config, stateDirectory, controller, clientOrigin, clientHostOrigin, listingDigest, launchInputs] = process.argv.slice(2);
   process.stdout.write(JSON.stringify({ available: await internalCandidateAvailable({
     ctl, config, stateDirectory, controller, clientOrigin, clientHostOrigin, listingDigest,
+    ...(launchInputs === undefined ? {} : { launchInputs: JSON.parse(launchInputs) }),
   }) }));
 }

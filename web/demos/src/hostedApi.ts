@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 
 export interface HostedActivitySummary {
+  readonly rosterOptions?: readonly {
+    readonly key: string;
+    readonly label: string;
+    readonly seatKeys: readonly string[];
+    readonly creatorSeatKeys: readonly string[];
+    readonly suppliedAgents: number;
+  }[];
+  readonly defaultRosterOption?: string;
   readonly slug: string;
   readonly title: string;
   readonly description: string;
@@ -262,6 +270,7 @@ export async function readMyGames(cursor?: MyGamesIndex["next"]): Promise<MyGame
 export async function createLaunch(
   csrf: string,
   input: {
+    readonly rosterOption?: string;
     readonly listingSlug: string;
     readonly creatorAccess: "seat" | "spectator";
     readonly creatorSeat: string | null;
@@ -270,6 +279,7 @@ export async function createLaunch(
   },
 ): Promise<HostedLaunch> {
   return mutateLaunch("/api/launches", csrf, {
+    ...(input.rosterOption === undefined ? {} : { roster_option: input.rosterOption }),
     listing_slug: input.listingSlug,
     creator_access: input.creatorAccess,
     creator_seat: input.creatorSeat,

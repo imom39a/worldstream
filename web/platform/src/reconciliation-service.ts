@@ -30,6 +30,7 @@ export function createHostedResultReconciler(input: {
   readonly dataSecretKey: string;
   readonly hostedGatewayUrl: string;
   readonly serviceAuthority: string;
+  readonly projectors?: ResultReconcilerDependencies["projectors"];
 }): ResultReconcilerDependencies {
   return {
     data: createSupabaseResultReconciliationData(
@@ -44,7 +45,7 @@ export function createHostedResultReconciler(input: {
       baseUrl: input.hostedGatewayUrl,
       serviceAuthority: input.serviceAuthority,
     }),
-    projectors: new PinnedResultProjectorRegistry(hostedProjectorArtifactBundles.map((bundle) => ({
+    projectors: input.projectors ?? new PinnedResultProjectorRegistry(hostedProjectorArtifactBundles.map((bundle) => ({
       listingBytes: decode(bundle.listingBase64),
       projectorBytes: decode(bundle.projectorBase64),
       runtimeBytes: decode(bundle.runtimeBase64),

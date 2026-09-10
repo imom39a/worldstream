@@ -1278,6 +1278,7 @@ function parseHouseFill(value: unknown): HouseFillRecord | null {
         "ambiguous",
         "succeeded",
         "terminal_failed",
+        "released",
       ]),
     })),
     assignments: requiredRecords(operation.assignments).map((assignment) => ({

@@ -9,7 +9,9 @@ import {
   createDevelopmentPlatformBff,
   DEVELOPMENT_IDENTITY_MODE,
   type PlatformBff,
+  type BffDependencies,
 } from "./bff.js";
+import type { ResultReconcilerDependencies } from "./result-reconciliation.js";
 import { HttpHostedBrowserSessionClient } from "./browser-sessions.js";
 import {
   HostedFormationCoordinator,
@@ -20,10 +22,14 @@ import {
   withHostedResultReconciliation,
 } from "./reconciliation-service.js";
 import { createSupabaseBffDependencies } from "./supabase.js";
+import { reviewedActivityByDigest } from "./hosted-catalog.js";
 
 const MAX_HTTP_BODY_BYTES = 32 * 1024;
 
-export function createDevelopmentPlatformServer(environment = process.env) {
+export function createDevelopmentPlatformServer(environment = process.env, qualification: {
+  readonly internalCandidates?: Pick<BffDependencies, "internalCandidateListingDigests" | "hostedActivityAvailable" | "reviewedActivities">;
+  readonly projectors?: ResultReconcilerDependencies["projectors"];
+} = {}) {
   const bind = required(environment, "WORLDSTREAM_PLATFORM_BIND");
   if (bind !== "127.0.0.1") throw new Error("development_platform_bind_must_be_loopback");
   const port = portValue(environment.WORLDSTREAM_PLATFORM_PORT ?? "3000");
@@ -37,6 +43,10 @@ export function createDevelopmentPlatformServer(environment = process.env) {
   const hostedFormation = hostedFormationDependencies(environment, dependencies);
   const hostedPublicStreamBaseUrl =
     environment.WORLDSTREAM_LOCAL_BROWSER_STREAM_URL ?? environment.WORLDSTREAM_HOSTED_GATEWAY_URL;
+  const internalCandidates: Pick<BffDependencies,
+    "internalCandidateListingDigests" | "hostedActivityAvailable" | "reviewedActivities"
+  > = qualification.internalCandidates ?? localInternalCandidates(environment, canonicalOrigin);
+  const resolveReviewedActivity = (digest: string) => reviewedActivityByDigest(digest, internalCandidates.reviewedActivities);
   const platform = createDevelopmentPlatformBff(
     {
       canonicalOrigin,
@@ -56,7 +66,7 @@ export function createDevelopmentPlatformServer(environment = process.env) {
     hostedBrowserSessions,
     hostedFormation,
     hostedPublicStreamBaseUrl,
-    localInternalCandidates(environment, canonicalOrigin),
+    internalCandidates,
   );
   const serviceAuthority = environment.WORLDSTREAM_VERCEL_SERVICE_AUTHORITY;
   const hostedGatewayUrl = environment.WORLDSTREAM_HOSTED_GATEWAY_URL;
@@ -69,6 +79,7 @@ export function createDevelopmentPlatformServer(environment = process.env) {
           dataSecretKey: required(environment, "SUPABASE_DATA_SECRET_KEY"),
           hostedGatewayUrl,
           serviceAuthority,
+          ...(qualification.projectors === undefined ? {} : { projectors: qualification.projectors }),
         }),
         hostedFormation === undefined
           ? undefined
@@ -82,11 +93,13 @@ export function createDevelopmentPlatformServer(environment = process.env) {
                 hostedFormation.data,
                 hostedFormation.gateway,
                 hostedFormation.hostInstallationId,
+                resolveReviewedActivity,
               ).recover(launchId),
               abandonPrestart: (launchId: string) => new HostedFormationCoordinator(
                 hostedFormation.data,
                 hostedFormation.gateway,
                 hostedFormation.hostInstallationId,
+                resolveReviewedActivity,
               ).abandonPrestart(launchId),
             },
       );
@@ -113,9 +126,9 @@ function localInternalCandidates(environment: NodeJS.ProcessEnv, canonicalOrigin
   ];
   return {
     internalCandidateListingDigests: digests.split(","),
-    hostedActivityAvailable: async (digest: string) => {
+    hostedActivityAvailable: async (digest: string, launchInputs?: Readonly<Record<string, string>>) => {
       if (!digests.split(",").includes(digest)) return false;
-      const { stdout } = await execute(process.execPath, [script, ...args, digest], {
+      const { stdout } = await execute(process.execPath, [script, ...args, digest, ...(launchInputs === undefined ? [] : [JSON.stringify(launchInputs)])], {
         timeout: 15_000, maxBuffer: 16_384,
       });
       return JSON.parse(stdout).available === true;
