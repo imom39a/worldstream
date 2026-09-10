@@ -8,7 +8,7 @@ FROM ${WORLDSTREAM_RUST_BUILDER_IMAGE} AS builder
 ARG SOURCE_REVISION
 WORKDIR /src
 COPY . .
-RUN WORLDSTREAM_BUILD_REVISION="${SOURCE_REVISION}" cargo build --locked --release \
+RUN WORLDSTREAM_BUILD_REVISION="${SOURCE_REVISION}" cargo build --locked --release --jobs 1 \
       -p worldstream-server \
       -p worldstream-studio-supervisor \
       -p worldstream-hosted-gateway \
