@@ -38,6 +38,10 @@ async function main() {
     ...hostedSmokeClientAssets(REPOSITORY_ROOT, assetRoot).map(({ source, destination }) =>
       copyFile(source, destination)),
     copyFile(
+      join(REPOSITORY_ROOT, "packs", "midnight-archive", "releases", "0.1.0", "worldstream-midnight-archive-de3cd1d9fa45087b69cb107a663596305864c350f620fe4d7260e0341214d47a.wspack"),
+      join(assetRoot, "midnight-archive.wspack"),
+    ),
+    copyFile(
       join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "inspector-web-v2.json"),
       join(assetRoot, "inspector-web.json"),
     ),
@@ -155,6 +159,9 @@ export function hostedSmokeClientAssets(repositoryRoot, assetRoot) {
     ["agent-heist-web-v9.json", "agent-heist-web.json"],
     ["agent-heist-web-v8.json", "agent-heist-web-v8.json"],
     ["agent-heist-web-v7.json", "agent-heist-web-v7.json"],
+    ["midnight-archive-web-v13.json", "midnight-archive-web.json"],
+    ["midnight-archive-web-v12.json", "midnight-archive-web-v12.json"],
+    ["midnight-archive-web-v10.json", "midnight-archive-web-v10.json"],
   ].map(([release, installed]) => ({
     source: join(repositoryRoot, "config", "activity-clients", "releases", release),
     destination: join(assetRoot, installed),

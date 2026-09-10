@@ -733,6 +733,54 @@ test("the HTTP formation boundary requires an explicit setup-complete flag", asy
   }
 });
 
+test("the HTTP formation boundary reads exact activity availability without mutation", async () => {
+  const digest = `blake3:${"a".repeat(64)}`;
+  const requests: Array<{ url: URL; init: RequestInit | undefined }> = [];
+  const gateway = new HttpHostedFormationGateway({
+    baseUrl: "https://gateway.example",
+    serviceAuthority: "test-service-authority-with-at-least-32-characters",
+    fetchImplementation: async (url, init) => {
+      requests.push({ url: new URL(String(url)), init });
+      return Response.json({
+        schema: "worldstream/hosted-activity-availability/v1",
+        listing_revision_digest: digest,
+        available: true,
+      });
+    },
+  });
+  assert.equal(await gateway.activityAvailable(digest), true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.init?.method, "GET");
+  assert.equal(requests[0]?.init?.body, undefined);
+  assert.equal(requests[0]?.init?.cache, "no-store");
+  assert.equal(
+    decodeURIComponent(requests[0]?.url.pathname ?? ""),
+    `/v1/hosted/activities/${digest}/availability`,
+  );
+  assert.equal(
+    new Headers(requests[0]?.init?.headers).get("authorization"),
+    "Bearer test-service-authority-with-at-least-32-characters",
+  );
+  await assert.rejects(
+    () => gateway.activityAvailable(`blake3:${"A".repeat(64)}`),
+    /invalid_listing_identity/u,
+  );
+  assert.equal(requests.length, 1, "invalid identities never reach the Gateway");
+
+  for (const body of [
+    { schema: "worldstream/hosted-activity-availability/v1", listing_revision_digest: digest },
+    { schema: "worldstream/hosted-activity-availability/v1", listing_revision_digest: `blake3:${"b".repeat(64)}`, available: true },
+    { schema: "worldstream/hosted-activity-availability/v1", listing_revision_digest: digest, available: true, extra: true },
+  ]) {
+    const malformed = new HttpHostedFormationGateway({
+      baseUrl: "https://gateway.example",
+      serviceAuthority: "test-service-authority-with-at-least-32-characters",
+      fetchImplementation: async () => Response.json(body),
+    });
+    await assert.rejects(() => malformed.activityAvailable(digest), /invalid_gateway_response/u);
+  }
+});
+
 test("recovery fences only an exact missing read followed by an exact replay conflict", async () => {
   const data = new HumanFormationData();
   const initial = new RecordingGateway();

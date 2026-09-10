@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { Buffer } from "node:buffer";
 import { test } from "vitest";
 
+import { MIDNIGHT_ARCHIVE_LISTING_DIGEST } from "./hosted-catalog.js";
 import { createProductionPlatformBff } from "./production.js";
 
 function productionEnvironment(): NodeJS.ProcessEnv {
@@ -54,6 +55,14 @@ test("production Vercel function exposes the HTTP catalog without a WebSocket fa
 });
 
 test("production construction rejects development substitutes and malformed keys", () => {
+  assert.doesNotThrow(() => createProductionPlatformBff({
+    ...productionEnvironment(),
+    WORLDSTREAM_INTERNAL_CANDIDATE_LISTING_DIGEST: MIDNIGHT_ARCHIVE_LISTING_DIGEST,
+  }));
+  assert.throws(() => createProductionPlatformBff({
+    ...productionEnvironment(),
+    WORLDSTREAM_INTERNAL_CANDIDATE_LISTING_DIGEST: `blake3:${"a".repeat(64)}`,
+  }), /invalid_internal_candidate_listing_digest/u);
   assert.throws(() => createProductionPlatformBff({
     ...productionEnvironment(),
     WORLDSTREAM_DEVELOPMENT_FAKE_OPENROUTER: "visible-local-only",

@@ -211,7 +211,7 @@ export interface BffDependencies {
   readonly hostedFormationHostInstallationId?: string;
   /** Exact nonpublic Listing revisions enabled for this internal deployment. */
   readonly internalCandidateListingDigests?: readonly string[];
-  /** Checks the exact approved Pack, client release, surface and Client Binding. */
+  /** Non-mutating deployment check for one exact Listing and resolved launch inputs. */
   readonly hostedActivityAvailable?: (listingRevisionDigest: string, launchInputs?: Readonly<Record<string, string>>) => Promise<boolean>;
 }
 
@@ -588,11 +588,10 @@ async function createHostedLaunch(
   const reviewed = dependencies.reviewedActivities?.find(({ slug }) => slug === admitted.body.listing_slug)
     ?? reviewedActivityBySlug(admitted.body.listing_slug);
   if (reviewed === null) return privateError(409, "activity_unavailable");
-  if (reviewed.listing.value.catalog.visibility !== "public" && (
-    !dependencies.internalCandidateListingDigests?.includes(reviewed.listing.digest)
-    || (reviewed.listing.value.launch_input_schema.accepts === "none"
-      && !await exactActivityAvailable(dependencies, reviewed.listing.digest))
-  )) return privateError(409, "activity_unavailable");
+  if (reviewed.listing.value.catalog.visibility !== "public"
+    && !dependencies.internalCandidateListingDigests?.includes(reviewed.listing.digest)) {
+    return privateError(409, "activity_unavailable");
+  }
   const creatorAccess = admitted.body.creator_access;
   if (creatorAccess !== "seat" && creatorAccess !== "spectator") {
     return privateError(400, "invalid_request");
@@ -626,7 +625,7 @@ async function createHostedLaunch(
         || option.house_agent_assignments.some((assignment) => assignment.seat_id === seatId)))
       || (option.house_agent_assignments.length > 0) !== (houseFillChoice === "fill_unclaimed")
     )) return privateError(400, "invalid_request");
-    if (option !== null && reviewed.listing.value.catalog.visibility !== "public"
+    if (reviewed.listing.value.catalog.visibility !== "public"
       && !await exactActivityAvailable(dependencies, reviewed.listing.digest, inputs)) {
       return privateError(409, "activity_unavailable");
     }

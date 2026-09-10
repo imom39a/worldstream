@@ -60,6 +60,7 @@ export function hostedRuntimeLayout(environment = process.env) {
     recoveryFence: join(volumeRoot, "maintenance", "recovery-house-calls-fenced"),
     retainedRunnerRoot: join(volumeRoot, "retained-runner-executables"),
     generatedRoot: join(ephemeralRoot, "generated"),
+    initializationImportReceipt: join(ephemeralRoot, "generated", "initialization-import-apply.json"),
     runtimeConfig: join(ephemeralRoot, "worldstream.toml"),
     authoritySecret: requiredPath(environment, "WORLDSTREAM_AUTHORITY_BOOTSTRAP_SECRET_FILE"),
     controllerAuthority: requiredPath(
@@ -76,6 +77,10 @@ export function hostedRuntimeLayout(environment = process.env) {
     clientRelease: join(assetRoot, "agent-heist-web.json"),
     retainedClientReleaseV8: join(assetRoot, "agent-heist-web-v8.json"),
     retainedClientRelease: join(assetRoot, "agent-heist-web-v7.json"),
+    archiveClientRelease: join(assetRoot, "midnight-archive-web.json"),
+    retainedArchiveClientReleaseV12: join(assetRoot, "midnight-archive-web-v12.json"),
+    retainedArchiveClientReleaseV10: join(assetRoot, "midnight-archive-web-v10.json"),
+    archivePackBundle: join(assetRoot, "midnight-archive.wspack"),
     inspectorRelease: join(assetRoot, "inspector-web.json"),
     clientBindings: join(assetRoot, "activity-client-bindings.json"),
   };
@@ -367,6 +372,10 @@ async function prepareLayout(layout) {
     layout.clientRelease,
     layout.retainedClientReleaseV8,
     layout.retainedClientRelease,
+    layout.archiveClientRelease,
+    layout.retainedArchiveClientReleaseV12,
+    layout.retainedArchiveClientReleaseV10,
+    layout.archivePackBundle,
     layout.inspectorRelease,
     layout.clientBindings,
     layout.authoritySecret,
@@ -401,7 +410,8 @@ async function initializeInstallation(layout, controllerAuthority) {
   if (typeof digest !== "string" || !/^blake3:[0-9a-f]{64}$/u.test(digest)) {
     throw new Error("initialization_review_invalid");
   }
-  await ctl(layout, [...selected, "--approve-imports", digest], controllerAuthority);
+  const applied = await ctl(layout, [...selected, "--approve-imports", digest], controllerAuthority);
+  await writeJson(layout.initializationImportReceipt, applied);
 }
 
 async function writeInitializationImports(layout) {
@@ -439,7 +449,7 @@ async function writeInitializationImports(layout) {
   const archiveProfiles = renderArchiveHouseAgentProfiles();
   const mira = await writeJson(join(layout.generatedRoot, "midnight-archive-mira.json"), archiveProfiles.mira);
   const jonah = await writeJson(join(layout.generatedRoot, "midnight-archive-jonah.json"), archiveProfiles.jonah);
-  const client = await writeClientImport(layout);
+  const client = await writeHostedClientImport(layout);
   return { runner, archiveRunner, provider, cooperative, skeptical, mira, jonah, client };
 }
 
@@ -500,10 +510,12 @@ export function renderArchiveHouseAgentProfiles() {
   return { mira, jonah };
 }
 
-async function writeClientImport(layout) {
+export async function writeHostedClientImport(
+  layout,
+  clientOrigin = process.env.WORLDSTREAM_HOSTED_CLIENT_ORIGIN,
+) {
   const fallbackDirectory = join(layout.controllerState, "client-bindings", "inspector-fallback");
   const bindings = await readJson(layout.clientBindings);
-  const clientOrigin = process.env.WORLDSTREAM_HOSTED_CLIENT_ORIGIN;
   let fallback = bindings.inspector_fallback;
   let inspectorDeployment = bindings.deployments?.find(
     (candidate) => candidate.client_id === "worldstream.inspector.web",
@@ -536,13 +548,19 @@ async function writeClientImport(layout) {
   const heistDeployments = bindings.deployments?.filter(
     (candidate) => candidate.client_id === "worldstream.agent-heist.web",
   );
+  const archiveDeployments = bindings.deployments?.filter(
+    (candidate) => candidate.client_id === "worldstream.midnight-archive.web",
+  );
   if (
     fallback === undefined ||
     inspectorDeployment === undefined ||
     !Array.isArray(inspectorDeployment.surfaces) ||
     !Array.isArray(heistDeployments) ||
     heistDeployments.length !== 3 ||
-    heistDeployments.some((deployment) => !Array.isArray(deployment.surfaces))
+    heistDeployments.some((deployment) => !Array.isArray(deployment.surfaces)) ||
+    !Array.isArray(archiveDeployments) ||
+    archiveDeployments.length !== 3 ||
+    archiveDeployments.some((deployment) => !Array.isArray(deployment.surfaces))
   ) {
     throw new Error("hosted_client_deployment_invalid");
   }
@@ -569,7 +587,23 @@ async function writeClientImport(layout) {
       ).toString(),
     }));
   }
-  bindings.deployments = [inspectorDeployment, ...heistDeployments];
+  const archiveReleases = [
+    await readJson(layout.archiveClientRelease),
+    await readJson(layout.retainedArchiveClientReleaseV12),
+    await readJson(layout.retainedArchiveClientReleaseV10),
+  ];
+  for (const deployment of archiveDeployments) {
+    const release = archiveReleases.find((candidate) => candidate.release_digest === deployment.release_digest);
+    if (release === undefined) throw new Error("hosted_archive_client_release_invalid");
+    deployment.surfaces = deployment.surfaces.map((surface) => ({
+      ...surface,
+      launch_url: new URL(
+        release.surfaces.find((candidate) => candidate.surface_id === surface.surface_id).entrypoint,
+        clientOrigin,
+      ).toString(),
+    }));
+  }
+  bindings.deployments = [inspectorDeployment, ...heistDeployments, ...archiveDeployments];
   bindings.inspector_fallback = fallback;
   const retainedInspector = await writeJson(
     join(layout.generatedRoot, "retained-inspector-web.json"),
@@ -587,13 +621,33 @@ async function writeClientImport(layout) {
     join(layout.generatedRoot, "agent-heist-web-v7.json"),
     heistReleases[2],
   );
+  const archiveRelease = await writeJson(
+    join(layout.generatedRoot, "midnight-archive-web.json"),
+    archiveReleases[0],
+  );
+  const retainedArchiveReleaseV12 = await writeJson(
+    join(layout.generatedRoot, "midnight-archive-web-v12.json"),
+    archiveReleases[1],
+  );
+  const retainedArchiveReleaseV10 = await writeJson(
+    join(layout.generatedRoot, "midnight-archive-web-v10.json"),
+    archiveReleases[2],
+  );
   const bindingFile = await writeJson(
     join(layout.generatedRoot, "hosted-client-bindings.json"),
     bindings,
   );
   return writeJson(join(layout.generatedRoot, "hosted-client-import.json"), {
     schema: "worldstream/client-declaration-import/v1",
-    release_files: [heistRelease, retainedHeistRelease, legacyHeistRelease, retainedInspector],
+    release_files: [
+      heistRelease,
+      retainedHeistRelease,
+      legacyHeistRelease,
+      archiveRelease,
+      retainedArchiveReleaseV12,
+      retainedArchiveReleaseV10,
+      retainedInspector,
+    ],
     bindings_file: bindingFile,
   });
 }

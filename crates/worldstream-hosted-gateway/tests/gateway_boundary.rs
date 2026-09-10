@@ -148,8 +148,48 @@ fn native_handoff_trace_probe() {
     }
 }
 
+#[test]
+fn fixed_adapter_reads_exact_activity_availability_without_launching() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("owned loopback fixture");
+    let address = listener.local_addr().expect("fixture address");
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("one upstream request");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("bounded fixture read");
+        let (path, authorization, body, mut stream) = read_request(stream);
+        assert_eq!(path, "POST /api/v1/hosted-activities:availability HTTP/1.1");
+        assert_eq!(authorization, format!("Bearer {TOKEN}"));
+        assert!(CanonicalJsonV1::from_canonical_bytes(&body).is_ok());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).expect("availability request"),
+            json!({
+                "schema":"worldstream/hosted-activity-availability-request/v1",
+                "listing_revision_digest":LISTING
+            })
+        );
+        let response = json!({
+            "schema":"worldstream/hosted-activity-availability/v1",
+            "listing_revision_digest":LISTING,
+            "available":true
+        })
+        .to_string();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+            response.len()
+        )
+        .expect("fixture response");
+    });
+    let backend = FixedHostAdapterBackend::new(address, TOKEN.to_owned(), Duration::from_secs(2))
+        .expect("literal adapter");
+    assert_eq!(backend.activity_available(LISTING), Ok(true));
+    server.join().expect("one availability read");
+}
+
 #[derive(Clone, Default)]
 struct Backend {
+    activity_availability_reads: Arc<Mutex<Vec<String>>>,
     launches: Arc<Mutex<Vec<HostedLaunchRequestV1>>>,
     evidence_reads: Arc<Mutex<Vec<HostedLaunchEvidenceRequestV1>>>,
     launch_closures: Arc<Mutex<Vec<HostedLaunchClosureRequestV1>>>,
@@ -176,6 +216,17 @@ struct Backend {
 impl HostedGatewayBackend for Backend {
     fn ready(&self) -> bool {
         self.ready
+    }
+
+    fn activity_available(
+        &self,
+        listing_revision_digest: &str,
+    ) -> Result<bool, HostedGatewayError> {
+        self.activity_availability_reads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(listing_revision_digest.to_owned());
+        Ok(self.ready)
     }
 
     fn launch(
@@ -1043,6 +1094,102 @@ async fn health_readiness_and_version_are_bounded_and_secret_free() {
         assert!(!text.contains(TOKEN));
         assert!(!text.contains("9310"));
     }
+}
+
+#[tokio::test]
+async fn exact_activity_availability_is_service_authenticated_and_read_only() {
+    let backend = Backend {
+        ready: true,
+        ..Backend::default()
+    };
+    let reads = Arc::clone(&backend.activity_availability_reads);
+    let app = hosted_gateway_router(config(8), backend);
+    let path = format!(
+        "/v1/hosted/activities/{}/availability",
+        LISTING.replace(':', "%3A")
+    );
+
+    for authority in [None, Some("Bearer wrong-authority-value-000000000000")] {
+        let mut builder = Request::builder().method("GET").uri(&path);
+        if let Some(authority) = authority {
+            builder = builder.header("authorization", authority);
+        }
+        let response = app
+            .clone()
+            .oneshot(builder.body(Body::empty()).expect("request"))
+            .await
+            .expect("response");
+        assert_eq!(response.status(), 401);
+    }
+    assert!(
+        reads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(&path)
+                .header("authorization", format!("Bearer {TOKEN}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response
+            .headers()
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok()),
+        Some("private, no-store, max-age=0")
+    );
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).expect("availability JSON"),
+        json!({
+            "schema":"worldstream/hosted-activity-availability/v1",
+            "listing_revision_digest":LISTING,
+            "available":true
+        })
+    );
+    assert_eq!(
+        reads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_slice(),
+        [LISTING]
+    );
+
+    let other = format!("blake3:{}", "b".repeat(64));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/hosted/activities/{other}/availability"))
+                .header("authorization", format!("Bearer {TOKEN}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), 403);
+    assert_eq!(
+        reads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_slice(),
+        [LISTING]
+    );
 }
 
 #[tokio::test]

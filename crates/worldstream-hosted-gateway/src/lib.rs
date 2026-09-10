@@ -86,6 +86,23 @@ const BROWSER_ADMISSION_CLOSE_REASON: &str = "browser authorization failed";
 const PUBLIC_STREAM_CLOSE_REASON: &str = "public stream unavailable";
 const PUBLIC_STREAM_HEARTBEAT: Duration = Duration::from_secs(15);
 const PUBLIC_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
+const ACTIVITY_AVAILABILITY_REQUEST_SCHEMA_V1: &str =
+    "worldstream/hosted-activity-availability-request/v1";
+const ACTIVITY_AVAILABILITY_SCHEMA_V1: &str = "worldstream/hosted-activity-availability/v1";
+
+#[derive(Debug, Serialize)]
+struct HostedActivityAvailabilityRequestV1<'a> {
+    schema: &'a str,
+    listing_revision_digest: &'a str,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct HostedActivityAvailabilityV1 {
+    schema: String,
+    listing_revision_digest: String,
+    available: bool,
+}
 
 /// Closed gateway failure classes. No variant carries credentials, private
 /// Projection bytes, upstream responses, or internal addresses.
@@ -245,6 +262,14 @@ impl HostedGatewayConfig {
 /// Narrow backend seam between the public gateway and the retained Host adapter.
 pub trait HostedGatewayBackend: Send + Sync + 'static {
     fn ready(&self) -> bool;
+
+    /// Reads whether the fixed Controller recognizes one exact reviewed
+    /// Listing Revision. This method must not create setup or Room state.
+    ///
+    /// # Errors
+    /// Returns a closed rejection or availability class.
+    fn activity_available(&self, listing_revision_digest: &str)
+    -> Result<bool, HostedGatewayError>;
 
     /// Begins or resumes one typed, allowlisted launch operation.
     ///
@@ -495,6 +520,28 @@ impl HostedGatewayBackend for FixedHostAdapterBackend {
         .is_some_and(|ready| {
             ready.schema == "worldstream/hosted-launch-readiness/v1" && ready.ready
         })
+    }
+
+    fn activity_available(
+        &self,
+        listing_revision_digest: &str,
+    ) -> Result<bool, HostedGatewayError> {
+        let request = HostedActivityAvailabilityRequestV1 {
+            schema: ACTIVITY_AVAILABILITY_REQUEST_SCHEMA_V1,
+            listing_revision_digest,
+        };
+        let (status, body) = self.call("/api/v1/hosted-activities:availability", &request)?;
+        if status != 200 {
+            return Err(classify_upstream_status(status));
+        }
+        let response = serde_json::from_slice::<HostedActivityAvailabilityV1>(&body)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        if response.schema != ACTIVITY_AVAILABILITY_SCHEMA_V1
+            || response.listing_revision_digest != listing_revision_digest
+        {
+            return Err(HostedGatewayError::Unavailable);
+        }
+        Ok(response.available)
     }
 
     fn launch(
@@ -889,6 +936,10 @@ pub fn hosted_gateway_router(
         .route("/healthz", get(health))
         .route("/readyz", get(readiness))
         .route("/version", get(version))
+        .route(
+            "/v1/hosted/activities/{listing_revision_digest}/availability",
+            get(activity_availability),
+        )
         .route("/v1/hosted/launch", post(launch))
         .route("/v1/hosted/evidence", post(evidence))
         .route("/v1/hosted/close", post(close_launch))
@@ -965,6 +1016,52 @@ async fn version(State(state): State<GatewayState>) -> Json<serde_json::Value> {
         "version":"hosted_gateway_deployment.v1",
         "deployment":state.config.deployment_version.as_ref()
     }))
+}
+
+async fn activity_availability(
+    State(state): State<GatewayState>,
+    Path(listing_revision_digest): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !service_authorized(&headers, &state.config.service_authority_tag) {
+        return safe_error(StatusCode::UNAUTHORIZED, "service_authority_required");
+    }
+    if !is_digest(&listing_revision_digest) {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if !listing_allowed(&state, &listing_revision_digest) {
+        return safe_error(StatusCode::FORBIDDEN, "listing_not_allowed");
+    }
+    if !admit_rate(&state) {
+        return safe_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
+    let backend = Arc::clone(&state.backend);
+    let requested_digest = listing_revision_digest.clone();
+    let result = tokio::task::spawn_blocking(move || backend.activity_available(&requested_digest))
+        .await
+        .map_err(|_| HostedGatewayError::Unavailable)
+        .and_then(|result| result);
+    match result {
+        Ok(available) => no_store(
+            (
+                StatusCode::OK,
+                Json(HostedActivityAvailabilityV1 {
+                    schema: ACTIVITY_AVAILABILITY_SCHEMA_V1.to_owned(),
+                    listing_revision_digest,
+                    available,
+                }),
+            )
+                .into_response(),
+        ),
+        Err(HostedGatewayError::Unavailable) => {
+            safe_error(StatusCode::SERVICE_UNAVAILABLE, "operation_unavailable")
+        }
+        Err(
+            HostedGatewayError::Rejected
+            | HostedGatewayError::Missing
+            | HostedGatewayError::InvalidConfiguration,
+        ) => safe_error(StatusCode::CONFLICT, "operation_rejected"),
+    }
 }
 
 async fn launch(
@@ -1889,7 +1986,8 @@ fn fixed_http_request(
             ("GET", "/api/v1/hosted-launches/ready")
                 | (
                     "POST",
-                    "/api/v1/hosted-launches:submit"
+                    "/api/v1/hosted-activities:availability"
+                        | "/api/v1/hosted-launches:submit"
                         | "/api/v1/hosted-launches:read"
                         | "/api/v1/hosted-launches:close"
                         | "/api/v1/hosted-launches:abandon-prestart"

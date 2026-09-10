@@ -713,6 +713,59 @@ export class HttpHostedFormationGateway implements HostedFormationGateway {
 
   private readonly authority: string;
 
+  /**
+   * Reads whether the live Gateway and its fixed Controller recognize one
+   * exact reviewed Listing Revision. This request creates no launch state.
+   */
+  async activityAvailable(listingRevisionDigest: string): Promise<boolean> {
+    if (!BLAKE3_PATTERN.test(listingRevisionDigest)) {
+      throw new HostedFormationRejectedError("invalid_listing_identity");
+    }
+    let response: Response;
+    try {
+      response = await this.fetchImplementation(new URL(
+        `/v1/hosted/activities/${encodeURIComponent(listingRevisionDigest)}/availability`,
+        this.base,
+      ), {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${this.authority}`,
+        },
+        cache: "no-store",
+        redirect: "error",
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (error) {
+      reportPlatformFailure("fly_formation", error);
+      throw new HostedFormationUnavailableError(undefined, { cause: error });
+    }
+    if (!response.ok) {
+      if ([400, 401, 403, 404, 409, 422].includes(response.status)) {
+        throw new HostedFormationRejectedError("activity_unavailable");
+      }
+      reportPlatformFailure("fly_formation", undefined, { status: response.status });
+      throw new HostedFormationUnavailableError();
+    }
+    const bytes = await boundedResponse(response, 4_096);
+    let value: unknown;
+    try {
+      value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    } catch (error) {
+      throw new HostedFormationUnavailableError("invalid_gateway_response", { cause: error });
+    }
+    if (
+      value === null || typeof value !== "object" || Array.isArray(value) ||
+      Object.keys(value).length !== 3 ||
+      (value as Record<string, unknown>).schema !== "worldstream/hosted-activity-availability/v1" ||
+      (value as Record<string, unknown>).listing_revision_digest !== listingRevisionDigest ||
+      typeof (value as Record<string, unknown>).available !== "boolean"
+    ) {
+      throw new HostedFormationUnavailableError("invalid_gateway_response");
+    }
+    return (value as Record<string, unknown>).available === true;
+  }
+
   async reserveHouseRunner(request: CanonicalObject): Promise<CanonicalObject> {
     return this.call("/v1/hosted/house-runners/reserve", request, false);
   }

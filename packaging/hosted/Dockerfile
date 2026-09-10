@@ -60,8 +60,12 @@ COPY scripts/hosted-volume-capture.mjs /opt/worldstream/hosted/hosted-volume-cap
 COPY config/activity-clients/releases/agent-heist-web-v9.json /opt/worldstream/hosted/agent-heist-web.json
 COPY config/activity-clients/releases/agent-heist-web-v8.json /opt/worldstream/hosted/agent-heist-web-v8.json
 COPY config/activity-clients/releases/agent-heist-web-v7.json /opt/worldstream/hosted/agent-heist-web-v7.json
+COPY config/activity-clients/releases/midnight-archive-web-v13.json /opt/worldstream/hosted/midnight-archive-web.json
+COPY config/activity-clients/releases/midnight-archive-web-v12.json /opt/worldstream/hosted/midnight-archive-web-v12.json
+COPY config/activity-clients/releases/midnight-archive-web-v10.json /opt/worldstream/hosted/midnight-archive-web-v10.json
 COPY config/activity-clients/releases/inspector-web-v2.json /opt/worldstream/hosted/inspector-web.json
 COPY config/activity-clients/hosted-local-bindings.json /opt/worldstream/hosted/activity-client-bindings.json
+COPY packs/midnight-archive/releases/0.1.0/worldstream-midnight-archive-de3cd1d9fa45087b69cb107a663596305864c350f620fe4d7260e0341214d47a.wspack /opt/worldstream/hosted/midnight-archive.wspack
 COPY packaging/hosted/entrypoint.sh /usr/local/bin/worldstream-hosted-entrypoint
 
 RUN chmod 0755 \
@@ -73,7 +77,7 @@ RUN chmod 0755 \
       /usr/local/bin/worldstream-hosted-gateway \
       /usr/local/bin/worldstream-hosted-artifact-digest \
       /usr/local/bin/worldstream-hosted-entrypoint \
-    && chmod 0644 /opt/worldstream/hosted/*.json /opt/worldstream/hosted/*.mjs \
+    && chmod 0644 /opt/worldstream/hosted/*.json /opt/worldstream/hosted/*.mjs /opt/worldstream/hosted/*.wspack \
     && chmod 0444 /opt/worldstream/hosted/managed-agent-host.blake3 \
     && chown -R 65532:65532 /opt/worldstream
 

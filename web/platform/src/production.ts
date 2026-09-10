@@ -7,6 +7,7 @@ import {
 } from "./bff.js";
 import { HttpHostedBrowserSessionClient } from "./browser-sessions.js";
 import { HostedFormationCoordinator, HttpHostedFormationGateway } from "./hosted-formation.js";
+import { MIDNIGHT_ARCHIVE_LISTING_DIGEST } from "./hosted-catalog.js";
 import {
   createHostedResultReconciler,
   withHostedResultReconciliation,
@@ -59,6 +60,7 @@ export function createProductionPlatformBff(
     throw new Error("hosted_formation_configuration_incomplete");
   }
   const hostedFormationGateway = new HttpHostedFormationGateway({ baseUrl: hostedGatewayUrl, serviceAuthority });
+  const internalCandidateListingDigests = productionInternalCandidateListingDigests(environment);
   const platform = createVercelPlatformBff(
     {
       canonicalOrigin,
@@ -81,6 +83,10 @@ export function createProductionPlatformBff(
       hostedFormationGateway,
       hostedFormationHostInstallationId: hostInstallationId,
       hostedPublicStreamBaseUrl: hostedGatewayUrl,
+      internalCandidateListingDigests,
+      hostedActivityAvailable: async (listingRevisionDigest) =>
+        internalCandidateListingDigests.includes(listingRevisionDigest)
+        && await hostedFormationGateway.activityAvailable(listingRevisionDigest),
     },
   );
   return withPlatformDiagnostics(withHostedResultReconciliation(
@@ -113,6 +119,17 @@ export function createProductionPlatformBff(
       ).abandonPrestart(launchId),
     },
   ));
+}
+
+function productionInternalCandidateListingDigests(
+  environment: NodeJS.ProcessEnv,
+): readonly string[] {
+  const value = environment.WORLDSTREAM_INTERNAL_CANDIDATE_LISTING_DIGEST;
+  if (value === undefined) return [];
+  if (value !== MIDNIGHT_ARCHIVE_LISTING_DIGEST) {
+    throw new Error("invalid_internal_candidate_listing_digest");
+  }
+  return [MIDNIGHT_ARCHIVE_LISTING_DIGEST];
 }
 
 function assertProductionEnvironment(environment: NodeJS.ProcessEnv): void {

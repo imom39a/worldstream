@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -9,6 +9,7 @@ import {
   hostedGatewayConfiguration,
   hostedRuntimeLayout,
   hostedStatusReady,
+  writeHostedClientImport,
   renderArchiveHouseAgentProfiles,
   renderArchiveHouseRunnerTemplate,
   renderHostedRuntimeConfig,
@@ -29,6 +30,10 @@ test("the deployed retained catalog fits the allowlist contract, including 64 re
   assert.ok(
     allowlist.split(",").includes("blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397"),
     "the Fly Gateway must admit the current discovery Listing",
+  );
+  assert.ok(
+    allowlist.split(",").includes("blake3:cc1c92ebc6ba7cccc9474186ff8107cf97f6bd0ce2676c6d1a2aa203c2a62d35"),
+    "the Fly Gateway must admit the exact reviewed Archive candidate",
   );
   assert.doesNotThrow(() => validateHostedRuntimeEnvironment(environment({ WORLDSTREAM_LISTING_ALLOWLIST: allowlist })));
   assert.doesNotThrow(() => validateHostedRuntimeEnvironment(environment({ WORLDSTREAM_LISTING_ALLOWLIST: Array(64).fill(digest).join(",") })));
@@ -106,6 +111,14 @@ test("runtime configuration fixes internal listeners and persistent children", (
   assert.equal(layout.controllerState, "/var/lib/worldstream/studio");
   assert.equal(layout.retainedClientReleaseV8, "/opt/worldstream/hosted/agent-heist-web-v8.json");
   assert.equal(layout.retainedClientRelease, "/opt/worldstream/hosted/agent-heist-web-v7.json");
+  assert.equal(layout.archiveClientRelease, "/opt/worldstream/hosted/midnight-archive-web.json");
+  assert.equal(layout.retainedArchiveClientReleaseV12, "/opt/worldstream/hosted/midnight-archive-web-v12.json");
+  assert.equal(layout.retainedArchiveClientReleaseV10, "/opt/worldstream/hosted/midnight-archive-web-v10.json");
+  assert.equal(layout.archivePackBundle, "/opt/worldstream/hosted/midnight-archive.wspack");
+  assert.equal(
+    layout.initializationImportReceipt,
+    "/run/worldstream/generated/initialization-import-apply.json",
+  );
   assert.equal(layout.maintenanceMarker, "/var/lib/worldstream/maintenance/closed");
   const config = renderHostedRuntimeConfig({
     dataDirectory: layout.runtimeData,
@@ -127,6 +140,47 @@ test("the hosted image packages the same current client as hosted bindings", asy
   assert.equal(deployment.release_digest, release.release_digest);
   assert.match(dockerfile, /COPY config\/activity-clients\/releases\/agent-heist-web-v8\.json \/opt\/worldstream\/hosted\/agent-heist-web-v8\.json/u);
   assert.match(dockerfile, /COPY config\/activity-clients\/releases\/agent-heist-web-v7\.json \/opt\/worldstream\/hosted\/agent-heist-web-v7\.json/u);
+  assert.match(dockerfile, /COPY config\/activity-clients\/releases\/midnight-archive-web-v13\.json \/opt\/worldstream\/hosted\/midnight-archive-web\.json/u);
+  assert.match(dockerfile, /COPY config\/activity-clients\/releases\/midnight-archive-web-v12\.json \/opt\/worldstream\/hosted\/midnight-archive-web-v12\.json/u);
+  assert.match(dockerfile, /COPY config\/activity-clients\/releases\/midnight-archive-web-v10\.json \/opt\/worldstream\/hosted\/midnight-archive-web-v10\.json/u);
+  assert.match(dockerfile, /COPY packs\/midnight-archive\/releases\/0\.1\.0\/worldstream-midnight-archive-de3cd1d9fa45087b69cb107a663596305864c350f620fe4d7260e0341214d47a\.wspack \/opt\/worldstream\/hosted\/midnight-archive\.wspack/u);
+});
+
+test("Fly initialization imports current and retained Archive client identities", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "worldstream-hosted-clients-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const generatedRoot = join(root, "generated");
+  await mkdir(generatedRoot, { recursive: true });
+  const layout = {
+    controllerState: join(root, "controller"),
+    generatedRoot,
+    clientBindings: resolve("config/activity-clients/hosted-local-bindings.json"),
+    inspectorRelease: resolve("config/activity-clients/releases/inspector-web-v2.json"),
+    clientRelease: resolve("config/activity-clients/releases/agent-heist-web-v9.json"),
+    retainedClientReleaseV8: resolve("config/activity-clients/releases/agent-heist-web-v8.json"),
+    retainedClientRelease: resolve("config/activity-clients/releases/agent-heist-web-v7.json"),
+    archiveClientRelease: resolve("config/activity-clients/releases/midnight-archive-web-v13.json"),
+    retainedArchiveClientReleaseV12: resolve("config/activity-clients/releases/midnight-archive-web-v12.json"),
+    retainedArchiveClientReleaseV10: resolve("config/activity-clients/releases/midnight-archive-web-v10.json"),
+  };
+  const declarationPath = await writeHostedClientImport(layout, "https://arena.example");
+  const declaration = JSON.parse(await readFile(declarationPath, "utf8"));
+  const bindings = JSON.parse(await readFile(declaration.bindings_file, "utf8"));
+  assert.equal(declaration.release_files.length, 7);
+  assert.equal(bindings.deployments.length, 7);
+  const archive = bindings.deployments.filter(({ client_id }) =>
+    client_id === "worldstream.midnight-archive.web");
+  assert.equal(archive.length, 3);
+  assert.deepEqual(archive.map(({ release_digest }) => release_digest).sort(), [
+    "sha256:240ac1b94e9e89c0eb5a059ba85d116b807258cfd5917bc0dd879139de1b35bb",
+    "sha256:9be6d6548f2d62baba805ec461b27fbd1021ed0d61fbd0e8ffd1d779616bc534",
+    "sha256:fae51aaa770810d203f00fd8be7d098b069ce2ef8e6fc9b7f31b80accf53345f",
+  ].sort());
+  assert.equal(
+    archive.find(({ release_digest }) => release_digest.startsWith("sha256:240ac1"))
+      .surfaces[0].launch_url,
+    "https://arena.example/midnight-archive-v13/hosted/",
+  );
 });
 
 test("the packaged managed Host digest is raw hex and mismatches fail closed", async () => {

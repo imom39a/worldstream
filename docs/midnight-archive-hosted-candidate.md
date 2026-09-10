@@ -53,9 +53,13 @@ My Games can reopen the retained private debrief for the original participant.
 The authenticated `/api/catalog/internal` route exposes the candidate only when
 its exact digest appears in `internalCandidateListingDigests`. Its launch
 control remains unavailable until `hostedActivityAvailable` verifies the exact
-approved dependencies, running inventory, and served artifact bytes. Missing,
-pending, mismatched, or unhealthy dependencies fail closed. Production
-construction does not opt into this internal candidate.
+Listing is recognized by the live Gateway and Controller. Final launch
+admission remains authoritative for Pack, client, roster, House approval,
+allowance, and capacity readiness; a missing or mismatched dependency fails
+closed. Production construction opts in only when
+`WORLDSTREAM_INTERNAL_CANDIDATE_LISTING_DIGEST` equals the exact reviewed
+Listing digest above. Omitting the variable leaves the production catalog
+public-only; every other value stops production startup.
 
 `pnpm hosted:dev` reads `config/hosted/internal-candidates.json`, approves and
 installs the exact Bundle, imports the v13 client, and configures the local

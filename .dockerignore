@@ -1,6 +1,7 @@
 /target/
 /tmp/
 /research/
+/.scratch/
 /.git/
 /.worldstream*/
 /node_modules/

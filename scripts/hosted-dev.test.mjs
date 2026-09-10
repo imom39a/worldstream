@@ -376,14 +376,16 @@ test("the command keeps the release default and accepts only one closed profile 
   ]) assert.throws(() => hostedDevelopmentArguments(args), /native profile|usage/u);
 });
 
-test("local and Fly gateways retain all retained Listings as well as current discovery", async () => {
+test("local and Fly gateways retain public Listings and Fly admits the exact internal candidate", async () => {
   const fly = await readFile(new URL("../packaging/hosted/fly.toml", import.meta.url), "utf8");
   const value = fly.split("\n").find((line) => line.trim().startsWith("WORLDSTREAM_LISTING_ALLOWLIST = "));
   assert.ok(value);
   const deployed = JSON.parse(value.slice(value.indexOf("=") + 1).trim());
-  assert.equal(deployed, hostedDevelopmentListingAllowlist());
   const admitted = new Set(deployed.split(","));
-  assert.equal(admitted.size, 25);
+  const localPublic = new Set(hostedDevelopmentListingAllowlist().split(","));
+  assert.equal(admitted.size, localPublic.size + 1);
+  for (const digest of localPublic) assert.ok(admitted.has(digest));
+  assert.ok(admitted.has("blake3:cc1c92ebc6ba7cccc9474186ff8107cf97f6bd0ce2676c6d1a2aa203c2a62d35"));
   assert.ok(admitted.has("blake3:8be1c66c9c69a4a67800dadf8e60d66bdf8a8b9118fb3baa96b5e8cdaf272b7d"));
   assert.ok(admitted.has("blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397"));
   assert.ok(admitted.has("blake3:945664f9fea18ace9991c44d43febc142a58244d69352d98514a69b4f7b22030"));

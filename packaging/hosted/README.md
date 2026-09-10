@@ -53,11 +53,20 @@ existing secret, spending, maintenance, or data-preservation checks below.
 7. [Prepare and review the actual House Agent approvals](../../docs/hosted-house-approval.md).
    The initial database records stay disabled. Do not use development approval
    hashes or activate model calls before the credential and budget checks pass.
-8. Deploy the product UI and BFF. The BFF uses HTTPS requests to Fly; browser
-   WebSockets connect directly to Fly.
-9. Create and record `hosted-deployment.json` with
+8. While maintenance remains closed, approve and install the reviewed Midnight
+   Archive Bundle at `/opt/worldstream/hosted/midnight-archive.wspack`, make its
+   exact Bundle digest selectable, and run `pack restart-readiness` with the
+   appliance configuration. Retain those JSON receipts and the private
+   `/run/worldstream/generated/initialization-import-apply.json` receipt as
+   deployment evidence and House approval input.
+9. Deploy the product UI and BFF. Set
+   `WORLDSTREAM_INTERNAL_CANDIDATE_LISTING_DIGEST` to the exact reviewed
+   Midnight Archive Listing digest only after the live Host availability probe
+   succeeds. The BFF uses HTTPS requests to Fly; browser WebSockets connect
+   directly to Fly.
+10. Create and record `hosted-deployment.json` with
    `scripts/hosted-checkpoint.mjs deployment create` and `deployment record`.
-10. Run the local and deployed acceptance story before advertising the preview.
+11. Run the local and deployed acceptance story before advertising the preview.
 
 The versioned `WORLDSTREAM_HOSTED_INSTALLATION_ID` must match in the Fly
 appliance, Vercel BFF, and active House approvals. A mismatch makes reviewed
@@ -146,8 +155,12 @@ authority and does not reopen the platform until all required services agree.
    `worldstream/hosted-prelaunch-zero-history/v1` and
    retains the actual Pack/Replay readiness receipt, not a native-envelope
    semantic-verifier claim.
-7. Apply a backward-compatible Supabase migration, deploy Fly, then deploy the
-   UI/BFF.
+7. Apply a backward-compatible Supabase migration and deploy Fly. With the
+   Runtime stopped, approve and install the exact bundled Midnight Archive
+   archive, set it selectable, and require `pack restart-readiness` to pass.
+   Activate the separately reviewed House approvals only after their installed
+   executable, Template, Profile, credential route, and allowance identities
+   match. Then deploy the UI/BFF with the exact internal candidate digest.
 8. Remove only the `closed` marker. Wait for `/readyz` to return 200.
 9. Run `maintenance open`. If readiness fails, recreate the marker and keep
    Supabase closed.

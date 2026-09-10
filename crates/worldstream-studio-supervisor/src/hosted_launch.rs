@@ -69,6 +69,24 @@ const ACCESS_TAG_KEY: &[u8] = b"worldstream/hosted-controller-authority/v1";
 const MAX_BINDING_BYTES: usize = 16 * 1024;
 const MAX_BINDINGS: usize = 256;
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
+const ACTIVITY_AVAILABILITY_REQUEST_SCHEMA_V1: &str =
+    "worldstream/hosted-activity-availability-request/v1";
+const ACTIVITY_AVAILABILITY_SCHEMA_V1: &str = "worldstream/hosted-activity-availability/v1";
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct HostedActivityAvailabilityRequestV1 {
+    schema: String,
+    listing_revision_digest: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct HostedActivityAvailabilityV1 {
+    schema: String,
+    listing_revision_digest: String,
+    available: bool,
+}
 
 /// Closed failures safe to expose to the colocated Hosted Gateway.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -478,6 +496,14 @@ impl HostedLaunchOperationsV1 {
     pub fn with_result_source(mut self, source: HttpHostedResultSourceV1) -> Self {
         self.result_source = Some(Arc::new(source));
         self
+    }
+
+    /// Reads whether this Controller has the exact reviewed Listing Revision.
+    /// This check does not create a launch binding or touch Room state.
+    #[must_use]
+    pub fn activity_available(&self, listing_revision_digest: &str) -> bool {
+        tagged_digest(listing_revision_digest, "blake3")
+            && self.listings.contains_key(listing_revision_digest)
     }
 
     #[cfg(test)]
@@ -2014,7 +2040,8 @@ pub fn is_hosted_launch_route(method: &Method, path: &str) -> bool {
         ("GET", "/api/v1/hosted-launches/ready")
             | (
                 "POST",
-                "/api/v1/hosted-launches:submit"
+                "/api/v1/hosted-activities:availability"
+                    | "/api/v1/hosted-launches:submit"
                     | "/api/v1/hosted-launches:read"
                     | "/api/v1/hosted-launches:close"
                     | "/api/v1/hosted-launches:abandon-prestart"
@@ -2042,6 +2069,10 @@ pub fn hosted_launch_router(
 ) -> Router {
     Router::new()
         .route("/api/v1/hosted-launches/ready", get(hosted_ready))
+        .route(
+            "/api/v1/hosted-activities:availability",
+            post(hosted_activity_availability),
+        )
         .route("/api/v1/hosted-launches:submit", post(hosted_submit))
         .route("/api/v1/hosted-launches:read", post(hosted_read))
         .route("/api/v1/hosted-launches:close", post(hosted_close))
@@ -2077,6 +2108,24 @@ pub fn hosted_launch_router(
 
 async fn hosted_ready() -> Json<serde_json::Value> {
     Json(serde_json::json!({"schema":"worldstream/hosted-launch-readiness/v1","ready":true}))
+}
+
+async fn hosted_activity_availability(
+    State(operations): State<HostedLaunchOperationsV1>,
+    body: Bytes,
+) -> Result<Json<HostedActivityAvailabilityV1>, HostedLaunchErrorV1> {
+    let request = decode_request::<HostedActivityAvailabilityRequestV1>(&body)?;
+    if request.schema != ACTIVITY_AVAILABILITY_REQUEST_SCHEMA_V1
+        || !tagged_digest(&request.listing_revision_digest, "blake3")
+    {
+        return Err(HostedLaunchErrorV1::Invalid);
+    }
+    let available = operations.activity_available(&request.listing_revision_digest);
+    Ok(Json(HostedActivityAvailabilityV1 {
+        schema: ACTIVITY_AVAILABILITY_SCHEMA_V1.to_owned(),
+        listing_revision_digest: request.listing_revision_digest,
+        available,
+    }))
 }
 
 async fn hosted_submit(
@@ -3312,6 +3361,7 @@ mod tests {
     #[test]
     fn hosted_service_route_allowlist_includes_realtime_admission_only_at_exact_paths() {
         for path in [
+            "/api/v1/hosted-activities:availability",
             "/api/v1/hosted-launches:abandon-prestart",
             "/api/v1/hosted-browser-handoffs:issue",
             "/api/v1/hosted-browser-handoffs:redeem",
@@ -3332,6 +3382,41 @@ mod tests {
             &Method::POST,
             "/api/v1/hosted-browser-sessions:stream-ticket?room=chosen"
         ));
+    }
+
+    #[test]
+    fn exact_activity_availability_does_not_create_setup_state() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+        let backend = FakeBackend::default();
+        let reviewed = listing();
+        let digest = reviewed.digest().to_owned();
+        let operations = HostedLaunchOperationsV1::open_with_backend(
+            &directory.path().join("hosted"),
+            "hosted-test",
+            vec![reviewed],
+            Vec::new(),
+            backend.clone(),
+        )
+        .unwrap_or_else(|error| unreachable!("valid operations: {error:?}"));
+
+        assert!(operations.activity_available(&digest));
+        assert!(!operations.activity_available(&format!("blake3:{}", "f".repeat(64))));
+        assert!(!operations.activity_available("not-a-digest"));
+        assert!(
+            backend
+                .advances
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty(),
+            "availability is a read and cannot start setup",
+        );
+        assert!(
+            backend
+                .inspections
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty(),
+        );
     }
 
     #[test]
