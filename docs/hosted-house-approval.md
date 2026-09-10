@@ -5,6 +5,13 @@ a migration, or an automatic startup action. Use it after the approved
 spending-limited OpenRouter credential and the exact Fly image are installed.
 Keep launches and House calls closed until the final checks pass.
 
+The versioned formation installation identity must be identical in three
+places: the Fly appliance, the Vercel BFF environment, and each active House
+approval. Rotate all three together when an image needs fresh approvals. The
+current identity is `fly-primary-r3`. The Supabase platform operating row named
+`fly-primary` is a separate singleton admission gate and must remain available
+for launches; it is not the versioned formation identity.
+
 The current candidate Listing is Agent Heist `0.24.0`. Its two House strategies are
 Cooperative Planner `17` and Skeptical Auditor `16`. Both use the exact Granite
 model and DeepInfra provider route declared in their immutable files. Their
@@ -89,6 +96,7 @@ generated SDK build.
 
 1. Verify the deployed source commit, Fly image digest, and installation ID.
    Do not copy these values from a different local build or a planned deployment.
+   Verify that Vercel uses this same installation ID before opening admission.
 2. Keep the machine in maintenance with the Controller and Runtime stopped.
    On the exact Fly machine, repeat the appliance's existing two-phase import
    with its generated declarations. Use `--preview`, review `import_review.digest`,

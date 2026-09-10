@@ -59,6 +59,13 @@ existing secret, spending, maintenance, or data-preservation checks below.
    `scripts/hosted-checkpoint.mjs deployment create` and `deployment record`.
 10. Run the local and deployed acceptance story before advertising the preview.
 
+The versioned `WORLDSTREAM_HOSTED_INSTALLATION_ID` must match in the Fly
+appliance, Vercel BFF, and active House approvals. A mismatch makes reviewed
+agents unavailable even when every service is healthy. The current release
+uses `fly-primary-r3`. Do not rename the global Supabase operating row from
+`fly-primary`; that row is the singleton platform admission gate, not the
+formation installation identity.
+
 Validate the reusable Fly configuration without binding it to a real app:
 
 ```text

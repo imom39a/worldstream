@@ -6,6 +6,81 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 10 — live platform smoke acceptance passed
+
+The public Chrome journey is operational on the schema-safe release. The
+observed identities were:
+
+- source `c90a1fe252ecdba5471d0e613ea4f6de890f82ae`;
+- Vercel production deployment `dpl_9BnAahCPH6JXaJHsMWzssNRZdx3i`;
+- Fly image
+  `sha256:8d5a44b2d547b1f0bb970bf2d9a67ba7db4fd7ea66840e93a4e1e1f29a1f0f07`;
+- Supabase migration head `20260910010000`;
+- Listing
+  `blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397`;
+- Pack
+  `blake3:56449d0830d113f7d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9`;
+- Activity Client release
+  `sha256:e1efd39ff8da4cddaa48e87ed4333d2c16fb71dd5ad0321f1245ac0a55aad33c`;
+  and
+- result projector
+  `blake3:3344a8af68f9fe2ce32a7c12b40d439cd4d1ee9e75e8d45c0cce07e2f2b827fb`.
+
+The final formation identity is `fly-primary-r3`. Exact r3 approvals were
+captured from the installed image and activated for Cooperative Planner 17 and
+Skeptical Auditor 16 only after Fly readiness and credential checks passed.
+The Supabase operating row named `fly-primary` remains the separate singleton
+global admission gate.
+
+Two pre-acceptance failures exposed deployment-state defects rather than Heist
+gameplay defects. First, Vercel used `fly-primary` while Fly and the approvals
+used `fly-primary-r3`; therefore the candidates were correctly reported as
+`host_unavailable`. Vercel now uses r3. Second, a stale active Run remained in
+Supabase after an earlier Fly-volume reset, so capacity was unavailable even
+though the old Room no longer existed. Because the preview had no users and the
+operator explicitly approved a clean slate, launches and House fill were
+closed and only preview launch/run descendant tables were truncated. The Auth
+account, platform account, 21 catalog revisions, approvals, deployment rows,
+and operating rows were preserved. This reset removed the previous preview
+launch/run history; the exact final pre-reset database state is not recoverable,
+although an earlier protected preview backup remains at
+`/private/tmp/worldstream-preview-reset-20260909` on the operator machine.
+
+The final paid acceptance Run was
+`0dacb137-2802-4f28-98bd-df0cdb32d6c4`. A GitHub-authenticated human played
+Navigator; Skeptical Auditor and Cooperative Planner filled Insider and Broker.
+Genesis completed, the standalone v7 Activity Client installed an authorized
+Projection Reset over the direct Fly WebSocket, and the human inspected and
+published a clue before proposing a plan. The retained House operation log
+recorded nine submissions: seven accepted actions and two normal
+activity-domain rejections. Both House agents therefore submitted real
+model-generated actions. The Room reached sequence 20 and `Complete`, with
+success and score 5/5. Replay published public result
+`f58a55a8325368fe6f53230eacd9151c`, which appeared in both **My games** and
+**Recent results**. Platform active capacity returned to zero, both House
+reservations were released, and terminal result evidence was indexed.
+
+A separate people-only waiting room,
+`4aaadbd2-e9e7-4b31-bc0a-6d57ac76c54a`, was then created and abandoned. **My
+games** displayed that cancelled setup beside the verified result. This proves
+the current create, exit-before-start, repeat-setup, and terminal capacity
+release path without operator cleanup.
+
+OpenRouter reported USD `0.00862742` lifetime usage and USD `1.99137258`
+remaining on the dedicated USD 2 lifetime-limited key. Auto Top-Up remained
+off. No extra Fly machine or paid Vercel/Supabase plan was enabled.
+
+This is a passed live Chrome platform smoke test, not the complete acceptance
+certificate. Remaining qualification is deliberately narrower now:
+
+1. retain a three-match local fake-provider matrix artifact;
+2. verify an ordinary same-volume restart and authorized re-entry during a live
+   Run on the final image;
+3. test iOS Safari, ChatGPT/WebMCP, anonymous live spectating, and sustained
+   direct WebSocket push;
+4. keep populated disaster recovery explicitly deferred under ADR 0026; and
+5. treat deeper Agent Heist gameplay improvements as a separate milestone.
+
 ### September 8 — stability specification and tickets published; no new qualification
 
 The user approved the testing boundaries and ten implementation/qualification
@@ -1772,6 +1847,6 @@ See [the support and acceptance contract](hosted-preview-support.md) and
 [the House approval procedure](hosted-house-approval.md). The deployment
 acceptance ticket remains open until its required evidence exists.
 
-The attempt to post this latest progress to Linear was rejected because the
-connection requires reauthentication. This file preserves the update; it
-must not be described as already posted to the ticket.
+The September 10 live smoke evidence is also recorded on IMO-184. That issue
+remains open until its broader restart, device, WebMCP, spectator, and sustained
+push checks are retained.
