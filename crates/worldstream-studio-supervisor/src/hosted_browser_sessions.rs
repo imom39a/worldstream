@@ -1596,18 +1596,26 @@ mod tests {
 
     #[test]
     fn ephemeral_tokens_expire_and_do_not_survive_broker_restart() {
-        let expiring = fixture(Duration::from_millis(1), Duration::from_millis(1));
-        let handoff = issue(&expiring.broker);
+        let expiring_handoff = fixture(Duration::from_millis(1), Duration::from_mins(1));
+        let handoff = issue(&expiring_handoff.broker);
         std::thread::sleep(Duration::from_millis(5));
         assert_eq!(
-            redeem(&expiring.broker, &handoff, ACCOUNT, None),
+            redeem(&expiring_handoff.broker, &handoff, ACCOUNT, None),
             Err(HostedBrowserSessionErrorV1::Missing)
         );
-        let session = redeem(&expiring.broker, &issue(&expiring.broker), ACCOUNT, None)
-            .expect("short session");
+        // Session expiry must not depend on redeeming a handoff within 1 ms
+        // when the test runner is busy. Exercise each token's TTL separately.
+        let expiring_session = fixture(Duration::from_mins(1), Duration::from_millis(1));
+        let session = redeem(
+            &expiring_session.broker,
+            &issue(&expiring_session.broker),
+            ACCOUNT,
+            None,
+        )
+        .expect("short session");
         std::thread::sleep(Duration::from_millis(5));
         assert_eq!(
-            expiring.broker.status(&session_request(&session)),
+            expiring_session.broker.status(&session_request(&session)),
             Err(HostedBrowserSessionErrorV1::Missing)
         );
 
