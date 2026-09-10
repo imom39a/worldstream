@@ -8,7 +8,8 @@ const outputPath = join(
   "web/platform/src/hosted-artifacts.generated.ts",
 );
 const sources = {
-  agentHeistListing: "config/hosted/listings/agent-heist-0.25.0.json",
+  agentHeistListing: "config/hosted/listings/agent-heist-0.26.0.json",
+  retainedAgentHeistListing025: "config/hosted/listings/agent-heist-0.25.0.json",
   retainedAgentHeistListing024: "config/hosted/listings/agent-heist-0.24.0.json",
   retainedAgentHeistListing023: "config/hosted/listings/agent-heist-0.23.0.json",
   retainedAgentHeistListing022: "config/hosted/listings/agent-heist-0.22.0.json",

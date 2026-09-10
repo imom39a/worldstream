@@ -31,6 +31,13 @@ const MAX_COLLECTION = 128;
 const MAX_TEXT = 2_048;
 
 export type AgentHeistRole = "navigator" | "insider" | "broker";
+export interface AgentHeistOutcomeChecks {
+  readonly route: boolean;
+  readonly entryWindow: boolean;
+  readonly requiredTool: boolean;
+  readonly extraction: boolean;
+  readonly resourceContributed: boolean;
+}
 export type AgentHeistPhase =
   | "lobby"
   | "briefing"
@@ -68,6 +75,9 @@ export interface AgentHeistProjection {
   readonly outcome: null | {
     outcome: string;
     selectedPlanId: string | null;
+    voteCounts: Readonly<Record<string, number>>;
+    missingRoles: readonly AgentHeistRole[];
+    checks: AgentHeistOutcomeChecks | null;
     score: number;
     reason: string;
   };
@@ -435,10 +445,54 @@ function parseOutcome(value: unknown): AgentHeistProjection["outcome"] | undefin
   const item = record(value);
   const outcome = boundedText(item.outcome);
   const selectedPlanId = item.selected_plan_id === null ? null : boundedText(item.selected_plan_id);
+  const voteCounts = parseVoteCounts(item.vote_counts);
+  const missingRoles = parseArrayOrEmpty(item.missing_roles, parseRole);
+  const checks = parseChecks(item.checks);
   const score = nonNegativeInteger(item.score);
   const reason = boundedText(item.reason);
-  if (outcome === null || score === null || reason === null || (item.selected_plan_id !== null && selectedPlanId === null)) return undefined;
-  return { outcome, selectedPlanId, score, reason };
+  if (
+    outcome === null
+    || voteCounts === null
+    || missingRoles === null
+    || checks === undefined
+    || score === null
+    || score > 5
+    || reason === null
+    || (item.selected_plan_id !== null && selectedPlanId === null)
+  ) return undefined;
+  return { outcome, selectedPlanId, voteCounts, missingRoles, checks, score, reason };
+}
+
+function parseVoteCounts(value: unknown): Readonly<Record<string, number>> | null {
+  const source = record(value);
+  if (Object.keys(source).length > MAX_COLLECTION) return null;
+  const counts: Record<string, number> = {};
+  for (const [planId, votes] of Object.entries(source)) {
+    if (boundedText(planId) === null) return null;
+    const count = nonNegativeInteger(votes);
+    if (count === null || count > 3) return null;
+    counts[planId] = count;
+  }
+  return counts;
+}
+
+function parseChecks(value: unknown): AgentHeistOutcomeChecks | null | undefined {
+  if (value === null || value === undefined) return null;
+  const item = record(value);
+  if (
+    typeof item.route !== "boolean"
+    || typeof item.entry_window !== "boolean"
+    || typeof item.required_tool !== "boolean"
+    || typeof item.extraction !== "boolean"
+    || typeof item.resource_contributed !== "boolean"
+  ) return undefined;
+  return {
+    route: item.route,
+    entryWindow: item.entry_window,
+    requiredTool: item.required_tool,
+    extraction: item.extraction,
+    resourceContributed: item.resource_contributed,
+  };
 }
 
 function parseCommitment(value: unknown): AgentHeistProjection["ownCommitment"] | undefined {

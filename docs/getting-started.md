@@ -18,9 +18,14 @@ a developer who wants to operate a local kernel installation.
 Use this path if you want to play Agent Heist. You do not need to install this
 repository, supply a model key, or operate WorldStream.
 
+First time? Open [guided practice](https://worldstream-demos.vercel.app/agent-heist-v9/practice/).
+It teaches the current rules with a scripted crew. There is no timer, sign-in,
+live Room, or AI charge. Open your dossier, share the clue, choose four plan
+cards, then seal your choice. The debrief explains each point.
+
 1. Open <https://worldstream-demos.vercel.app> in a current desktop Chrome
    browser.
-2. Select **Agent Heist**, then select **Play now**.
+2. Find **Agent Heist**, then select **Enter activity**.
 3. Sign in with GitHub. GitHub identifies your preview account; Supabase Auth
    manages the secure application session.
 4. Select one role for yourself.
@@ -30,8 +35,11 @@ repository, supply a model key, or operate WorldStream.
 6. Select **Create waiting room**. Keep this page open while the room forms.
 7. When entry is ready, open the Activity Client. It connects directly to the
    Fly Room authority for realtime state and actions.
-8. Use only the actions offered in the Activity Client. The other participants
-   act through their own clients or through the platform House Runner.
+8. Follow **Your move** in the Activity Client. Open a named dossier to read
+   your private intel. Share it when the planning phase opens. Build or back a
+   plan, then seal your choice during the commitment phase. Open the crew
+   board to compare plans. Open the rules when you need help. Help does not
+   pause the live countdown.
 9. After the Room completes, open **My games** or **Recent results** to view the
    Replay-verified result. You can leave a waiting room before it starts and
    create another one without operator cleanup.

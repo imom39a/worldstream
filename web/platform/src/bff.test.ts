@@ -688,7 +688,7 @@ test("an anonymous public Run receives only the server-selected exact viewer rel
   assert.equal(response.status, 200);
   const body = await response.json() as Record<string, unknown>;
   assert.deepEqual(body.client, {
-    launch_url: `https://arena.example/agent-heist-v8/hosted/?public_run=${"c".repeat(32)}&platform_return=%2F&platform_result=%2Fruns%2F${"c".repeat(32)}`,
+    launch_url: `https://arena.example/agent-heist-v9/hosted/?public_run=${"c".repeat(32)}&platform_return=%2F&platform_result=%2Fruns%2F${"c".repeat(32)}`,
     back_to_games: "/",
     result_url: `/runs/${"c".repeat(32)}`,
   });

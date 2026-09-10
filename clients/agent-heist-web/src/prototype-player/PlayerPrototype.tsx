@@ -1,21 +1,20 @@
-// THROWAWAY: Three structurally different player journeys on /agent-heist-v8/?variant=A|B|C.
+// Guided practice uses Mission focus only; development retains the layout study.
 // Question: can a first-time human understand, act and explain the result without typing IDs?
 // All state is a scripted, untimed practice sample. No sessions, providers, API calls or Room truth.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import rooftop from "../assets/heist-rooftop.webp";
+import { HeistArtwork, type HeistArtworkKind } from "../HeistArtwork";
 import "./prototype.css";
 
 type Variant = "A" | "B" | "C";
 type Step = 0 | 1 | 2 | 3 | 4 | 5;
 const variants: Variant[] = ["A", "B", "C"];
 const names = { A: "Mission focus", B: "Crew tabletop", C: "Interactive story" };
-const artwork = import.meta.glob<string>("./art/*.png", { eager: true, query: "?url", import: "default" });
-const artKeys = [["canal", "service-entrance", "rooftop"], [], ["disguise", "thermal-key", "jammer"], ["van", "boat", "motorbike"]];
+const artKinds: HeistArtworkKind[] = ["route", "entry_window", "required_tool", "extraction"];
+const artValues = [["canal", "service", "rooftop"], ["late", "early", "middle"], ["disguise", "thermal_key", "jammer"], ["van", "boat", "motorbike"]];
 function ChoiceArt({ part, option, className = "" }: { part: number; option: number; className?: string }) {
-  const url = artwork[`./art/${artKeys[part]?.[option]}.png`];
-  if (part === 1) return <span className={`px-window-art ${className}`} aria-hidden="true"><span>ENTRY WINDOW</span><span className="px-window-segments">{[0,1,2].map(i => <i key={i} className={i === [2,0,1][option] ? "active" : ""} />)}</span><span>{["Late", "Early", "Middle"][option]}</span></span>;
-  return url ? <img className={`px-card-art ${className}`} src={url} alt="" decoding="async" /> : <span className={`px-option-symbol ${className}`} aria-hidden="true">◇</span>;
+  return <HeistArtwork kind={artKinds[part]!} value={artValues[part]?.[option] ?? "unknown"} className={className} />;
 }
 const chapters = ["Safehouse", "Discover", "Share", "Build a plan", "Lock it in", "Debrief"];
 const choices = [
@@ -33,16 +32,18 @@ const objectives = [
   ["Every choice left a trace.", "This is a crew result, not an individual ranking. Here is how this practice plan scored."],
 ];
 
-export function mountPrototype() {
+export type PlayerPrototypeProps = { practiceMode?: boolean; onExitPractice?: () => void };
+
+export function mountPrototype(props: PlayerPrototypeProps = {}) {
   document.title = "Agent Heist · Player experience study";
-  createRoot(document.getElementById("root")!).render(<PlayerPrototype />);
+  createRoot(document.getElementById("root")!).render(<PlayerPrototype {...props} />);
 }
 
-function PlayerPrototype() {
-  const requested = new URLSearchParams(location.search).get("variant");
-  const requestedStep = Number(new URLSearchParams(location.search).get("step") ?? 0);
+export function PlayerPrototype({ practiceMode = false, onExitPractice }: PlayerPrototypeProps) {
+  const requested = practiceMode ? null : new URLSearchParams(location.search).get("variant");
+  const requestedStep = practiceMode ? 0 : Number(new URLSearchParams(location.search).get("step") ?? 0);
   const initialStep = (Number.isInteger(requestedStep) && requestedStep >= 0 && requestedStep <= 5 ? requestedStep : 0) as Step;
-  const [variant, setVariant] = useState<Variant>(variants.includes(requested as Variant) ? requested as Variant : "A");
+  const [variant, setVariant] = useState<Variant>(practiceMode ? "A" : variants.includes(requested as Variant) ? requested as Variant : "A");
   const [step, setStep] = useState<Step>(initialStep);
   const [inspected, setInspected] = useState(initialStep > 1);
   const [shared, setShared] = useState(initialStep > 2);
@@ -59,6 +60,7 @@ function PlayerPrototype() {
   const score = checks.filter(Boolean).length + Number(resource);
   const phase = step === 0 ? "Pre-game" : step === 1 ? "Briefing" : step < 4 ? "Negotiation" : step === 4 ? "Commitment" : "Result";
   function switchVariant(next: Variant) {
+    if (practiceMode) return;
     setVariant(next);
     const url = new URL(location.href); url.searchParams.set("variant", next);
     history.replaceState(null, "", url);
@@ -67,13 +69,14 @@ function PlayerPrototype() {
   function advance(next: Step) { setStep(next); setDrawer(null); }
   function reset() { setStep(0); setInspected(false); setShared(false); setPart(0); setVisited([]); setPlan([1, 1, 1, 1]); setResource(true); setNotice("Practice reset. No live room or AI calls."); }
   useEffect(() => {
+    if (practiceMode) return;
     const key = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       if (target.closest("input,textarea,select,[contenteditable=true],[role=tablist],dialog")) return;
       if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); cycle(event.key === "ArrowLeft" ? -1 : 1); }
     };
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
-  }, [variant]);
+  }, [practiceMode, variant]);
   useEffect(() => { if (drawer) dialog.current?.showModal(); else dialog.current?.close(); }, [drawer]);
   useEffect(() => { heading.current?.focus(); }, [step]);
   const openIntel = () => setDrawer("intel");
@@ -137,15 +140,16 @@ function PlayerPrototype() {
   </section>;
 
   const title = <div className="px-objective"><span className="px-overline">{phase.toUpperCase()} / {step === 0 ? "LEARN BEFORE YOU JOIN" : "YOUR NEXT MOVE"}</span><h1 ref={heading} tabIndex={-1}>{objectives[step]![0]}</h1><p>{objectives[step]![1]}</p></div>;
-  const hud = <header className="px-hud"><button className="px-wordmark" onClick={reset}>AGENT<span>HEIST</span></button><nav aria-label="Game tools"><button onClick={openIntel}>My intel{inspected ? " · 1" : ""}</button><button onClick={() => setDrawer("crew")}>Crew · 3</button><button onClick={() => setDrawer("rules")}>How to play</button></nav><span className="px-clock">∞ <small>UNTIMED PRACTICE</small></span></header>;
+  const exitPractice = () => onExitPractice ? onExitPractice() : history.back();
+  const hud = <header className="px-hud">{practiceMode && <button className="px-back" onClick={exitPractice}>← Back to catalog</button>}<button className="px-wordmark" onClick={reset}>AGENT<span>HEIST</span></button><nav aria-label="Game tools"><button onClick={openIntel}>My intel{inspected ? " · 1" : ""}</button><button onClick={() => setDrawer("crew")}>Crew · 3</button><button onClick={() => setDrawer("rules")}>How to play</button></nav><span className="px-clock">∞ <small>UNTIMED PRACTICE</small></span></header>;
   const scene = <div className="px-scene" style={{ backgroundImage: `linear-gradient(180deg,rgba(6,12,18,.03),rgba(6,12,18,.97)),url(${rooftop})` }}><span className="px-scene-caption">THE JOB / FIND A WAY IN. AGREE ON A WAY OUT.</span><div className="px-scene-bottom"><span className="px-role-badge">⌖</span><div><span className="px-overline">YOU ARE THE NAVIGATOR</span><h2>The crew needs your intel.</h2><p>No one starts with the whole picture.</p></div></div></div>;
   const phaseTrack = <ol className="px-track" aria-label="Practice progress">{chapters.map((chapter, i) => <li key={chapter} className={i === step ? "active" : i < step ? "done" : ""}><span>{i < step ? "✓" : String(i + 1).padStart(2, "0")}</span><b>{chapter}</b></li>)}</ol>;
 
   return <main className={`px-root variant-${variant} step-${step}`}>
-    <div className="px-prototype-note">INTERACTION STUDY · SIMULATED PRACTICE · NOT A LIVE ROOM</div>
+    <div className="px-prototype-note">{practiceMode ? "GUIDED PRACTICE · SCRIPTED CREW · NO LIVE AI CALLS" : "INTERACTION STUDY · SIMULATED PRACTICE · NOT A LIVE ROOM"}</div>
     {hud}
     {variant === "A" ? <VariantA title={title} scene={scene} play={play} coach={coach} track={phaseTrack} feedback={feedback} /> : variant === "B" ? <VariantB title={title} play={play} coach={coach} track={phaseTrack} feedback={feedback} onIntel={openIntel} onCrew={() => setDrawer("crew")} /> : <VariantC title={title} play={play} coach={coach} track={phaseTrack} feedback={feedback} image={rooftop} />}
-    <div className="px-switcher"><button aria-label="Previous design" onClick={() => cycle(-1)}>←</button><span>{variant} / {names[variant]}</span><button aria-label="Next design" onClick={() => cycle(1)}>→</button><button onClick={() => setDrawer("state")}>Study controls</button></div>
+    {!practiceMode && <div className="px-switcher"><button aria-label="Previous design" onClick={() => cycle(-1)}>←</button><span>{variant} / {names[variant]}</span><button aria-label="Next design" onClick={() => cycle(1)}>→</button><button onClick={() => setDrawer("state")}>Study controls</button></div>}
     <dialog className="px-dialog" ref={dialog} onCancel={() => setDrawer(null)} onClose={() => setDrawer(null)}><div className="px-dialog-header"><b>{drawer === "rules" ? "The job, in plain English" : drawer === "intel" ? "Your intel" : drawer === "crew" ? "Your practice crew" : "Prototype state & controls"}</b><button autoFocus aria-label="Close panel" onClick={() => setDrawer(null)}>×</button></div>
       {drawer === "rules" ? <div className="px-rules"><p>Agent Heist is a timed cooperative planning game. You do not steer a character around a map.</p><ol><li><b>Discover:</b> open the intel assigned to your role.</li><li><b>Share and plan:</b> publish facts, trade privately, and propose or back a plan.</li><li><b>Commit:</b> choose one plan and whether to contribute a resource. Your choice is sealed.</li><li><b>Resolve:</b> at least two crew members must choose the same plan. No majority means failure and 0 points.</li></ol><h3>How the crew scores</h3><p>One point each for the correct route, timing, equipment and escape. One point if a supporter of the selected plan contributes a resource.</p><p><b>5: success. 3–4: partial failure. 0–2: failure.</b> There is no individual score or bonus for clicking quickly.</p><p>In the current rules, published intel must be true. You can withhold intel; you cannot publish a false clue.</p><p>Live rounds share a clock. Help, switching tabs, and leaving the page do not pause it. This local practice is untimed.</p><button className="px-primary" onClick={() => { setTour(true); setDrawer(null); }}>Show guidance</button></div> : drawer === "intel" ? <div className="px-rules"><span className="px-overline">{shared ? "SHARED" : "PRIVATE"}</span><h2>{inspected ? "Service entrance" : "Your dossier is still sealed"}</h2><p>{inspected ? "Your route clue. " + (shared ? "The whole crew can now see this." : "Only you can see this until you share it.") : "Open your route dossier in Discover. You do not need to know a clue identifier."}</p>{shared && <p>Shared by the practice crew: Early · Thermal key · Boat.</p>}</div> : drawer === "crew" ? <div className="px-rules"><p><b>Navigator · You</b><br />Find the route.</p><p><b>Insider · Scripted practice teammate</b><br />Find the entry time.</p><p><b>Broker · Scripted practice teammate</b><br />Find equipment and extraction.</p><p>Humans and agents use the same game rules. These two teammates are scripted locally; no model is running.</p></div> : <div className="px-rules"><p>Compare the same state in three different layouts. Arrow keys also switch designs. Nothing persists after reload.</p><div className="px-stage-picker">{chapters.map((chapter, i) => <button key={chapter} onClick={() => { setStep(i as Step); setInspected(i > 1); setShared(i > 2); setVisited(i > 3 ? [0,1,2,3] : []); setDrawer(null); }}>{chapter}</button>)}</div><button className="px-text-button" onClick={() => { reset(); setDrawer(null); }}>Reset practice</button><pre>{JSON.stringify({ variant, phase, step: chapters[step], inspected, shared, plan: choices.map((choice, i) => ({ part: choice.label, choice: visited.includes(i) || step >= 4 ? choice.options[plan[i]!] : null })), resource, sampleMajority: step === 5 ? 2 : null, sampleScore: step === 5 ? score : null, network: "none", simulated: true }, null, 2)}</pre></div>}
     </dialog>

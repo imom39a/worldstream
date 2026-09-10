@@ -1,5 +1,15 @@
 # Heist prototype artwork
 
+The production-facing shared renderer is `src/HeistArtwork.tsx`. It accepts
+only the presentation slots `route`, `entry_window`, `required_tool`, and
+`extraction`; labels are HTML beside the image. Unknown wire values render a
+neutral placeholder and are never interpreted as private clues or outcomes.
+
+The twelve bounded WebP assets (`quality 82`, max width 1200) are the browser
+assets. The PNGs remain as provenance/source copies and are not imported by
+the client. Entry-window art is mission-relative early/middle/late, not
+timeofday. Its timeline dots are HTML, not painted into the image.
+
 Created 2026-09-10 using the built-in image_gen tool (not the API/CLI fallback).
 Nine separate image requests; no edits or regeneration. Originals remain in the
 Codex generated-images directory. Project copies are the PNG files in this directory.
@@ -67,6 +77,13 @@ Primary subject: An unbranded dark city motorbike parked alone under a streetlam
 Original: `/Users/vinothshanmugam/.codex/generated_images/01a081cc-b6c2-74e3-a08e-b008849a6b5e/exec-254436e2-ac00-4da7-b926-eff25093dd09.png`
 
 
+### Added entry-window assets
+
+`entry-early.png`, `entry-middle.png`, and `entry-late.png` are generated
+mission-window illustrations. Their exact prompt/original paths are recorded
+in the generated-image provenance sidecar maintained at the repository
+workspace level; the client does not depend on that sidecar at runtime.
+
 ## Integration
 
 The prototype uses these images in route/equipment/extraction choice cards, the
@@ -79,6 +96,7 @@ equipment and escape images loaded successfully at phone size. The 390×844
 plan screen has no horizontal or vertical page overflow and its primary action
 is visible. Clicking an illustrated choice still updates the selected plan.
 TypeScript compilation passed. This is prototype verification, not live acceptance.
-Current files are source-resolution originals for this local study. A production
-release should derive bounded responsive web assets and validate page-weight
-budgets; this branch is not a production asset pipeline or client release.
+The checked-in WebP derivatives are bounded responsive release assets and keep
+the twelve-card set under the page-weight budget. The source PNGs remain for
+review and provenance; changing source art requires regenerating all WebP
+derivatives with the same dimensions/quality policy.

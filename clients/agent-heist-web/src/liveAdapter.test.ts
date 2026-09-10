@@ -188,6 +188,31 @@ describe("Agent Heist retained live adapter", () => {
     }]);
   });
 
+  it("preserves the authorized result debrief without inventing hidden answers", () => {
+    const state = reduceAgentHeistObservation(initialAgentHeistLiveState(), observation({
+      delivery: [{
+        kind: "projection_reset",
+        body: {
+          projection: {
+            core: { access_mode: "participant", standing: "enabled", role: "navigator", room_status: "active", viewer_class: "participant" },
+            activity: activity({
+              phase: "result",
+              outcome: {
+                outcome: "partial_failure", selected_plan_id: "plan-a", vote_counts: { "plan-a": 2 }, missing_roles: ["broker"],
+                checks: { route: true, entry_window: false, required_tool: true, extraction: true, resource_contributed: false }, score: 3, reason: "scored_selected_plan",
+              },
+            }),
+            action_offers: [],
+          },
+        },
+      }],
+    }));
+    expect(state.kind).toBe("ready");
+    if (state.kind !== "ready") throw new Error("expected ready state");
+    expect(state.projection.outcome).toEqual(expect.objectContaining({ voteCounts: { "plan-a": 2 }, missingRoles: ["broker"], checks: expect.objectContaining({ route: true, entryWindow: false, resourceContributed: false }) }));
+    expect(JSON.stringify(state.projection.outcome)).not.toContain("fixture");
+  });
+
   it("replaces every activity field on Reset instead of retaining a prior private value", () => {
     const first = reduceAgentHeistObservation(initialAgentHeistLiveState(), observation());
     const replacement = observation({
