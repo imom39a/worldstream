@@ -2,6 +2,7 @@
 -- platform first freezes that intent, the Host then prevents future setup and
 -- archives any canonical Room, and capacity is released only after the exact
 -- Host evidence is retained here.
+-- This head migration follows the already-deployed Agent Heist V9 successors.
 
 alter table platform_store.launch_requests
   drop constraint launch_request_state;
