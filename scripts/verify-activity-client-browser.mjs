@@ -8,13 +8,14 @@ const host = await startActivityClientHost({ port: 0 });
 const browser = await chromium.launch({ headless: true, ...await localBrowserOptions() });
 
 try {
+  await verifyInitialTicketRecovery();
   if ((await fetch(`${host.origin}/agent-heist/`)).status !== 404) throw new Error("unavailable retained Heist path must not serve replacement bytes");
-  await verifySurface("Agent Heist current local", "/agent-heist-v9/", "Agent Heist · WorldStream Activity Client", async (page) => {
-    await page.getByRole("heading", { name: "Waiting for the mission" }).waitFor();
+  await verifySurface("Agent Heist current local", "/agent-heist-v10/", "Agent Heist · WorldStream Activity Client", async (page) => {
+    await page.getByRole("heading", { name: "Re-enter your mission" }).waitFor();
     const body = await page.locator("body").innerText();
     reject(body, /Canal Shift|route_service|Recorded fixture|Fixture mode/i, "Heist live client exposed recorded data");
   });
-  await verifySurface("Agent Heist current hosted", "/agent-heist-v9/hosted/", "Agent Heist · Hosted Activity Client", async (page) => {
+  await verifySurface("Agent Heist current hosted", "/agent-heist-v10/hosted/", "Agent Heist · Hosted Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Unable to enter this Run" }).waitFor();
   }, true);
   await verifySurface("Agent Heist retained v8", "/agent-heist-v8/", "Agent Heist · WorldStream Activity Client", async (page) => {
@@ -138,6 +139,53 @@ async function verifySurface(label, path, expectedTitle, assertPage, hosted = fa
   await assertPage(page);
   if (failures.length > 0) throw new Error(failures.join("\n"));
   await page.close();
+}
+
+async function verifyInitialTicketRecovery() {
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const counts = { redeem: 0, resume: 0, ticket: 0, actions: 0 };
+  const errors = [];
+  let sessionMissing = false;
+  page.on("pageerror", (error) => errors.push(error.message));
+  const fulfill = (route, status, body) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+  const usable = { version: "participant_console_session.v1", state: "usable", next_action: "continue" };
+  await page.route(`${host.origin}/api/**`, (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/auth/session") return fulfill(route, 200, {
+      authenticated: true, csrf: "c".repeat(43), browser_stream_url: "ws://127.0.0.1:8080/v1/hosted/browser-stream",
+    });
+    if (path.endsWith("handoffs:redeem")) { counts.redeem += 1; return fulfill(route, 200, usable); }
+    if (path.endsWith("/session")) {
+      counts.resume += 1;
+      return sessionMissing
+        ? fulfill(route, 401, { code: "participant_session_missing", message: "Your session expired.", next_action: "return_to_task_setup", retryable: false })
+        : fulfill(route, 200, usable);
+    }
+    if (path.endsWith("session:stream-ticket")) {
+      counts.ticket += 1;
+      return fulfill(route, 503, { code: "participant_session_unavailable", message: "The Activity Client cannot reach the Room service safely.", next_action: "reconnect", retryable: true });
+    }
+    counts.actions += 1;
+    return fulfill(route, 500, {});
+  });
+  try {
+    await page.goto(`${host.origin}/agent-heist-v10/hosted/#handoff=wsh1:${"ab".repeat(32)}`, { waitUntil: "networkidle" });
+    await page.getByRole("button", { name: "Reconnect", exact: true }).waitFor();
+    if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)) throw new Error("initial recovery screen overflows the mobile viewport");
+    if (page.url().includes("#handoff")) throw new Error("initial handoff was retained in the URL");
+    await page.getByRole("button", { name: "Reconnect", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector(".heist-boundary-shell")?.getAttribute("aria-busy")?.includes("true"));
+    if (counts.redeem !== 1 || counts.resume !== 1 || counts.ticket !== 2 || counts.actions !== 0) {
+      throw new Error("recovery did not use the existing session and a single fresh ticket request");
+    }
+    if (await page.locator("form").count() !== 0) throw new Error("an unsynchronized client exposed an action form");
+    sessionMissing = true;
+    await page.getByRole("button", { name: "Reconnect", exact: true }).click();
+    await page.getByRole("heading", { name: "Re-enter your mission", exact: true }).waitFor();
+    if (await page.getByRole("button", { name: "Reconnect", exact: true }).count() !== 0) throw new Error("expired authority remained reconnectable");
+    if (counts.redeem !== 1 || counts.ticket !== 2 || errors.length > 0) throw new Error("expired-session recovery replayed authority or threw");
+    console.log("Initial Heist ticket failure: explicit reconnect, no handoff/action replay, expired-session re-entry, mobile layout passed.");
+  } finally { await page.close(); }
 }
 
 function reject(value, pattern, message) {

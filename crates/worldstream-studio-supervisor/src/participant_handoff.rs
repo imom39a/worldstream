@@ -1,5 +1,6 @@
 //! Local, opaque Participant Console handoff and membership-bound session proxy.
 
+use crate::session_diagnostics::{self as session_diagnostic, Detail};
 use std::{
     collections::HashMap,
     fmt,
@@ -436,6 +437,7 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
         ));
         let mut stream = TcpStream::connect_timeout(&self.address, self.timeout)
             .inspect_err(|error| {
+                session_diagnostic::io(Detail::Connect, error.kind());
                 #[cfg(debug_assertions)]
                 reentry_diagnostic::io(reentry_diagnostic::Stage::Connect, error.kind());
                 #[cfg(not(debug_assertions))]
@@ -447,6 +449,7 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
             .and_then(|()| stream.set_write_timeout(Some(self.timeout)))
             .and_then(|()| stream.write_all(request.as_bytes()))
             .inspect_err(|error| {
+                session_diagnostic::io(Detail::Write, error.kind());
                 #[cfg(debug_assertions)]
                 reentry_diagnostic::io(reentry_diagnostic::Stage::Write, error.kind());
                 #[cfg(not(debug_assertions))]
@@ -458,6 +461,7 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
             .take(MAX_TICKET_RESPONSE_BYTES + 1)
             .read_to_end(&mut response)
             .inspect_err(|error| {
+                session_diagnostic::io(Detail::Read, error.kind());
                 #[cfg(debug_assertions)]
                 reentry_diagnostic::io(reentry_diagnostic::Stage::Read, error.kind());
                 #[cfg(not(debug_assertions))]
@@ -465,14 +469,17 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
             })
             .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
         if u64::try_from(response.len()).unwrap_or(u64::MAX) > MAX_TICKET_RESPONSE_BYTES {
+            session_diagnostic::invalid(Detail::Body);
             #[cfg(debug_assertions)]
             reentry_diagnostic::invalid(reentry_diagnostic::Stage::Body);
             return Err(ParticipantConsoleGatewayErrorV1::Unavailable);
         }
         let (status, body) = parse_http_response(&response).inspect_err(|_| {
+            session_diagnostic::invalid(Detail::Parse);
             #[cfg(debug_assertions)]
             reentry_diagnostic::invalid(reentry_diagnostic::Stage::Parse);
         })?;
+        session_diagnostic::http(status);
         #[cfg(debug_assertions)]
         reentry_diagnostic::http(status);
         match status {
@@ -482,6 +489,7 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
         }
         let current: worldstream_protocol::MembershipStatusResponse = serde_json::from_slice(body)
             .inspect_err(|_| {
+                session_diagnostic::invalid(Detail::Body);
                 #[cfg(debug_assertions)]
                 reentry_diagnostic::invalid(reentry_diagnostic::Stage::Body);
             })
@@ -497,6 +505,7 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
             )
             || (current.access_mode == AccessMode::Participant) != current.role.is_some()
         {
+            session_diagnostic::invalid(Detail::Validation);
             #[cfg(debug_assertions)]
             reentry_diagnostic::invalid(reentry_diagnostic::Stage::Validation);
             return Err(ParticipantConsoleGatewayErrorV1::Rejected);
@@ -530,23 +539,30 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
                 .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?,
         ));
         let mut stream = TcpStream::connect_timeout(&self.address, self.timeout)
+            .inspect_err(|error| session_diagnostic::io(Detail::Connect, error.kind()))
             .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
         stream
             .set_read_timeout(Some(self.timeout))
             .and_then(|()| stream.set_write_timeout(Some(self.timeout)))
+            .inspect_err(|error| session_diagnostic::io(Detail::Write, error.kind()))
             .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
         stream
             .write_all(request.as_bytes())
+            .inspect_err(|error| session_diagnostic::io(Detail::Write, error.kind()))
             .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
         let mut response = Vec::new();
         stream
             .take(MAX_TICKET_RESPONSE_BYTES + 1)
             .read_to_end(&mut response)
+            .inspect_err(|error| session_diagnostic::io(Detail::Read, error.kind()))
             .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
         if u64::try_from(response.len()).unwrap_or(u64::MAX) > MAX_TICKET_RESPONSE_BYTES {
+            session_diagnostic::invalid(Detail::Body);
             return Err(ParticipantConsoleGatewayErrorV1::Unavailable);
         }
-        let (status, body) = parse_http_response(&response)?;
+        let (status, body) = parse_http_response(&response)
+            .inspect_err(|_| session_diagnostic::invalid(Detail::Parse))?;
+        session_diagnostic::http(status);
         Ok((status, body.to_vec()))
     }
 
@@ -921,12 +937,14 @@ impl ParticipantConsoleGatewayV1 for FixedDaemonParticipantConsoleGatewayV1 {
             });
         }
         let response: BrowserWebSocketTicketIssueResponse = serde_json::from_slice(&body)
+            .inspect_err(|_| session_diagnostic::invalid(Detail::Body))
             .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
         if response.version != BROWSER_WS_TICKET_VERSION
             || response.expires_in_ms == 0
             || response.expires_in_ms > 15_000
             || !is_token(&response.ticket, "wst1:")
         {
+            session_diagnostic::invalid(Detail::Validation);
             return Err(ParticipantConsoleGatewayErrorV1::Unavailable);
         }
         Ok(response)

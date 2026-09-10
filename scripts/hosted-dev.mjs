@@ -48,8 +48,9 @@ const HOSTED_NATIVE_BINARY_NAMES = [
 ];
 export const HOSTED_LOCAL_RECONCILIATION_SECRET =
   "worldstream-local-reconciliation-secret-000000000000";
-const LISTING_DIGEST = "blake3:30ee53ed1ad230586f0f0ac20b3da442093c76bed568b3b7021b043800e240fe";
+const LISTING_DIGEST = "blake3:c2e07bc3c8ff2b36a549127d1f9f6403c52dcaca45065cb5923debe705111de2";
 const RETAINED_LISTING_DIGESTS = [
+  "blake3:30ee53ed1ad230586f0f0ac20b3da442093c76bed568b3b7021b043800e240fe",
   "blake3:8be1c66c9c69a4a67800dadf8e60d66bdf8a8b9118fb3baa96b5e8cdaf272b7d",
   "blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397",
   "blake3:945664f9fea18ace9991c44d43febc142a58244d69352d98514a69b4f7b22030",
@@ -795,7 +796,7 @@ async function ensureDevelopmentProviderSecret(path) {
 
 async function seedSupabase(supabase, environment) {
   const databaseUrl = requiredSupabase(supabase, "DB_URL");
-  await run("psql", [databaseUrl, "-q", "-v", "ON_ERROR_STOP=1", "-f", "supabase/seed.sql"], {
+  await run("psql", [databaseUrl, "-q", "-v", "ON_ERROR_STOP=1", "-f", "supabase/seed.sql", "-f", "supabase/catalog/agent-heist-0.27.0.sql"], {
     capture: true,
     sensitive: true,
     environment,
@@ -1012,7 +1013,7 @@ async function hostedClientDeclaration(stateDirectory, stateRoot) {
 
   const template = await readRegularJson(join(configuration, "hosted-local-bindings.json"));
   const currentHeist = await readRegularJson(
-    join(configuration, "releases", "agent-heist-web-v9.json"),
+    join(configuration, "releases", "agent-heist-web-v10.json"),
   );
   const retainedHeist = await readRegularJson(
     join(configuration, "releases", "agent-heist-web-v7.json"),
@@ -1054,6 +1055,8 @@ async function hostedClientDeclaration(stateDirectory, stateRoot) {
       release_files: [
         "./agent-heist-web.json",
         "./agent-heist-web-v7.json",
+        resolve(configuration, "releases", "agent-heist-web-v8.json"),
+        resolve(configuration, "releases", "agent-heist-web-v9.json"),
         "./retained-inspector-web.json",
         ...additionalReleases,
       ],
@@ -1439,7 +1442,7 @@ async function verifyDevelopmentFlow(ports) {
     [
       "fixtures/hosted-contract/valid/agent-heist-launch-request.json",
       "fixtures/hosted-contract/valid/agent-heist-frozen-roster.json",
-      "config/hosted/listings/agent-heist-0.26.0.json",
+      "config/hosted/listings/agent-heist-0.27.0.json",
     ].map(async (path) => JSON.parse(await readFile(join(REPOSITORY_ROOT, path), "utf8"))),
   );
   const frozenLaunchRequest = {

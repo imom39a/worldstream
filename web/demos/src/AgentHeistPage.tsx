@@ -71,7 +71,7 @@ export function AgentHeistPage({ onNavigate }: { onNavigate: Navigate }) {
           <p>
             Follow the intel. Read the crew. Step through a recorded heist and see how private knowledge shapes a shared plan.
           </p>
-          <p><a className="inline-doc-link" href="/agent-heist-v9/practice/">First time? Play the guided practice →</a> — untimed, scripted, and free of live AI calls.</p>
+          <p><a className="inline-doc-link" href="/agent-heist-v10/practice/">First time? Play the guided practice →</a> — untimed, scripted, and free of live AI calls.</p>
         </section>
 
         <aside className="fixture-notice" aria-label="Demo boundary">

@@ -14,6 +14,30 @@ function state(role: "navigator" | "insider" | "broker" = "navigator"): AgentHei
 const render = (ready: AgentHeistReadyState, connection: "live" | "disconnected" = "live") => renderToStaticMarkup(<AgentHeistClientView state={ready} connection={connection} onAct={vi.fn()} />);
 
 describe("Mission focus live participant surface", () => {
+  it("offers one explicit reconnect before the first authorized mission arrives", async () => {
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    let finish!: () => void;
+    const onReconnect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    try {
+      await act(async () => root.render(<AgentHeistClientView state={{ kind: "awaiting" }} connection="disconnected"
+        message="The Activity Client cannot reach the Room service safely." onAct={vi.fn()} onReconnect={onReconnect} />));
+      const button = [...host.querySelectorAll("button")].find((item) => item.textContent === "Reconnect");
+      expect(button).toBeDefined();
+      await act(async () => { button!.click(); button!.click(); });
+      expect(onReconnect).toHaveBeenCalledTimes(1);
+      expect(button!.disabled).toBe(true);
+      expect(host.querySelector("form")).toBeNull();
+      await act(async () => finish());
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it("requires re-entry rather than reconnect for an expired or revoked session", () => {
+    const markup = renderToStaticMarkup(<AgentHeistClientView state={{ kind: "awaiting" }} connection="setup_required"
+      onAct={vi.fn()} onReconnect={vi.fn()} />);
+    expect(markup).toContain("Return to My games");
+    expect(markup).not.toContain(">Reconnect<");
+  });
   it.each([
     ["navigator", "Route dossier"], ["insider", "Entry time dossier"], ["broker", "Equipment dossier"],
   ] as const)("shows only the reviewed unopened dossier objects for %s", (role, label) => {

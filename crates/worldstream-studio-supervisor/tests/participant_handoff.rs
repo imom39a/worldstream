@@ -1,6 +1,10 @@
 #![allow(clippy::panic)]
 
 #[allow(dead_code)]
+#[path = "../src/session_diagnostics.rs"]
+mod session_diagnostics;
+
+#[allow(dead_code)]
 #[path = "../src/protected_publication.rs"]
 mod protected_publication;
 
@@ -1820,14 +1824,21 @@ fn native_membership_diagnostic_child() {
         address.parse().expect("owned loopback peer"),
         Duration::from_millis(75),
     );
-    let result = gateway.membership_status(&authority);
     let expected = if std::env::var("WORLDSTREAM_TEST_MEMBERSHIP_CASE").as_deref() == Ok("timeout")
     {
         ParticipantConsoleGatewayErrorV1::Disconnected
     } else {
         ParticipantConsoleGatewayErrorV1::Unavailable
     };
-    assert_eq!(result.err(), Some(expected));
+    let result =
+        session_diagnostics::operation(session_diagnostics::Operation::StreamTicket, || {
+            session_diagnostics::stage(session_diagnostics::Stage::Membership, || {
+                let result = gateway.membership_status(&authority);
+                assert_eq!(result.err(), Some(expected));
+                Err::<(), _>(session_diagnostics::Category::Unavailable)
+            })
+        });
+    assert!(result.is_err());
 }
 
 #[cfg(all(unix, debug_assertions))]
@@ -1924,6 +1935,7 @@ fn native_membership_diagnostic_preserves_rate_limit_and_timeout_results() {
             .expect("bounded diagnostic child");
         peer.join().expect("fixture peer completed");
         assert!(output.status.success(), "public adapter result changed");
+        assert_session_failure_diagnostics(&output.stderr, case);
         let stored = std::fs::read_to_string(&trace).expect("read diagnostic receipt");
         let records = stored
             .lines()
@@ -1932,5 +1944,34 @@ fn native_membership_diagnostic_preserves_rate_limit_and_timeout_results() {
         assert_eq!(records, vec![expected]);
         assert!(!stored.contains(BEARER));
         assert!(!stored.contains("private-upstream-body-sentinel"));
+    }
+}
+
+#[cfg(all(unix, debug_assertions))]
+#[allow(
+    clippy::expect_used,
+    reason = "Malformed fixture output must fail the test"
+)]
+fn assert_session_failure_diagnostics(stderr: &[u8], case: &str) {
+    let stderr = std::str::from_utf8(stderr).expect("structured diagnostic output");
+    let records: Vec<Value> = stderr
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|record| record["event"] == "hosted_session_diagnostic")
+        .collect();
+    assert_eq!(records.len(), 3);
+    assert!(records.iter().all(|record| {
+        record["operation"] == "stream_ticket" && record["call"] == records[0]["call"]
+    }));
+    assert!(records.iter().any(|record| {
+        record["stage"] == "membership"
+            && if case == "timeout" {
+                record["detail"] == "read" && record["category"] == "timeout"
+            } else {
+                record["detail"] == "http" && record["status"] == 429
+            }
+    }));
+    for private in [BEARER, ROOM_ID, MEMBER_ID, "private-upstream-body-sentinel"] {
+        assert!(!stderr.contains(private));
     }
 }

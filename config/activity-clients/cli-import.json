@@ -27,7 +27,8 @@
     "./releases/midnight-archive-web-v11.json",
     "./releases/midnight-archive-web-v12.json",
     "./releases/midnight-archive-web-v13.json",
-    "./releases/agent-heist-web-v9.json"
+    "./releases/agent-heist-web-v9.json",
+    "./releases/agent-heist-web-v10.json"
   ],
   "bindings_file": "./local-bindings.json"
 }

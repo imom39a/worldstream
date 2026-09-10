@@ -1,6 +1,6 @@
 # First-party client design release
 
-Current source builds are Agent Heist v9, Negotiate v3, Midnight Archive v13,
+Current source builds are Agent Heist v10, Negotiate v3, Midnight Archive v13,
 and Inspector v2. Each release has an exact build-tree digest and linked
 evidence under `releases/` and `conformance/`. The shared CSS in `web/design/`
 is bundled independently; it does not create a runtime dependency between
@@ -8,7 +8,7 @@ clients.
 
 | Current path | Source |
 | --- | --- |
-| `/agent-heist-v9/`, `/agent-heist-v9/hosted/`, and `/agent-heist-v9/practice/` | `clients/agent-heist-web` |
+| `/agent-heist-v10/`, `/agent-heist-v10/hosted/`, and `/agent-heist-v10/practice/` | `clients/agent-heist-web` |
 | `/negotiate-v3/` | `clients/negotiate-web` |
 | `/midnight-archive-v13/` and `/midnight-archive-v13/hosted/` | `clients/midnight-archive-web` |
 | `/inspector-v2/` | `web/console` |
@@ -32,10 +32,15 @@ selection is scoped to the Room's exact Pack revision digest. The repository
 binding-store test proves the ten Pack digests resolve v1 through v10 even
 though all revisions retain the same publisher version label.
 
-The hosted platform installs the current Heist v9 build and retained v8/v7/v6/v5/v4/v3/v2
+The hosted platform installs the current Heist v10 build and retained v9/v8/v7/v6/v5/v4/v3/v2
 artifacts. Midnight Archive v1 through v12 remain retained, with v13 bound only
 to the four-roster Pack Revision. Listing 0.26.0 and its database migration pin
 v9, while retained Listing 0.25.0 resolves v8 and Listing 0.24.0 resolves v7.
+The session-recovery successor is Listing 0.27.0 and v10. It uses a data-only
+catalog seed, not a schema migration. Existing v9 build bytes were checked
+against their published digest before retention. See
+[the activation gate](../../docs/room-service-reliability.md#successor-and-deployment-gate);
+prepared source identities do not prove production activation.
 Publish through the coordinated hosted release process; changing
 frontend files alone does not activate a Runtime or database migration.
 

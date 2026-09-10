@@ -105,6 +105,7 @@ test("runtime configuration fixes internal listeners and persistent children", (
   assert.equal(layout.runtimeData, "/var/lib/worldstream/runtime");
   assert.equal(layout.controllerState, "/var/lib/worldstream/studio");
   assert.equal(layout.retainedClientReleaseV8, "/opt/worldstream/hosted/agent-heist-web-v8.json");
+  assert.equal(layout.retainedClientReleaseV9, "/opt/worldstream/hosted/agent-heist-web-v9.json");
   assert.equal(layout.retainedClientRelease, "/opt/worldstream/hosted/agent-heist-web-v7.json");
   assert.equal(layout.maintenanceMarker, "/var/lib/worldstream/maintenance/closed");
   const config = renderHostedRuntimeConfig({

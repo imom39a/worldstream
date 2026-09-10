@@ -43,6 +43,71 @@ afterEach(() => {
   mocks.enterRun.mockReset();
 });
 
+it("waits for a slow launch read before scheduling another poll", async () => {
+  vi.useFakeTimers();
+  let resolve!: (value: unknown) => void;
+  mocks.readLaunch.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+  mocks.readLaunch.mockResolvedValue({ ...launch, state: "collecting" });
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<LaunchPage launchId={launch.launch_id} onNavigate={vi.fn()} />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(mocks.readLaunch).toHaveBeenCalledTimes(1);
+    await act(async () => resolve({ ...launch, state: "collecting" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_999); });
+    expect(mocks.readLaunch).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(mocks.readLaunch).toHaveBeenCalledTimes(2);
+  } finally { await act(async () => root.unmount()); }
+});
+
+it("aborts a pending launch read when leaving the waiting room", async () => {
+  vi.useFakeTimers();
+  mocks.readLaunch.mockImplementation(() => new Promise(() => {}));
+  const root = createRoot(document.createElement("div"));
+  await act(async () => root.render(<LaunchPage launchId={launch.launch_id} onNavigate={vi.fn()} />));
+  const signal = mocks.readLaunch.mock.calls[0]?.[1] as AbortSignal | undefined;
+  await act(async () => root.unmount());
+  expect(signal?.aborted).toBe(true);
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(mocks.readLaunch).toHaveBeenCalledTimes(1);
+});
+
+it("backs off after a failed read and stops after the recovered terminal response", async () => {
+  vi.useFakeTimers();
+  mocks.readLaunch.mockRejectedValueOnce(new Error("temporarily_unavailable"));
+  mocks.readLaunch.mockResolvedValue(launch);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<LaunchPage launchId={launch.launch_id} onNavigate={vi.fn()} />));
+    expect(container.textContent).toContain("Retry connection");
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_999); });
+    expect(mocks.readLaunch).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(mocks.readLaunch).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("This room did not start");
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(mocks.readLaunch).toHaveBeenCalledTimes(2);
+  } finally { await act(async () => root.unmount()); }
+});
+
+it("does not let a stale launch response replace the newly selected launch", async () => {
+  let resolve!: (value: unknown) => void;
+  mocks.readLaunch.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+  mocks.readLaunch.mockResolvedValue({ ...launch, activity_title: "New activity" });
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<LaunchPage launchId={launch.launch_id} onNavigate={vi.fn()} />));
+    await act(async () => root.render(<LaunchPage launchId="different-launch" onNavigate={vi.fn()} />));
+    await act(async () => resolve({ ...launch, activity_title: "Stale activity" }));
+    expect(container.textContent).toContain("New activity");
+    expect(container.textContent).not.toContain("Stale activity");
+  } finally { await act(async () => root.unmount()); }
+});
+
 it("renders an abandoned pre-start Room as terminal without start, abandon, or polling", async () => {
   vi.useFakeTimers();
   mocks.readLaunch.mockResolvedValue(launch);

@@ -11,11 +11,15 @@ import {
   runRoomCreateWithRetainedSetupRetry,
 } from "./hosted-production-smoke.mjs";
 
-test("the production smoke installs current V9 and every retained runtime client", () => {
+test("the production smoke installs current V10 and every retained runtime client", () => {
   assert.deepEqual(hostedSmokeClientAssets("/repo", "/assets"), [
     {
-      source: "/repo/config/activity-clients/releases/agent-heist-web-v9.json",
+      source: "/repo/config/activity-clients/releases/agent-heist-web-v10.json",
       destination: "/assets/agent-heist-web.json",
+    },
+    {
+      source: "/repo/config/activity-clients/releases/agent-heist-web-v9.json",
+      destination: "/assets/agent-heist-web-v9.json",
     },
     {
       source: "/repo/config/activity-clients/releases/agent-heist-web-v8.json",

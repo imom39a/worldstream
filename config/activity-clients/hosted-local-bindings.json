@@ -8,7 +8,12 @@
       "client_id": "worldstream.midnight-archive.web",
       "release_digest": "sha256:9be6d6548f2d62baba805ec461b27fbd1021ed0d61fbd0e8ffd1d779616bc534",
       "trust_level": "externally_trusted",
-      "surfaces": [{ "surface_id": "midnight-archive-hosted-web", "launch_url": "http://127.0.0.1:5180/midnight-archive-v10/hosted/" }]
+      "surfaces": [
+        {
+          "surface_id": "midnight-archive-hosted-web",
+          "launch_url": "http://127.0.0.1:5180/midnight-archive-v10/hosted/"
+        }
+      ]
     },
     {
       "schema": "worldstream/client-deployment/v1",
@@ -16,7 +21,12 @@
       "client_id": "worldstream.midnight-archive.web",
       "release_digest": "sha256:fae51aaa770810d203f00fd8be7d098b069ce2ef8e6fc9b7f31b80accf53345f",
       "trust_level": "externally_trusted",
-      "surfaces": [{ "surface_id": "midnight-archive-hosted-web", "launch_url": "http://127.0.0.1:5180/midnight-archive-v12/hosted/" }]
+      "surfaces": [
+        {
+          "surface_id": "midnight-archive-hosted-web",
+          "launch_url": "http://127.0.0.1:5180/midnight-archive-v12/hosted/"
+        }
+      ]
     },
     {
       "schema": "worldstream/client-deployment/v1",
@@ -24,7 +34,12 @@
       "client_id": "worldstream.midnight-archive.web",
       "release_digest": "sha256:240ac1b94e9e89c0eb5a059ba85d116b807258cfd5917bc0dd879139de1b35bb",
       "trust_level": "externally_trusted",
-      "surfaces": [{ "surface_id": "midnight-archive-hosted-web", "launch_url": "http://127.0.0.1:5180/midnight-archive-v13/hosted/" }]
+      "surfaces": [
+        {
+          "surface_id": "midnight-archive-hosted-web",
+          "launch_url": "http://127.0.0.1:5180/midnight-archive-v13/hosted/"
+        }
+      ]
     },
     {
       "schema": "worldstream/client-deployment/v1",
@@ -77,16 +92,35 @@
           "launch_url": "http://127.0.0.1:5180/agent-heist-v9/hosted/"
         }
       ]
+    },
+    {
+      "schema": "worldstream/client-deployment/v1",
+      "deployment_id": "hosted-agent-heist-web-v10-5e6a6300",
+      "client_id": "worldstream.agent-heist.web",
+      "release_digest": "sha256:5e6a6300c0d9b17ad2c79df29aa02cc136516447f212c222723c080545f9bdd4",
+      "trust_level": "externally_trusted",
+      "surfaces": [
+        {
+          "surface_id": "heist-hosted-web",
+          "launch_url": "http://127.0.0.1:5180/agent-heist-v10/hosted/"
+        }
+      ]
     }
   ],
   "bindings": [
     {
       "schema": "worldstream/client-binding/v1",
       "binding_id": "hosted-midnight-archive-v10-9be6d654-lead",
-      "pack": { "id": "worldstream.midnight-archive", "version": "0.1.0", "digest": "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64" },
+      "pack": {
+        "id": "worldstream.midnight-archive",
+        "version": "0.1.0",
+        "digest": "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64"
+      },
       "client_contract": "worldstream/activity-client-protocol/v1",
       "access_mode": "participant",
-      "roles": ["lead"],
+      "roles": [
+        "lead"
+      ],
       "deployment_id": "hosted-midnight-archive-web-v10-9be6d654",
       "surface_id": "midnight-archive-hosted-web",
       "preference": "default"
@@ -94,10 +128,16 @@
     {
       "schema": "worldstream/client-binding/v1",
       "binding_id": "hosted-midnight-archive-v12-fae51aaa-lead",
-      "pack": { "id": "worldstream.midnight-archive", "version": "0.1.0", "digest": "blake3:aea45a1c056c4a7da744be33d38df672499062fd2548302fae43adc49b833b07" },
+      "pack": {
+        "id": "worldstream.midnight-archive",
+        "version": "0.1.0",
+        "digest": "blake3:aea45a1c056c4a7da744be33d38df672499062fd2548302fae43adc49b833b07"
+      },
       "client_contract": "worldstream/activity-client-protocol/v1",
       "access_mode": "participant",
-      "roles": ["lead"],
+      "roles": [
+        "lead"
+      ],
       "deployment_id": "hosted-midnight-archive-web-v12-fae51aaa",
       "surface_id": "midnight-archive-hosted-web",
       "preference": "default"
@@ -105,10 +145,16 @@
     {
       "schema": "worldstream/client-binding/v1",
       "binding_id": "hosted-midnight-archive-v13-240ac1b9-lead",
-      "pack": { "id": "worldstream.midnight-archive", "version": "0.1.0", "digest": "blake3:aea45a1c056c4a7da744be33d38df672499062fd2548302fae43adc49b833b07" },
+      "pack": {
+        "id": "worldstream.midnight-archive",
+        "version": "0.1.0",
+        "digest": "blake3:aea45a1c056c4a7da744be33d38df672499062fd2548302fae43adc49b833b07"
+      },
       "client_contract": "worldstream/activity-client-protocol/v1",
       "access_mode": "participant",
-      "roles": ["lead"],
+      "roles": [
+        "lead"
+      ],
       "deployment_id": "hosted-midnight-archive-web-v13-240ac1b9",
       "surface_id": "midnight-archive-hosted-web",
       "preference": "default"
@@ -282,6 +328,40 @@
       "deployment_id": "hosted-agent-heist-web-v9-6ee6747c",
       "surface_id": "heist-hosted-web",
       "preference": "default"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "hosted-agent-heist-0-5-v10-5e6a6300-participant",
+      "pack": {
+        "id": "worldstream.agent-heist",
+        "version": "0.5.0",
+        "digest": "blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "participant",
+      "roles": [
+        "navigator",
+        "insider",
+        "broker"
+      ],
+      "deployment_id": "hosted-agent-heist-web-v10-5e6a6300",
+      "surface_id": "heist-hosted-web",
+      "preference": "eligible"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "hosted-agent-heist-0-5-v10-5e6a6300-spectator",
+      "pack": {
+        "id": "worldstream.agent-heist",
+        "version": "0.5.0",
+        "digest": "blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "spectator",
+      "roles": [],
+      "deployment_id": "hosted-agent-heist-web-v10-5e6a6300",
+      "surface_id": "heist-hosted-web",
+      "preference": "eligible"
     }
   ],
   "inspector_fallback": {

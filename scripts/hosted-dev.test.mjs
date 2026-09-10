@@ -383,7 +383,9 @@ test("local and Fly gateways retain all retained Listings as well as current dis
   const deployed = JSON.parse(value.slice(value.indexOf("=") + 1).trim());
   assert.equal(deployed, hostedDevelopmentListingAllowlist());
   const admitted = new Set(deployed.split(","));
-  assert.equal(admitted.size, 25);
+  assert.equal(admitted.size, 26);
+  assert.ok(admitted.has("blake3:c2e07bc3c8ff2b36a549127d1f9f6403c52dcaca45065cb5923debe705111de2"));
+  assert.ok(admitted.has("blake3:30ee53ed1ad230586f0f0ac20b3da442093c76bed568b3b7021b043800e240fe"));
   assert.ok(admitted.has("blake3:8be1c66c9c69a4a67800dadf8e60d66bdf8a8b9118fb3baa96b5e8cdaf272b7d"));
   assert.ok(admitted.has("blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397"));
   assert.ok(admitted.has("blake3:945664f9fea18ace9991c44d43febc142a58244d69352d98514a69b4f7b22030"));

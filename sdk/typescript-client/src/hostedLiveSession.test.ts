@@ -208,8 +208,8 @@ function fixture() {
 async function openResetSession(
   setup: ReturnType<typeof fixture>,
   accessMode: "participant" | "spectator" = "participant",
+  starting = setup.controller.start({ kind: "retained", status: USABLE }),
 ) {
-  const starting = setup.controller.start({ kind: "retained", status: USABLE });
   await vi.waitFor(() => expect(setup.sockets).toHaveLength(1));
   const socket = setup.sockets[0] as FakeSocket;
   socket.open();
@@ -254,6 +254,26 @@ async function openResetSession(
 }
 
 describe("HostedLiveSessionController", () => {
+  it("recovers an initial ticket 503 with the retained session, never replaying the handoff or an Action", async () => {
+    const setup = fixture();
+    setup.authority.issueStreamTicket.mockRejectedValueOnce(new ActivityClientHandoffError(
+      "participant_session_unavailable", "The Activity Client cannot reach the Room service safely.", "retry", true,
+    ));
+    await expect(setup.controller.start({ kind: "handoff", handoff: `wsh1:${"ab".repeat(32)}` })).resolves.toMatchObject({
+      status: "disconnected", deliveryBatch: null, canAct: false,
+    });
+    expect(setup.sockets).toHaveLength(0);
+    const reconnecting = setup.controller.reconnect();
+    expect(setup.controller.reconnect()).toBe(reconnecting);
+    expect(setup.controller.state.canAct).toBe(false);
+    const socket = await openResetSession(setup, "participant", reconnecting);
+    expect(setup.authority.redeem).toHaveBeenCalledTimes(1);
+    expect(setup.authority.resume).toHaveBeenCalledTimes(1);
+    expect(setup.authority.issueStreamTicket).toHaveBeenCalledTimes(2);
+    expect(setup.controller.state.canAct).toBe(true);
+    expect(sentMessages(socket).some((item) => item.type === "action.submit")).toBe(false);
+    setup.controller.close();
+  });
   it("starts empty and installs only the authorized Reset before enabling Actions", async () => {
     const setup = fixture();
     expect(setup.controller.state.deliveryBatch).toBeNull();
