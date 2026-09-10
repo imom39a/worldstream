@@ -57,6 +57,9 @@ const MAX_RECORD_BYTES: usize = 256 * 1024;
 const MAX_RESERVATIONS: usize = 256;
 const MAX_HOUSE_RUNNERS: usize = 4;
 const MAX_HOUSE_RUNNERS_PER_LAUNCH: usize = 2;
+// Listings and House revisions are retained side by side in the reviewed
+// hosted catalog. Keep each catalog class within the same bounded scale.
+const MAX_REVIEWED_HOSTED_CATALOG_REVISIONS: usize = 64;
 const RETIREMENT_SCHEMA_V1: &str = "worldstream/house-runner-retirement/v1";
 const RETIREMENT_RECEIPT_SCHEMA_V1: &str = "worldstream/house-runner-retirement-receipt/v1";
 const RETIREMENT_TAG_DOMAIN: &str = "worldstream/house-runner-retirement-tag/v1";
@@ -890,8 +893,8 @@ impl HostedHouseRunnerOperationsV1 {
     ) -> Result<Self, HostedHouseRunnerErrorV1> {
         if !safe_public_reference(host_installation_id, 128)
             || listings.is_empty()
-            || listings.len() > 64
-            || revisions.len() > 32
+            || listings.len() > MAX_REVIEWED_HOSTED_CATALOG_REVISIONS
+            || revisions.len() > MAX_REVIEWED_HOSTED_CATALOG_REVISIONS
         {
             return Err(HostedHouseRunnerErrorV1::Invalid);
         }
@@ -2152,6 +2155,44 @@ mod tests {
             .unwrap_or_else(|error| unreachable!("second receipt key: {error:?}"));
         assert_eq!(first.as_slice(), second.as_slice());
         assert_eq!(first.len(), 32);
+    }
+
+    #[test]
+    fn full_reviewed_house_catalog_opens_within_the_shared_catalog_bound() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("tempdir: {error}"));
+        let (listings, revisions) = crate::hosted_artifacts::reviewed_hosted_artifacts()
+            .unwrap_or_else(|error| unreachable!("reviewed catalog: {error}"));
+        assert_eq!(
+            revisions.len(),
+            33,
+            "update this regression when the catalog grows"
+        );
+        assert!(listings.len() <= MAX_REVIEWED_HOSTED_CATALOG_REVISIONS);
+
+        let operations = HostedHouseRunnerOperationsV1::open_with(
+            directory.path(),
+            "hosted-test",
+            listings.clone(),
+            revisions.clone(),
+            FakeSource::ready(),
+        )
+        .unwrap_or_else(|error| unreachable!("full reviewed catalog: {error:?}"));
+        assert_eq!(operations.revisions.len(), revisions.len());
+
+        let mut over_limit = revisions;
+        let padding = MAX_REVIEWED_HOSTED_CATALOG_REVISIONS - over_limit.len() + 1;
+        let retained = over_limit.clone();
+        over_limit.extend(retained.into_iter().cycle().take(padding));
+        assert!(matches!(
+            HostedHouseRunnerOperationsV1::open_with(
+                directory.path(),
+                "hosted-test-over-limit",
+                listings,
+                over_limit,
+                FakeSource::ready(),
+            ),
+            Err(HostedHouseRunnerErrorV1::Invalid)
+        ));
     }
 
     fn make_operations(
