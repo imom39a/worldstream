@@ -1,0 +1,31 @@
+{
+  "schema": "worldstream/client-conformance-evidence/v1",
+  "subject": {
+    "client_id": "worldstream.midnight-archive.web",
+    "artifact_digest": "sha256:f05bd5643d562dd5b494f77e5a40a99f1e2e331774261d190aa60e4b28d7cc4a",
+    "release_claims_digest": "sha256:7dd1cbde653cd7981eb11d9f778ec4a832b1c8d7e4d5665a697bb790223bc3b2",
+    "client_contract": "worldstream/activity-client-protocol/v1"
+  },
+  "checks": [
+    "release-and-host-binding-exact-references",
+    "live-adapter-starts-empty",
+    "briefing-reset-and-activity-start-gating",
+    "projection-reset-replaces-authorized-state",
+    "participant-access-and-private-truth-gating",
+    "staged-action-and-explicit-commit-boundaries",
+    "responsive-map-and-contextual-action-controls",
+    "fixed-agreement-and-optional-objective-projection-boundaries",
+    "all-four-starting-roster-component-host-witnesses",
+    "structured-specialist-task-plan-and-private-knowledge-boundaries",
+    "separate-human-mira-and-jonah-membership-live-browser-witness",
+    "one-specialist-step-per-human-commit-and-provider-free-replay",
+    "typed-turn-reservation-and-conflict-boundaries",
+    "staged-extraction-preview-and-exact-crew-acknowledgement",
+    "terminal-full-and-partial-crew-debrief-work-attribution",
+    "responsive-specialist-controls",
+    "bounded-idempotent-upstream-retry"
+  ],
+  "reproduce": "pnpm activity-clients:verify",
+  "authority": "informative_only",
+  "notice": "Passing this client check is not a security audit, deployment proof, Host approval, Pack qualification, Activity Listing, or hosted release."
+}
