@@ -1507,7 +1507,10 @@ impl ParticipantHandoffBrokerV1 {
                 .authority
                 .resolve_provisioned_human_seat(&record.binding.draft_id, &record.binding.seat_id)
                 .map_err(ParticipantHandoffErrorV1::from_authority)?;
-            let current = self.current_membership(&authority, record.durable_cursor)?;
+            // Session authority is independent of stream position. In particular,
+            // acknowledging a delivered frame must not depend on a fresh attach
+            // succeeding after the Room advances.
+            let current = self.membership_status(&authority)?;
             self.validate_retained_selection(&current, &record.selection)?;
             authority.install_current_membership(&current);
             Ok(ResolvedParticipantSessionV1 {

@@ -1472,9 +1472,9 @@ async fn protected_console_returns_a_sanitized_rejected_action_receipt() {
         .unwrap_or_else(|error| panic!("rejected receipt fixture address: {error}"));
     let server = thread::spawn(move || {
         serve_membership_status_fixture_connection(&listener);
-        for action_receipt in [None, None, Some("action.rejected")] {
-            serve_cursor_enforcing_connection(&listener, action_receipt);
-        }
+        serve_cursor_enforcing_connection(&listener, None);
+        serve_membership_status_fixture_connection(&listener);
+        serve_cursor_enforcing_connection(&listener, Some("action.rejected"));
     });
     let router = fixed_gateway_app(address);
     let (_, handoff) = issue_handoff(&router).await;
@@ -1553,18 +1553,12 @@ fn spawn_open_projection_fixture(
 
 fn spawn_cursor_enforcing_daemon_fixture(listener: TcpListener) -> thread::JoinHandle<()> {
     thread::spawn(move || {
+        // Issuance reads authority; redemption attaches. Subsequent operations
+        // revalidate authority without an extra stream attach of their own.
         serve_membership_status_fixture_connection(&listener);
-        for action_receipt in [
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some("action.accepted"),
-            None,
-            None,
-        ] {
+        serve_cursor_enforcing_connection(&listener, None);
+        for action_receipt in [None, None, Some("action.accepted"), None] {
+            serve_membership_status_fixture_connection(&listener);
             serve_cursor_enforcing_connection(&listener, action_receipt);
         }
     })
