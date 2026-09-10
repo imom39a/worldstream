@@ -281,3 +281,27 @@ and its Component digest is
 `blake3:9b86dcd4173aad23167e01cfd936a91d95396fc6faf02220cdac8046fdb22783`.
 Its production proof is retained in
 [`evidence/production-proof-0.1.0.json`](evidence/production-proof-0.1.0.json).
+
+## Bounded companion dialogue (schema v4)
+
+`submit_companion_plan` requires `dialogue`: use the empty string for none.
+Nonempty text is accepted only alongside an eligible current one-to-three-step
+plan. It is limited to 160 UTF-8 bytes and 192 UTF-8 bytes after two JSON string
+encodings; C0 controls and unpaired surrogates are rejected without truncation.
+A companion that knows an unshared private source must first execute a
+structured `share_source` step before submitting nonempty dialogue.
+
+Activity State keeps at most four accepted utterances per speaker Role and
+eight total, in acceptance order. Each record and its
+`companion_dialogue_recorded` event freeze the original speaker and lead
+Membership IDs, Role, task/opportunity revisions, turn and full text. Projection
+and Observation expose only the newest four visible `{speaker, turn, text}`
+records to those original participant Memberships. Other companions, replacement
+Memberships, public, operator and final-reveal views receive no utterance.
+Dialogue remains advice and grants no Action or evidence authority.
+
+The v4 production proof is retained in
+[`evidence/production-proof-0.1.0-dialogue.json`](evidence/production-proof-0.1.0-dialogue.json).
+Its Bundle is `blake3:4325846eb61ee4b821d4e7d95a0a3e9c5f78aeaddbc2649cf308b33efcc68812`
+and its Revision is `blake3:26c51f969dc7949fb42556d013eeec555ae83dc9f28cb582c03f0541e420e776`.
+Earlier immutable bundles are retained for their original Rooms.

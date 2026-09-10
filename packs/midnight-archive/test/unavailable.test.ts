@@ -73,7 +73,7 @@ class Expedition {
 
   request(role: Companion, second = 0) { return this.act("lead", `request_${role}_plan`, {}, second); }
   proposal(role: Companion, steps = [step("move", "records")]): CanonicalObject {
-    return { task_revision: this.state[role].task.revision, opportunity_revision: this.state[role].opportunity.revision, steps };
+    return { task_revision: this.state[role].task.revision, opportunity_revision: this.state[role].opportunity.revision, dialogue: "", steps };
   }
   timer(role: Companion): CanonicalObject {
     const timer = this.scheduled[timerId(role)] as CanonicalObject;

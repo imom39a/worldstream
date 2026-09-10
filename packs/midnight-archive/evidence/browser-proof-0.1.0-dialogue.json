@@ -1,0 +1,29 @@
+{
+  "status": "passed",
+  "pack": "worldstream.midnight-archive@0.1.0",
+  "bundle_digest": "blake3:4325846eb61ee4b821d4e7d95a0a3e9c5f78aeaddbc2649cf308b33efcc68812",
+  "revision_digest": "blake3:26c51f969dc7949fb42556d013eeec555ae83dc9f28cb582c03f0541e420e776",
+  "scenario_id": "standard-v1",
+  "room": "01M25FHH2NEMGJGWZHH50Z95FK",
+  "turns": 11,
+  "turns_remaining": 5,
+  "power_remaining": 2,
+  "provider_calls": 0,
+  "runner_invocations": {
+    "mira": 1,
+    "jonah": 1
+  },
+  "checks": [
+    "briefing_projection_before_activity_start",
+    "actions_disabled_until_sync",
+    "authored_scenario_and_initial_power_rendered",
+    "desktop_and_phone_layouts",
+    "separate_full_party_memberships",
+    "external_specialist_runners_once_each",
+    "one_recorded_specialist_step_per_human_turn",
+    "field_assay_verified_candidate",
+    "full_crew_extraction",
+    "authorized_replay_without_runner_or_policy_rerun",
+    "private_authenticity_non_leakage"
+  ]
+}

@@ -77,7 +77,7 @@ function plan(state: ArchiveState, role: "mira" | "jonah", task: string, steps: 
   state = action(state, "lead", `assign_${role}_task`, { task_kind: task, power_allowance: allowance });
   state = action(state, "lead", `request_${role}_plan`);
   return action(state, role, "submit_companion_plan", { task_revision: state[role].task.revision,
-    opportunity_revision: state[role].opportunity.revision, steps });
+    opportunity_revision: state[role].opportunity.revision, dialogue: "", steps });
 }
 
 function step(kind: string, destination = "none", source = "none", power = 0): CanonicalObject {
@@ -147,7 +147,7 @@ test("Mira's two Vault assay steps disclose no finding before eligible completio
   assert.ok((firstProjection.candidates as CanonicalObject[]).every((candidate) => (candidate.observed_evidence as unknown[]).length === 0));
   state = action(state, "lead", "request_mira_plan");
   state = action(state, "mira", "submit_companion_plan", { task_revision: state.mira.task.revision,
-    opportunity_revision: state.mira.opportunity.revision, steps: [step("complete_field_assay")] });
+    opportunity_revision: state.mira.opportunity.revision, dialogue: "", steps: [step("complete_field_assay")] });
   state = wait(state, ["mira"]);
   assert.equal(state.mira.field_assay.steps_completed, 2);
   assert.equal(state.mira.field_assay.result, "ledger-violet");
@@ -171,7 +171,7 @@ test("Mira's pending assay sample resets when the next turn or task interrupts i
   state = action(state, "lead", "request_mira_plan");
   rejectAction(state, "mira", "submit_companion_plan", "plan_invalid", {
     task_revision: state.mira.task.revision,
-    opportunity_revision: state.mira.opportunity.revision,
+    opportunity_revision: state.mira.opportunity.revision, dialogue: "",
     steps: [step("complete_field_assay")],
   });
 
@@ -345,11 +345,11 @@ test("extraction cancels an old reply window and an explicit new request invalid
   state = action(state, "lead", "stage_extract");
   state = action(state, "lead", "prepare_extraction");
   state = action(state, "lead", "acknowledge_extraction", { preview_revision: state.extraction.revision, left_behind_roles: [] });
-  rejectAction(state, "mira", "submit_companion_plan", "stale_plan", { task_revision: state.mira.task.revision, opportunity_revision: state.mira.opportunity.revision,
+  rejectAction(state, "mira", "submit_companion_plan", "stale_plan", { task_revision: state.mira.task.revision, opportunity_revision: state.mira.opportunity.revision, dialogue: "",
     steps: [step("move", "records")] });
   state = action(state, "lead", "request_mira_plan");
   assert.equal(state.extraction.status, "none");
-  const accepted = action(state, "mira", "submit_companion_plan", { task_revision: state.mira.task.revision, opportunity_revision: state.mira.opportunity.revision,
+  const accepted = action(state, "mira", "submit_companion_plan", { task_revision: state.mira.task.revision, opportunity_revision: state.mira.opportunity.revision, dialogue: "",
     steps: [step("move", "records")] });
   assert.equal(accepted.extraction.status, "none");
   assert.equal(accepted.turns_used, 0);

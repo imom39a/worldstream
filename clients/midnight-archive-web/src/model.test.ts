@@ -684,3 +684,14 @@ function agreementState(
     },
   };
 }
+
+it("rejects dialogue drift, private identifiers and every byte boundary violation", () => {
+  const utterance = { speaker: "jonah", turn: 1, text: "a".repeat(160) };
+  expect(readMidnightArchiveProjection(rawProjection({ companion_dialogue: [utterance] }))).not.toBeNull();
+  for (const bad of [
+    [{ ...utterance, speaker_member_id: "private" }], [{ ...utterance, speaker: "lead" }],
+    [{ ...utterance, text: "é".repeat(81) }], [{ ...utterance, text: '"'.repeat(47) }],
+    [{ ...utterance, text: "\ud800" }], [{ ...utterance, text: "\n" }],
+    [{ ...utterance, text: "" }], Array(5).fill(utterance),
+  ]) expect(readMidnightArchiveProjection(rawProjection({ companion_dialogue: bad }))).toBeNull();
+});

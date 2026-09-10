@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import "./specialists.test.js";
 import "./unavailable.test.js";
+import "./dialogue.test.js";
 
 import {
   ACTIVITY_START_SOURCE_ID,
@@ -83,7 +84,7 @@ test("briefing is a complete safe projection with no Action offers", () => {
   assert.equal(view.schema, "participant");
   assert.deepEqual(view.actionOffers, []);
   assert.deepEqual(Object.keys(view.projection).sort(), [
-    "candidates", "carried_candidate", "crew_debrief", "debrief", "extraction", "gates", "initial_power", "jonah", "location", "map", "method_costs", "mira",
+    "candidates", "carried_candidate", "companion_dialogue", "crew_debrief", "debrief", "extraction", "gates", "initial_power", "jonah", "location", "map", "method_costs", "mira",
     "objective", "operation_costs", "optional_objectives", "outcome", "phase", "power", "preservation_agreement", "scenario",
     "staged_action", "turn_resolution", "turns_remaining", "turns_used", "verifier_result",
   ]);
@@ -878,7 +879,7 @@ test("Mira advances one planned step beside each committed lead action and keeps
 
   state = submitMiraPlan(state, {
     task_revision: 1,
-    opportunity_revision: 1,
+    opportunity_revision: 1, dialogue: "",
     steps: [
       { step_type: "move", destination: "records", source_id: "none", power_cost: 0 },
       { step_type: "inspect_source", destination: "none", source_id: "records", power_cost: 0 },
@@ -957,7 +958,7 @@ test("the reducer authenticates Mira's one-shot plan and replays without a provi
     action_type: "submit_companion_plan",
     canonical_payload: {
       task_revision: 1,
-      opportunity_revision: 1,
+      opportunity_revision: 1, dialogue: "",
       steps: [{ step_type: "move", destination: "records", source_id: "none", power_cost: 0 }],
     },
   }));
@@ -971,7 +972,7 @@ test("the reducer authenticates Mira's one-shot plan and replays without a provi
     admitted_at: "2026-09-09T12:00:01.000Z",
     canonical_payload: {
       task_revision: 1,
-      opportunity_revision: 1,
+      opportunity_revision: 1, dialogue: "",
       steps: [{ step_type: "move", destination: "records", source_id: "none", power_cost: 0 }],
     },
   }));
@@ -1001,7 +1002,7 @@ test("an exhausted short plan preserves its standing task and enables a bounded 
   assert.equal(contextualOffers(state).includes("defer_mira_contribution"), true);
   state = submitMiraPlan(state, {
     task_revision: 1,
-    opportunity_revision: 1,
+    opportunity_revision: 1, dialogue: "",
     steps: [{ step_type: "move", destination: "records", source_id: "none", power_cost: 0 }],
   }, core(), "mira-1", "2026-09-09T12:00:01.000Z", {}).state;
   assertRule("task_violation", () => applyMiraLeadControl(
@@ -1024,7 +1025,7 @@ test("an exhausted short plan preserves its standing task and enables a bounded 
   ).state;
   state = submitMiraPlan(state, {
     task_revision: 1,
-    opportunity_revision: 2,
+    opportunity_revision: 2, dialogue: "",
     steps: [
       { step_type: "inspect_source", destination: "none", source_id: "records", power_cost: 0 },
       { step_type: "share_source", destination: "none", source_id: "records", power_cost: 0 },
@@ -1039,7 +1040,7 @@ test("an exhausted short plan preserves its standing task and enables a bounded 
     ).state,
     {
       task_revision: 2,
-      opportunity_revision: 3,
+      opportunity_revision: 3, dialogue: "",
       steps: [
         { step_type: "inspect_source", destination: "none", source_id: "records", power_cost: 0 },
         { step_type: "share_source", destination: "none", source_id: "records", power_cost: 0 },
@@ -1092,7 +1093,7 @@ test("terminal turns close Mira planning and cancel its one-shot timer", () => {
   }]);
   assertRule("inactive", () => submitMiraPlan(finished, {
     task_revision: 1,
-    opportunity_revision: 1,
+    opportunity_revision: 1, dialogue: "",
     steps: [{ step_type: "move", destination: "records", source_id: "none", power_cost: 0 }],
   }, core(), "mira-1", "2026-09-09T12:00:01.000Z", {}));
 });
@@ -1108,7 +1109,7 @@ test("extraction requires a preview before a prepared companion move away from t
   ).state;
   state = submitMiraPlan(state, {
     task_revision: 1,
-    opportunity_revision: 1,
+    opportunity_revision: 1, dialogue: "",
     steps: [{ step_type: "move", destination: "records", source_id: "none", power_cost: 0 }],
   }, core(), "mira-1", "2026-09-09T12:00:01.000Z", {}).state;
   state = applyLeadAction(state, "stage_extract", {}, core()).state;
@@ -1130,7 +1131,7 @@ test("late, stale, and replaced Companion Plans cannot execute", () => {
   ).state;
   const move = {
     task_revision: 1,
-    opportunity_revision: 1,
+    opportunity_revision: 1, dialogue: "",
     steps: [{ step_type: "move", destination: "records", source_id: "none", power_cost: 0 }],
   };
   assertRule("stale_plan", () =>
@@ -1173,7 +1174,7 @@ test("task allowance fences verifier use and unprepared work remains explicitly 
   ).state;
   assertRule("task_violation", () => submitMiraPlan(state, {
     task_revision: 1,
-    opportunity_revision: 1,
+    opportunity_revision: 1, dialogue: "",
     steps: [
       { step_type: "move", destination: "records", source_id: "none", power_cost: 0 },
       { step_type: "use_verifier", destination: "none", source_id: "records", power_cost: 1 },
@@ -1196,7 +1197,7 @@ test("task allowance fences verifier use and unprepared work remains explicitly 
   ).state;
   powered = submitMiraPlan(powered, {
     task_revision: 1,
-    opportunity_revision: 1,
+    opportunity_revision: 1, dialogue: "",
     steps: [
       { step_type: "move", destination: "records", source_id: "none", power_cost: 0 },
       { step_type: "use_verifier", destination: "none", source_id: "records", power_cost: 1 },

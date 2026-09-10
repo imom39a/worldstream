@@ -25,6 +25,7 @@ export const MIRA_PLAN_ATTENTION_REASON = "companion_plan_requested";
 export interface CompanionTransition {
   readonly state: ArchiveState;
   readonly event: CanonicalObject;
+  readonly dialogueEvent?: CanonicalObject;
   readonly timerRequests: readonly CanonicalJson[];
   readonly attentionSignals: readonly CanonicalJson[];
 }
@@ -326,7 +327,7 @@ export function submitMiraPlan(
   if (current.phase !== "active") reject("inactive", "the expedition is not active");
   const activeMemberId = requireActiveMira(current, core, companionRole);
   if (memberId !== activeMemberId) reject("role_violation", "only the current Mira Membership may submit its plan");
-  exactKeys(payload, ["task_revision", "opportunity_revision", "steps"]);
+  exactKeys(payload, ["task_revision", "opportunity_revision", "steps", "dialogue"]);
   const taskRevision = boundedInteger(payload.task_revision, "task_revision", 1, 65_535);
   const opportunityRevision = boundedInteger(payload.opportunity_revision, "opportunity_revision", 1, 65_535);
   if (
@@ -345,6 +346,24 @@ export function submitMiraPlan(
   }
   const steps = payload.steps.map((value, index) => parsePlanStep(value, `steps[${index}]`));
   validatePlannedSequence(current, current[companionRole], steps, companionRole);
+  const text = validateDialogue(payload.dialogue);
+  if (text !== "" && !dialogueAllowed(current, companionRole)) {
+    reject("invalid_payload", "share every private source through structured work before speaking");
+  }
+  const lead = Object.values(record(core.memberships, "memberships"))
+    .map((value) => record(value, "membership")).find((member) => member.role === "lead" && member.access_mode === "participant");
+  if (lead === undefined) reject("core_role_invariant", "dialogue requires the current lead Membership");
+  const utterance = { speaker_role: companionRole, speaker_member_id: memberId,
+    lead_member_id: stringValue(lead.member_id, "lead member_id"), task_revision: taskRevision,
+    opportunity_revision: opportunityRevision, turn: current.turns_used, text };
+  let dialogue = [...current.companion_dialogue];
+  if (text !== "") {
+    dialogue.push(utterance);
+    while (dialogue.filter((item) => item.speaker_role === companionRole).length > 4) {
+      dialogue.splice(dialogue.findIndex((item) => item.speaker_role === companionRole), 1);
+    }
+    dialogue = dialogue.slice(-8);
+  }
   const mira: MiraState = {
     ...current[companionRole],
     opportunity: {
@@ -365,7 +384,8 @@ export function submitMiraPlan(
     preparation: emptyPreparation(),
   };
   return {
-    state: { ...cloneState(current), [companionRole]: mira },
+    state: { ...cloneState(current), [companionRole]: mira, companion_dialogue: dialogue },
+    ...(text === "" ? {} : { dialogueEvent: asCanonical({ event_type: "companion_dialogue_recorded", ...utterance }) }),
     event: asCanonical({
       event_type: "companion_state_updated",
       role: companionRole,
@@ -1028,4 +1048,23 @@ function pad(value: number, length: number): string {
 function daysInMonth(year: number, month: number): number {
   if (month === 2) return year % 400 === 0 || (year % 4 === 0 && year % 100 !== 0) ? 29 : 28;
   return month === 4 || month === 6 || month === 9 || month === 11 ? 30 : 31;
+}
+
+export function dialogueAllowed(state: ArchiveState, role: CompanionRole): boolean {
+  return (["records", "conservation"] as const).every((source) =>
+    state[role].knowledge[source] !== "private" || state.evidence[source] === "observed");
+}
+
+export function validateDialogue(value: CanonicalJson | undefined): string {
+  if (typeof value !== "string" || /[\u0000-\u001f]/u.test(value) || /[\uD800-\uDFFF]/u.test(value)) {
+    reject("invalid_payload", "dialogue must be text without controls or unpaired surrogates");
+  }
+  const utf8Bytes = (text: string) => [...text].reduce((total, point) => {
+    const code = point.codePointAt(0)!;
+    return total + (code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4);
+  }, 0);
+  if (utf8Bytes(value) > 160 || utf8Bytes(JSON.stringify(JSON.stringify(value))) > 192) {
+    reject("invalid_payload", "dialogue exceeds its raw or serialized byte limit");
+  }
+  return value;
 }

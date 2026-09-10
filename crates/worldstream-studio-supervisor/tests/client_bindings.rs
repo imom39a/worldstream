@@ -6,6 +6,7 @@ use worldstream_protocol::AccessMode;
 use worldstream_studio_supervisor::client_bindings::{
     ClientBindingStoreV1, ClientCandidateClassV1, ClientSelectionRequestV1, ClientSelectionV1,
 };
+use worldstream_studio_supervisor::initialization_inputs::parse_client_declaration;
 
 const PACK_DIGEST: &str = "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const RELEASE_DIGEST: &str =
@@ -315,6 +316,71 @@ fn revoked_deployment_blocks_new_handoffs_and_its_active_client() {
         ),
         Err(worldstream_studio_supervisor::client_bindings::ClientBindingStoreErrorV1::InvalidChoice)
     ));
+}
+
+#[test]
+fn fresh_documented_imports_select_current_and_retained_archive_clients()
+-> Result<(), Box<dyn std::error::Error>> {
+    let configuration =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/activity-clients");
+    for (declaration_name, origin, suffix) in [
+        ("cli-import.json", "http://127.0.0.1:5173", "/"),
+        (
+            "hosted-local-import.json",
+            "http://127.0.0.1:5180",
+            "/hosted/",
+        ),
+    ] {
+        let declaration =
+            parse_client_declaration(&std::fs::read(configuration.join(declaration_name))?)?;
+        let releases: Vec<Vec<u8>> = declaration
+            .release_files
+            .iter()
+            .map(|file| std::fs::read(configuration.join(file)))
+            .collect::<Result<_, _>>()?;
+        let release_bytes: Vec<&[u8]> = releases.iter().map(Vec::as_slice).collect();
+        let bindings = std::fs::read(configuration.join(declaration.bindings_file))?;
+        let state = TempDir::new()?;
+        let store = ClientBindingStoreV1::open(
+            &state.path().join("client-bindings"),
+            &release_bytes,
+            &bindings,
+        )?;
+        for (generation, revision) in [
+            (
+                "v10",
+                "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64",
+            ),
+            (
+                "v11",
+                "blake3:26c51f969dc7949fb42556d013eeec555ae83dc9f28cb582c03f0541e420e776",
+            ),
+        ] {
+            // Hosted v11 Listing and candidate wiring are delivered together in IMO-209.
+            if generation == "v11" && declaration_name == "hosted-local-import.json" {
+                continue;
+            }
+            let request = ClientSelectionRequestV1 {
+                pack: ExactPackReferenceV1 {
+                    id: "worldstream.midnight-archive".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    digest: revision.to_owned(),
+                },
+                client_contract: "worldstream/activity-client-protocol/v1".to_owned(),
+                access_mode: AccessMode::Participant,
+                role: Some("lead".to_owned()),
+            };
+            assert!(
+                matches!(
+                    store.select(&request, None),
+                    Ok(ClientSelectionV1::Selected { candidate })
+                        if candidate.launch_url == format!("{origin}/midnight-archive-{generation}{suffix}")
+                ),
+                "{declaration_name} must select the exact {generation} surface after a fresh import"
+            );
+        }
+    }
+    Ok(())
 }
 
 #[test]

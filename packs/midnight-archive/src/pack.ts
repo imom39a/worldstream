@@ -19,7 +19,7 @@ import {
 } from "./model.js";
 import {
   emptyPayloadSchema,
-  participantProjectionSchema,
+  participantProjectionSchema, dialogueRecordSchema, dialogueTextSchema,
   publicProjectionSchema,
   stateSchema,
 } from "./schemas.js";
@@ -176,7 +176,7 @@ export function reduceArchive(input: CanonicalObject): PackReduceOutput {
       return {
         activity_disposition_type: "apply",
         next_activity_state: stateAsCanonical(isMiraLeadControl(actionType) || actionType === "submit_companion_plan" ? invalidateExtraction(applied.state) : applied.state),
-        ordered_domain_events: [applied.event],
+        ordered_domain_events: [applied.event, ...("dialogueEvent" in applied && applied.dialogueEvent ? [applied.dialogueEvent as CanonicalObject] : [])],
         timer_requests: [...("timerRequests" in applied
           ? applied.timerRequests as readonly CanonicalJson[]
           : []), ...editing.timerRequests],
@@ -190,7 +190,7 @@ export function reduceArchive(input: CanonicalObject): PackReduceOutput {
       return {
         activity_disposition_type: "apply",
         next_activity_state: stateAsCanonical(invalidateExtraction(applied.state)),
-        ordered_domain_events: [applied.event],
+        ordered_domain_events: [applied.event, ...("dialogueEvent" in applied && applied.dialogueEvent ? [applied.dialogueEvent as CanonicalObject] : [])],
         timer_requests: applied.timerRequests,
         ordered_attention_signals: applied.attentionSignals,
       };
@@ -311,7 +311,7 @@ function cleanRejectionAllowed(stimulusType: string): boolean {
 export default defineActivityPack({
   descriptor: {
     packId: "worldstream.midnight-archive",
-    schemaVersion: 3,
+    schemaVersion: 4,
     name: "Midnight Archive",
     version: "0.1.0",
     roles: [
@@ -403,6 +403,7 @@ export default defineActivityPack({
         payloadSchema: {
           additionalProperties: false,
           properties: {
+            dialogue: dialogueTextSchema(),
             opportunity_revision: { maximum: 65_535, minimum: 1, type: "integer" },
             steps: {
               items: {
@@ -422,7 +423,7 @@ export default defineActivityPack({
             },
             task_revision: { maximum: 65_535, minimum: 1, type: "integer" },
           },
-          required: ["task_revision", "opportunity_revision", "steps"],
+          required: ["task_revision", "opportunity_revision", "steps", "dialogue"],
           type: "object",
         },
       },
@@ -446,6 +447,7 @@ export default defineActivityPack({
       "core_role_invariant",
     ],
     events: [
+      { eventType: "companion_dialogue_recorded", payloadSchema: { ...dialogueRecordSchema(), properties: { ...record(dialogueRecordSchema().properties, "properties"), event_type: { const: "companion_dialogue_recorded" } }, required: [...dialogueRecordSchema().required as string[], "event_type"] } },
       { eventType: "archive_started", payloadSchema: archiveStartedSchema() },
       { eventType: "action_staged", payloadSchema: actionStagedSchema() },
       { eventType: "turn_committed", payloadSchema: turnCommittedSchema() },

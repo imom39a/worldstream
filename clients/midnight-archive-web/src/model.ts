@@ -57,6 +57,7 @@ export type MiraContributionKind =
   | "complete_field_assay";
 
 export interface SpecialistCrewState {
+  readonly dialogueAllowed: boolean;
   readonly presence: MiraPresence;
   readonly location: ArchiveLocation | "none";
   readonly mode: MiraMode;
@@ -261,6 +262,7 @@ const OPERATION_COSTS = {
 export type ArchiveOperation = keyof typeof OPERATION_COSTS;
 
 export interface MidnightArchiveProjection {
+  readonly companionDialogue: readonly { readonly speaker: CompanionRole; readonly turn: number; readonly text: string }[];
   readonly scenario:
     | { readonly id: "standard-v1"; readonly label: "Standard" }
     | { readonly id: "low-reserve-v1"; readonly label: "Low Reserve" };
@@ -364,6 +366,7 @@ const MAX_OBJECTIVE_BYTES = 384;
 const MAX_LABEL_BYTES = 64;
 const MAX_DESCRIPTION_BYTES = 256;
 const ROOT_KEYS = [
+  "companion_dialogue",
   "scenario",
   "initial_power",
   "method_costs",
@@ -406,6 +409,7 @@ export function readMidnightArchiveProjection(
   const source = exactRecord(value, ROOT_KEYS);
   if (source === null) return null;
 
+  const companionDialogue = readCompanionDialogue(source.companion_dialogue);
   const scenario = readScenario(source.scenario);
   const initialPower = source.initial_power === 2 || source.initial_power === 3
     ? source.initial_power : null;
@@ -438,7 +442,7 @@ export function readMidnightArchiveProjection(
   const outcome = readOutcome(source.outcome);
 
   if (
-    scenario === null || initialPower === null || methodCosts === null || operationCosts === null
+    companionDialogue === null || scenario === null || initialPower === null || methodCosts === null || operationCosts === null
     || initialPower !== (scenario.id === "standard-v1" ? 3 : 2)
     || phase === null || objective === null || location === null
     || turnsUsed === null || turnsRemaining === null || power === null
@@ -500,6 +504,7 @@ export function readMidnightArchiveProjection(
   ) return null;
 
   return {
+    companionDialogue,
     scenario,
     initialPower,
     methodCosts,
@@ -825,7 +830,7 @@ function contributionSummary(role: CompanionRole, kind: MiraContributionKind): s
 
 function readSpecialist(value: unknown, role: CompanionRole): SpecialistCrewState | null {
   const source = exactRecord(value, [
-    "field_assay", "knowledge", "last_contribution", "location", "mode", "planning", "preparation", "presence", "task",
+    "dialogue_allowed", "field_assay", "knowledge", "last_contribution", "location", "mode", "planning", "preparation", "presence", "task",
   ]);
   if (source === null) return null;
   const presence = source.presence;
@@ -841,6 +846,7 @@ function readSpecialist(value: unknown, role: CompanionRole): SpecialistCrewStat
   const lastContribution = exactRecord(source.last_contribution, ["kind", "summary", "turn"]);
   if (
     (presence !== "absent" && presence !== "active" && presence !== "suspended")
+    || typeof source.dialogue_allowed !== "boolean"
     || location === null
     || (mode !== "unavailable" && mode !== "following" && mode !== "holding"
       && mode !== "tasked" && mode !== "regrouping")
@@ -872,6 +878,7 @@ function readSpecialist(value: unknown, role: CompanionRole): SpecialistCrewStat
   const assayResult = readVerifierResult(fieldAssay.result);
   if (verifierResult === undefined || assayResult === undefined) return null;
   return {
+    dialogueAllowed: source.dialogue_allowed,
     presence,
     location,
     mode,
@@ -1601,4 +1608,17 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
 
 function connectionKey(a: ArchiveLocation, b: ArchiveLocation): string {
   return [a, b].sort().join("|");
+}
+
+function readCompanionDialogue(value: unknown): MidnightArchiveProjection["companionDialogue"] | null {
+  if (!Array.isArray(value) || value.length > 4) return null;
+  const result: { speaker: CompanionRole; turn: number; text: string }[] = [];
+  for (const raw of value) {
+    const item = exactRecord(raw, ["speaker", "turn", "text"]);
+    if (item === null || !isCompanionRole(item.speaker) || typeof item.text !== "string" || item.text === ""
+      || /[\u0000-\u001f\uD800-\uDFFF]/u.test(item.text) || byteLength(item.text) > 160
+      || byteLength(JSON.stringify(JSON.stringify(item.text))) > 192 || integerInRange(item.turn, 0, 16) === null) return null;
+    result.push({ speaker: item.speaker, turn: item.turn as number, text: item.text });
+  }
+  return result;
 }

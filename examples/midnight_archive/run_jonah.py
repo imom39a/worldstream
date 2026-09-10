@@ -52,7 +52,7 @@ def select_plan(projection: dict) -> dict:
     companion = exact(
         activity.get("jonah"),
         {
-            "presence", "location", "mode", "task", "planning", "preparation",
+            "dialogue_allowed", "presence", "location", "mode", "task", "planning", "preparation",
             "knowledge", "field_assay", "last_contribution",
         },
     )
@@ -118,6 +118,7 @@ def select_plan(projection: dict) -> dict:
     return {
         "task_revision": task["revision"],
         "opportunity_revision": planning["opportunity_revision"],
+        "dialogue": "",
         "steps": steps,
     }
 

@@ -36,11 +36,11 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const PACK_ID: &str = "worldstream.midnight-archive";
 const PACK_VERSION: &str = "0.1.0";
 const CURRENT_BUNDLE_DIGEST: &str =
-    "blake3:8083201f2d1d6a1afdaab8e6759287a3aeacc1a7908d85d2b758af272c150b47";
+    "blake3:4325846eb61ee4b821d4e7d95a0a3e9c5f78aeaddbc2649cf308b33efcc68812";
 const CURRENT_REVISION_DIGEST: &str =
-    "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64";
+    "blake3:26c51f969dc7949fb42556d013eeec555ae83dc9f28cb582c03f0541e420e776";
 const CURRENT_COMPONENT_DIGEST: &str =
-    "blake3:aa124b20667020510de26eb1658f54876b49a6354d0950052c804f6a5338e0a1";
+    "blake3:f991741654552d77734f54ff7aa8752c3c24bb45a00c90091691f12f3b3059b0";
 const RETAINED_V9_BUNDLE_DIGEST: &str =
     "blake3:0ddcd385d0b250f9ec5a285df1783fbae45a685a90fcf69703026787959b540f";
 const RETAINED_V9_REVISION_DIGEST: &str =
@@ -73,7 +73,7 @@ const FORBIDDEN_PRIVATE_KEYS: &[&str] = &["authentic_candidate_id", "is_authenti
 
 fn client_binding_identity() -> TestResult<(String, String)> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config/activity-clients/releases/midnight-archive-web-v10.json");
+        .join("../../config/activity-clients/releases/midnight-archive-web-v11.json");
     let release: Value = serde_json::from_slice(&fs::read(path)?)?;
     let release_digest = release["release_digest"]
         .as_str()
@@ -83,7 +83,7 @@ fn client_binding_identity() -> TestResult<(String, String)> {
         .as_array()
         .and_then(|surfaces| {
             surfaces.iter().find_map(|surface| {
-                (surface["entrypoint"] == "/midnight-archive-v10/")
+                (surface["entrypoint"] == "/midnight-archive-v11/")
                     .then(|| surface["surface_id"].as_str())
                     .flatten()
             })
@@ -105,8 +105,8 @@ fn release_bundle_path(bundle_digest: &str) -> PathBuf {
 
 fn current_bundle_path() -> PathBuf {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let proof_path = workspace
-        .join("packs/midnight-archive/evidence/production-proof-0.1.0-authored-scenarios.json");
+    let proof_path =
+        workspace.join("packs/midnight-archive/evidence/production-proof-0.1.0-dialogue.json");
     let proof: Value = serde_json::from_slice(
         &fs::read(&proof_path)
             .unwrap_or_else(|error| panic!("read Archive proof {proof_path:?}: {error}")),
@@ -540,7 +540,8 @@ impl LiveWitness {
         self.act(
             role,
             "submit_companion_plan",
-            json!({"task_revision":revision,"opportunity_revision":opportunity,"steps":steps}),
+            json!({"task_revision":revision,"opportunity_revision":opportunity,"steps":steps,
+                "dialogue":format!("{} recommends the assigned route.", role)}),
         )?;
         assert_eq!(
             turns_used(&self.state),
@@ -548,6 +549,17 @@ impl LiveWitness {
             "an authenticated plan cannot commit a turn"
         );
         assert_eq!(self.state[role]["planning"]["status"], "ready");
+        let advice = self.state["companion_dialogue"]
+            .as_array()
+            .ok_or("dialogue missing")?
+            .last()
+            .ok_or("advice missing")?;
+        assert_eq!(advice["speaker"], role);
+        assert_eq!(
+            advice["text"],
+            format!("{} recommends the assigned route.", role)
+        );
+        assert!(advice.get("speaker_member_id").is_none());
         Ok(())
     }
 
@@ -680,7 +692,7 @@ fn unavailable_route(live: &mut LiveWitness, clock: &QualificationClock) -> Test
     let mira_head = live.sequence;
     let mira_payload = json!({"task_revision":live.state["mira"]["task"]["revision"],
         "opportunity_revision":live.state["mira"]["planning"]["opportunity_revision"],
-        "steps":[plan_step("inspect_source","none","records",0)]});
+        "dialogue":"","steps":[plan_step("inspect_source","none","records",0)]});
     let deadline = live.state["mira"]["planning"]["deadline"]
         .as_str()
         .ok_or("Mira deadline missing")?
@@ -701,7 +713,7 @@ fn unavailable_route(live: &mut LiveWitness, clock: &QualificationClock) -> Test
     let jonah_head = live.sequence;
     let jonah_payload = json!({"task_revision":live.state["jonah"]["task"]["revision"],
         "opportunity_revision":live.state["jonah"]["planning"]["opportunity_revision"],
-        "steps":[plan_step("inspect_source","none","records",0)]});
+        "dialogue":"","steps":[plan_step("inspect_source","none","records",0)]});
     let mut wrong_task = jonah_payload.clone();
     wrong_task["task_revision"] = json!(999);
     live.reject_agent("jonah", wrong_task, live.sequence, "stale_plan")?;
@@ -1050,6 +1062,10 @@ async fn run_archive_witness(roles: &[&str], scenario: Scenario) -> TestResult {
                 RETAINED_CONSECUTIVE_REVISION_DIGEST,
             ),
             (RETAINED_V9_BUNDLE_DIGEST, RETAINED_V9_REVISION_DIGEST),
+            (
+                "blake3:8083201f2d1d6a1afdaab8e6759287a3aeacc1a7908d85d2b758af272c150b47",
+                "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64",
+            ),
         ] {
             let old = PackBundleVerifierV1
                 .inspect(Arc::<[u8]>::from(fs::read(release_bundle_path(bundle))?))?;

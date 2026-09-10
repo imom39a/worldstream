@@ -108,3 +108,11 @@ uv run --project sdk/python --python 3.14.7 ruff check examples/midnight_archive
 These are integration instructions, not a claim that the live witness has run.
 The existing Rust Component Host and browser acceptance harnesses remain the
 appropriate places to retain the resulting live and Replay evidence.
+
+The current helper accepts the v4 participant Projection and independently
+checks the required `dialogue` field: 160 raw UTF-8 bytes, 192 bytes after two
+JSON string encodings, no C0 controls or unpaired surrogates, and nonempty text
+only when the companion's `dialogue_allowed` is true. The deterministic local
+selectors return an empty string. Reviewed House model policies live in
+`config/hosted/house-policies`; named hosted assignment wiring is qualified
+separately and these local fixtures do not call a provider.

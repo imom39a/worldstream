@@ -62,6 +62,7 @@ export const digest = (character: string) => `blake3:${character.repeat(64)}`;
 
 export function rawMira(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    dialogue_allowed: true,
     presence: "absent",
     location: "none",
     mode: "unavailable",
@@ -224,6 +225,7 @@ export function rawProjection(overrides: Record<string, unknown> = {}): Record<s
     } : {
       status: "none", revision: 0, for_turn: 0, extracted_roles: [], left_behind_roles: [],
     },
+    companion_dialogue: [],
     crew_debrief: {
       starting_roles: startingRoles,
       extracted_roles: terminalExtracted,

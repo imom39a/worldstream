@@ -180,7 +180,9 @@ Select an explicit bounded set of existing descriptors:
 }
 ```
 
-All three fields are required. `release_files` contains 1–16 local file paths.
+All three fields are required. `release_files` contains 1–64 local file paths,
+allowing retained exact Release history alongside current clients. Imports still
+load only the explicitly listed files; the limit does not enable directory scanning.
 `bindings_file` selects exactly one local file. This wrapper does not inline
 or replace the existing release, deployment, binding, or fallback contracts:
 

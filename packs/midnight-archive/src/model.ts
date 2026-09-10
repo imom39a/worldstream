@@ -164,7 +164,18 @@ export interface ArchiveOutcome {
   readonly extracted_candidate_id: CandidateReference;
 }
 
+export interface CompanionDialogue {
+  readonly speaker_role: CompanionRole;
+  readonly speaker_member_id: string;
+  readonly lead_member_id: string;
+  readonly task_revision: number;
+  readonly opportunity_revision: number;
+  readonly turn: number;
+  readonly text: string;
+}
+
 export interface ArchiveState {
+  readonly companion_dialogue: readonly CompanionDialogue[];
   readonly phase: Phase;
   readonly scenario_id: "standard-v1" | "low-reserve-v1";
   readonly scenario_label: "Standard" | "Low Reserve";

@@ -14,6 +14,8 @@ use std::{collections::BTreeMap, net::SocketAddr};
 use thiserror::Error;
 
 const SMALL_DOCUMENT_BYTES: usize = 64 * 1024;
+// Explicit imports retain older exact Releases alongside current clients.
+const MAX_CLIENT_RELEASE_FILES: usize = 64;
 
 /// Closed error: never contains declaration contents, paths, or secret values.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -263,7 +265,7 @@ pub fn parse_agent_profile(
 /// Parses explicit Release/bootstrap file references without opening any file.
 ///
 /// # Errors
-/// Rejects wrong schemas, unbounded paths, unknown fields, or more than 16 Releases.
+/// Rejects wrong schemas, unbounded paths, unknown fields, or more than 64 Releases.
 pub fn parse_client_declaration(
     bytes: &[u8],
 ) -> Result<ClientDeclarationImportV1, InitializationInputError> {
@@ -271,7 +273,7 @@ pub fn parse_client_declaration(
     require(
         input.schema == "worldstream/client-declaration-import/v1"
             && !input.release_files.is_empty()
-            && input.release_files.len() <= 16
+            && input.release_files.len() <= MAX_CLIENT_RELEASE_FILES
             && input.release_files.iter().all(|path| local_path(path))
             && local_path(&input.bindings_file),
     )?;

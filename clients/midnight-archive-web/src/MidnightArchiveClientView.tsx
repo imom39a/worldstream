@@ -130,6 +130,14 @@ function ReadyArchive({
   return (
     <main className="archive-shell">
       <a className="skip-link" href="#archive-actions">Skip to turn controls</a>
+      {projection.companionDialogue.length > 0 ? <section className="archive-notice" aria-label="Companion advice">
+        <div><h2>Companion advice</h2><p>Recommendations from your companions. You choose and commit every turn.</p>
+          {projection.companionDialogue.map((item, index) => <div key={index}>
+            <strong>{item.speaker === "mira" ? "Mira" : "Jonah"} · Turn {item.turn} · Recommendation</strong>
+            <p>{item.text}</p>
+          </div>)}
+        </div>
+      </section> : null}
       <header className="archive-hero">
         <div className="hero-copy">
           <p className="archive-kicker">WorldStream expedition 01</p>

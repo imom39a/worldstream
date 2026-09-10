@@ -18,6 +18,7 @@ PACK = {
 TEST_PLAN = {
     "task_revision": 1,
     "opportunity_revision": 1,
+    "dialogue": "",
     "steps": [{
         "step_type": "move",
         "destination": "records",
@@ -757,3 +758,13 @@ def test_role_and_single_membership_authority_fail_before_connecting(
             )
         )
     client.assert_not_called()
+
+@pytest.mark.parametrize("text,allowed", [
+    ("a" * 160, True), ("é" * 80, True), ("😀" * 40, True),
+    ('"' * 46 + 'aa', True), ('"' * 47, False), ("a" * 161, False),
+    ("é" * 81, False), ("\n", False), ("\ud800", False),
+])
+def test_dialogue_independent_byte_validation(text, allowed):
+    view = transport()[3]
+    view["activity"]["mira"]["dialogue_allowed"] = True
+    assert companion_runner.valid_plan_payload({**TEST_PLAN, "dialogue": text}, 1000, view, policy()) is allowed

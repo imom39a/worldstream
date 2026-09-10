@@ -34,7 +34,7 @@ def projection():
                 {"from": "plant", "to": "vault", "gate": "service_hatch"},
             ]},
             "mira": {
-                "presence": "active", "location": "atrium", "mode": "tasked",
+                "dialogue_allowed": True, "presence": "active", "location": "atrium", "mode": "tasked",
                 "task": {"status": "assigned", "revision": 2, "kind": "investigate_records",
                          "power_allowance": 0, "power_spent": 0},
                 "planning": {"status": "waiting", "opportunity_revision": 3, "plan_revision": 0,
@@ -53,7 +53,7 @@ def test_exact_records_plan_has_three_closed_zero_power_steps():
     view = projection()
     original = copy.deepcopy(view)
     assert mira.select_plan(view) == {
-        "task_revision": 2, "opportunity_revision": 3,
+        "task_revision": 2, "opportunity_revision": 3, "dialogue": "",
         "steps": [mira.step("move", destination="records"),
                   mira.step("inspect_source", source="records"),
                   mira.step("share_source", source="records")],

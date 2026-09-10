@@ -18,13 +18,13 @@ const buildRoots = new Map([
 const currentReleaseFiles = new Map([
   ["worldstream.agent-heist.web", "agent-heist-web-v7.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
-  ["worldstream.midnight-archive.web", "midnight-archive-web-v10.json"],
+  ["worldstream.midnight-archive.web", "midnight-archive-web-v11.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const currentEvidenceFiles = new Map([
   ["worldstream.agent-heist.web", "agent-heist-web-v7.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
-  ["worldstream.midnight-archive.web", "midnight-archive-web-v10.json"],
+  ["worldstream.midnight-archive.web", "midnight-archive-web-v11.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const expectedChecks = new Map([
@@ -96,7 +96,7 @@ for (const { name, value: evidence } of evidenceDocuments) {
     JSON.stringify(evidence.checks) === JSON.stringify([
       ...expectedChecks.get(evidence.subject.client_id),
       ...(evidence.subject.client_id === "worldstream.midnight-archive.web" ? (
-        ["midnight-archive-web-v5.json", "midnight-archive-web-v6.json", "midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json"].includes(name) ? [
+        ["midnight-archive-web-v5.json", "midnight-archive-web-v6.json", "midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json"].includes(name) ? [
           "fixed-agreement-and-optional-objective-projection-boundaries",
           "all-four-starting-roster-component-host-witnesses",
           "structured-specialist-task-plan-and-private-knowledge-boundaries",
@@ -106,7 +106,7 @@ for (const { name, value: evidence } of evidenceDocuments) {
           "staged-extraction-preview-and-exact-crew-acknowledgement",
           "terminal-full-and-partial-crew-debrief-work-attribution",
           "responsive-specialist-controls",
-          ...(name === "midnight-archive-web-v10.json" ? [
+          ...(["midnight-archive-web-v10.json", "midnight-archive-web-v11.json"].includes(name) ? [
             "authored-standard-and-low-reserve-scenario-boundaries",
             "closed-genesis-operation-cost-schedule",
           ] : []),
@@ -126,10 +126,11 @@ for (const { name, value: evidence } of evidenceDocuments) {
         "deployment-owned-stream-bootstrap-and-recovery",
         "separate-local-kernel-and-hosted-entrypoints-without-auth-fallback",
       ] : []),
-      ...(["midnight-archive-web-v2.json", "midnight-archive-web-v3.json", "midnight-archive-web-v4.json", "midnight-archive-web-v5.json", "midnight-archive-web-v6.json", "midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json"].includes(name)
+      ...(["midnight-archive-web-v2.json", "midnight-archive-web-v3.json", "midnight-archive-web-v4.json", "midnight-archive-web-v5.json", "midnight-archive-web-v6.json", "midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json"].includes(name)
         ? ["bounded-idempotent-upstream-retry"] : []),
-      ...(["midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json"].includes(name)
+      ...(["midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json"].includes(name)
         ? ["unavailable-companion-plan-continuation-boundaries"] : []),
+      ...(name === "midnight-archive-web-v11.json" ? ["bounded-companion-dialogue-literal-rendering-and-schema-boundaries"] : []),
     ]),
     `${evidence.subject.client_id} conformance checks do not match the exercised canonical lane`,
   );
@@ -208,6 +209,31 @@ for (const { name, value: release } of releaseDocuments) {
 }
 
 check(Object.keys(expectedIdentities).length === buildRoots.size, "the current first-party Release set is incomplete");
+// A fresh import sees only its declared Release files, not the whole repository
+// directory. Check that closure independently of the artifact inventory above.
+for (const declarationName of ["cli-import.json", "hosted-local-import.json"]) {
+  const declaration = await readJson(resolve(configuration, declarationName));
+  exactKeys(declaration, ["schema", "release_files", "bindings_file"]);
+  check(declaration.schema === "worldstream/client-declaration-import/v1", `${declarationName} has an unknown import schema`);
+  const imported = new Map();
+  for (const releaseFile of declaration.release_files) {
+    const release = await readJson(resolve(configuration, releaseFile));
+    const key = `${release.client_id}\0${release.release_digest}`;
+    check(declaredReleaseIndex.has(key), `${declarationName} imports an unavailable exact Release`);
+    check(!imported.has(key), `${declarationName} imports a duplicate Release`);
+    imported.set(key, release);
+  }
+  const declaredBindings = await readJson(resolve(configuration, declaration.bindings_file));
+  for (const deployment of declaredBindings.deployments) {
+    const release = imported.get(`${deployment.client_id}\0${deployment.release_digest}`);
+    check(release !== undefined, `${declarationName}: ${deployment.deployment_id} requires a Release absent from release_files`);
+    for (const surface of deployment.surfaces) {
+      check(release.surfaces.some((candidate) => candidate.surface_id === surface.surface_id
+        && candidate.entrypoint === new URL(surface.launch_url).pathname),
+      `${declarationName}: ${deployment.deployment_id} exposes a surface outside its imported Release`);
+    }
+  }
+}
 for (const distribution of distributions) {
   exactKeys(distribution, ["schema", "distribution_id", "version", "pack_bundles", "clients", "client_compatibility", "integration_artifacts"]);
   check(distribution.schema === "worldstream/activity-distribution/v1", "unknown Activity Distribution schema");

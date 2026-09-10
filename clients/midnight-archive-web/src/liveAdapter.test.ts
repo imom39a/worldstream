@@ -128,7 +128,7 @@ describe("Midnight Archive authorized live adapter", () => {
 
   it("permits a clear committed turn while a tasked specialist remains unprepared", () => {
     const mira = {
-      presence: "active", location: "records", mode: "tasked",
+      dialogue_allowed: true, presence: "active", location: "records", mode: "tasked",
       task: { status: "assigned", revision: 1, kind: "investigate_records", power_allowance: 0, power_spent: 0 },
       planning: { status: "not_requested", opportunity_revision: 0, plan_revision: 0, steps_total: 0, steps_completed: 0, deadline: "none" },
       preparation: { status: "none", for_turn: 0, summary: "none" },

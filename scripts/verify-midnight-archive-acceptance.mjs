@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 const workspace = resolve(import.meta.dirname, "..");
 const proofPath = join(
   workspace,
-  "packs/midnight-archive/evidence/production-proof-0.1.0-authored-scenarios.json",
+  "packs/midnight-archive/evidence/production-proof-0.1.0-dialogue.json",
 );
 const proof = JSON.parse(await readFile(proofPath, "utf8"));
 if (proof.status !== "passed" || !/^blake3:[0-9a-f]{64}$/u.test(proof.bundleDigest)) {
@@ -19,7 +19,7 @@ const bundle = process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE ?? join(
   `worldstream-midnight-archive-${proof.bundleDigest.slice("blake3:".length)}.wspack`,
 );
 const release = process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_CLIENT_RELEASE
-  ?? join(workspace, "config/activity-clients/releases/midnight-archive-web-v10.json");
+  ?? join(workspace, "config/activity-clients/releases/midnight-archive-web-v11.json");
 const modes = ["agreement", "both-objectives", "low-reserve", "mira-live", "crew-live", "unavailable-live"];
 
 for (const [index, mode] of modes.entries()) {

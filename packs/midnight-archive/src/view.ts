@@ -7,7 +7,7 @@ import type {
 import type { ArchiveState, CompanionRole, Role, StagedAction, VisibleCandidate } from "./model.js";
 import { record, stringValue } from "./model.js";
 import { authoredEvidenceSources, legalDestinations } from "./rules.js";
-import { miraActionOffers, planningStatus } from "./companions.js";
+import { dialogueAllowed, miraActionOffers, planningStatus } from "./companions.js";
 import { crewDebrief, prepareTurn } from "./turn-resolution.js";
 
 export type AudienceSchema =
@@ -69,7 +69,7 @@ export function authorizedView(
   }
   return {
     schema,
-    projection: participantProjection(state, role, core),
+    projection: participantProjection(state, role, core, viewerMemberId),
     actionOffers: viewerType === "participant"
       ? role === "lead"
         ? [...leadActionOffers(state, core), ...miraActionOffers(state, role, viewerMemberId), ...miraActionOffers(state, role, viewerMemberId, "jonah"),
@@ -80,8 +80,11 @@ export function authorizedView(
   };
 }
 
-export function participantProjection(state: ArchiveState, role: Role, core?: CanonicalObject): CanonicalObject {
+export function participantProjection(state: ArchiveState, role: Role, core?: CanonicalObject, viewerMemberId?: string): CanonicalObject {
   return {
+    companion_dialogue: state.companion_dialogue.filter((item) => viewerMemberId !== undefined &&
+      (item.speaker_member_id === viewerMemberId || item.lead_member_id === viewerMemberId))
+      .slice(-4).map((item) => ({ speaker: item.speaker_role, turn: item.turn, text: item.text })),
     phase: state.phase,
     scenario: { id: state.scenario_id, label: state.scenario_label },
     objective: `${state.objective} ${state.role_notes[role]}`,
@@ -243,6 +246,7 @@ function miraProjection(state: ArchiveState, companionRole: CompanionRole = "mir
   const status = planningStatus(companion);
   const visiblePlan = status === "ready" || status === "complete";
   return {
+    dialogue_allowed: dialogueAllowed(state, companionRole),
     field_assay: { steps_completed: companion.field_assay.steps_completed, result: companion.field_assay.result === "none" ? null : { candidate_id: companion.field_assay.result, confidence: "verified" } },
     presence: companion.presence,
     location: companion.location,

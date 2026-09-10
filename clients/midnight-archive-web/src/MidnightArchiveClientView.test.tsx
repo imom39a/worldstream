@@ -812,3 +812,15 @@ describe("Midnight Archive mission surface", () => {
     expect(markup).not.toContain("private_plan");
   });
 });
+
+it("shows bounded companion advice as literal recommendations without human free text", () => {
+  const text = '<img src=x onerror="alert(1)"> **Trust me**';
+  const state = readyState(projection({ companion_dialogue: [{ speaker: "mira", turn: 1, text }] }));
+  const markup = renderToStaticMarkup(<MidnightArchiveClientView state={state} connection="live" actionsEnabled onAction={vi.fn()} />);
+  expect(markup).toContain("Companion advice");
+  expect(markup).toContain("Recommendation");
+  expect(markup).toContain("&lt;img");
+  expect(markup).toContain("**Trust me**");
+  expect(markup).not.toContain("<img src=x");
+  expect(markup).not.toMatch(/<input|<textarea|contenteditable/iu);
+});

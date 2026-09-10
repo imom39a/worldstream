@@ -33,7 +33,7 @@ def projection() -> dict:
                 ],
             },
             "jonah": {
-                "presence": "active",
+                "dialogue_allowed": True, "presence": "active",
                 "location": "atrium",
                 "mode": "tasked",
                 "task": {
@@ -70,6 +70,7 @@ def test_atrium_hatch_plan_is_two_moves_then_the_one_charge_specialist_step():
     assert jonah.select_plan(view) == {
         "task_revision": 4,
         "opportunity_revision": 5,
+        "dialogue": "",
         "steps": [
             jonah.step("move", destination="records"),
             jonah.step("move", destination="plant"),

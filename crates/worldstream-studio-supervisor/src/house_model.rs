@@ -6,6 +6,8 @@
 //! are short-lived, zeroized buffers; durable state contains only bounded usage
 //! evidence and hashes.
 
+mod archive_context;
+
 use std::{
     collections::BTreeMap,
     fs,
@@ -1601,7 +1603,16 @@ impl<P: HouseProviderPortV1> HouseModelExecutorV1<P> {
             revision,
             &offered_schemas,
             request_digest.as_str(),
-        ) {
+        )
+        .and_then(|decoded| {
+            let (policy_id, policy_revision, _) = revision.behavior_policy();
+            if let Some(context) =
+                archive_context::current_context(policy_id, policy_revision, projection)?
+            {
+                archive_context::validate_proposal(&context, &decoded.completion.action.payload)?;
+            }
+            Ok(decoded)
+        }) {
             Ok(decoded) => decoded,
             Err(error) => {
                 let failure_code = match error {
@@ -1642,6 +1653,17 @@ fn build_provider_request(
         return Err(HouseModelErrorV1::InvalidConfiguration);
     }
     let offered_schemas = exact_offer_schemas(action_offers)?;
+    let (policy_id, policy_revision, _) = revision.behavior_policy();
+    let current_context = archive_context::current_context(policy_id, policy_revision, projection)?;
+    if current_context.is_some() {
+        let offers = action_offers["offers"]
+            .as_array()
+            .ok_or(HouseModelErrorV1::InvalidInput)?;
+        if offers.len() != 1 || offers[0]["action_type"] != "submit_companion_plan" {
+            return Err(HouseModelErrorV1::InvalidInput);
+        }
+    }
+    let projection = current_context.as_ref().unwrap_or(projection);
     let invocation = json!({
         "action_offers": action_offers,
         "instruction": "Return exactly one JSON object with offer_id and payload. Select only a listed offer. Do not include prose or reasoning.",

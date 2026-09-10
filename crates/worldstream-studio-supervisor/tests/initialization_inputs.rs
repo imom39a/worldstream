@@ -102,7 +102,13 @@ fn paths_and_client_expansion_are_bounded_and_never_opened() -> TestResult {
         value["secret_file"] = serde_json::json!(path);
         assert!(parse_provider_declaration(&serde_json::to_vec(&value)?).is_err());
     }
-    for count in [0, 17] {
+    for count in [1, 16, 23, 64] {
+        let mut value: serde_json::Value = serde_json::from_slice(CLIENT)?;
+        value["release_files"] = serde_json::json!(vec!["not-opened/release.json"; count]);
+        let parsed = parse_client_declaration(&serde_json::to_vec(&value)?)?;
+        assert_eq!(parsed.release_files.len(), count);
+    }
+    for count in [0, 65] {
         let mut value: serde_json::Value = serde_json::from_slice(CLIENT)?;
         value["release_files"] = serde_json::json!(vec!["release.json"; count]);
         assert!(parse_client_declaration(&serde_json::to_vec(&value)?).is_err());

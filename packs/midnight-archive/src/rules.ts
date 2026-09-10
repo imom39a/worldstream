@@ -268,6 +268,7 @@ export function initializeArchiveState(configuration: CanonicalObject): ArchiveS
     source_record_protected: false,
     mira: initialMiraState(null),
     jonah: initialMiraState(null, "jonah"),
+    companion_dialogue: [],
     starting_crew: [{ role: "lead", member_id: "none" }],
     extraction: emptyExtraction(),
     completed_crew_work: [],

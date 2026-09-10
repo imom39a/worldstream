@@ -403,10 +403,11 @@ function schemaParts() {
         required: ["status", "for_turn", "summary"],
         type: "object",
       },
+      dialogue_allowed: { type: "boolean" },
       presence: miraState.properties.presence,
       task: miraTask,
     },
-    required: ["presence", "location", "mode", "task", "planning", "preparation", "knowledge", "last_contribution", "field_assay"],
+    required: ["dialogue_allowed", "presence", "location", "mode", "task", "planning", "preparation", "knowledge", "last_contribution", "field_assay"],
     type: "object",
   };
   const role = { enum: ["lead", "mira", "jonah"] };
@@ -452,6 +453,16 @@ function schemaParts() {
   };
 }
 
+export function dialogueTextSchema(): CanonicalObject { return { type: "string", maxLength: 160 }; }
+export function dialogueRecordSchema(): CanonicalObject {
+  return closed({ speaker_role: { enum: ["mira", "jonah"] },
+    speaker_member_id: { type: "string", minLength: 1, maxLength: 64 },
+    lead_member_id: { type: "string", minLength: 1, maxLength: 64 },
+    task_revision: { type: "integer", minimum: 1, maximum: 65535 },
+    opportunity_revision: { type: "integer", minimum: 1, maximum: 65535 },
+    turn: { type: "integer", minimum: 0, maximum: 16 }, text: dialogueTextSchema() }) as CanonicalObject;
+}
+
 export function stateSchema(): CanonicalObject {
   const part = schemaParts();
   return {
@@ -466,6 +477,7 @@ export function stateSchema(): CanonicalObject {
       location: part.location,
       mira: part.miraState,
       jonah: part.miraState,
+      companion_dialogue: arrayOf(dialogueRecordSchema(), 8),
       starting_crew: part.startingCrew,
       extraction: part.extractionState,
       completed_crew_work: part.completedWork,
@@ -491,7 +503,7 @@ export function stateSchema(): CanonicalObject {
     required: [
       "phase", "scenario_id", "scenario_label", "initial_power", "evidence_records", "method_costs", "operation_costs", "objective", "location", "turn_limit", "turns_used",
       "power_remaining", "gates", "candidates", "evidence", "preservation_agreement",
-      "collection_preservation", "source_record_protected", "mira", "jonah", "starting_crew", "extraction", "completed_crew_work", "truth_marker", "verifier_result",
+      "collection_preservation", "source_record_protected", "mira", "jonah", "companion_dialogue", "starting_crew", "extraction", "completed_crew_work", "truth_marker", "verifier_result",
       "carried_candidate_id", "carried_confidence", "staged_action", "outcome", "role_notes",
     ],
     type: "object",
@@ -560,6 +572,7 @@ export function participantProjectionSchema(): CanonicalObject {
       jonah: part.miraProjection,
       turn_resolution: part.turnResolution,
       extraction: part.extraction,
+      companion_dialogue: arrayOf(closed({ speaker: { enum: ["mira", "jonah"] }, turn: { type: "integer", minimum: 0, maximum: 16 }, text: dialogueTextSchema() }), 4),
       crew_debrief: part.crewDebrief,
       objective: { maxLength: 384, minLength: 1, type: "string" },
       outcome: part.outcomeProjection,
@@ -577,7 +590,7 @@ export function participantProjectionSchema(): CanonicalObject {
     required: [
       "phase", "scenario", "objective", "location", "turns_used", "turns_remaining", "power", "initial_power", "method_costs", "operation_costs",
       "gates", "map", "candidates", "staged_action", "carried_candidate", "debrief",
-      "preservation_agreement", "optional_objectives", "mira", "jonah", "turn_resolution", "extraction", "crew_debrief",
+      "preservation_agreement", "optional_objectives", "mira", "jonah", "turn_resolution", "extraction", "crew_debrief", "companion_dialogue",
       "verifier_result", "outcome",
     ],
     type: "object",
