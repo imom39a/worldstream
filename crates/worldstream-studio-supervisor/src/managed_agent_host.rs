@@ -2026,6 +2026,13 @@ mod tests {
         let helper = root.join("worldstream-assignment-mcp");
         std::fs::write(&helper, b"#!/bin/sh\nexec /bin/cat\n").unwrap();
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let host = root.join("managed-house-host");
+        // Accept the House CLI arguments and keep stdin open for its startup
+        // frame. Calling /bin/cat directly rejects those arguments and races
+        // the startup write. Consume input without echoing, while keeping both
+        // pipe descriptors open until the launcher stops the children.
+        std::fs::write(&host, b"#!/bin/sh\nwhile IFS= read -r line; do :; done\n").unwrap();
+        std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
         let bytes = CanonicalJsonV1::parse(HOUSE_REVISION)
             .unwrap()
             .to_bytes()
@@ -2035,7 +2042,7 @@ mod tests {
             &helper,
             &root,
             SECRET_REFERENCE,
-            Path::new("/bin/cat"),
+            &host,
             &root,
             "house-unit-01",
             &revision,
@@ -2045,6 +2052,9 @@ mod tests {
         let mut active = super::OsManagedAgentHostProcessLauncherV1
             .launch_bridged(&plan, &Zeroizing::new(vec![0xab; 32]))
             .expect("an unfenced House unit can start");
+        // Catch a child that accepts the startup write but immediately exits.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(active.try_wait().unwrap(), None);
         active.stop().unwrap();
         // Contents are operator evidence, not executable instructions or authority.
         std::fs::write(&marker, b"{}").unwrap();
