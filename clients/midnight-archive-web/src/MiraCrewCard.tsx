@@ -26,7 +26,6 @@ const MIRA_CARD: SpecialistCrewCardDefinition = {
     controls: "mira-controls",
   },
   controlsLabel: "Mira task controls",
-  waitingMessage: "Mira is preparing a bounded plan. You may continue staging your own turn.",
 };
 
 export function MiraCrewCard({
@@ -61,7 +60,7 @@ export function MiraCrewCard({
         plan: `${planningLabel(mira.planning.status)} · revision ${mira.planning.planRevision}`,
         opportunity: `revision ${mira.planning.opportunityRevision}`,
         progress: planProgress,
-        waiting: mira.planning.status === "waiting",
+        planningNotice: planningNotice("Mira", mira, offerTypes),
         preparation: {
           status: mira.preparation.status,
           summary: preparationLabel(mira.preparation.summary),
@@ -105,7 +104,7 @@ export function MiraCrewCard({
         <div className="mira-control-row">
           <ControlButton
             action="request_mira_plan"
-            label="Request a plan"
+            label={mira.planning.status === "expired" ? "Request plan again" : "Request a plan"}
             enabled={active && enabled}
             offered={offerTypes.has("request_mira_plan")}
             reason={planUnavailableReason(projection)}
@@ -249,6 +248,7 @@ function planUnavailableReason(projection: MidnightArchiveProjection): string {
   if (projection.mira.task.status !== "assigned") return "Assign an investigation task first.";
   if (projection.mira.planning.status === "waiting") return "Mira is already preparing a plan.";
   if (projection.mira.planning.status === "ready") return "The current bounded plan is ready.";
+  if (projection.mira.planning.status === "expired") return "This expired opportunity can reopen only through a new Room-offered request.";
   return "Plan requests are unavailable at this Room Head.";
 }
 
@@ -257,4 +257,27 @@ function prepareUnavailableReason(projection: MidnightArchiveProjection): string
   if (projection.mira.planning.status !== "ready") return "No current bounded plan has an eligible step.";
   if (projection.mira.preparation.status !== "none") return "A Mira contribution is already selected for this turn.";
   return "The next planned step is currently ineligible.";
+}
+
+function planningNotice(
+  name: string,
+  specialist: MidnightArchiveProjection["mira"],
+  offers: ReadonlySet<MidnightArchiveActionType>,
+): string | null {
+  if (specialist.planning.status === "waiting") {
+    return `${name}'s planning window is open until ${specialist.planning.deadline}. You may stage your own turn, defer this contribution, or use an offered follow/regroup order.`;
+  }
+  if (specialist.planning.status === "expired") {
+    return `No ${name} plan was recorded before opportunity ${specialist.planning.opportunityRevision} expired. No turn or power was spent. Continue solo, defer this turn, use an offered follow/regroup order, or ${offers.has("request_mira_plan") ? "explicitly request a new plan" : "wait for a new Room-offered request"}.`;
+  }
+  if (specialist.task.status === "cancelled") {
+    return `${name}'s standing task was cancelled. No plan opportunity remains open.`;
+  }
+  if (specialist.planning.status === "ready") {
+    return `${name}'s bounded plan is recorded. Prepare its next eligible step or defer it for this turn.`;
+  }
+  if (specialist.planning.status === "complete") {
+    return `${name}'s recorded plan is complete. Assign a new task only when the Room offers it.`;
+  }
+  return null;
 }

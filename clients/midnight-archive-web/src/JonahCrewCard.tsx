@@ -23,7 +23,6 @@ const JONAH_CARD: SpecialistCrewCardDefinition = {
     controls: "jonah-controls",
   },
   controlsLabel: "Jonah task controls",
-  waitingMessage: "Jonah is preparing a bounded plan. You may continue staging your own turn.",
 };
 
 export function JonahCrewCard({ projection, enabled, offerTypes, onAction }: {
@@ -51,7 +50,7 @@ export function JonahCrewCard({ projection, enabled, offerTypes, onAction }: {
       plan: `${jonah.planning.status.replace("_", " ")} · revision ${jonah.planning.planRevision}`,
       opportunity: `revision ${jonah.planning.opportunityRevision}`,
       progress,
-      waiting: jonah.planning.status === "waiting",
+      planningNotice: planningNotice("Jonah", jonah, offerTypes),
       preparation: {
         status: jonah.preparation.status,
         summary: jonah.preparation.summary === "none" ? "No contribution selected" : jonah.preparation.summary,
@@ -83,7 +82,7 @@ export function JonahCrewCard({ projection, enabled, offerTypes, onAction }: {
 
       <h3>Bounded plan</h3>
       <div className="jonah-control-row">
-        <ControlButton action="request_jonah_plan" label="Request a plan" enabled={active && enabled} offered={offerTypes.has("request_jonah_plan")} reason={jonah.task.status !== "assigned" ? "Assign a task first." : "Plan requests are unavailable at this Room Head."} onAction={onAction} />
+        <ControlButton action="request_jonah_plan" label={jonah.planning.status === "expired" ? "Request plan again" : "Request a plan"} enabled={active && enabled} offered={offerTypes.has("request_jonah_plan")} reason={planUnavailableReason(projection)} onAction={onAction} />
         <ControlButton action="prepare_jonah_contribution" label="Prepare next eligible step" enabled={active && enabled} offered={offerTypes.has("prepare_jonah_contribution")} reason={jonah.planning.status !== "ready" ? "No current bounded plan has an eligible step." : "The next planned step is currently ineligible."} onAction={onAction} />
         <ControlButton action="defer_jonah_contribution" label="Defer Jonah this turn" enabled={active && enabled} offered={offerTypes.has("defer_jonah_contribution")} reason="Deferral is unavailable at this Room Head." onAction={onAction} />
       </div>
@@ -157,4 +156,35 @@ function locationLabel(projection: MidnightArchiveProjection, location: ArchiveL
 
 function labelWord(value: string): string {
   return value === "unavailable" ? "Unavailable" : `${value[0]?.toUpperCase() ?? ""}${value.slice(1)}`;
+}
+
+function planUnavailableReason(projection: MidnightArchiveProjection): string {
+  if (projection.jonah.task.status !== "assigned") return "Assign a task first.";
+  if (projection.jonah.planning.status === "waiting") return "Jonah is already preparing a plan.";
+  if (projection.jonah.planning.status === "ready") return "The current bounded plan is ready.";
+  if (projection.jonah.planning.status === "expired") return "This expired opportunity can reopen only through a new Room-offered request.";
+  return "Plan requests are unavailable at this Room Head.";
+}
+
+function planningNotice(
+  name: string,
+  specialist: MidnightArchiveProjection["jonah"],
+  offers: ReadonlySet<MidnightArchiveActionType>,
+): string | null {
+  if (specialist.planning.status === "waiting") {
+    return `${name}'s planning window is open until ${specialist.planning.deadline}. You may stage your own turn, defer this contribution, or use an offered follow/regroup order.`;
+  }
+  if (specialist.planning.status === "expired") {
+    return `No ${name} plan was recorded before opportunity ${specialist.planning.opportunityRevision} expired. No turn or power was spent. Continue solo, defer this turn, use an offered follow/regroup order, or ${offers.has("request_jonah_plan") ? "explicitly request a new plan" : "wait for a new Room-offered request"}.`;
+  }
+  if (specialist.task.status === "cancelled") {
+    return `${name}'s standing task was cancelled. No plan opportunity remains open.`;
+  }
+  if (specialist.planning.status === "ready") {
+    return `${name}'s bounded plan is recorded. Prepare its next eligible step or defer it for this turn.`;
+  }
+  if (specialist.planning.status === "complete") {
+    return `${name}'s recorded plan is complete. Assign a new task only when the Room offers it.`;
+  }
+  return null;
 }

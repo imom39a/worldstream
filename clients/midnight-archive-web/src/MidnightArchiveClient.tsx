@@ -120,7 +120,7 @@ export function MidnightArchiveClient({
         payload: action.payload as JsonValue,
       });
       if (receipt.state === "rejected") {
-        throw new Error(`The authoritative Room rejected this Action (${receipt.code}).`);
+        throw new Error(rejectedActionMessage(intent.action, receipt.code));
       }
     } finally {
       const next = controller.state;
@@ -152,4 +152,11 @@ export function connectionFor(
   if (status === "setup_required") return "setup_required";
   if (status === "disconnected" || status === "closed") return "disconnected";
   return "connecting";
+}
+
+export function rejectedActionMessage(
+  action: MidnightArchiveActionIntent["action"],
+  code: string,
+): string {
+  return `The authoritative Room rejected ${action.replaceAll("_", " ")} (${code}). The board was refreshed; continue only with its current offered controls.`;
 }

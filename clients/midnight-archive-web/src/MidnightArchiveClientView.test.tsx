@@ -653,7 +653,7 @@ describe("Midnight Archive mission surface", () => {
     const waitingMarkup = renderToStaticMarkup(
       <MidnightArchiveClientView state={readyState(waiting, ["set_mira_hold", "defer_mira_contribution", "stage_wait"])} connection="live" actionsEnabled onAction={vi.fn()} />,
     );
-    expect(waitingMarkup).toContain("Mira is preparing a bounded plan");
+    expect(waitingMarkup).toContain("Mira&#x27;s planning window is open until 2026-09-09T12:34:56.789Z.");
     expect(waitingMarkup).toContain("Mira has private Records findings; their values have not been disclosed.");
     expect(waitingMarkup).not.toContain("step_type");
     expect(waitingMarkup).not.toContain("destination&quot;");
@@ -740,10 +740,47 @@ describe("Midnight Archive mission surface", () => {
       <MidnightArchiveClientView state={readyState(current, ["assign_mira_task", "set_mira_follow", "stage_wait", "commit_turn"])} connection="live" actionsEnabled onAction={vi.fn()} />,
     );
     expect(markup).toContain("cancelled");
+    expect(markup).toContain("Mira&#x27;s standing task was cancelled. No plan opportunity remains open.");
     expect(markup).toContain("not requested · revision 0");
     expect(markup).toContain("No current bounded plan has an eligible step.");
     expect(markup).toContain("Wait in place");
     expect(markup).toContain("Commit Turn");
+  });
+
+  it("makes expired and waiting planning windows actionable without claiming provider health", () => {
+    const current = projection({
+      mira: rawMira({
+        presence: "active", location: "records", mode: "tasked",
+        task: { status: "assigned", revision: 2, kind: "investigate_records", power_allowance: 0, power_spent: 0 },
+        planning: {
+          status: "expired", opportunity_revision: 4, plan_revision: 0,
+          steps_total: 0, steps_completed: 0, deadline: "none",
+        },
+      }),
+      jonah: rawJonah({
+        presence: "active", location: "records", mode: "tasked",
+        task: { status: "assigned", revision: 3, kind: "investigate_conservation", power_allowance: 0, power_spent: 0 },
+        planning: {
+          status: "waiting", opportunity_revision: 5, plan_revision: 0,
+          steps_total: 0, steps_completed: 0, deadline: "2026-09-10T00:00:15.000Z",
+        },
+      }),
+    });
+    const markup = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState(current, [
+        "request_mira_plan", "defer_mira_contribution", "set_mira_follow", "set_mira_regroup",
+        "defer_jonah_contribution", "set_jonah_follow", "set_jonah_regroup", "stage_wait",
+      ])} connection="live" actionsEnabled onAction={vi.fn()} />,
+    );
+    expect(markup).toContain("No Mira plan was recorded before opportunity 4 expired.");
+    expect(markup).toContain("No turn or power was spent.");
+    expect(markup).toContain("Request plan again");
+    expect(markup).toContain("Jonah&#x27;s planning window is open until 2026-09-10T00:00:15.000Z.");
+    expect(markup).toContain("Defer Jonah this turn");
+    expect(markup).toContain("Follow lead");
+    expect(markup).toContain("Regroup at Atrium");
+    expect(markup).toContain("No companion contribution is created by waiting");
+    expect(markup).not.toMatch(/provider|model health|service health/u);
   });
 
   it("shows a recorded parallel contribution and only Pack-disclosed verifier evidence", () => {

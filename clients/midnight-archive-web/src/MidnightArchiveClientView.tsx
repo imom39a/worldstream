@@ -487,7 +487,7 @@ function ContextActions({
     intent: { action: "stage_wait" },
     eyebrow: "Hold position",
     title: "Wait for one turn",
-    description: "Advance time without moving or spending power.",
+    description: "Advance time without moving or spending power. No companion contribution is created by waiting; only a prepared Room-authorized contribution can resolve beside this turn.",
     turns: 1,
     power: 0,
     available: true,

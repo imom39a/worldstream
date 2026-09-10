@@ -14,7 +14,6 @@ export interface SpecialistCrewCardDefinition {
     readonly controls: string;
   };
   readonly controlsLabel: string;
-  readonly waitingMessage: string;
 }
 
 export interface SpecialistCrewCardView {
@@ -28,7 +27,8 @@ export interface SpecialistCrewCardView {
   readonly plan: string;
   readonly opportunity: string;
   readonly progress: string;
-  readonly waiting: boolean;
+  /** Derived only from the authorized companion state, never Runner health. */
+  readonly planningNotice: string | null;
   readonly preparation: {
     readonly status: string;
     readonly summary: string;
@@ -73,9 +73,9 @@ export function SpecialistCrewCard({
         <Fact label="Progress" value={view.progress} />
       </dl>
 
-      {view.waiting ? (
-        <p className={definition.classNames.planStatus} role="status">{definition.waitingMessage}</p>
-      ) : null}
+      {view.planningNotice === null ? null : (
+        <p className={definition.classNames.planStatus} role="status">{view.planningNotice}</p>
+      )}
 
       <div className={`${definition.classNames.preparation} preparation-${view.preparation.status}`}>
         <small>Prepared contribution</small>
