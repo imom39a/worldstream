@@ -7,6 +7,7 @@ export interface HostedActivitySummary {
   readonly availability: "available" | "coming_soon" | "dependency_unavailable";
   readonly availabilityMessage: string;
   readonly seatSummary: string;
+  readonly participationKinds?: readonly ("human" | "external_agent")[];
   readonly seats: readonly { readonly key: string; readonly label: string; readonly required: boolean }[];
   readonly creatorMaySpectate: boolean;
   readonly houseFillAvailable: boolean;
@@ -73,6 +74,7 @@ export interface MyGamesIndex {
       | "setup_failed"
       | "live"
       | "publication_pending"
+      | "terminal_private"
       | "terminal_without_outcome"
       | "result_suppressed"
       | "dependency_failure"
@@ -210,8 +212,10 @@ export function usePlatformSession(): {
   return { session, developmentSignInAvailable, reload };
 }
 
-export async function readCatalog(): Promise<readonly HostedActivitySummary[]> {
-  const response = await fetch("/api/catalog");
+export async function readCatalog(authenticated = false): Promise<readonly HostedActivitySummary[]> {
+  const response = await fetch(authenticated ? "/api/catalog/internal" : "/api/catalog", {
+    ...(authenticated ? { cache: "no-store" as const } : {}),
+  });
   const value = await safeJson(response);
   if (!response.ok || !Array.isArray(value.activities)) throw new Error("catalog_unavailable");
   return value.activities as unknown as readonly HostedActivitySummary[];

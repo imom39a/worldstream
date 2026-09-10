@@ -6,6 +6,7 @@ import {
 } from "@worldstream/hosted-contract";
 
 import {
+  midnightArchiveListingBase64,
   agentHeistListingBase64,
   retainedAgentHeistListing023Base64,
   retainedAgentHeistListing022Base64,
@@ -68,12 +69,13 @@ export const AGENT_HEIST_LISTING_DIGEST =
   "blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397";
 
 export interface PublicHostedActivity {
-  readonly slug: "agent-heist" | "negotiate";
+  readonly slug: string;
   readonly title: string;
   readonly description: string;
   readonly availability: "available" | "coming_soon" | "dependency_unavailable";
   readonly availabilityMessage: string;
   readonly seatSummary: string;
+  readonly participationKinds?: readonly ("human" | "external_agent")[];
   readonly seats: readonly { readonly key: string; readonly label: string; readonly required: boolean }[];
   readonly creatorMaySpectate: boolean;
   readonly houseFillAvailable: boolean;
@@ -164,6 +166,7 @@ const agentHeistPublic = Object.freeze({
   availability: "available",
   availabilityMessage: "Ready for live formation",
   seatSummary: "2 required seats · 1 optional seat",
+  participationKinds: ["human", "external_agent"],
   seats: listing.value.seats.map((seat, index) => ({
     key: `seat-${index + 1}`,
     label: seat.display_name,
@@ -222,8 +225,35 @@ const retainedAgentHeist = [retainedAgentHeistListing02Base64, retainedAgentHeis
       }),
     });
   });
+const archiveListing = readListingRevision(decode(midnightArchiveListingBase64));
+export const MIDNIGHT_ARCHIVE_LISTING_DIGEST = archiveListing.digest;
+const reviewedMidnightArchive: ReviewedHostedActivity = Object.freeze({
+  slug: "midnight-archive",
+  listing: archiveListing,
+  houseAgents: new Map<string, HouseAgentRevision>(),
+  public: Object.freeze({
+    slug: "midnight-archive",
+    title: archiveListing.value.title,
+    description: archiveListing.value.description,
+    availability: "available",
+    availabilityMessage: "Internal solo candidate",
+    seatSummary: "Solo · 16 turns · 3 power charges",
+    participationKinds: ["human"] as const,
+    seats: [{ key: "seat-1", label: "Expedition lead", required: true }],
+    creatorMaySpectate: false,
+    houseFillAvailable: false,
+    publicViewingAvailable: false,
+    resultPublication: "Private debrief in the activity; no public result publication.",
+    attribution: "Anonymous viewing is disabled.",
+    clientPath: "/midnight-archive-v10/hosted/",
+    publicViewerClientPath: null,
+    houseTerms: null,
+  }),
+});
+const currentReviewedActivities = [reviewedAgentHeist, reviewedMidnightArchive];
+const reviewedBySlug = new Map(currentReviewedActivities.map((activity) => [activity.slug, activity]));
 const reviewedByDigest = new Map(
-  [reviewedAgentHeist, ...retainedAgentHeist].map((activity) => [activity.listing.digest, activity]),
+  [...currentReviewedActivities, ...retainedAgentHeist].map((activity) => [activity.listing.digest, activity]),
 );
 
 const negotiatePublic = Object.freeze({
@@ -260,7 +290,14 @@ export function listPublicHostedActivities(
 }
 
 export function reviewedActivityBySlug(slug: string): ReviewedHostedActivity | null {
-  return slug === reviewedAgentHeist.slug ? reviewedAgentHeist : null;
+  return reviewedBySlug.get(slug) ?? null;
+}
+
+/** Nonpublic discovery requires both authentication and an exact deployment opt-in. */
+export function reviewedInternalActivities(allowedDigests: readonly string[]): readonly ReviewedHostedActivity[] {
+  const allowed = new Set(allowedDigests);
+  return currentReviewedActivities.filter((activity) =>
+    activity.listing.value.catalog.visibility !== "public" && allowed.has(activity.listing.digest));
 }
 
 export function reviewedActivityByDigest(digest: string): ReviewedHostedActivity | null {

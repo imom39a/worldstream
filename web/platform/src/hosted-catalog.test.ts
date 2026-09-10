@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { test } from "vitest";
@@ -8,6 +9,8 @@ import { deriveRoomSetup } from "@worldstream/hosted-contract";
 
 import {
   AGENT_HEIST_LISTING_DIGEST,
+  MIDNIGHT_ARCHIVE_LISTING_DIGEST,
+  reviewedInternalActivities,
   listPublicHostedActivities,
   reviewedActivityByDigest,
   reviewedActivityBySlug,
@@ -16,7 +19,7 @@ import {
   reviewedSeatKey,
 } from "./hosted-catalog.js";
 
-test("the hosted catalog resolves only the reviewed Agent Heist revision", async () => {
+test("the hosted catalog retains the reviewed Agent Heist revision", async () => {
   const activity = reviewedActivityBySlug("agent-heist");
   assert.ok(activity);
   assert.equal(activity.listing.digest, AGENT_HEIST_LISTING_DIGEST);
@@ -66,6 +69,32 @@ test("client selection is a reviewed client-contract concern, not a Pack branch"
   const current = reviewedActivityBySlug("agent-heist");
   assert.ok(current);
   assert.equal(reviewedPublicViewerClientPath(current.public), "/agent-heist-v7/hosted/");
+});
+
+test("solo Archive pins exact artifacts and is excluded from public discovery", async () => {
+  const activity = reviewedActivityBySlug("midnight-archive");
+  assert.ok(activity);
+  assert.equal(activity.listing.digest, MIDNIGHT_ARCHIVE_LISTING_DIGEST);
+  assert.equal(activity.listing.value.catalog.visibility, "unlisted");
+  assert.equal(activity.listing.value.public_viewing_policy, "disabled");
+  assert.equal(activity.listing.value.result.publication.policy, "disabled");
+  assert.equal(activity.listing.value.seats.length, 1);
+  assert.deepEqual(activity.listing.value.seats[0]?.allowed_participation, ["account_human"]);
+  assert.deepEqual(activity.listing.value.room_setup.configuration, { scenario_id: "standard-v1" });
+  assert.equal(activity.houseAgents.size, 0);
+  assert.deepEqual(reviewedInternalActivities([]), []);
+  assert.deepEqual(reviewedInternalActivities([MIDNIGHT_ARCHIVE_LISTING_DIGEST]), [activity]);
+  assert.equal(listPublicHostedActivities(true).some(({ slug }) => slug === activity.slug), false);
+  const release = JSON.parse(await readFile(resolve("../..", "config/activity-clients/releases/midnight-archive-web-v10.json"), "utf8"));
+  assert.equal(activity.listing.value.client.release_digest, release.release_digest);
+  assert.equal(activity.public.clientPath, release.surfaces.find((surface: { surface_id: string }) =>
+    surface.surface_id === activity.listing.value.client.surface_id)?.entrypoint);
+  const proof = JSON.parse(await readFile(resolve("../..", "packs/midnight-archive/evidence/production-proof-0.1.0-authored-scenarios.json"), "utf8"));
+  const bundle = resolve("../..", `packs/midnight-archive/releases/0.1.0/worldstream-midnight-archive-${proof.bundleDigest.slice(7)}.wspack`);
+  const descriptor = JSON.parse(execFileSync("tar", ["-xOf", bundle, "descriptor.json"], { encoding: "utf8" }));
+  assert.equal(activity.listing.value.pack.digest, proof.revisionDigest);
+  assert.equal(activity.listing.value.result.projection.schema, descriptor.projection_schemas.public.schema_id);
+  assert.equal(activity.listing.value.result.projection.digest, descriptor.projection_schemas.public.schema_digest);
 });
 
 test("new discovery retains old exact Listing resolution without replacing its client", () => {

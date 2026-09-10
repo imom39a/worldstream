@@ -156,6 +156,7 @@ trait HostedResultSourceBackendV1: Send + Sync + 'static {
     fn read(
         &self,
         binding: &RoomSetupResultIndexerBindingV1,
+        include_replay: bool,
     ) -> Result<HostedResultObservationV1, HostedResultSourceErrorV1>;
 }
 
@@ -163,8 +164,9 @@ impl HostedResultSourceBackendV1 for HttpHostedResultSourceV1 {
     fn read(
         &self,
         binding: &RoomSetupResultIndexerBindingV1,
+        include_replay: bool,
     ) -> Result<HostedResultObservationV1, HostedResultSourceErrorV1> {
-        HttpHostedResultSourceV1::read(self, binding)
+        HttpHostedResultSourceV1::read(self, binding, include_replay)
     }
 }
 
@@ -719,7 +721,7 @@ impl HostedLaunchOperationsV1 {
             .result_source
             .as_ref()
             .ok_or(HostedLaunchErrorV1::Unavailable)?
-            .read(&indexer)
+            .read(&indexer, listing.allows_result_publication())
             .map_err(map_result_source_error)?;
         if observation.room_id != indexer.room_id
             || observation.member_id != indexer.member_id
@@ -2029,7 +2031,12 @@ mod tests {
         fn read(
             &self,
             _binding: &RoomSetupResultIndexerBindingV1,
+            include_replay: bool,
         ) -> Result<HostedResultObservationV1, HostedResultSourceErrorV1> {
+            assert!(
+                include_replay,
+                "publishable Listing must retain Replay reads"
+            );
             Ok(self.observation.clone())
         }
     }

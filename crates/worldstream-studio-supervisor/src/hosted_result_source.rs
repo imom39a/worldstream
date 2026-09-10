@@ -109,6 +109,7 @@ impl HttpHostedResultSourceV1 {
     pub(crate) fn read(
         &self,
         binding: &RoomSetupResultIndexerBindingV1,
+        include_replay: bool,
     ) -> Result<HostedResultObservationV1, HostedResultSourceErrorV1> {
         let projection_path = format!("/v1/rooms/{}/projection", binding.room_id);
         let projection =
@@ -131,7 +132,14 @@ impl HttpHostedResultSourceV1 {
             "/v1/rooms/{}/replay?at_room_seq={}",
             binding.room_id, projection.room_head.room_seq
         );
-        let replay = self.optional_replay(&replay_path, &binding.secret_reference)?;
+        // Private terminal disposition needs current authorized public evidence.
+        // Replay is a separate publication proof and can use a different
+        // historical schema; do not fetch or reconstruct it for private Runs.
+        let replay = if include_replay {
+            self.optional_replay(&replay_path, &binding.secret_reference)?
+        } else {
+            None
+        };
         let (public_projection, projection_hash, replay) = if let Some(replay) = replay {
             validate_replay_response(binding, &projection, &replay)?;
             let replay_public_projection =
@@ -451,6 +459,77 @@ mod tests {
 
     use super::{HOSTED_RESULT_SOURCE_TIMEOUT, HttpHostedResultSourceV1, replay_core_corresponds};
     use crate::secrets::{FileSecretVaultV1, SecretKindV1};
+
+    #[test]
+    fn private_current_evidence_does_not_request_historical_replay() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let vault = FileSecretVaultV1::open(&directory.path().join("vault"))?;
+        let reference = vault.store(SecretKindV1::MembershipAuthority, &[0xab; 32])?;
+        let room_id = "01JY0000000000000000000000";
+        let digest = format!("blake3:{}", "a".repeat(64));
+        let authorized = json!({
+            "projection_schema": "fixture/current-public/v1",
+            "authorized_core": {"access_mode":"spectator","role":null,"room_status":"active","standing":"enabled","viewer_class":"public"},
+            "projection": {"phase":"active","outcome":null}, "action_offers": []
+        });
+        let hash = worldstream_core::projection_hash_for_canonical_bytes(&super::canonical_bytes(
+            &authorized,
+        )?)?;
+        let response = serde_json::to_vec(&json!({
+            "room_id":room_id,
+            "room_head":{"room_id":room_id,"room_seq":0,"genesis_or_transition_hash":digest,"core_schema_version":"worldstream.core-room-state.v1","pack_digest":digest,"core_state_hash":digest,"activity_state_hash":digest,"authoritative_state_hash":digest},
+            "room_health":"healthy","integrity_generation":1,
+            "projection_schema":authorized["projection_schema"],
+            "projection":{"core":authorized["authorized_core"],"activity":authorized["projection"],"action_offers":[]},
+            "projection_hash":hash.to_string()
+        }))?;
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        let worker = thread::spawn(move || -> std::io::Result<()> {
+            let (mut socket, _) = listener.accept()?;
+            socket.set_read_timeout(Some(Duration::from_secs(2)))?;
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte)?;
+                request.push(byte[0]);
+                assert!(request.len() < 4096);
+            }
+            assert!(
+                String::from_utf8_lossy(&request)
+                    .starts_with(&format!("GET /v1/rooms/{room_id}/projection "))
+            );
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response.len()
+            )?;
+            socket.write_all(&response)
+            // The listener closes here. Any unnecessary Replay request fails.
+        });
+        let source = HttpHostedResultSourceV1::new(address, HOSTED_RESULT_SOURCE_TIMEOUT, vault)?;
+        let observed = source.read(
+            &crate::room_setup_operations::RoomSetupResultIndexerBindingV1 {
+                room_id: room_id.to_owned(),
+                member_id: "01ARZ3NDEKTSV4RRFFQ69G5FB1".to_owned(),
+                principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FB2".to_owned(),
+                pack: worldstream_protocol::PackReference {
+                    id: "fixture.pack".to_owned(),
+                    version: "1".to_owned(),
+                    digest,
+                },
+                secret_reference: reference,
+            },
+            false,
+        )?;
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("mock transport panicked"))??;
+        assert!(observed.replay.is_none());
+        assert_eq!(observed.projection_schema, "fixture/current-public/v1");
+        assert_eq!(observed.projection_hash, hash.to_string());
+        Ok(())
+    }
 
     #[test]
     fn hosted_replay_can_finish_after_the_old_five_second_deadline() {

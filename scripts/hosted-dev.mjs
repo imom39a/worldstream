@@ -25,6 +25,7 @@ import {
   retainRunnerExecutable,
 } from "./hosted-runtime.mjs";
 import { runHostedAcceptancePrerequisites } from "./hosted-acceptance-prerequisites.mjs";
+import { readInternalCandidates } from "./hosted-internal-candidates.mjs";
 import {
   HOSTED_ACCEPTANCE_SCHEMA,
   LOCAL_ACCEPTANCE_CHECKS,
@@ -70,8 +71,8 @@ const RETAINED_LISTING_DIGESTS = [
   "blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956",
 ];
 
-export function hostedDevelopmentListingAllowlist() {
-  return [LISTING_DIGEST, ...RETAINED_LISTING_DIGESTS].join(",");
+export function hostedDevelopmentListingAllowlist(internalCandidates = []) {
+  return [LISTING_DIGEST, ...RETAINED_LISTING_DIGESTS, ...internalCandidates].join(",");
 }
 
 export function hostedLocalSmokeIdempotencyKey(listingDigest = LISTING_DIGEST) {
@@ -405,7 +406,10 @@ async function main() {
       run("pnpm", ["--filter", "@worldstream/pack-sdk", "build"], {
         environment: commonEnvironment,
       }),
+      run("pnpm", ["--filter", "@worldstream/agent-heist-client", "build"], { environment: commonEnvironment }),
+      run("pnpm", ["--filter", "@worldstream/console", "build"], { environment: commonEnvironment }),
     ]);
+    const internalCandidates = await readInternalCandidates();
 
     ownsSupabase = !(await succeeds("supabase", ["status", "-o", "env"], commonEnvironment));
     if (ownsSupabase) {
@@ -430,7 +434,7 @@ async function main() {
     await ctl(["init"]);
     await ctl(["server", "stop"], { allowFailure: true, quiet: true });
     await ctl(["server", "controller-stop"], { allowFailure: true, quiet: true });
-    const reuseHeist = await compatibleAgentHeistAlreadyRunning(ports.heist);
+    const reuseHeist = await compatibleAgentHeistAlreadyRunning(ports.heist, internalCandidates, gateway.browserStreamUrl);
     if (reuseHeist) {
       process.stdout.write(
         `[Agent Heist] Reusing the compatible approved client already on port ${ports.heist}.\n`,
@@ -474,6 +478,18 @@ async function main() {
       native.managedAgentHost,
     );
 
+    for (const candidate of internalCandidates) {
+      const bundle = resolve(REPOSITORY_ROOT, candidate.bundle_file);
+      const decisionTime = new Date().toISOString();
+      const rawPack = (args) => run(worldstreamctl, ["--config", configFile, "pack", ...args], { environment: commonEnvironment });
+      await rawPack(["approve", "--bundle", bundle, "--operator-id", "hosted-local-development", "--decided-at", decisionTime]);
+      await rawPack(["install", "--bundle", bundle, "--installed-at", decisionTime]);
+      await rawPack(["set-selectable", "--bundle-digest", candidate.bundle_digest, "--selectable", "true"]);
+    }
+    if (internalCandidates.length > 0) {
+      await run(worldstreamctl, ["--config", configFile, "pack", "restart-readiness"], { environment: commonEnvironment });
+    }
+
     await ctl(["server", "start", "--participant-console-origin", heistOrigin]);
     managedStarted = true;
 
@@ -500,6 +516,12 @@ async function main() {
       WORLDSTREAM_DEVELOPMENT_OPENROUTER_KEY: FAKE_OPENROUTER_KEY,
       WORLDSTREAM_LOCAL_PLATFORM_BFF_TARGET: platformOrigin,
       WORLDSTREAM_LOCAL_ACTIVITY_CLIENT_TARGET: heistOrigin,
+      WORLDSTREAM_LOCAL_INTERNAL_LISTING_DIGESTS: internalCandidates.map((candidate) => candidate.listing.digest).join(","),
+      WORLDSTREAM_LOCAL_ACTIVITY_AVAILABILITY_SCRIPT: join(REPOSITORY_ROOT, "scripts/hosted-internal-candidates.mjs"),
+      WORLDSTREAM_LOCAL_CTL: worldstreamctl,
+      WORLDSTREAM_LOCAL_CONFIG: configFile,
+      WORLDSTREAM_LOCAL_STATE_DIRECTORY: stateDirectory,
+      WORLDSTREAM_LOCAL_CONTROLLER: `127.0.0.1:${ports.controller}`,
       // Server-only BFF calls use the IPv4 loopback bind. The browser stream
       // uses its separate public hostname below so platform cookies cannot
       // reach the credential-free Gateway upgrade.
@@ -552,7 +574,7 @@ async function main() {
           WORLDSTREAM_HOSTED_CLIENT_ORIGIN: productOrigin,
           WORLDSTREAM_PUBLIC_AUTHORITY: gateway.publicAuthority,
           WORLDSTREAM_VERCEL_SERVICE_AUTHORITY: SERVICE_AUTHORITY,
-          WORLDSTREAM_LISTING_ALLOWLIST: hostedDevelopmentListingAllowlist(),
+          WORLDSTREAM_LISTING_ALLOWLIST: hostedDevelopmentListingAllowlist(internalCandidates.map((candidate) => candidate.listing.digest)),
           WORLDSTREAM_DEPLOYMENT_VERSION: "hosted-local-development",
           RUST_LOG: "worldstream_hosted_gateway=info",
         },
@@ -561,18 +583,12 @@ async function main() {
     if (!reuseHeist) {
       children.push(
         startChild(
-          "Agent Heist",
-          "pnpm",
+          "Activity Clients",
+          "node",
           [
-            "--dir",
-            "clients/agent-heist-web",
-            "exec",
-            "vite",
-            "--host",
-            "127.0.0.1",
+            "scripts/serve-hosted-local-clients.mjs",
             "--port",
             String(ports.heist),
-            "--strictPort",
           ],
           childEnvironment,
         ),
@@ -862,6 +878,8 @@ async function hostedClientDeclaration(stateDirectory, stateRoot) {
   const currentHeist = await readRegularJson(
     join(configuration, "releases", "agent-heist-web-v7.json"),
   );
+  const additionalReleases = (await readInternalCandidates()).map((candidate) =>
+    resolve(REPOSITORY_ROOT, candidate.client_release_file));
   template.deployments = [
     deployment,
     ...template.deployments.filter((candidate) => candidate.client_id !== "worldstream.inspector.web"),
@@ -889,7 +907,7 @@ async function hostedClientDeclaration(stateDirectory, stateRoot) {
     generatedDeclaration,
     `${JSON.stringify({
       schema: "worldstream/client-declaration-import/v1",
-      release_files: ["./agent-heist-web.json", "./retained-inspector-web.json"],
+      release_files: ["./agent-heist-web.json", "./retained-inspector-web.json", ...additionalReleases],
       bindings_file: "./hosted-local-bindings.json",
     })}\n`,
     { mode: 0o600 },
@@ -992,7 +1010,7 @@ async function assertLoopbackPortAvailable(portNumber, host, message, allowUnsup
   });
 }
 
-async function compatibleAgentHeistAlreadyRunning(portNumber) {
+async function compatibleAgentHeistAlreadyRunning(portNumber, internalCandidates = [], browserStreamOrigin) {
   try {
     const response = await fetch(`http://127.0.0.1:${portNumber}/agent-heist-v7/hosted/`, {
       signal: AbortSignal.timeout(1_000),
@@ -1000,10 +1018,22 @@ async function compatibleAgentHeistAlreadyRunning(portNumber) {
     if (response.status !== 200) return false;
     const contentSecurityPolicy = response.headers.get("content-security-policy") ?? "";
     const body = await response.text();
-    return (
+    const retainedHeistAvailable = (
       contentSecurityPolicy.includes("connect-src 'self' http://127.0.0.1:9420") &&
       body.includes("<title>Agent Heist · WorldStream Activity Client</title>")
     );
+    if (!retainedHeistAvailable) return false;
+    for (const candidate of internalCandidates) {
+      const candidateResponse = await fetch(new URL(candidate.surface.entrypoint, `http://127.0.0.1:${portNumber}`), {
+        signal: AbortSignal.timeout(1_000),
+      });
+      if (!candidateResponse.ok || !(candidateResponse.headers.get("content-security-policy") ?? "")
+        .includes(browserStreamOrigin.replace(/^http:/u, "ws:"))) return false;
+      const entry = candidate.surface.entrypoint.replace(/^\/[^/]+\//u, "");
+      const expected = await readFile(join(REPOSITORY_ROOT, candidate.client_artifact_directory, entry, "index.html"));
+      if (!Buffer.from(await candidateResponse.arrayBuffer()).equals(expected)) return false;
+    }
+    return true;
   } catch {
     return false;
   }

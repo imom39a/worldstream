@@ -52,17 +52,21 @@ export async function startActivityClientHost({
   hostname = "127.0.0.1",
   port = 5173,
   controllerOrigin = "http://127.0.0.1:9420",
+  browserStreamOrigin,
+  mounts = activityClientMounts,
 } = {}) {
   if (hostname !== "127.0.0.1" && hostname !== "localhost") throw new Error("Activity Client Host must bind to loopback");
   if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) throw new Error("Activity Client Host port is invalid");
-  const authorizedControllerOrigin = exactLoopbackOrigin(controllerOrigin);
-  await Promise.all(activityClientMounts.map(async ({ root }) => {
+  const authorizedConnectOrigins = [exactLoopbackOrigin(controllerOrigin),
+    ...(browserStreamOrigin === undefined ? [] : [exactLoopbackOrigin(browserStreamOrigin),
+      exactLoopbackOrigin(browserStreamOrigin).replace(/^http:/u, "ws:")])].join(" ");
+  await Promise.all(mounts.map(async ({ root }) => {
     await activityClientBuildDigest(root);
     await stat(resolve(root, "index.html"));
   }));
   const server = createServer((request, response) => {
-    void serve(request, response, authorizedControllerOrigin).catch(() => {
-      if (!response.headersSent) response.writeHead(500, commonHeaders("text/plain; charset=utf-8", authorizedControllerOrigin));
+    void serve(request, response, authorizedConnectOrigins, mounts).catch(() => {
+      if (!response.headersSent) response.writeHead(500, commonHeaders("text/plain; charset=utf-8", authorizedConnectOrigins));
       response.end("Activity Client Host failed to read a retained artifact.\n");
     });
   });
@@ -80,7 +84,7 @@ export async function startActivityClientHost({
   };
 }
 
-async function serve(request, response, controllerOrigin) {
+async function serve(request, response, controllerOrigin, mounts) {
   if (request.method !== "GET" && request.method !== "HEAD") {
     response.writeHead(405, { ...commonHeaders("text/plain; charset=utf-8", controllerOrigin), Allow: "GET, HEAD" });
     response.end("Method not allowed.\n");
@@ -97,12 +101,12 @@ async function serve(request, response, controllerOrigin) {
     response.end();
     return;
   }
-  if (activityClientMounts.some(({ prefix }) => prefix !== "/" && prefix.slice(0, -1) === url.pathname)) {
+  if (mounts.some(({ prefix }) => prefix !== "/" && prefix.slice(0, -1) === url.pathname)) {
     response.writeHead(308, { ...commonHeaders("text/plain; charset=utf-8", controllerOrigin), Location: `${url.pathname}/${url.search}` });
     response.end();
     return;
   }
-  const mount = activityClientMounts.find(({ prefix }) => url.pathname.startsWith(prefix));
+  const mount = mounts.find(({ prefix }) => url.pathname.startsWith(prefix));
   if (mount === undefined) {
     response.writeHead(404, commonHeaders("text/plain; charset=utf-8", controllerOrigin));
     response.end("Not found.\n");

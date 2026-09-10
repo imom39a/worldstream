@@ -31,6 +31,7 @@ import {
   reviewedActivityByDigest,
   reviewedPublicViewerClientPath,
   reviewedActivityBySlug,
+  reviewedInternalActivities,
   reviewedSeatId,
   reviewedSeatKey,
 } from "./hosted-catalog.js";
@@ -88,6 +89,7 @@ export interface MyGamesIndex {
       | "setup_failed"
       | "live"
       | "publication_pending"
+      | "terminal_private"
       | "terminal_without_outcome"
       | "result_suppressed"
       | "dependency_failure"
@@ -199,6 +201,10 @@ export interface BffDependencies {
   readonly hostedFormationGateway?: HostedFormationGateway;
   /** Exact reviewed Host installation selected by deployment configuration. */
   readonly hostedFormationHostInstallationId?: string;
+  /** Exact nonpublic Listing revisions enabled for this internal deployment. */
+  readonly internalCandidateListingDigests?: readonly string[];
+  /** Checks the exact approved Pack, client release, surface and Client Binding. */
+  readonly hostedActivityAvailable?: (listingRevisionDigest: string) => Promise<boolean>;
 }
 
 export interface PlatformBffConfig {
@@ -300,6 +306,24 @@ export function createPlatformBff(
       if (url.origin !== origin) return safeJson(404, "route_not_found");
       if (request.method === "GET" && url.pathname === "/api/catalog") {
         return publicCatalog(formation !== null && dependencies.hostedBrowserSessions !== undefined);
+      }
+      if (request.method === "GET" && url.pathname === "/api/catalog/internal") {
+        const admitted = await verifiedRead(request, origin, sessionKey, dependencies);
+        if (admitted instanceof Response) return admitted;
+        const ready = formation !== null && dependencies.hostedBrowserSessions !== undefined;
+        const candidates = await Promise.all(reviewedInternalActivities(
+          dependencies.internalCandidateListingDigests ?? [],
+        ).map(async (activity) => ({
+          ...activity.public,
+          ...(!(ready && await exactActivityAvailable(dependencies, activity.listing.digest)) ? {
+            availability: "dependency_unavailable" as const,
+            availabilityMessage: "The exact approved activity and client are unavailable.",
+          } : {}),
+        })));
+        return privateJson(200, {
+          version: "hosted_activity_catalog.v1",
+          activities: [...listPublicHostedActivities(ready), ...candidates],
+        });
       }
       const publicRunId = publicRunRoute(url.pathname);
       if (request.method === "GET" && publicRunId !== null) {
@@ -479,6 +503,14 @@ function publicCatalog(dependenciesAvailable: boolean): Response {
   return response;
 }
 
+async function exactActivityAvailable(dependencies: BffDependencies, digest: string): Promise<boolean> {
+  try {
+    return await dependencies.hostedActivityAvailable?.(digest) === true;
+  } catch {
+    return false;
+  }
+}
+
 function hostedLaunchRoute(pathname: string): HostedLaunchRoute | null {
   const read = pathname.match(/^\/api\/launches\/([0-9a-f-]+)$/u);
   if (read?.[1] !== undefined && validLaunchIdentifier(read[1])) {
@@ -537,6 +569,10 @@ async function createHostedLaunch(
   }
   const reviewed = reviewedActivityBySlug(admitted.body.listing_slug);
   if (reviewed === null) return privateError(409, "activity_unavailable");
+  if (reviewed.listing.value.catalog.visibility !== "public" && (
+    !dependencies.internalCandidateListingDigests?.includes(reviewed.listing.digest)
+    || !await exactActivityAvailable(dependencies, reviewed.listing.digest)
+  )) return privateError(409, "activity_unavailable");
   const creatorAccess = admitted.body.creator_access;
   if (creatorAccess !== "seat" && creatorAccess !== "spectator") {
     return privateError(400, "invalid_request");
@@ -557,6 +593,9 @@ async function createHostedLaunch(
       ? "disabled"
       : null;
   if (houseFillChoice === null) return privateError(400, "invalid_request");
+  if (houseFillChoice === "fill_unclaimed" && !reviewed.public.houseFillAvailable) {
+    return privateError(400, "invalid_request");
+  }
   const launchInput = encodeCanonical({});
   try {
     const created = await data.createLaunchRequest({
@@ -982,11 +1021,13 @@ export function createDevelopmentPlatformBff(
     readonly hostInstallationId: string;
   },
   hostedPublicStreamBaseUrl?: string,
+  internalCandidates: Pick<BffDependencies, "internalCandidateListingDigests" | "hostedActivityAvailable"> = {},
 ): PlatformBff {
   const origin = validateDevelopmentConfiguration(config);
   const user = developmentUser(config.identity);
   const auth = new DevelopmentPlatformAuthClient(user);
   const inner = createPlatformBff(config, {
+    ...internalCandidates,
     authClient: () => auth,
     dataClient,
     ...(supportsPublicRuns(dataClient) ? { publicRunData: dataClient } : {}),

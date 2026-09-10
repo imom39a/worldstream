@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worldstream.dev/schemas/midnight-archive-terminal-summary-v1.schema.json",
+  "title": "Midnight Archive terminal disposition envelope v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "not_terminal"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "terminal_without_outcome"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "summary"
+      ],
+      "properties": {
+        "status": {
+          "const": "summary"
+        },
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "outcome"
+          ],
+          "properties": {
+            "schema": {
+              "const": "midnight-archive/terminal-summary/v1"
+            },
+            "outcome": {
+              "enum": [
+                "success",
+                "partial_extraction",
+                "wrong_ledger",
+                "no_ledger",
+                "exhausted_inside"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

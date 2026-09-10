@@ -428,6 +428,7 @@ export class HttpHostedHouseRetirementClient implements HostedHouseRetirementCli
 
 export type ResultReconciliationOutcome =
   | "not_terminal"
+  | "terminal_private"
   | "terminal_without_outcome"
   | "result_recorded"
   | "result_confirmed"
@@ -543,6 +544,14 @@ export async function reconcileActivityResult(
   );
   if (terminalReceipt.disposition === "conflict") {
     return report(request.run_id, "conflict", terminalReceipt);
+  }
+
+  if (pinned.listing.value.result.publication.policy === "disabled") {
+    // A terminal disposition retires capacity. Its private Outcome is never
+    // copied into the result index, even when Replay evidence is available.
+    await recordCurrentIntegrity(dependencies.data, evidence, hostEvidenceDigest.tagged, null);
+    await attemptTerminalHouseRunnerRetirement(request.run_id, dependencies);
+    return { runId: request.run_id, outcome: "terminal_private", safeCode: terminalReceipt.safeCode };
   }
 
   if (projected.status === "terminal_without_outcome") {

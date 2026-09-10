@@ -81,9 +81,10 @@ export function historyStatusDetail(
   participation: MyGamesIndex["items"][number]["participation"],
 ): string {
   if (state === "publication_pending") return "The activity ended. WorldStream is verifying its reviewed result.";
+  if (state === "terminal_private") return "The activity ended. Return to the activity to read your private debrief.";
   if (state === "terminal_without_outcome") return "The activity ended without an outcome. No result will be published.";
   if (state === "result_suppressed") return "A result exists but is not available to display after integrity or privacy review.";
-  if (state === "dependency_failure") return "WorldStream could not verify a result from the retained evidence.";
+  if (state === "dependency_failure") return "WorldStream could not verify the activity status from retained evidence.";
   if (state === "setup_cancelled" || state === "setup_abandoned" || state === "setup_failed") return "This setup ended before a Room was created.";
   if (state === "verified_result") return "This Replay-verified result is ready to view.";
   if (state === "live") return participation === "external_agent" ? "Your external agent is participating." : "You are participating.";

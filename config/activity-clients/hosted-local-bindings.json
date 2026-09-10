@@ -4,6 +4,14 @@
   "deployments": [
     {
       "schema": "worldstream/client-deployment/v1",
+      "deployment_id": "hosted-midnight-archive-web-v10-9be6d654",
+      "client_id": "worldstream.midnight-archive.web",
+      "release_digest": "sha256:9be6d6548f2d62baba805ec461b27fbd1021ed0d61fbd0e8ffd1d779616bc534",
+      "trust_level": "externally_trusted",
+      "surfaces": [{ "surface_id": "midnight-archive-hosted-web", "launch_url": "http://127.0.0.1:5180/midnight-archive-v10/hosted/" }]
+    },
+    {
+      "schema": "worldstream/client-deployment/v1",
       "deployment_id": "first-party-inspector-web-v2",
       "client_id": "worldstream.inspector.web",
       "release_digest": "sha256:9f7972efe162a3fa6bd85c7598358d9e961c9a28a662afa4859329f9ac07cf72",
@@ -30,6 +38,17 @@
     }
   ],
   "bindings": [
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "hosted-midnight-archive-v10-9be6d654-lead",
+      "pack": { "id": "worldstream.midnight-archive", "version": "0.1.0", "digest": "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64" },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "participant",
+      "roles": ["lead"],
+      "deployment_id": "hosted-midnight-archive-web-v10-9be6d654",
+      "surface_id": "midnight-archive-hosted-web",
+      "preference": "default"
+    },
     {
       "schema": "worldstream/client-binding/v1",
       "binding_id": "hosted-agent-heist-0-5-v7-e1efd39f-participant",

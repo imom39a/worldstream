@@ -1,4 +1,6 @@
 import { Buffer } from "node:buffer";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,6 +56,7 @@ export function createDevelopmentPlatformServer(environment = process.env) {
     hostedBrowserSessions,
     hostedFormation,
     hostedPublicStreamBaseUrl,
+    localInternalCandidates(environment, canonicalOrigin),
   );
   const serviceAuthority = environment.WORLDSTREAM_VERCEL_SERVICE_AUTHORITY;
   const hostedGatewayUrl = environment.WORLDSTREAM_HOSTED_GATEWAY_URL;
@@ -91,6 +94,33 @@ export function createDevelopmentPlatformServer(environment = process.env) {
     void dispatch(bff, canonicalOrigin, request, response);
   });
   return { bind, port, server };
+}
+
+function localInternalCandidates(environment: NodeJS.ProcessEnv, canonicalOrigin: string) {
+  const digests = environment.WORLDSTREAM_LOCAL_INTERNAL_LISTING_DIGESTS;
+  // hosted-dev serializes an empty reviewed candidate manifest as "".
+  // Absence and that exact empty value both select the public-only platform.
+  if (digests === undefined || digests === "") return {};
+  if (!/^blake3:[0-9a-f]{64}(,blake3:[0-9a-f]{64}){0,7}$/u.test(digests)) {
+    throw new Error("invalid_internal_candidate_allowlist");
+  }
+  const execute = promisify(execFile);
+  const script = required(environment, "WORLDSTREAM_LOCAL_ACTIVITY_AVAILABILITY_SCRIPT");
+  const args = [
+    required(environment, "WORLDSTREAM_LOCAL_CTL"), required(environment, "WORLDSTREAM_LOCAL_CONFIG"),
+    required(environment, "WORLDSTREAM_LOCAL_STATE_DIRECTORY"), required(environment, "WORLDSTREAM_LOCAL_CONTROLLER"),
+    canonicalOrigin, required(environment, "WORLDSTREAM_LOCAL_ACTIVITY_CLIENT_TARGET"),
+  ];
+  return {
+    internalCandidateListingDigests: digests.split(","),
+    hostedActivityAvailable: async (digest: string) => {
+      if (!digests.split(",").includes(digest)) return false;
+      const { stdout } = await execute(process.execPath, [script, ...args, digest], {
+        timeout: 15_000, maxBuffer: 16_384,
+      });
+      return JSON.parse(stdout).available === true;
+    },
+  };
 }
 
 function hostedFormationDependencies(

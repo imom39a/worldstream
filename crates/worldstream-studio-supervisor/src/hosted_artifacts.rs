@@ -10,6 +10,7 @@ use worldstream_hosted_contract::{HouseAgentRevision, ListingRevision};
 /// Fails if an embedded artifact is not a valid canonical contract document.
 pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAgentRevision>)> {
     const LISTINGS: &[&[u8]] = &[
+        include_bytes!("../../../config/hosted/listings/midnight-archive-0.1.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.4.0.json"),
@@ -95,12 +96,17 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
-    fn reviewed_listings_resolve_exact_installed_pack_rules() -> anyhow::Result<()> {
+    fn reviewed_public_listings_resolve_exact_installed_pack_rules() -> anyhow::Result<()> {
         // The reviewed hosted catalog retains every Agent Heist Pack revision,
         // including revisions intentionally omitted from the base daemon image.
         let registry = worldstream_core::builtin_agent_heist_registry()?;
         let (listings, _) = reviewed_hosted_artifacts()?;
         for listing in listings {
+            // Internal installed Component candidates are admitted separately
+            // by their exact bundle and running Host inventory.
+            if !listing.allows_result_publication() {
+                continue;
+            }
             let document: serde_json::Value = serde_json::from_slice(listing.canonical_bytes())?;
             let digest = document["pack"]["digest"]
                 .as_str()
@@ -113,6 +119,18 @@ mod tests {
             );
             assert_eq!(document["pack"]["id"], pack.descriptor().pack_id);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn private_candidates_do_not_require_publication_replay() -> anyhow::Result<()> {
+        let (listings, _) = reviewed_hosted_artifacts()?;
+        let private: Vec<_> = listings
+            .iter()
+            .filter(|listing| !listing.allows_result_publication())
+            .collect();
+        assert_eq!(private.len(), 1);
+        assert!(!private[0].allows_anonymous_viewing());
         Ok(())
     }
 

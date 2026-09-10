@@ -113,7 +113,7 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
         <section className="waiting-heading">
           <span className="eyebrow">{launch.activity_title} · waiting room</span>
           <div>
-            <h1>{stateTitle(launch.state)}</h1>
+            <h1>{launch.state === "collecting" && launch.seats.length === 1 ? "Ready to begin" : stateTitle(launch.state)}</h1>
             <span className={`formation-state state-${launch.state}`}><i />{stateLabel(launch.state)}</span>
           </div>
           <p>{stateDetail(launch)}</p>
@@ -123,7 +123,7 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
         <section className="roster-card" aria-labelledby="roster-title">
           <div className="roster-heading">
             <div><span className="section-label">Seats</span><h2 id="roster-title">Room roster</h2></div>
-            <span>{launch.fill_mode === "house_agents" ? "House fill enabled" : "People and external agents"}</span>
+            <span>{launch.fill_mode === "house_agents" ? "House fill enabled" : launch.seats.length === 1 ? "Solo activity" : "Invited participants"}</span>
           </div>
           <div className="roster-list">
             {launch.seats.map((seat) => (
@@ -234,6 +234,7 @@ export function stateDetail(launch: HostedLaunch): string {
   if (launch.state === "provisioning") return "The exact roster is frozen. The Host is creating one room.";
   if (launch.state === "reconciling") return "The Host is ready. The platform is confirming the exact Run.";
   if (launch.house_fill?.state === "claim_window_open") return "People have 30 seconds to claim open seats before reviewed House Agents fill them.";
+  if (launch.seats.length === 1) return "Your solo seat is ready. Start when you are ready to begin.";
   return "Share seat invitations. A person can join directly or control an external agent.";
 }
 

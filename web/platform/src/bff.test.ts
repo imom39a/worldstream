@@ -29,7 +29,7 @@ import type { PublicRunData } from "./public-runs.js";
 import { createSupabaseBffDependencies } from "./supabase.js";
 import { HttpHostedFormationGateway } from "./hosted-formation.js";
 import type { HostedFormationData, HostedFormationGateway } from "./hosted-formation.js";
-import { AGENT_HEIST_LISTING_DIGEST } from "./hosted-catalog.js";
+import { AGENT_HEIST_LISTING_DIGEST, MIDNIGHT_ARCHIVE_LISTING_DIGEST } from "./hosted-catalog.js";
 
 const ORIGIN = "https://arena.example";
 
@@ -319,6 +319,7 @@ function harness(
   hostedBrowserSessions?: HostedBrowserSessionClient,
   publicRunData?: PublicRunData,
   hostedPublicStreamBaseUrl?: string,
+  overrides: Partial<BffDependencies> = {},
 ) {
   const auth = new FakeAuth();
   const data = new FakeData();
@@ -328,6 +329,7 @@ function harness(
     ...(hostedBrowserSessions === undefined ? {} : { hostedBrowserSessions }),
     ...(publicRunData === undefined ? {} : { publicRunData }),
     ...(hostedPublicStreamBaseUrl === undefined ? {} : { hostedPublicStreamBaseUrl }),
+    ...overrides,
   };
   const bff = createPlatformBff(
     {
@@ -415,6 +417,44 @@ async function csrf(
   const body = (await response.json()) as { csrf: string };
   return body.csrf;
 }
+
+test("internal catalog requires sign-in and exact deployment opt-in; missing artifacts block launch", async () => {
+  const { bff } = harness(undefined, undefined, undefined, {
+    internalCandidateListingDigests: [MIDNIGHT_ARCHIVE_LISTING_DIGEST],
+    hostedFormationData: {} as HostedFormationData,
+    hostedFormationGateway: {} as HostedFormationGateway,
+    hostedFormationHostInstallationId: "internal-test",
+    hostedBrowserSessions: {} as HostedBrowserSessionClient,
+    hostedActivityAvailable: async () => false,
+  });
+  assert.equal((await bff.fetch(new Request(`${ORIGIN}/api/catalog/internal`))).status, 401);
+  const publicResponse = await bff.fetch(new Request(`${ORIGIN}/api/catalog`));
+  assert.equal((await publicResponse.text()).includes("midnight-archive"), false);
+  const signedIn = await signIn(bff);
+  const response = await bff.fetch(new Request(`${ORIGIN}/api/catalog/internal`, {
+    headers: { cookie: `__Host-worldstream-session=${signedIn.sessionCookie}` },
+  }));
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+  const body = await response.json() as { activities: Array<{ slug: string; availability: string }> };
+  assert.equal(body.activities.find(({ slug }) => slug === "midnight-archive")?.availability, "dependency_unavailable");
+  const denied = await bff.fetch(mutation("/api/launches", signedIn.sessionCookie, await csrf(bff, signedIn.sessionCookie), JSON.stringify({
+    listing_slug: "midnight-archive", creator_access: "seat", creator_seat: "seat-1",
+    fill_mode: "people_only", idempotency_key: "a".repeat(32),
+  })));
+  assert.equal(denied.status, 409);
+  assert.equal((await denied.text()).includes("activity_unavailable"), true);
+});
+
+test("signed-in catalog keeps internal candidates hidden without exact opt-in", async () => {
+  const { bff } = harness();
+  const signedIn = await signIn(bff);
+  const response = await bff.fetch(new Request(`${ORIGIN}/api/catalog/internal`, {
+    headers: { cookie: `__Host-worldstream-session=${signedIn.sessionCookie}` },
+  }));
+  assert.equal(response.status, 200);
+  assert.equal((await response.text()).includes("midnight-archive"), false);
+});
 
 test("My games is account-scoped, preserves the reviewed result route, and rejects erased accounts", async () => {
   const { bff, data } = harness();

@@ -1,0 +1,53 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "location": {
+      "enum": [
+        "atrium",
+        "records",
+        "conservation",
+        "plant",
+        "vault"
+      ]
+    },
+    "outcome": {
+      "enum": [
+        null,
+        {
+          "kind": "success"
+        },
+        {
+          "kind": "partial_extraction"
+        },
+        {
+          "kind": "wrong_ledger"
+        },
+        {
+          "kind": "no_ledger"
+        },
+        {
+          "kind": "exhausted_inside"
+        }
+      ]
+    },
+    "phase": {
+      "enum": [
+        "briefing",
+        "active",
+        "complete"
+      ]
+    },
+    "turns_used": {
+      "maximum": 16,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "phase",
+    "location",
+    "turns_used",
+    "outcome"
+  ],
+  "type": "object"
+}

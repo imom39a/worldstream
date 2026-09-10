@@ -279,6 +279,15 @@ impl ListingRevision {
         &self.document.result.projection.schema
     }
 
+    /// Whether this Listing requires Replay evidence for result publication.
+    #[must_use]
+    pub const fn allows_result_publication(&self) -> bool {
+        matches!(
+            self.document.result.publication.policy,
+            ResultPublicationPolicy::PublicRecentResults
+        )
+    }
+
     /// Returns whether this reviewed revision explicitly permits an
     /// anonymous, link-addressed Public Projection relay.
     #[must_use]

@@ -583,6 +583,28 @@ test("shared reconciliation projects a reviewed non-Heist result with a differen
   });
 });
 
+test("disabled publication records terminal evidence without indexing an Outcome", async () => {
+  const fixture = nonHeistContract();
+  const listingBytes = encodeCanonical({ ...fixture.listing.value, result: {
+    ...fixture.listing.value.result,
+    publication: { policy: "disabled", attribution: "none", public_output: "none", suppression: "unhealthy_inconclusive_or_conflict" },
+  }} as unknown as CanonicalObject);
+  const listing = readListingRevision(listingBytes);
+  const evidence = { ...nonHeistEvidence(), listing_revision_digest: listing.digest };
+  const { replay: _replay, ...withoutReplay } = evidence;
+  for (const selected of [evidence, withoutReplay]) {
+    const data = new MemoryData();
+    const report = await reconcileActivityResult(candidate(listing.digest), {
+      source: new MutableSource(selected), data, houseRetirement: new MemoryHouseRetirement(),
+      projectors: new PinnedResultProjectorRegistry([{ ...fixture, listingBytes }]),
+    });
+    assert.equal(report.outcome, "terminal_private");
+    assert.equal(data.terminal.terminalRecorded, true);
+    assert.equal(data.writes.some(({ kind }) => kind === "result"), false);
+    assert.equal(data.resultPayload, null);
+  }
+});
+
 test("only retained terminal evidence can trigger exact House retirement", async () => {
   const source = new MutableSource(sourceEvidence("agent-heist-terminal-input.json"));
   const data = new MemoryData();

@@ -883,6 +883,7 @@ class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationD
           "setup_failed",
           "live",
           "publication_pending",
+          "terminal_private",
           "terminal_without_outcome",
           "result_suppressed",
           "dependency_failure",

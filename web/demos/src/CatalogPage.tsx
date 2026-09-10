@@ -18,13 +18,16 @@ export function CatalogPage({ onNavigate }: { onNavigate: Navigate }) {
   const { session, developmentSignInAvailable, reload } = usePlatformSession();
 
   useEffect(() => {
-    void readCatalog()
+    let current = true;
+    void readCatalog(session.state === "authenticated")
       .then((value) => {
+        if (!current) return;
         setActivities(value);
         setCatalogState("ready");
       })
-      .catch(() => setCatalogState("unavailable"));
-  }, []);
+      .catch(() => { if (current) setCatalogState("unavailable"); });
+    return () => { current = false; };
+  }, [session.state]);
 
   return (
     <div className="site-shell hosted-shell discovery-shell">
@@ -132,7 +135,7 @@ function ActivityCard({ activity, onChoose }: { activity: HostedActivitySummary;
         <p>{activity.description}</p>
         <div className="activity-facts">
           <span>{activity.publicViewingAvailable ? "Spectators welcome" : "Private viewing"}</span>
-          <span>{activity.houseFillAvailable ? "Optional House Agents" : "People and external agents"}</span>
+          <span>{participationLabel(activity)}</span>
         </div>
       </div>
       <div className="activity-card-footer">
@@ -164,6 +167,7 @@ function LaunchPanel({
   session: ReturnType<typeof usePlatformSession>["session"];
 }) {
   const firstSeat = activity.seats[0]?.key ?? "";
+  const solo = activity.seats.length === 1 && !activity.creatorMaySpectate;
   const [seat, setSeat] = useState(firstSeat);
   const [fillMode, setFillMode] = useState<"people_only" | "house_agents">(activity.houseFillAvailable ? "house_agents" : "people_only");
   const [busy, setBusy] = useState(false);
@@ -217,9 +221,10 @@ function LaunchPanel({
         <button className="dialog-close" type="button" aria-label="Close" onClick={onClose}>×</button>
         <span className="eyebrow">Your next activity / live room</span>
         <h2 id="launch-title">{activity.title}</h2>
-        <p className="launch-summary">Choose your role and who you want to play with.</p>
+        <p className="launch-summary">{activity.description}</p>
+        <p>{solo ? `Play solo as ${activity.seats[0]?.label}.` : "Choose your role and who you want to play with."}</p>
 
-        <fieldset>
+        {!solo ? <fieldset>
           <legend>Choose your role</legend>
           <div className="choice-grid">
             {activity.seats.map((candidate) => (
@@ -230,9 +235,9 @@ function LaunchPanel({
               </label>
             ))}
           </div>
-        </fieldset>
+        </fieldset> : null}
 
-        <fieldset>
+        {!solo && activity.houseFillAvailable ? <fieldset>
           <legend>Fill open seats</legend>
           <div className="choice-stack">
             {activity.houseFillAvailable ? <label className={fillMode === "house_agents" ? "choice-selected" : ""}>
@@ -241,10 +246,10 @@ function LaunchPanel({
             </label> : null}
             <label className={fillMode === "people_only" ? "choice-selected" : ""}>
               <input type="radio" name="fill" checked={fillMode === "people_only"} onChange={() => setFillMode("people_only")} />
-              <span><strong>People and their agents only</strong><small>You invite every required participant.</small></span>
+              <span><strong>{activity.participationKinds?.includes("external_agent") ? "People and their agents only" : "People only"}</strong><small>You invite every required participant.</small></span>
             </label>
           </div>
-        </fieldset>
+        </fieldset> : null}
 
         <div className="terms-card">
           <strong>Before you join</strong>
@@ -267,13 +272,22 @@ function LaunchPanel({
           </div>
         ) : (
           <button className="primary-launch" type="button" disabled={busy || session.state !== "authenticated"} onClick={() => void beginLaunch()}>
-            {busy ? "Creating one room…" : session.state === "unavailable" ? "Sign-in service unavailable" : "Create waiting room"}
+            {busy ? "Creating one room…" : session.state === "unavailable" ? "Sign-in service unavailable" : solo ? "Prepare solo activity" : "Create waiting room"}
           </button>
         )}
         {error !== null ? <p className="form-error" role="alert">{error}</p> : null}
       </section>
     </dialog>
   );
+}
+
+function participationLabel(activity: HostedActivitySummary): string {
+  if (activity.houseFillAvailable) return "Optional House Agents";
+  if (activity.seats.length === 1 && activity.participationKinds?.length === 1
+      && activity.participationKinds[0] === "human") return "Solo adventure";
+  if (activity.participationKinds?.includes("external_agent")) return "People and external agents";
+  if (activity.participationKinds?.includes("human")) return "Play with people";
+  return "Participation options under review";
 }
 
 function retainedLaunchKey(slug: string, seat: string, fillMode: string): string {

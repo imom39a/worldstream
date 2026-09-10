@@ -42,7 +42,7 @@ select
   'my-games-test-' || number, decode(lpad(number::text, 64, '0'), 'hex'),
   convert_to('{}', 'utf8'), extensions.digest(convert_to('{}', 'utf8'), 'sha256'),
   'worldstream/canonical-json/v1', 'disabled', 'spectator', null, 'account_human',
-  case when number = 20 then 'failed_pre_genesis' when number in (1, 18) then 'abandoned_prestart' else 'cancelled' end,
+  case when number in (2, 3) then 'run_created' when number = 20 then 'failed_pre_genesis' when number in (1, 18) then 'abandoned_prestart' else 'cancelled' end,
   sampled_at - (number || ' seconds')::interval,
   sampled_at - (number || ' seconds')::interval,
   sampled_at - (number || ' seconds')::interval + interval '24 hours'
@@ -91,6 +91,40 @@ insert into platform_store.activity_run_memberships (
   '01ARZ3NDEKTSV4RRFFQ69G5FAZ', repeat('a', 32)
 );
 -- Isolate the My-games action policy from public-result projector fixtures.
+insert into platform_store.activity_runs (
+  activity_run_id, launch_request_id, listing_revision_digest, creator_account_id,
+  host_installation_id, room_setup_operation_id, room_id, launch_request_digest,
+  pack_id, pack_version, pack_revision_digest, genesis_room_seq,
+  genesis_or_transition_hash, canonical_genesis_evidence, genesis_evidence_digest,
+  public_id, evidence_class, initial_reconciliation_state
+)
+select '70000000-0000-4000-8000-000000000098', '70000000-0000-4000-8000-000000000002',
+  listing_revision_digest, creator_account_id, host_installation_id, 'private-terminal-operation',
+  '01ARZ3NDEKTSV4RRFFQ69G5FB0', launch_request_digest, pack_id, pack_version,
+  pack_revision_digest, genesis_room_seq, genesis_or_transition_hash,
+  canonical_genesis_evidence, genesis_evidence_digest, repeat('e', 32), evidence_class, initial_reconciliation_state
+from platform_store.activity_runs where activity_run_id = '70000000-0000-4000-8000-000000000099';
+insert into platform_store.activity_run_memberships (
+  activity_run_id, membership_id, access_mode, purpose, seat_id, role,
+  public_seat_label, principal_kind, participation_source, controlling_account_id,
+  principal_id, entry_selector
+)
+select '70000000-0000-4000-8000-000000000098', '01ARZ3NDEKTSV4RRFFQ69G5FB1',
+  access_mode, purpose, seat_id, role, public_seat_label, principal_kind,
+  participation_source, controlling_account_id, '01ARZ3NDEKTSV4RRFFQ69G5FB2', repeat('b', 32)
+from platform_store.activity_run_memberships where activity_run_id = '70000000-0000-4000-8000-000000000099';
+insert into platform_store.activity_run_terminal_evidence (
+  activity_run_id, listing_revision_digest, result_projector_revision_digest,
+  projector_status, result_indexer_membership_id, source_head, source_room_seq,
+  source_projection_hash, integrity_status, integrity_generation,
+  host_evidence_digest, canonical_terminal_evidence, terminal_evidence_digest
+) values (
+  '70000000-0000-4000-8000-000000000098', 'blake3:' || repeat('7', 64), 'blake3:' || repeat('a', 64),
+  'summary', '01ARZ3NDEKTSV4RRFFQ69G5FB3', '{}'::jsonb, 12,
+  'blake3:' || repeat('d', 64), 'healthy', 1,
+  decode(repeat('d', 64), 'hex'), convert_to('{}', 'utf8'), decode(repeat('e', 64), 'hex')
+);
+
 -- The rollback encloses this replacement, so the durable public view policy is
 -- never changed by the test.
 create or replace function platform_store.public_run_state_v1(p_activity_run_id uuid)
@@ -103,6 +137,22 @@ create temporary table first_page as
 select platform_api.list_my_games_v1(
   '70000000-0000-4000-8000-000000000001', null, null, 20
 ) as value;
+
+select is(
+  (select item ->> 'state' from first_page, jsonb_array_elements(value -> 'items') item
+   where item ->> 'launch_id' = '70000000-0000-4000-8000-000000000002'),
+  'terminal_private', 'private terminal evidence does not wait for result publication'
+);
+select is(
+  (select item ->> 'action' from first_page, jsonb_array_elements(value -> 'items') item
+   where item ->> 'launch_id' = '70000000-0000-4000-8000-000000000002'),
+  'return_to_game', 'the original Participant can return to the private debrief'
+);
+select ok(
+  (select not (item ? 'result_public_id') from first_page, jsonb_array_elements(value -> 'items') item
+   where item ->> 'launch_id' = '70000000-0000-4000-8000-000000000002'),
+  'private terminal history has no public result link'
+);
 
 select is(
   jsonb_array_length((select value -> 'items' from first_page)), 20,
@@ -207,6 +257,39 @@ select is(
   ) from generate_series(1, 21) number),
   'two pages traverse the exact expected launch-ID range without a gap'
 );
+
+reset role;
+insert into platform_store.activity_runs
+select (jsonb_populate_record(null::platform_store.activity_runs, to_jsonb(runs) || jsonb_build_object(
+  'activity_run_id', '70000000-0000-4000-8000-000000000097',
+  'launch_request_id', '70000000-0000-4000-8000-000000000003',
+  'room_setup_operation_id', 'private-unhealthy-operation',
+  'room_id', '01ARZ3NDEKTSV4RRFFQ69G5FB4', 'public_id', repeat('d', 32)
+))).* from platform_store.activity_runs runs
+where activity_run_id = '70000000-0000-4000-8000-000000000098';
+insert into platform_store.activity_run_terminal_evidence
+select (jsonb_populate_record(null::platform_store.activity_run_terminal_evidence, to_jsonb(evidence) || jsonb_build_object(
+  'activity_run_id', '70000000-0000-4000-8000-000000000097', 'integrity_status', 'faulted'
+))).* from platform_store.activity_run_terminal_evidence evidence
+where activity_run_id = '70000000-0000-4000-8000-000000000098';
+insert into platform_store.reconciliation_receipts (
+  receipt_kind, source_key, activity_run_id, evidence_digest, disposition, safe_code
+) values ('terminal', 'private-terminal-conflict-test', '70000000-0000-4000-8000-000000000098',
+  decode(repeat('c', 64), 'hex'), 'conflict', 'terminal_conflict');
+
+set local role service_role;
+create temporary table unavailable_page as
+select platform_api.list_my_games_v1('70000000-0000-4000-8000-000000000001', null, null, 20) as value;
+select is((select item ->> 'state' from unavailable_page, jsonb_array_elements(value -> 'items') item
+  where item ->> 'launch_id' = '70000000-0000-4000-8000-000000000003'),
+  'dependency_failure', 'unhealthy private terminal evidence is not publication pending');
+select is((select item ->> 'state' from unavailable_page, jsonb_array_elements(value -> 'items') item
+  where item ->> 'launch_id' = '70000000-0000-4000-8000-000000000002'),
+  'dependency_failure', 'conflicted private terminal evidence is not publication pending');
+select ok((select bool_and(item ->> 'action' = 'none' and not (item ? 'result_public_id'))
+  from unavailable_page, jsonb_array_elements(value -> 'items') item
+  where item ->> 'launch_id' in ('70000000-0000-4000-8000-000000000002', '70000000-0000-4000-8000-000000000003')),
+  'unverified private histories expose neither a result link nor an entry action');
 
 select * from finish();
 rollback;
