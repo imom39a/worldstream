@@ -40,6 +40,10 @@ async function main() {
       join(assetRoot, "agent-heist-web.json"),
     ),
     copyFile(
+      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "agent-heist-web-v7.json"),
+      join(assetRoot, "agent-heist-web-v7.json"),
+    ),
+    copyFile(
       join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "inspector-web-v2.json"),
       join(assetRoot, "inspector-web.json"),
     ),
