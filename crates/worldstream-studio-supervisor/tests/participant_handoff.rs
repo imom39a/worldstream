@@ -1310,9 +1310,10 @@ async fn protected_console_returns_a_sanitized_rejected_action_receipt() {
         .local_addr()
         .unwrap_or_else(|error| panic!("rejected receipt fixture address: {error}"));
     let server = thread::spawn(move || {
-        for action_receipt in [None, None, None, Some("action.rejected")] {
-            serve_cursor_enforcing_connection(&listener, action_receipt);
-        }
+        serve_cursor_enforcing_connection(&listener, None);
+        serve_cursor_enforcing_connection(&listener, None);
+        serve_membership_status_fixture_connection(&listener);
+        serve_cursor_enforcing_connection(&listener, Some("action.rejected"));
     });
     let router = fixed_gateway_app(address);
     let (_, handoff) = issue_handoff(&router).await;
@@ -1362,21 +1363,61 @@ fn spawn_daemon_fixture(listener: TcpListener) -> thread::JoinHandle<()> {
 
 fn spawn_cursor_enforcing_daemon_fixture(listener: TcpListener) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        for action_receipt in [
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some("action.accepted"),
-            None,
-            None,
-        ] {
+        // Issuance and redemption attach. Subsequent operations revalidate
+        // authority without an extra stream attach of their own.
+        serve_cursor_enforcing_connection(&listener, None);
+        serve_cursor_enforcing_connection(&listener, None);
+        for action_receipt in [None, None, Some("action.accepted"), None] {
+            serve_membership_status_fixture_connection(&listener);
             serve_cursor_enforcing_connection(&listener, action_receipt);
         }
     })
+}
+
+fn serve_membership_status_fixture_connection(listener: &TcpListener) {
+    use std::io::{Read as _, Write as _};
+
+    let (mut stream, _) = listener
+        .accept()
+        .unwrap_or_else(|error| panic!("accept membership-status fixture: {error}"));
+    let mut request = Vec::new();
+    while !request.ends_with(b"\r\n\r\n") {
+        assert!(request.len() < 4096, "membership-status request is bounded");
+        let mut byte = [0_u8];
+        stream
+            .read_exact(&mut byte)
+            .unwrap_or_else(|error| panic!("read membership-status request: {error}"));
+        request.push(byte[0]);
+    }
+    assert!(request.starts_with(
+        format!("GET /v1/rooms/{ROOM_ID}/members/{MEMBER_ID}/status HTTP/1.1\r\n").as_bytes()
+    ));
+    assert!(
+        request
+            .windows(BEARER.len())
+            .any(|bytes| bytes == BEARER.as_bytes()),
+        "membership-status request authenticates the exact Membership bearer"
+    );
+    let body = serde_json::to_vec(&json!({
+        "version": "membership_status.v1",
+        "room_id": ROOM_ID,
+        "member_id": MEMBER_ID,
+        "principal_kind": "human",
+        "access_mode": "participant",
+        "role": "navigator",
+        "membership_status": "enabled",
+        "pack": agent_heist_pack("0.2.0", AGENT_HEIST_0_2_DIGEST),
+    }))
+    .unwrap_or_else(|error| panic!("encode membership-status response: {error}"));
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .unwrap_or_else(|error| panic!("write membership-status response head: {error}"));
+    stream
+        .write_all(&body)
+        .unwrap_or_else(|error| panic!("write membership-status response body: {error}"));
 }
 
 #[expect(

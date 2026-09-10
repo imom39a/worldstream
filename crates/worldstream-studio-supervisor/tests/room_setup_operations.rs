@@ -1002,6 +1002,12 @@ struct BrowserReceiptFixture {
 }
 
 async fn browser_receipt_fixture() -> TestResult<BrowserReceiptFixture> {
+    browser_receipt_fixture_with_gateway(MembershipGateway).await
+}
+
+async fn browser_receipt_fixture_with_gateway(
+    gateway: impl ParticipantConsoleGatewayV1,
+) -> TestResult<BrowserReceiptFixture> {
     let temp = tempfile::tempdir()?;
     let (operations, _, setup) = open_retained_operations(temp.path(), &RetainedDaemon::default())?;
     assert!(
@@ -1021,7 +1027,7 @@ async fn browser_receipt_fixture() -> TestResult<BrowserReceiptFixture> {
         std::time::Duration::from_secs(30),
         16,
         setup,
-        MembershipGateway,
+        gateway,
         clients,
     )
     .map_err(|_| "broker fixture")?;
@@ -1179,7 +1185,130 @@ async fn browser_readiness_requires_acknowledgement_of_delivered_frame() -> Test
     Ok(())
 }
 
+#[derive(Clone, Default)]
+struct DeliveryRaceGateway {
+    stream_rejected: Arc<std::sync::atomic::AtomicBool>,
+    membership_rejected: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ParticipantConsoleGatewayV1 for DeliveryRaceGateway {
+    fn membership_status(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        if self
+            .membership_rejected
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(ParticipantConsoleGatewayErrorV1::Rejected);
+        }
+        MembershipGateway.membership_status(authority)
+    }
+
+    fn current_membership(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+        cursor: Option<u64>,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        if self
+            .stream_rejected
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(ParticipantConsoleGatewayErrorV1::Rejected);
+        }
+        MembershipGateway.current_membership(authority, cursor)
+    }
+
+    fn observe(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+        cursor: Option<u64>,
+    ) -> Result<ParticipantConsoleObservationV1, ParticipantConsoleGatewayErrorV1> {
+        MembershipGateway.observe(authority, cursor)
+    }
+
+    fn act(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+        cursor: Option<u64>,
+        request: &ParticipantActionRequestV1,
+    ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
+        MembershipGateway.act(authority, cursor, request)
+    }
+}
+
+#[tokio::test]
+async fn browser_delivery_acknowledgement_revalidates_membership_without_reattaching() -> TestResult
+{
+    use worldstream_studio_supervisor::participant_handoff::{
+        ParticipantConsoleReadinessSourceV1, ParticipantConsoleSessionHealthV1,
+    };
+    let gateway = DeliveryRaceGateway::default();
+    let BrowserReceiptFixture {
+        _temp,
+        readiness,
+        router,
+        cookie,
+    } = browser_receipt_fixture_with_gateway(gateway.clone()).await?;
+    let acknowledgement = browser_observation_nonce(&router, &cookie).await?;
+    // A competing stream can advance between observation and its browser receipt.
+    // Stream attach rejection must not revoke otherwise valid Membership authority.
+    gateway
+        .stream_rejected
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let acknowledged = browser_request(
+        &router,
+        "POST",
+        "/api/v1/participant-console/session:acknowledge",
+        "http://127.0.0.1:5173",
+        Some(&cookie),
+        json!({"acknowledgement":acknowledgement,"frame_head":7}),
+    )
+    .await?;
+    assert_eq!(acknowledged.status(), 200);
+    assert_eq!(
+        readiness.session_health(ROOM, "01ARZ3NDEKTSV4RRFFQ69G5FAY"),
+        ParticipantConsoleSessionHealthV1::Usable
+    );
+
+    // The same cursor-independent check must still revoke a disabled Membership,
+    // and restoring authority must not resurrect its already invalidated session.
+    gateway
+        .membership_rejected
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_ne!(
+        readiness.session_health(ROOM, "01ARZ3NDEKTSV4RRFFQ69G5FAY"),
+        ParticipantConsoleSessionHealthV1::Usable
+    );
+    gateway
+        .membership_rejected
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    gateway
+        .stream_rejected
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let restored = browser_request(
+        &router,
+        "GET",
+        "/api/v1/participant-console/session",
+        "http://127.0.0.1:5173",
+        Some(&cookie),
+        Value::Null,
+    )
+    .await?;
+    assert_eq!(restored.status(), 401);
+    let body: Value = serde_json::from_slice(&restored.into_body().collect().await?.to_bytes())?;
+    assert_eq!(body["code"], "participant_session_missing");
+    Ok(())
+}
+
 impl ParticipantConsoleGatewayV1 for MembershipGateway {
+    fn membership_status(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        self.current_membership(authority, None)
+    }
+
     fn current_membership(
         &self,
         authority: &HumanSeatAuthorityV1,
