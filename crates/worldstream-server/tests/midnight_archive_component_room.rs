@@ -5,6 +5,7 @@
 //! local Runtime.
 
 use std::{
+    collections::BTreeMap,
     env, fs,
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
@@ -35,8 +36,18 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const PACK_ID: &str = "worldstream.midnight-archive";
 const PACK_VERSION: &str = "0.1.0";
 const CURRENT_BUNDLE_DIGEST: &str =
-    "blake3:ea79ce7ff3e90ab5d073409486af1227286b82512daec98db3e921097dd8ac99";
+    "blake3:b82e0d5df065af1b31252a06e06a3bbd685a5ba63c3d2bfeb71a0d6dd06ebbab";
 const CURRENT_REVISION_DIGEST: &str =
+    "blake3:59bb814b920b0eb6f8b8886f2d368052189c0f9263d6c36c91894f639c8e19f5";
+const CURRENT_COMPONENT_DIGEST: &str =
+    "blake3:1c127958464352e324ddb450e0df398cbcc9867bbcb1834cb972df4595f3a87b";
+const RETAINED_SPECIALIST_BUNDLE_DIGEST: &str =
+    "blake3:309721db5290e9f2daf8c092ed97528d8cf7dc2bdcf577edef737f26e14157ea";
+const RETAINED_SPECIALIST_REVISION_DIGEST: &str =
+    "blake3:894f7a58c01b0ca99ac29b1b84a9083bab7f0f858f0b33ce495413255cf91339";
+const RETAINED_MIRA_BUNDLE_DIGEST: &str =
+    "blake3:ea79ce7ff3e90ab5d073409486af1227286b82512daec98db3e921097dd8ac99";
+const RETAINED_MIRA_REVISION_DIGEST: &str =
     "blake3:ec4689e090f05f1c1894f21c1dba95e1f56b3afc49fc88c5c8f3530a03a80b61";
 const RETAINED_AGREEMENT_BUNDLE_DIGEST: &str =
     "blake3:877702b321352288553cc0e5ea6510f1f8dea3e18687759658714ebc09a3c269";
@@ -54,7 +65,7 @@ const FORBIDDEN_PRIVATE_KEYS: &[&str] = &["authentic_candidate_id", "is_authenti
 
 fn client_binding_identity() -> TestResult<(String, String)> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config/activity-clients/releases/midnight-archive-web-v4.json");
+        .join("../../config/activity-clients/releases/midnight-archive-web-v6.json");
     let release: Value = serde_json::from_slice(&fs::read(path)?)?;
     let release_digest = release["release_digest"]
         .as_str()
@@ -64,7 +75,7 @@ fn client_binding_identity() -> TestResult<(String, String)> {
         .as_array()
         .and_then(|surfaces| {
             surfaces.iter().find_map(|surface| {
-                (surface["entrypoint"] == "/midnight-archive-v4/")
+                (surface["entrypoint"] == "/midnight-archive-v6/")
                     .then(|| surface["surface_id"].as_str())
                     .flatten()
             })
@@ -86,8 +97,9 @@ fn release_bundle_path(bundle_digest: &str) -> PathBuf {
 
 fn current_bundle_path() -> PathBuf {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let proof_path =
-        workspace.join("packs/midnight-archive/evidence/production-proof-0.1.0-mira.json");
+    let proof_path = workspace.join(
+        "packs/midnight-archive/evidence/production-proof-0.1.0-specialist-crew-consecutive.json",
+    );
     let proof: Value = serde_json::from_slice(
         &fs::read(&proof_path)
             .unwrap_or_else(|error| panic!("read Archive proof {proof_path:?}: {error}")),
@@ -134,14 +146,16 @@ fn send(socket: &mut WebSocket<TcpStream>, kind: &str, body: &Value, id: &str) -
 }
 
 fn receive(socket: &mut WebSocket<TcpStream>, kind: &str) -> TestResult<Value> {
-    for _ in 0..32 {
+    for _ in 0..256 {
         if let Message::Text(text) = socket.read()? {
             let envelope: Value = serde_json::from_str(&text)?;
             reject_private(&envelope["body"]);
             if envelope["type"] == kind {
                 return Ok(envelope["body"].clone());
             }
-            if envelope["type"] == "error" {
+            if envelope["type"] == "error"
+                || (kind == "action.accepted" && envelope["type"] == "action.rejected")
+            {
                 return Err(
                     format!("server rejected expected {kind}: {}", envelope["body"]).into(),
                 );
@@ -152,7 +166,7 @@ fn receive(socket: &mut WebSocket<TcpStream>, kind: &str) -> TestResult<Value> {
 }
 
 fn receive_envelope(socket: &mut WebSocket<TcpStream>) -> TestResult<Value> {
-    for _ in 0..32 {
+    for _ in 0..256 {
         if let Message::Text(text) = socket.read()? {
             let envelope: Value = serde_json::from_str(&text)?;
             reject_private(&envelope["body"]);
@@ -217,191 +231,496 @@ async fn post(routes: &Router, authority: &str, path: &str, body: Value) -> Test
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> TestResult {
-    run_archive_witness(false).await
+    run_archive_witness(&[], false).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mira_task_assignment_commits_with_descriptor_ordered_offers() -> TestResult {
-    run_archive_witness(true).await
+async fn mira_assay_and_ordinary_hatch_complete_with_the_starting_crew() -> TestResult {
+    run_archive_witness(&["mira"], false).await
 }
 
-async fn run_archive_witness(with_mira: bool) -> TestResult {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn jonah_specialist_hatch_completes_with_the_starting_crew() -> TestResult {
+    run_archive_witness(&["jonah"], false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_crew_resolves_reservations_assay_and_extraction_before_replay() -> TestResult {
+    run_archive_witness(&["mira", "jonah"], false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partial_extraction_retains_missing_starting_crew_and_executed_work() -> TestResult {
+    run_archive_witness(&["mira", "jonah"], true).await
+}
+
+struct LiveWitness {
+    lead: WebSocket<TcpStream>,
+    agents: BTreeMap<String, WebSocket<TcpStream>>,
+    room: String,
+    agent_members: BTreeMap<String, String>,
+    state: Value,
+    offers: Vec<Value>,
+    sequence: u64,
+    next_id: u64,
+    descriptor_actions: Vec<String>,
+}
+
+impl LiveWitness {
+    fn id(&mut self) -> String {
+        self.next_id += 1;
+        format!("{:026X}", self.next_id)
+    }
+
+    fn act(&mut self, role: &str, action: &str, payload: Value) -> TestResult {
+        if role == "lead" {
+            assert!(
+                self.offers
+                    .iter()
+                    .any(|offer| offer["action_type"] == action),
+                "{action} absent from current lead offers at Head {}",
+                self.sequence
+            );
+        }
+        let action_id = self.id();
+        let message_id = self.id();
+        let sequence = self.sequence;
+        let mut body = json!({"action_id":action_id,"based_on_room_seq":sequence,
+            "action_type":action,"payload":payload});
+        if role != "lead" {
+            body["room_id"] = json!(self.room);
+            body["member_id"] = json!(
+                self.agent_members
+                    .get(role)
+                    .ok_or("agent Membership missing")?
+            );
+        }
+        let actor = if role == "lead" {
+            &mut self.lead
+        } else {
+            self.agents.get_mut(role).ok_or("agent stream missing")?
+        };
+        send(actor, "action.submit", &body, &message_id)?;
+        let receipt = receive(actor, "action.accepted")
+            .map_err(|error| format!("{role}/{action} at Head {sequence}: {error}"))?;
+        let observation = receive(&mut self.lead, "observation.deliver")?;
+        self.state = projection(&observation);
+        // Delta delivery omits unchanged offers; retain the last authorized set.
+        if let Some(offers) = action_offers(&observation) {
+            self.offers = offers.clone();
+        }
+        self.sequence = room_seq(&observation);
+        assert_eq!(self.sequence, sequence + 1);
+        assert_eq!(receipt["room_head"]["room_seq"], self.sequence);
+        let indices = self
+            .offers
+            .iter()
+            .map(|offer| {
+                self.descriptor_actions
+                    .iter()
+                    .position(|declared| offer["action_type"] == declared.as_str())
+                    .ok_or("Action offer outside descriptor")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        assert!(
+            indices.windows(2).all(|pair| pair[0] < pair[1]),
+            "offers must be unique and in descriptor order"
+        );
+        let ack_id = self.id();
+        send(
+            &mut self.lead,
+            "observation.ack",
+            &json!({"through_frame_seq":observation["frame_seq"]}),
+            &ack_id,
+        )?;
+        receive(&mut self.lead, "observation.acked")?;
+        Ok(())
+    }
+
+    fn reject(&mut self, action: &str, payload: Value, stale: bool) -> TestResult {
+        let action_id = self.id();
+        let message_id = self.id();
+        let sequence = if stale {
+            self.sequence.saturating_sub(1)
+        } else {
+            self.sequence
+        };
+        send(
+            &mut self.lead,
+            "action.submit",
+            &json!({"action_id":action_id,"based_on_room_seq":sequence,
+            "action_type":action,"payload":payload}),
+            &message_id,
+        )?;
+        let rejected = receive_envelope(&mut self.lead)?;
+        assert_eq!(
+            rejected["type"], "action.rejected",
+            "known-invalid action must be rejected"
+        );
+        assert_eq!(rejected["body"]["current_room_seq"], self.sequence);
+        Ok(())
+    }
+
+    fn personal(&mut self, action: &str, payload: Value) -> TestResult {
+        let before = turns_used(&self.state);
+        self.act("lead", action, payload)?;
+        assert_eq!(
+            turns_used(&self.state),
+            before,
+            "staging must not advance a turn"
+        );
+        self.act("lead", "commit_turn", json!({}))?;
+        assert_eq!(turns_used(&self.state), before + 1);
+        Ok(())
+    }
+
+    fn task(&mut self, role: &str, task: &str, allowance: u64, steps: Value) -> TestResult {
+        let before = turns_used(&self.state);
+        self.act(
+            "lead",
+            &format!("assign_{role}_task"),
+            json!({"task_kind":task,"power_allowance":allowance}),
+        )?;
+        self.act("lead", &format!("request_{role}_plan"), json!({}))?;
+        let revision = self.state[role]["task"]["revision"].clone();
+        let opportunity = self.state[role]["planning"]["opportunity_revision"].clone();
+        self.act(
+            role,
+            "submit_companion_plan",
+            json!({"task_revision":revision,"opportunity_revision":opportunity,"steps":steps}),
+        )?;
+        assert_eq!(
+            turns_used(&self.state),
+            before,
+            "an authenticated plan cannot commit a turn"
+        );
+        assert_eq!(self.state[role]["planning"]["status"], "ready");
+        Ok(())
+    }
+
+    fn prepare(&mut self, role: &str) -> TestResult {
+        self.act("lead", &format!("prepare_{role}_contribution"), json!({}))
+    }
+
+    fn extract(&mut self) -> TestResult {
+        self.act("lead", "stage_extract", json!({}))?;
+        self.reject("commit_turn", json!({}), false)?;
+        self.act("lead", "prepare_extraction", json!({}))?;
+        let preview = self.state["extraction"].clone();
+        self.act("lead", "acknowledge_extraction", json!({"preview_revision":preview["revision"],"left_behind_roles":preview["left_behind_roles"]}))?;
+        self.act("lead", "commit_turn", json!({}))
+    }
+}
+
+fn plan_step(kind: &str, destination: &str, source: &str, power: u64) -> Value {
+    json!({"step_type":kind,"destination":destination,"source_id":source,"power_cost":power})
+}
+
+fn specialist_route(live: &mut LiveWitness, roles: &[&str], partial: bool) -> TestResult {
+    let mira = roles.contains(&"mira");
+    let jonah = roles.contains(&"jonah");
+    live.personal("stage_move", json!({"destination":"records"}))?;
+    if mira && jonah {
+        live.act("lead", "set_mira_hold", json!({}))?;
+    } else if !mira {
+        live.personal("stage_use_verifier", json!({}))?;
+    }
+    live.personal("stage_move", json!({"destination":"plant"}))?;
+    let hatch_role = if jonah { "jonah" } else { "mira" };
+    let hatch_cost = if jonah { 1 } else { 2 };
+    if mira && jonah {
+        live.task(
+            "mira",
+            "investigate_records",
+            1,
+            json!([plan_step("use_verifier", "none", "records", 1)]),
+        )?;
+    }
+    live.task(
+        hatch_role,
+        "open_service_hatch",
+        hatch_cost,
+        json!([plan_step("open_service_hatch", "none", "none", hatch_cost)]),
+    )?;
+    live.act("lead", "stage_open_service_hatch", json!({}))?;
+    live.prepare(hatch_role)?;
+    if mira && jonah {
+        live.prepare("mira")?;
+        assert_eq!(live.state["turn_resolution"]["power_reserved"], 4);
+        assert!(
+            live.state["turn_resolution"]["conflicts"]
+                .as_array()
+                .ok_or("conflicts missing")?
+                .iter()
+                .any(|conflict| conflict["code"] == "shared_power")
+        );
+    }
+    assert!(
+        live.state["turn_resolution"]["conflicts"]
+            .as_array()
+            .ok_or("conflicts missing")?
+            .iter()
+            .any(|conflict| conflict["code"] == "service_hatch")
+    );
+    live.reject("commit_turn", json!({}), false)?;
+    if mira && jonah {
+        live.act("lead", "defer_mira_contribution", json!({}))?;
+    }
+    live.act("lead", "stage_wait", json!({}))?;
+    let before_power = live.state["power"].as_u64().ok_or("power missing")?;
+    // A prepared opening cannot make a beginning-of-turn closed edge legal.
+    live.reject("stage_move", json!({"destination":"vault"}), false)?;
+    live.act("lead", "commit_turn", json!({}))?;
+    assert_eq!(live.state["gates"]["service_hatch"], "open");
+    assert_eq!(
+        live.state["power"].as_u64(),
+        Some(before_power - hatch_cost)
+    );
+    assert_eq!(live.state[hatch_role]["planning"]["steps_completed"], 1);
+    if mira {
+        if jonah {
+            assert_eq!(
+                live.state["verifier_result"],
+                Value::Null,
+                "deferred verifier must not claim work"
+            );
+        }
+        live.act("lead", "set_mira_follow", json!({}))?;
+    }
+    live.personal("stage_move", json!({"destination":"vault"}))?;
+    if mira && jonah {
+        live.personal("stage_wait", json!({}))?;
+    }
+    if mira {
+        assert_eq!(live.state["mira"]["location"], "vault");
+        live.task(
+            "mira",
+            "field_assay",
+            0,
+            json!([
+                plan_step("collect_assay_sample", "none", "none", 0),
+                plan_step("complete_field_assay", "none", "none", 0)
+            ]),
+        )?;
+        let assay_power = live.state["power"].clone();
+        for complete in [false, true] {
+            live.act("lead", "stage_wait", json!({}))?;
+            live.prepare("mira")?;
+            live.act("lead", "commit_turn", json!({}))?;
+            assert_eq!(live.state["power"], assay_power);
+            assert_eq!(
+                live.state["mira"]["field_assay"]["steps_completed"],
+                if complete { 2 } else { 1 }
+            );
+            if complete {
+                assert_eq!(
+                    live.state["mira"]["field_assay"]["result"],
+                    json!({"candidate_id":"ledger-violet","confidence":"verified"})
+                );
+            } else {
+                assert_eq!(live.state["mira"]["field_assay"]["result"], Value::Null);
+                assert!(
+                    live.state["candidates"]
+                        .as_array()
+                        .ok_or("candidate board missing")?
+                        .iter()
+                        .all(|candidate| candidate["observed_evidence"]
+                            .as_array()
+                            .is_some_and(Vec::is_empty))
+                );
+            }
+        }
+    }
+    if jonah {
+        live.act("lead", "set_jonah_regroup", json!({}))?;
+    }
+    live.personal(
+        "stage_recover_candidate",
+        json!({"candidate_id":"ledger-violet"}),
+    )?;
+    for destination in ["plant", "records", "atrium"] {
+        live.personal("stage_move", json!({"destination":destination}))?;
+    }
+    if mira {
+        live.act("lead", "stage_extract", json!({}))?;
+        live.act("lead", "prepare_extraction", json!({}))?;
+        assert_eq!(
+            live.state["extraction"]["left_behind_roles"],
+            json!(["mira"])
+        );
+        let preview = live.state["extraction"]["revision"].clone();
+        live.reject(
+            "acknowledge_extraction",
+            json!({"preview_revision":preview,"left_behind_roles":[]}),
+            false,
+        )?;
+        if !partial {
+            live.act("lead", "set_mira_regroup", json!({}))?;
+            assert_eq!(live.state["extraction"]["status"], "none");
+            // Two completed return steps leave Mira in Records. The third is
+            // included in the extraction preview and resolves with extraction.
+            for _ in 0..2 {
+                live.personal("stage_wait", json!({}))?;
+            }
+            assert_eq!(live.state["mira"]["location"], "records");
+        }
+    }
+    live.extract()?;
+    let expected_outcome = if partial {
+        "partial_extraction"
+    } else {
+        "success"
+    };
+    assert_eq!(live.state["outcome"]["kind"], expected_outcome);
+    let mut expected_crew = vec!["lead"];
+    expected_crew.extend_from_slice(roles);
+    assert_eq!(
+        live.state["crew_debrief"]["starting_roles"],
+        json!(expected_crew)
+    );
+    assert_eq!(
+        live.state["crew_debrief"]["left_behind_roles"],
+        if partial { json!(["mira"]) } else { json!([]) }
+    );
+    if !partial {
+        assert_eq!(
+            live.state["crew_debrief"]["extracted_roles"],
+            json!(expected_crew)
+        );
+    }
+    let work = live.state["crew_debrief"]["completed_work"]
+        .as_array()
+        .ok_or("completed work missing")?;
+    assert_eq!(
+        work.iter()
+            .filter(|entry| entry["kind"] == "open_service_hatch")
+            .count(),
+        1
+    );
+    assert!(
+        work.iter()
+            .any(|entry| entry["role"] == hatch_role && entry["kind"] == "open_service_hatch")
+    );
+    if mira {
+        assert_eq!(
+            work.iter()
+                .filter(|entry| entry["role"] == "mira" && entry["kind"] == "complete_field_assay")
+                .count(),
+            1
+        );
+        assert!(
+            !work
+                .iter()
+                .any(|entry| entry["role"] == "mira" && entry["kind"] == "use_verifier")
+        );
+    }
+    assert!(turns_used(&live.state) <= 16);
+    Ok(())
+}
+
+async fn run_archive_witness(roles: &[&str], partial: bool) -> TestResult {
     let (client_release_digest, client_surface_id) = client_binding_identity()?;
-    let current_path = current_bundle_path();
-    let current_bytes = fs::read(&current_path)?;
-    let verified = PackBundleVerifierV1.inspect(Arc::<[u8]>::from(current_bytes))?;
-    let current_inspection = verified.inspection();
-    assert_eq!(current_inspection.pack_id, PACK_ID);
-    assert_eq!(current_inspection.explanatory_version, PACK_VERSION);
-    assert_eq!(
-        current_inspection.bundle_digest.to_string(),
-        CURRENT_BUNDLE_DIGEST,
-        "current release path must contain the exact proof-bound Bundle bytes"
-    );
-    assert_eq!(
-        current_inspection.revision_digest.to_string(),
-        CURRENT_REVISION_DIGEST,
-        "current Bundle must inspect as the exact agreement-route revision"
-    );
+    let verified =
+        PackBundleVerifierV1.inspect(Arc::<[u8]>::from(fs::read(current_bundle_path())?))?;
+    assert_eq!(verified.inspection().pack_id, PACK_ID);
+    assert_eq!(verified.inspection().explanatory_version, PACK_VERSION);
     assert_eq!(verified.bundle_digest().to_string(), CURRENT_BUNDLE_DIGEST);
     assert_eq!(
         verified.revision_digest().to_string(),
         CURRENT_REVISION_DIGEST
     );
-    let current_revision_digest = verified.revision_digest().clone();
-    let digest = current_revision_digest.to_string();
+    assert_eq!(
+        verified.component_digest().to_string(),
+        CURRENT_COMPONENT_DIGEST
+    );
+    let revision = verified.revision_digest().clone();
     let configuration: Value =
         serde_json::from_slice(&verified.golden_corpus().genesis.configuration.to_bytes()?)?;
     let witness = verified.golden_corpus().actions.clone();
-    assert!(
-        !witness.is_empty(),
-        "the Bundle must freeze a non-empty witness"
-    );
     assert_eq!(
-        witness.len() % 2,
-        0,
-        "the Bundle witness must contain complete stage/commit turns"
+        witness
+            .iter()
+            .filter(|action| action.action_type == "commit_turn")
+            .count(),
+        15
     );
-    assert!(witness.chunks_exact(2).all(|turn| {
-        turn[0].action_type.starts_with("stage_") && turn[1].action_type == "commit_turn"
-    }));
-    let registry = if with_mira {
-        let admission = ComponentPackHostV1::new()?.admit(
-            verified,
-            PackRegistryStatusV1 {
-                selectable_for_new_rooms: true,
-                runnable_for_retained_rooms: true,
-                approved_for_activity_start: true,
-            },
-        )?;
-        builtin_counter_registry()?.admit_portable([admission])?
-    } else {
-        let evidence_path = release_bundle_path(RETAINED_EVIDENCE_BUNDLE_DIGEST);
-        let evidence_bytes = fs::read(&evidence_path)?;
-        let evidence_verified = PackBundleVerifierV1.inspect(Arc::<[u8]>::from(evidence_bytes))?;
-        let evidence_inspection = evidence_verified.inspection();
-        assert_eq!(evidence_inspection.pack_id, PACK_ID);
-        assert_eq!(evidence_inspection.explanatory_version, PACK_VERSION);
-        assert_eq!(
-            evidence_inspection.bundle_digest.to_string(),
-            RETAINED_EVIDENCE_BUNDLE_DIGEST,
-            "retained release path must contain the exact IMO-200 Bundle bytes"
-        );
-        assert_eq!(
-            evidence_inspection.revision_digest.to_string(),
-            RETAINED_EVIDENCE_REVISION_DIGEST,
-            "retained Bundle must inspect as the exact IMO-200 revision"
-        );
-        let evidence_revision_digest = evidence_verified.revision_digest().clone();
-        let agreement_path = release_bundle_path(RETAINED_AGREEMENT_BUNDLE_DIGEST);
-        let agreement_bytes = fs::read(&agreement_path)?;
-        let agreement_verified =
-            PackBundleVerifierV1.inspect(Arc::<[u8]>::from(agreement_bytes))?;
-        let agreement_inspection = agreement_verified.inspection();
-        assert_eq!(agreement_inspection.pack_id, PACK_ID);
-        assert_eq!(agreement_inspection.explanatory_version, PACK_VERSION);
-        assert_eq!(
-            agreement_inspection.bundle_digest.to_string(),
-            RETAINED_AGREEMENT_BUNDLE_DIGEST,
-            "retained release path must contain the exact IMO-201 Bundle bytes"
-        );
-        assert_eq!(
-            agreement_inspection.revision_digest.to_string(),
-            RETAINED_AGREEMENT_REVISION_DIGEST,
-            "retained Bundle must inspect as the exact IMO-201 revision"
-        );
-        let agreement_revision_digest = agreement_verified.revision_digest().clone();
-        let first_playable_path = release_bundle_path(RETAINED_FIRST_PLAYABLE_BUNDLE_DIGEST);
-        let first_playable_bytes = fs::read(&first_playable_path)?;
-        let first_playable_verified =
-            PackBundleVerifierV1.inspect(Arc::<[u8]>::from(first_playable_bytes))?;
-        let first_playable_inspection = first_playable_verified.inspection();
-        assert_eq!(first_playable_inspection.pack_id, PACK_ID);
-        assert_eq!(first_playable_inspection.explanatory_version, PACK_VERSION);
-        assert_eq!(
-            first_playable_inspection.bundle_digest.to_string(),
-            RETAINED_FIRST_PLAYABLE_BUNDLE_DIGEST,
-            "retained release path must contain the exact IMO-199 Bundle bytes"
-        );
-        assert_eq!(
-            first_playable_inspection.revision_digest.to_string(),
-            RETAINED_FIRST_PLAYABLE_REVISION_DIGEST,
-            "retained Bundle must inspect as the exact IMO-199 revision"
-        );
-        let first_playable_revision_digest = first_playable_verified.revision_digest().clone();
-
-        let component_host = ComponentPackHostV1::new()?;
-        let first_playable_admission = component_host.admit(
-            first_playable_verified,
-            PackRegistryStatusV1 {
-                selectable_for_new_rooms: false,
-                runnable_for_retained_rooms: true,
-                approved_for_activity_start: true,
-            },
-        )?;
-        let evidence_admission = component_host.admit(
-            evidence_verified,
-            PackRegistryStatusV1 {
-                selectable_for_new_rooms: false,
-                runnable_for_retained_rooms: true,
-                approved_for_activity_start: true,
-            },
-        )?;
-        let agreement_admission = component_host.admit(
-            agreement_verified,
-            PackRegistryStatusV1 {
-                selectable_for_new_rooms: false,
-                runnable_for_retained_rooms: true,
-                approved_for_activity_start: true,
-            },
-        )?;
-        let current_admission = component_host.admit(
-            verified,
-            PackRegistryStatusV1 {
-                selectable_for_new_rooms: true,
-                runnable_for_retained_rooms: true,
-                approved_for_activity_start: true,
-            },
-        )?;
-        // Registry construction executes and verifies both immutable golden corpora.
-        let registry = builtin_counter_registry()?.admit_portable([
-            first_playable_admission,
-            evidence_admission,
-            agreement_admission,
-            current_admission,
-        ])?;
-        registry.load_retained(&first_playable_revision_digest)?;
-        registry.load_retained(&evidence_revision_digest)?;
-        registry.load_retained(&agreement_revision_digest)?;
-        registry.load_retained(&current_revision_digest)?;
-        for retained_revision in [
-            &first_playable_revision_digest,
-            &evidence_revision_digest,
-            &agreement_revision_digest,
+    assert_eq!(witness.len(), 32);
+    assert_eq!(witness[witness.len() - 3].action_type, "prepare_extraction");
+    assert_eq!(
+        witness[witness.len() - 2].action_type,
+        "acknowledge_extraction"
+    );
+    assert_eq!(witness[witness.len() - 1].action_type, "commit_turn");
+    let host = ComponentPackHostV1::new()?;
+    let mut admissions = Vec::new();
+    let mut retained_revisions = Vec::new();
+    if roles.is_empty() {
+        for (bundle, expected_revision) in [
+            (
+                RETAINED_FIRST_PLAYABLE_BUNDLE_DIGEST,
+                RETAINED_FIRST_PLAYABLE_REVISION_DIGEST,
+            ),
+            (
+                RETAINED_EVIDENCE_BUNDLE_DIGEST,
+                RETAINED_EVIDENCE_REVISION_DIGEST,
+            ),
+            (
+                RETAINED_AGREEMENT_BUNDLE_DIGEST,
+                RETAINED_AGREEMENT_REVISION_DIGEST,
+            ),
+            (RETAINED_MIRA_BUNDLE_DIGEST, RETAINED_MIRA_REVISION_DIGEST),
+            (
+                RETAINED_SPECIALIST_BUNDLE_DIGEST,
+                RETAINED_SPECIALIST_REVISION_DIGEST,
+            ),
         ] {
-            let retained_catalog = registry.catalog_revision(retained_revision)?;
-            assert!(!retained_catalog.selectable_for_new_rooms);
-            assert!(retained_catalog.runnable_for_retained_rooms);
-            assert!(retained_catalog.approved_for_activity_start);
+            let old = PackBundleVerifierV1
+                .inspect(Arc::<[u8]>::from(fs::read(release_bundle_path(bundle))?))?;
+            assert_eq!(old.bundle_digest().to_string(), bundle);
+            assert_eq!(old.revision_digest().to_string(), expected_revision);
+            assert_eq!(old.inspection().pack_id, PACK_ID);
+            retained_revisions.push(old.revision_digest().clone());
+            admissions.push(host.admit(
+                old,
+                PackRegistryStatusV1 {
+                    selectable_for_new_rooms: false,
+                    runnable_for_retained_rooms: true,
+                    approved_for_activity_start: true,
+                },
+            )?);
         }
-        let current_catalog = registry.catalog_revision(&current_revision_digest)?;
-        assert!(current_catalog.selectable_for_new_rooms);
-        assert!(current_catalog.runnable_for_retained_rooms);
-        assert!(current_catalog.approved_for_activity_start);
-
-        registry
-    };
-    let descriptor_action_order = registry
-        .load_retained(&current_revision_digest)?
+    }
+    admissions.push(host.admit(
+        verified,
+        PackRegistryStatusV1 {
+            selectable_for_new_rooms: true,
+            runnable_for_retained_rooms: true,
+            approved_for_activity_start: true,
+        },
+    )?);
+    // Admission verifies the actual retained golden corpora under their original executors.
+    let registry = builtin_counter_registry()?.admit_portable(admissions)?;
+    for retained in retained_revisions {
+        registry.load_retained(&retained)?;
+        let status = registry.catalog_revision(&retained)?;
+        assert!(!status.selectable_for_new_rooms);
+        assert!(status.runnable_for_retained_rooms && status.approved_for_activity_start);
+    }
+    let status = registry.catalog_revision(&revision)?;
+    assert!(
+        status.selectable_for_new_rooms
+            && status.runnable_for_retained_rooms
+            && status.approved_for_activity_start
+    );
+    let descriptor_actions = registry
+        .load_retained(&revision)?
         .descriptor()
         .actions
         .iter()
         .map(|action| action.action_type.clone())
-        .collect::<Vec<_>>();
-
+        .collect();
     let directory = tempfile::tempdir()?;
-    let file = tempfile::NamedTempFile::new_in(directory.path())?;
-    let store = SqliteRoomStore::open(file.path())?;
+    let store = SqliteRoomStore::open(directory.path().join("archive.sqlite"))?;
     let host_bearer = CapabilityBearerV1::from_bytes([0xc1; 32]);
     AuthorityV1::new(Arc::new(store.clone())).bootstrap(
         AuthorityBootstrapV1::new(
@@ -418,69 +737,68 @@ async fn run_archive_witness(with_mira: bool) -> TestResult {
     let routes =
         operator_router(OperatorState::new(EffectiveConfig::default())?.with_backend(backend));
     let host_header = format!("Bearer {}", BearerWireV1::from_bytes([0xc1; 32]).to_wire());
-    let mut members = vec![json!({
-        "principal_id":"01ARZ3NDEKTSV4RRFFQ69G5G14", "principal_kind":"human",
-        "role":"lead", "access_mode":"participant"
-    })];
-    if with_mira {
-        members.push(json!({
-            "principal_id":"01ARZ3NDEKTSV4RRFFQ69G5G16", "principal_kind":"agent",
-            "role":"mira", "access_mode":"participant"
-        }));
+    let roster = std::iter::once("lead")
+        .chain(roles.iter().copied())
+        .collect::<Vec<_>>();
+    let principals = roster
+        .iter()
+        .enumerate()
+        .map(|(index, _)| format!("{:026X}", index + 200))
+        .collect::<Vec<_>>();
+    let members = roster.iter().zip(&principals).map(|(role, principal)| json!({"principal_id":principal,
+        "principal_kind":if *role == "lead" { "human" } else { "agent" },"role":role,"access_mode":"participant"})).collect::<Vec<_>>();
+    let created: CreateRoomResponse = serde_json::from_value(post(&routes, &host_header, "/v1/rooms", json!({
+        "pack":{"id":PACK_ID,"version":PACK_VERSION,"digest":CURRENT_REVISION_DIGEST},"configuration":configuration,
+        "members":members,"idempotency_key":"midnight-archive-live-witness"
+    })).await?)?;
+    assert_eq!(created.member_ids.len(), roster.len());
+    assert_eq!(
+        created
+            .member_ids
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        roster.len()
+    );
+    let mut capabilities = BTreeMap::new();
+    for (index, role) in roster.iter().enumerate() {
+        let issued: MemberCapabilityIssueResponse = serde_json::from_value(post(&routes, &host_header,
+            "/v1/operator/member-capabilities", json!({"room_id":created.room_id,"member_id":created.member_ids[index],
+            "principal_id":principals[index],"scopes":["room:attach","room:observe_member","room:act","room:replay"],
+            "idempotency_key":format!("{:026X}",index+300),"expires_at":null})).await?)?;
+        capabilities.insert(
+            (*role).to_owned(),
+            (created.member_ids[index].clone(), issued.bearer),
+        );
     }
-    let created: CreateRoomResponse = serde_json::from_value(
-        post(
-            &routes,
-            &host_header,
-            "/v1/rooms",
-            json!({
-                "pack":{"id":PACK_ID,"version":PACK_VERSION,"digest":digest},
-                "configuration":configuration,
-                "members":members,
-                "idempotency_key":"midnight-archive-live-witness"
-            }),
-        )
-        .await?,
-    )?;
-    assert_eq!(created.member_ids.len(), if with_mira { 2 } else { 1 });
-    if with_mira {
-        assert_ne!(created.member_ids[0], created.member_ids[1]);
-    }
-    let member = created
-        .member_ids
-        .first()
-        .ok_or("lead Membership missing")?
+    let (lead_member, lead_bearer) = capabilities
+        .get("lead")
+        .ok_or("lead authority missing")?
         .clone();
-    let issued: MemberCapabilityIssueResponse = serde_json::from_value(post(
-        &routes,
-        &host_header,
-        "/v1/operator/member-capabilities",
-        json!({"room_id":created.room_id,"member_id":member,"principal_id":"01ARZ3NDEKTSV4RRFFQ69G5G14","scopes":["room:attach","room:observe_member","room:act","room:replay"],"idempotency_key":"01ARZ3NDEKTSV4RRFFQ69G5G15","expires_at":null}),
-    ).await?)?;
-
-    let ticket = post(
-        &routes,
-        &format!("Bearer {}", issued.bearer),
-        "/v1/hosted/browser-stream-ticket",
-        json!({"version":"hosted_browser_ws_ticket.v1","room_id":created.room_id,"member_id":member,"mode":"participant","after_frame_seq":null,"browser_session_digest":"blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","client_release_digest":client_release_digest,"client_surface_id":client_surface_id}),
-    ).await?;
+    let ticket = post(&routes, &format!("Bearer {lead_bearer}"), "/v1/hosted/browser-stream-ticket", json!({
+        "version":"hosted_browser_ws_ticket.v1","room_id":created.room_id,"member_id":lead_member,"mode":"participant",
+        "after_frame_seq":null,"browser_session_digest":"blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "client_release_digest":client_release_digest,"client_surface_id":client_surface_id
+    })).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
-    let routes_for_server = routes.clone();
+    let server_routes = routes.clone();
     let server = tokio::spawn(async move {
         axum::serve(
             listener,
-            routes_for_server.into_make_service_with_connect_info::<SocketAddr>(),
+            server_routes.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
     });
-    let route_clone = routes.clone();
-    let host_header_clone = host_header.clone();
-    let digest_clone = digest.clone();
-    let room_clone = created.room_id.clone();
+    let blocking_routes = routes.clone();
+    let room = created.room_id.clone();
+    let owned_roles = roles
+        .iter()
+        .map(|role| (*role).to_owned())
+        .collect::<Vec<_>>();
     let result = tokio::task::spawn_blocking(move || -> TestResult<(u64, Value)> {
         let stream = TcpStream::connect(address)?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_read_timeout(Some(Duration::from_secs(15)))?;
         let mut request = format!("ws://{address}/v1/hosted/browser-stream").into_client_request()?;
         request.headers_mut().insert("origin", "https://arena.example".parse()?);
         request.headers_mut().insert("sec-websocket-protocol", worldstream_protocol::WEBSOCKET_SUBPROTOCOL.parse()?);
@@ -491,159 +809,94 @@ async fn run_archive_witness(with_mira: bool) -> TestResult {
         let reset = receive(&mut socket, "projection.reset")?;
         assert_eq!(projection(&reset)["phase"], "briefing");
         assert!(action_offers(&reset).is_none_or(Vec::is_empty));
-        send(&mut socket, "room.sync_ack", &json!({"through_frame_head":attached["frame_head"],"sync_token":attached["sync_token"]}), "01ARZ3NDEKTSV4RRFFQ69G5G17")?;
+        send(&mut socket, "room.sync_ack", &json!({"through_frame_head":attached["frame_head"],"sync_token":attached["sync_token"]}), "00000000000000000000000400")?;
         receive(&mut socket, "room.sync_acked")?;
-        let launch = tokio::runtime::Handle::current().block_on(post(
-            &route_clone,
-            &host_header_clone,
-            &format!("/v1/operator/rooms/{room_clone}/lobby/launch"),
-            json!({"input_id":"01ARZ3NDEKSTV4RRFFQ69G5G20","based_on_room_seq":0,"pack_digest":digest_clone}),
-        ))?;
+        let launch = tokio::runtime::Handle::current().block_on(post(&blocking_routes, &host_header,
+            &format!("/v1/operator/rooms/{room}/lobby/launch"), json!({"input_id":"00000000000000000000000401","based_on_room_seq":0,"pack_digest":CURRENT_REVISION_DIGEST})))?;
         assert_eq!(launch["room_head"]["room_seq"], 1);
         let active = receive(&mut socket, "observation.deliver")?;
-        let mut state = projection(&active);
+        let state = projection(&active);
         assert_eq!(state["phase"], "active");
-        assert_eq!(turns_used(&state), 0);
-        let initial_turns_remaining = state["turns_remaining"]
-            .as_u64()
-            .ok_or("initial turns_remaining missing")?;
-        let mut last_seq = room_seq(&active);
-        let mut offers = action_offers(&active)
-            .cloned()
-            .ok_or("active action offers missing")?;
-        if with_mira {
-            assert_eq!(state["mira"]["presence"], "active");
-            assert_eq!(state["mira"]["task"]["status"], "none");
-            assert!(offers.iter().any(|offer| offer["action_type"] == "assign_mira_task"));
-            send(&mut socket, "action.submit", &json!({
-                "action_id":"01ARZ3NDEKSTV4RRFFQ69G5G23",
-                "based_on_room_seq":last_seq,
-                "action_type":"assign_mira_task",
-                "payload":{"task_kind":"investigate_records","power_allowance":0}
-            }), "01ARZ3NDEKSTV4RRFFQ69G5G24")?;
-            // Acceptance must include preparation and durable commitment of
-            // every Membership's resulting view, not only Pack reduction.
-            let receipt = receive(&mut socket, "action.accepted")?;
-            let observation = receive(&mut socket, "observation.deliver")?;
-            state = projection(&observation);
-            offers = action_offers(&observation)
-                .cloned()
-                .ok_or("task assignment action offers missing")?;
-            let next_seq = room_seq(&observation);
-            assert_eq!(next_seq, last_seq + 1);
-            assert_eq!(receipt["room_head"]["room_seq"], next_seq);
-            assert_eq!(turns_used(&state), 0, "assignment must not commit an Activity Turn");
-            assert_eq!(state["mira"]["task"]["status"], "assigned");
-            assert_eq!(state["mira"]["task"]["kind"], "investigate_records");
-            assert_eq!(state["mira"]["task"]["power_allowance"], 0);
-            let indices = offers.iter().map(|offer| {
-                descriptor_action_order.iter()
-                    .position(|action| offer["action_type"] == action.as_str())
-                    .ok_or("offered Action is absent from the admitted descriptor")
-            }).collect::<Result<Vec<_>, _>>()?;
-            assert!(indices.windows(2).all(|pair| pair[0] < pair[1]),
-                "assignment offers must follow the exact descriptor order without duplicates");
-            for action in ["cancel_mira_task", "request_mira_plan", "defer_mira_contribution"] {
-                assert!(offers.iter().any(|offer| offer["action_type"] == action),
-                    "task assignment did not offer {action}");
-            }
-            return Ok((next_seq, state));
+        assert_eq!(state["turns_used"], 0);
+        assert_eq!(state["turns_remaining"], 16);
+        assert_eq!(state["power"], 3);
+        assert_eq!(state["location"], "atrium");
+        let mut agents = BTreeMap::new();
+        for role in &owned_roles {
+            assert_eq!(state[role]["presence"], "active");
+            assert_eq!(state[role]["location"], "atrium");
+            let (member, bearer) = capabilities.get(role).ok_or("companion authority missing")?;
+            let stream = TcpStream::connect(address)?;
+            stream.set_read_timeout(Some(Duration::from_secs(15)))?;
+            let mut request = format!("ws://{address}/v1/stream").into_client_request()?;
+            request.headers_mut().insert("authorization", format!("Bearer {bearer}").parse()?);
+            request.headers_mut().insert("sec-websocket-protocol", worldstream_protocol::WEBSOCKET_SUBPROTOCOL.parse()?);
+            let (mut agent, _) = tungstenite::client(request, stream)?;
+            send(&mut agent, "client.hello", &json!({"client_name":"archive-specialist-proof","client_version":"1","mode":"participant",
+                "supported_protocols":[worldstream_protocol::PROTOCOL_VERSION],"capabilities":["cursor_ack","projection_reset"]}), "00000000000000000000000402")?;
+            let welcome = receive(&mut agent, "server.welcome")?;
+            assert_eq!(welcome["authenticated_principal"]["kind"], "agent");
+            send(&mut agent, "room.attach", &json!({"room_id":room,"member_id":member,"after_frame_seq":null}), "00000000000000000000000403")?;
+            let attached = receive(&mut agent, "room.attached")?;
+            receive(&mut agent, "projection.reset")?;
+            send(&mut agent, "room.sync_ack", &json!({"room_id":room,"member_id":member,"through_frame_head":attached["frame_head"],"sync_token":attached["sync_token"]}), "00000000000000000000000404")?;
+            receive(&mut agent, "room.sync_acked")?;
+            agents.insert(role.clone(), agent);
         }
-        send(&mut socket, "action.submit", &json!({
-            "action_id":"01ARZ3NDEKSTV4RRFFQ69G5G23",
-            "based_on_room_seq":last_seq,
-            "action_type":"stage_move",
-            "payload":{"destination":"vault"}
-        }), "01ARZ3NDEKSTV4RRFFQ69G5G24")?;
-        let illegal = receive_envelope(&mut socket)?;
-        assert_eq!(illegal["type"], "action.rejected", "illegal move must be rejected");
-        assert_eq!(illegal["body"]["current_room_seq"], last_seq, "illegal Action changed the Room head");
-        send(&mut socket, "action.submit", &json!({
-            "action_id":"01ARZ3NDEKSTV4RRFFQ69G5G25",
-            "based_on_room_seq":last_seq.saturating_sub(1),
-            "action_type":"stage_wait",
-            "payload":{}
-        }), "01ARZ3NDEKSTV4RRFFQ69G5G26")?;
-        let rejected = receive_envelope(&mut socket)?;
-        assert_eq!(rejected["type"], "action.rejected", "stale Action must not commit");
-        assert_eq!(rejected["body"]["current_room_seq"], last_seq, "stale Action changed the Room head");
-        let mut committed_turns = 0_u64;
-        for (index, expected) in witness.iter().enumerate() {
-            let action_type = expected.action_type.as_str();
-            assert!(
-                offers.iter().any(|offer| offer["action_type"] == action_type),
-                "expected witness Action {action_type} is absent at step {index}"
-            );
-            let payload: Value = serde_json::from_slice(&expected.canonical_payload.to_bytes()?)?;
-            let before_turns = turns_used(&state);
-            let before_remaining = state["turns_remaining"]
-                .as_u64()
-                .ok_or("turns_remaining missing before witness action")?;
-            let before_power = state["power"]
-                .as_u64()
-                .ok_or("power missing before witness action")?;
-            let before_gates = state["gates"].clone();
-            send(&mut socket, "action.submit", &json!({"action_id":format!("01ARZ3NDEKTSV4RRFFQ69G5H{:02X}", index + 18),"based_on_room_seq":last_seq,"action_type":action_type,"payload":payload}), &format!("01ARZ3NDEKTSV4RRFFQ69G5J{:02X}", index + 40))?;
-            let receipt = receive(&mut socket, "action.accepted")?;
-            let observation = receive(&mut socket, "observation.deliver")?;
-            state = projection(&observation);
-            offers = action_offers(&observation)
-                .cloned()
-                .ok_or("next action offers missing")?;
-            let next_seq = room_seq(&observation);
-            assert_eq!(next_seq, last_seq + 1);
-            if action_type.starts_with("stage_") {
-                assert_eq!(turns_used(&state), before_turns);
-                assert_eq!(state["turns_remaining"].as_u64(), Some(before_remaining));
-                assert_eq!(state["power"].as_u64(), Some(before_power));
-                assert_eq!(state["gates"], before_gates, "staging cannot change a gate before turn commit");
+        let agent_members = capabilities.iter().filter(|(role, _)| role.as_str() != "lead")
+            .map(|(role, (member, _))| (role.clone(), member.to_string())).collect();
+        let mut live = LiveWitness { lead: socket, agents, room: room.to_string(), agent_members, state,
+            offers: action_offers(&active).cloned().ok_or("initial offers missing")?, sequence: room_seq(&active), next_id: 1000, descriptor_actions };
+        live.reject("stage_move", json!({"destination":"vault"}), false)?;
+        live.reject("stage_wait", json!({}), true)?;
+        if owned_roles.is_empty() {
+            for expected in witness {
+                let before_turns = turns_used(&live.state);
+                let before_power = live.state["power"].clone();
+                let before_gates = live.state["gates"].clone();
+                let payload = serde_json::from_slice(&expected.canonical_payload.to_bytes()?)?;
+                live.act("lead", &expected.action_type, payload)?;
+                if expected.action_type == "commit_turn" { assert_eq!(turns_used(&live.state), before_turns + 1); }
+                else {
+                    assert_eq!(turns_used(&live.state), before_turns);
+                    assert_eq!(live.state["power"], before_power);
+                    assert_eq!(live.state["gates"], before_gates);
+                }
             }
-            if action_type == "commit_turn" {
-                committed_turns += 1;
-                assert_eq!(turns_used(&state), before_turns + 1);
-                assert_eq!(state["turns_remaining"].as_u64(), Some(before_remaining - 1));
-                let after_power = state["power"].as_u64().ok_or("power missing after commit")?;
-                assert!(
-                    after_power <= before_power,
-                    "a committed turn cannot create power ({before_power} -> {after_power})"
-                );
-            }
-            assert_eq!(receipt["room_head"]["room_seq"], next_seq);
-            last_seq = next_seq;
-            let frame = observation["frame_seq"].as_u64().ok_or("observation frame missing")?;
-            send(&mut socket, "observation.ack", &json!({"through_frame_seq":frame}), &format!("01ARZ3NDEKTSV4RRFFQ69G5K{:02X}", index + 70))?;
-            receive(&mut socket, "observation.acked")?;
+            assert_eq!(live.state["outcome"]["kind"], "success");
+            assert_eq!(live.state["turns_used"], 15);
+            assert_eq!(live.state["power"], 0);
+            assert_eq!(live.state["crew_debrief"]["extracted_roles"], json!(["lead"]));
+        } else {
+            specialist_route(&mut live, &owned_roles.iter().map(String::as_str).collect::<Vec<_>>(), partial)?;
         }
-        assert_eq!(committed_turns, witness.len() as u64 / 2);
-        assert_eq!(turns_used(&state), committed_turns);
-        assert_eq!(
-            state["turns_remaining"].as_u64(),
-            Some(initial_turns_remaining - committed_turns)
-        );
-        assert_eq!(state["outcome"]["kind"], "success");
-        Ok((last_seq, state))
+        Ok((live.sequence, live.state))
     }).await?;
     server.abort();
     let _ = server.await;
-    let (last_seq, final_state) = result?;
+    let (last_sequence, mut final_state) = result?;
     let replay = get(
         &routes,
-        &format!("Bearer {}", issued.bearer),
+        &format!("Bearer {lead_bearer}"),
         &format!(
-            "/v1/rooms/{}/replay?at_room_seq={last_seq}",
+            "/v1/rooms/{}/replay?at_room_seq={last_sequence}",
             created.room_id
         ),
     )
     .await?;
-    assert_eq!(replay["requested_room_seq"], last_seq);
-    assert_eq!(projection(&replay)["phase"], final_state["phase"]);
-    assert_eq!(projection(&replay)["outcome"], final_state["outcome"]);
-    if with_mira {
-        assert_eq!(
-            projection(&replay)["mira"]["task"],
-            final_state["mira"]["task"]
-        );
-    }
+    assert_eq!(replay["requested_room_seq"], last_sequence);
+    // Hosted live delivery adds transport Action Offers to the Pack projection;
+    // the historical replay endpoint returns the Pack-authored facts alone.
+    assert_eq!(final_state["action_offers"], json!([]));
+    final_state
+        .as_object_mut()
+        .ok_or("terminal projection missing")?
+        .remove("action_offers");
+    assert_eq!(
+        projection(&replay),
+        final_state,
+        "Replay must reconstruct all authorized terminal facts and actual companion work"
+    );
     reject_private(&replay);
     Ok(())
 }
