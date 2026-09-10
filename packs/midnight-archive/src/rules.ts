@@ -16,6 +16,14 @@ import {
   reject,
   stringValue,
 } from "./model.js";
+import {
+  applyMiraResolution,
+  cancelMiraPlanningTimer,
+  closeMiraAtTerminal,
+  initialMiraState,
+  prepareMiraResolution,
+} from "./companions.js";
+import { legalDestinationsFrom } from "./world.js";
 
 export const OBJECTIVE =
   "Recover the authentic ledger, return to the Atrium, and extract before turn 16 ends.";
@@ -134,6 +142,7 @@ export function initializeArchiveState(configuration: CanonicalObject): ArchiveS
     preservation_agreement: "offered",
     collection_preservation: "unprepared",
     source_record_protected: false,
+    mira: initialMiraState(null),
     truth_marker: scenario.authentic_candidate_id,
     verifier_result: "none",
     carried_candidate_id: "none",
@@ -156,15 +165,18 @@ export function startArchive(state: ArchiveState): ArchiveState {
 export interface AppliedLeadAction {
   readonly state: ArchiveState;
   readonly event: CanonicalObject;
+  readonly timerRequests: readonly CanonicalJson[];
 }
 
 export function applyLeadAction(
   current: ArchiveState,
   actionType: string,
   payload: CanonicalObject,
+  core?: CanonicalObject,
+  scheduled: CanonicalObject = {},
 ): AppliedLeadAction {
   if (current.phase !== "active") reject("inactive", "the expedition is not active");
-  if (actionType === "commit_turn") return commitTurn(current, payload);
+  if (actionType === "commit_turn") return commitTurn(current, payload, core, scheduled);
   const staged = stagedAction(current, actionType, payload);
   const state = { ...cloneState(current), staged_action: staged };
   return {
@@ -175,6 +187,7 @@ export function applyLeadAction(
       turn_cost: staged.turn_cost,
       power_cost: staged.power_cost,
     }),
+    timerRequests: [],
   };
 }
 
@@ -347,14 +360,20 @@ function stagedAction(
   reject("invalid_payload", "Action type is not declared by Midnight Archive");
 }
 
-function commitTurn(current: ArchiveState, payload: CanonicalObject): AppliedLeadAction {
+function commitTurn(
+  current: ArchiveState,
+  payload: CanonicalObject,
+  core?: CanonicalObject,
+  scheduled: CanonicalObject = {},
+): AppliedLeadAction {
   exactKeys(payload, []);
   if (current.staged_action.kind === "none") {
     reject("nothing_staged", "stage one personal action before committing the turn");
   }
   const staged = current.staged_action;
   validateStagedAtTurnStart(current, staged);
-  const next = cloneState(current) as MutableArchiveState;
+  const miraResolution = prepareMiraResolution(current, staged, core);
+  let next = cloneState(current) as MutableArchiveState;
   const kind = staged.kind;
   if (kind === "move") {
     next.location = staged.destination as Location;
@@ -396,6 +415,8 @@ function commitTurn(current: ArchiveState, payload: CanonicalObject): AppliedLea
       next.collection_preservation === "preserved",
   };
 
+  next = applyMiraResolution(current, next, miraResolution) as MutableArchiveState;
+
   next.turns_used += 1;
   next.staged_action = emptyStage();
   if (kind === "extract") {
@@ -409,6 +430,10 @@ function commitTurn(current: ArchiveState, payload: CanonicalObject): AppliedLea
       extracted_candidate_id: "none",
     };
   }
+  const timerRequests = next.phase === "complete"
+    ? cancelMiraPlanningTimer(scheduled)
+    : [];
+  if (next.phase === "complete") next = closeMiraAtTerminal(next) as MutableArchiveState;
   return {
     state: next,
     event: asCanonical({
@@ -418,7 +443,12 @@ function commitTurn(current: ArchiveState, payload: CanonicalObject): AppliedLea
       location: next.location,
       power: next.power_remaining,
       outcome_kind: next.outcome.kind,
+      mira_contribution: next.mira.last_contribution.turn === next.turns_used
+        ? next.mira.last_contribution.kind
+        : "none",
+      mira_plan_revision: next.mira.plan.revision,
     }),
+    timerRequests,
   };
 }
 
@@ -501,19 +531,7 @@ function extractionOutcome(state: ArchiveState): ArchiveOutcome {
 }
 
 export function legalDestinations(state: ArchiveState): Location[] {
-  const destinations: Location[] = [];
-  const add = (left: Location, right: Location, open = true): void => {
-    if (!open) return;
-    if (state.location === left) destinations.push(right);
-    if (state.location === right) destinations.push(left);
-  };
-  add("atrium", "records");
-  add("atrium", "conservation");
-  add("records", "conservation");
-  add("records", "plant");
-  add("conservation", "vault", state.gates.conservation_vault_open);
-  add("plant", "vault", state.gates.plant_vault_open);
-  return destinations.sort();
+  return legalDestinationsFrom(state, state.location);
 }
 
 function isVaultEdge(left: Location, right: Location): boolean {

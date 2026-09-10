@@ -6,6 +6,7 @@ import {
   initializeArchiveState,
   startArchive,
 } from "../src/rules.js";
+import { initialMiraState } from "../src/companions.js";
 
 export const LEAD_MEMBER_ID = "01ARZ3NDEKTSV4RRFFQ69G5FC0";
 export const MIRA_MEMBER_ID = "01ARZ3NDEKTSV4RRFFQ69G5FC1";
@@ -135,12 +136,21 @@ export const goldenFixture = {
 } as const satisfies CanonicalJson;
 
 export function bothObjectivesRouteFinalState(): ArchiveState {
-  let state = startArchive(initializeArchiveState({ scenario_id: "standard-v1" }));
+  let state = startArchive({
+    ...initializeArchiveState({ scenario_id: "standard-v1" }),
+    mira: initialMiraState(MIRA_MEMBER_ID),
+  });
+  const fixtureCore = {
+    memberships: Object.fromEntries(
+      [lead, mira, jonah, spectator, operator].map((membership) => [membership.member_id, membership]),
+    ),
+  } as CanonicalObject;
   for (const action of bothObjectivesRouteActions) {
     state = applyLeadAction(
       state,
       action.action_type,
       action.canonical_payload as CanonicalObject,
+      fixtureCore,
     ).state;
   }
   return state;

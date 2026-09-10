@@ -31,6 +31,16 @@ import {
   stateAsCanonical,
 } from "./rules.js";
 import { authorizedView } from "./view.js";
+import {
+  MIRA_PLAN_ATTENTION_REASON,
+  activeMiraMemberId,
+  applyMiraLeadControl,
+  expireMiraOpportunity,
+  initialMiraState,
+  isMiraLeadControl,
+  reconcileMira,
+  submitMiraPlan,
+} from "./companions.js";
 
 export const ACTIVITY_START_INPUT_TYPE =
   "worldstream.midnight-archive/briefing-opened/v1";
@@ -75,12 +85,35 @@ function turnCommittedSchema(): CanonicalObject {
       outcome_kind: {
         enum: ["pending", "success", "wrong_ledger", "no_ledger", "exhausted_inside"],
       },
+      mira_contribution: {
+        enum: ["none", "move", "inspect_source", "share_source", "use_verifier", "follow_move", "regroup_move"],
+      },
+      mira_plan_revision: { maximum: 65_535, minimum: 0, type: "integer" },
       power: { maximum: 3, minimum: 0, type: "integer" },
       turn: { maximum: 16, minimum: 1, type: "integer" },
     },
     required: [
       "event_type", "committed_action_type", "turn", "location", "power", "outcome_kind",
+      "mira_contribution", "mira_plan_revision",
     ],
+    type: "object",
+  };
+}
+
+function miraStateUpdatedSchema(): CanonicalObject {
+  return {
+    additionalProperties: false,
+    properties: {
+      action_type: { enum: [
+        "assign_mira_task", "cancel_mira_task", "set_mira_follow", "set_mira_hold",
+        "set_mira_regroup", "request_mira_plan", "prepare_mira_contribution",
+        "defer_mira_contribution", "submit_companion_plan", "expire_mira_plan",
+      ] },
+      event_type: { const: "mira_state_updated" },
+      planning_status: { enum: ["not_requested", "waiting", "ready", "expired", "complete"] },
+      task_revision: { maximum: 65_535, minimum: 0, type: "integer" },
+    },
+    required: ["event_type", "action_type", "task_revision", "planning_status"],
     type: "object",
   };
 }
@@ -102,6 +135,9 @@ export function reduceArchive(input: CanonicalObject): PackReduceOutput {
   const coreBefore = record(input.core_before, "core_before");
   const coreAfter = record(input.proposed_core_after, "proposed_core_after");
   const stimulus = record(input.recorded_stimulus, "recorded_stimulus");
+  const scheduled = input.scheduled_timers === undefined
+    ? {}
+    : record(input.scheduled_timers, "scheduled_timers");
   const stimulusType = stringValue(stimulus.stimulus_type, "stimulus_type");
 
   try {
@@ -113,24 +149,45 @@ export function reduceArchive(input: CanonicalObject): PackReduceOutput {
     if (stimulusType === "participant_action") {
       const actionType = stringValue(stimulus.action_type, "action_type");
       const memberId = stringValue(stimulus.member_id, "member_id");
-      if (roleForMember(coreBefore, memberId) !== "lead") {
-        throw new RuleRejection("role_violation", "only the human lead acts in this release");
-      }
-      const applied = applyLeadAction(current, actionType, payload(stimulus.canonical_payload));
+      const role = roleForMember(coreBefore, memberId);
+      const actionPayload = payload(stimulus.canonical_payload);
+      const admittedAt = stringValue(stimulus.admitted_at, "admitted_at");
+      const applied = role === "lead"
+        ? isMiraLeadControl(actionType)
+          ? applyMiraLeadControl(current, actionType, actionPayload, coreBefore, admittedAt, scheduled)
+          : applyLeadAction(current, actionType, actionPayload, coreBefore, scheduled)
+        : role === "mira" && actionType === "submit_companion_plan"
+        ? submitMiraPlan(current, actionPayload, coreBefore, memberId, admittedAt, scheduled)
+        : (() => { throw new RuleRejection("role_violation", "the acting Role cannot perform this Action"); })();
       return {
         activity_disposition_type: "apply",
         next_activity_state: stateAsCanonical(applied.state),
         ordered_domain_events: [applied.event],
-        timer_requests: [],
-        ordered_attention_signals: [],
+        timer_requests: "timerRequests" in applied
+          ? applied.timerRequests as readonly CanonicalJson[]
+          : [],
+        ordered_attention_signals: "attentionSignals" in applied
+          ? applied.attentionSignals as readonly CanonicalJson[]
+          : [],
+      };
+    }
+    if (stimulusType === "timer_fired") {
+      const applied = expireMiraOpportunity(current, stimulus);
+      return {
+        activity_disposition_type: "apply",
+        next_activity_state: stateAsCanonical(applied.state),
+        ordered_domain_events: [applied.event],
+        timer_requests: applied.timerRequests,
+        ordered_attention_signals: applied.attentionSignals,
       };
     }
     if (stimulusType === "core_proposed") {
+      const reconciled = reconcileMira(current, coreAfter, scheduled);
       return {
         activity_disposition_type: "apply",
-        next_activity_state: stateAsCanonical(current),
+        next_activity_state: stateAsCanonical(reconciled.state),
         ordered_domain_events: [],
-        timer_requests: [],
+        timer_requests: reconciled.timerRequests,
         ordered_attention_signals: [],
       };
     }
@@ -196,14 +253,17 @@ export function validateCoreInvariant(core: CanonicalObject): void {
     const role = membership.role;
     counts[role] += 1;
     const expectedKind = role === "lead" ? "human" : "agent";
+    const standingIsValid = role === "lead"
+      ? membership.standing === "enabled"
+      : membership.standing === "enabled" || membership.standing === "suspended";
     if (
       membership.access_mode !== "participant" ||
       membership.principal_kind !== expectedKind ||
-      membership.standing !== "enabled"
+      !standingIsValid
     ) {
       throw new RuleRejection(
         "core_role_invariant",
-        `${role} must remain an enabled ${expectedKind} Participant`,
+        `${role} must retain participant access and its ${expectedKind} principal kind`,
       );
     }
   }
@@ -219,6 +279,9 @@ function roleForMember(core: CanonicalObject, memberId: string): Role {
   const memberships = record(core.memberships, "Core memberships");
   const membership = record(memberships[memberId], "acting Membership");
   const role = membership.role;
+  if (membership.access_mode !== "participant" || membership.standing !== "enabled") {
+    throw new RuleRejection("role_violation", "acting Membership is not an enabled Participant");
+  }
   if (role === "lead" || role === "mira" || role === "jonah") return role;
   throw new RuleRejection("role_violation", "acting Membership has no participant Role");
 }
@@ -273,6 +336,53 @@ export default defineActivityPack({
       { actionType: "stage_extract", payloadSchema: emptyPayloadSchema() },
       { actionType: "stage_wait", payloadSchema: emptyPayloadSchema() },
       { actionType: "commit_turn", payloadSchema: emptyPayloadSchema() },
+      {
+        actionType: "assign_mira_task",
+        payloadSchema: {
+          additionalProperties: false,
+          properties: {
+            power_allowance: { enum: [0, 1] },
+            task_kind: { enum: ["investigate_records", "investigate_conservation"] },
+          },
+          required: ["task_kind", "power_allowance"],
+          type: "object",
+        },
+      },
+      { actionType: "cancel_mira_task", payloadSchema: emptyPayloadSchema() },
+      { actionType: "set_mira_follow", payloadSchema: emptyPayloadSchema() },
+      { actionType: "set_mira_hold", payloadSchema: emptyPayloadSchema() },
+      { actionType: "set_mira_regroup", payloadSchema: emptyPayloadSchema() },
+      { actionType: "request_mira_plan", payloadSchema: emptyPayloadSchema() },
+      { actionType: "prepare_mira_contribution", payloadSchema: emptyPayloadSchema() },
+      { actionType: "defer_mira_contribution", payloadSchema: emptyPayloadSchema() },
+      {
+        actionType: "submit_companion_plan",
+        payloadSchema: {
+          additionalProperties: false,
+          properties: {
+            opportunity_revision: { maximum: 65_535, minimum: 1, type: "integer" },
+            steps: {
+              items: {
+                additionalProperties: false,
+                properties: {
+                  destination: { enum: ["none", "atrium", "records", "conservation", "plant", "vault"] },
+                  power_cost: { enum: [0, 1] },
+                  source_id: { enum: ["none", "records", "conservation"] },
+                  step_type: { enum: ["move", "inspect_source", "share_source", "use_verifier"] },
+                },
+                required: ["step_type", "destination", "source_id", "power_cost"],
+                type: "object",
+              },
+              maxItems: 3,
+              minItems: 1,
+              type: "array",
+            },
+            task_revision: { maximum: 65_535, minimum: 1, type: "integer" },
+          },
+          required: ["task_revision", "opportunity_revision", "steps"],
+          type: "object",
+        },
+      },
     ],
     rejectionCodes: [
       "inactive",
@@ -283,14 +393,21 @@ export default defineActivityPack({
       "insufficient_power",
       "gate_closed",
       "unknown_candidate",
+      "companion_unavailable",
+      "stale_plan",
+      "task_violation",
+      "plan_invalid",
+      "preparation_required",
+      "crew_not_regrouped",
       "core_role_invariant",
     ],
     events: [
       { eventType: "archive_started", payloadSchema: archiveStartedSchema() },
       { eventType: "action_staged", payloadSchema: actionStagedSchema() },
       { eventType: "turn_committed", payloadSchema: turnCommittedSchema() },
+      { eventType: "mira_state_updated", payloadSchema: miraStateUpdatedSchema() },
     ],
-    attentionReasons: [],
+    attentionReasons: [MIRA_PLAN_ATTENTION_REASON],
     configurationSchema: {
       additionalProperties: false,
       properties: { scenario_id: { const: "standard-v1", type: "string" } },
@@ -335,8 +452,10 @@ export default defineActivityPack({
   initialize(input) {
     const configuration = record(input.configuration, "configuration");
     validateCoreInvariant(record(input.initial_core_state, "initial_core_state"));
+    const core = record(input.initial_core_state, "initial_core_state");
+    const state = initializeArchiveState(configuration);
     return {
-      initial_activity_state: stateAsCanonical(initializeArchiveState(configuration)),
+      initial_activity_state: stateAsCanonical({ ...state, mira: initialMiraState(activeMiraMemberId(core)) }),
       timer_requests: [],
     };
   },

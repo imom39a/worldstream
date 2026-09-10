@@ -10,7 +10,7 @@ import {
   moveOptions,
   readMidnightArchiveProjection,
 } from "./model";
-import { projection, rawProjection } from "./testFixtures";
+import { projection, rawMira, rawProjection } from "./testFixtures";
 
 describe("Midnight Archive strict participant Projection", () => {
   it("accepts the exact five-location, finite-resource contract", () => {
@@ -180,6 +180,158 @@ describe("Midnight Archive strict participant Projection", () => {
       },
     })).not.toBeNull();
   });
+
+  it("decodes bounded Mira task, waiting, ready, and prepared progress without private plan steps", () => {
+    const task = {
+      status: "assigned",
+      revision: 4,
+      kind: "investigate_records",
+      power_allowance: 1,
+      power_spent: 0,
+    };
+    const waiting = readMidnightArchiveProjection(rawProjection({
+      mira: rawMira({
+        presence: "active",
+        location: "atrium",
+        mode: "tasked",
+        task,
+        planning: {
+          status: "waiting",
+          opportunity_revision: 6,
+          plan_revision: 0,
+          steps_total: 0,
+          steps_completed: 0,
+          deadline: "2026-09-09T12:34:56.789Z",
+        },
+      }),
+    }));
+    expect(waiting?.mira.planning.status).toBe("waiting");
+    expect(waiting?.mira).not.toHaveProperty("steps");
+
+    const ready = readMidnightArchiveProjection(rawProjection({
+      mira: rawMira({
+        presence: "active",
+        location: "records",
+        mode: "tasked",
+        task,
+        planning: {
+          status: "ready",
+          opportunity_revision: 6,
+          plan_revision: 6,
+          steps_total: 3,
+          steps_completed: 1,
+          deadline: "none",
+        },
+        preparation: {
+          status: "prepared",
+          for_turn: 2,
+          summary: "Mira will inspect the assigned source.",
+        },
+      }),
+    }));
+    expect(ready?.mira.planning).toMatchObject({ stepsTotal: 3, stepsCompleted: 1 });
+    expect(ready?.mira.preparation.summary).toBe("Mira will inspect the assigned source.");
+
+    const exhausted = readMidnightArchiveProjection(rawProjection({
+      turns_used: 1,
+      turns_remaining: 15,
+      mira: rawMira({
+        presence: "active",
+        location: "records",
+        mode: "tasked",
+        task,
+        planning: {
+          status: "complete",
+          opportunity_revision: 6,
+          plan_revision: 6,
+          steps_total: 1,
+          steps_completed: 1,
+          deadline: "none",
+        },
+        last_contribution: {
+          turn: 1,
+          kind: "move",
+          summary: "Mira moved one open passage.",
+        },
+      }),
+    }));
+    expect(exhausted?.mira.task.status).toBe("assigned");
+    expect(exhausted?.mira.planning.status).toBe("complete");
+  });
+
+  it("fails closed on private payloads, stale preparation, forged provenance, and impossible Mira spend", () => {
+    const assigned = {
+      status: "assigned",
+      revision: 2,
+      kind: "investigate_records",
+      power_allowance: 1,
+      power_spent: 0,
+    };
+    const planning = {
+      status: "ready",
+      opportunity_revision: 3,
+      plan_revision: 3,
+      steps_total: 2,
+      steps_completed: 0,
+      deadline: "none",
+    };
+    const invalid = [
+      rawMira({ presence: "active", location: "records", mode: "tasked", task: assigned, planning: { ...planning, steps: [] } }),
+      rawMira({
+        presence: "active", location: "records", mode: "tasked", task: assigned, planning,
+        preparation: { status: "prepared", for_turn: 1, summary: "Mira will inspect the assigned source." },
+      }),
+      rawMira({ presence: "active", location: "records", mode: "tasked", task: assigned, planning: { ...planning, plan_revision: 2 } }),
+      rawMira({
+        presence: "active", location: "records", mode: "tasked", task: assigned,
+        planning: { ...planning, status: "waiting", plan_revision: 0, steps_total: 0, deadline: "2026-99-09T12:34:56.789Z" },
+      }),
+      rawMira({
+        presence: "active", location: "records", mode: "tasked",
+        task: { ...assigned, power_spent: 1 }, planning,
+      }),
+      rawMira({
+        presence: "active", location: "records", mode: "tasked", task: assigned, planning,
+        last_contribution: { turn: 1, kind: "inspect_source", summary: "Found calfskin." },
+      }),
+    ];
+    for (const mira of invalid) {
+      expect(readMidnightArchiveProjection(rawProjection({ mira }))).toBeNull();
+    }
+  });
+
+  it("accepts only disclosed Mira evidence in the lead Projection", () => {
+    const base = rawProjection();
+    const candidates = (base.candidates as Array<Record<string, unknown>>).map((candidate) => ({
+      ...candidate,
+      evidence_assessment: "observed",
+      observed_evidence: [{
+        source_id: "records",
+        source_label: "Records intake card",
+        attribute_label: "Binding",
+        observed_value: "calfskin",
+        candidate_value: (candidate.visible_attributes as Array<Record<string, unknown>>)[0]?.value,
+        relation: candidate.candidate_id === "ledger-cobalt" ? "does_not_match" : "matches",
+      }],
+    }));
+    const privateState = readMidnightArchiveProjection(rawProjection({
+      mira: rawMira({
+        presence: "active", location: "records", mode: "tasked",
+        task: { status: "assigned", revision: 1, kind: "investigate_records", power_allowance: 0, power_spent: 0 },
+        knowledge: { records: "private", conservation: "unknown", verifier_result: null },
+      }),
+    }));
+    expect(privateState?.mira.knowledge.records).toBe("private");
+    expect(privateState?.candidates.every((candidate) => candidate.observedEvidence.length === 0)).toBe(true);
+    expect(readMidnightArchiveProjection(rawProjection({
+      candidates,
+      mira: rawMira({
+        presence: "active", location: "records", mode: "tasked",
+        task: { status: "assigned", revision: 1, kind: "investigate_records", power_allowance: 0, power_spent: 0 },
+        knowledge: { records: "shared", conservation: "unknown", verifier_result: null },
+      }),
+    }))).not.toBeNull();
+  });
 });
 
 describe("technical route semantics", () => {
@@ -223,6 +375,12 @@ describe("technical route semantics", () => {
     expect(actionPayload({ action: "stage_recover_candidate", candidate_id: "ledger-amber" })).toEqual({
       candidate_id: "ledger-amber",
     });
+    expect(actionPayload({
+      action: "assign_mira_task",
+      task_kind: "investigate_records",
+      power_allowance: 1,
+    })).toEqual({ task_kind: "investigate_records", power_allowance: 1 });
+    expect(actionCost("request_mira_plan")).toEqual({ turns: 0, power: 0 });
     expect(moveOptions(current).map((option) => option.destination).sort()).toEqual([
       "atrium", "conservation", "plant",
     ]);

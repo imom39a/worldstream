@@ -14,6 +14,37 @@ import {
 
 export const digest = (character: string) => `blake3:${character.repeat(64)}`;
 
+export function rawMira(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    presence: "absent",
+    location: "none",
+    mode: "unavailable",
+    task: {
+      status: "none",
+      revision: 0,
+      kind: "none",
+      power_allowance: 0,
+      power_spent: 0,
+    },
+    planning: {
+      status: "not_requested",
+      opportunity_revision: 0,
+      plan_revision: 0,
+      steps_total: 0,
+      steps_completed: 0,
+      deadline: "none",
+    },
+    preparation: { status: "none", for_turn: 0, summary: "none" },
+    knowledge: { records: "unknown", conservation: "unknown", verifier_result: null },
+    last_contribution: {
+      turn: 0,
+      kind: "none",
+      summary: "No Mira contribution has completed.",
+    },
+    ...overrides,
+  };
+}
+
 export function rawProjection(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   const carriedCandidate = overrides.carried_candidate ?? null;
   return {
@@ -76,6 +107,7 @@ export function rawProjection(overrides: Record<string, unknown> = {}): Record<s
         ],
       },
     ],
+    mira: rawMira(),
     preservation_agreement: {
       speaker: "Archivist",
       statement: "Preserve the threatened collection and I will open the Conservation–Vault gate.",

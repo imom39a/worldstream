@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MidnightArchiveClientView } from "./MidnightArchiveClientView";
-import { projection, rawProjection, readyState } from "./testFixtures";
+import { projection, rawMira, rawProjection, readyState } from "./testFixtures";
 
 afterEach(() => {
   document.body.innerHTML = "";
@@ -478,5 +478,157 @@ describe("Midnight Archive mission surface", () => {
     expect(markup).toContain("Realtime connection was interrupted.");
     expect(markup).toContain("Reconnect securely");
     expect(markup).not.toContain("Preparing the archive");
+  });
+
+  it("preserves the solo mission surface when Mira is absent", () => {
+    const markup = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState()} connection="live" actionsEnabled onAction={vi.fn()} />,
+    );
+    expect(markup).not.toContain("data-testid=\"mira-crew-card\"");
+    expect(markup).toContain("Commit Turn");
+    expect(markup).toContain("Stage action");
+  });
+
+  it("shows Mira waiting and ready progress without rendering private plan payloads", () => {
+    const task = {
+      status: "assigned",
+      revision: 3,
+      kind: "investigate_records",
+      power_allowance: 1,
+      power_spent: 0,
+    };
+    const waiting = projection({
+      mira: rawMira({
+        presence: "active", location: "records", mode: "tasked", task,
+        planning: {
+          status: "waiting", opportunity_revision: 5, plan_revision: 0,
+          steps_total: 0, steps_completed: 0, deadline: "2026-09-09T12:34:56.789Z",
+        },
+        knowledge: { records: "private", conservation: "unknown", verifier_result: null },
+      }),
+    });
+    const waitingMarkup = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState(waiting, ["set_mira_hold", "defer_mira_contribution", "stage_wait"])} connection="live" actionsEnabled onAction={vi.fn()} />,
+    );
+    expect(waitingMarkup).toContain("Mira is preparing a bounded plan");
+    expect(waitingMarkup).toContain("Mira has private Records findings; their values have not been disclosed.");
+    expect(waitingMarkup).not.toContain("step_type");
+    expect(waitingMarkup).not.toContain("destination&quot;");
+
+    const ready = projection({
+      mira: rawMira({
+        presence: "active", location: "records", mode: "tasked", task,
+        planning: {
+          status: "ready", opportunity_revision: 5, plan_revision: 5,
+          steps_total: 3, steps_completed: 1, deadline: "none",
+        },
+        preparation: {
+          status: "prepared", for_turn: 2, summary: "Mira will inspect the assigned source.",
+        },
+      }),
+    });
+    const readyMarkup = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState(ready, ["prepare_mira_contribution", "defer_mira_contribution", "stage_wait"])} connection="live" actionsEnabled onAction={vi.fn()} />,
+    );
+    expect(readyMarkup).toContain("1 of 3 complete");
+    expect(readyMarkup).toContain("Mira will inspect the assigned source.");
+    expect(readyMarkup).toContain("Fenced to turn 2");
+  });
+
+  it("dispatches structured assignment, mode, cancellation, preparation, and deferral controls", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const onAction = vi.fn().mockResolvedValue(undefined);
+    const current = projection({
+      mira: rawMira({
+        presence: "active", location: "atrium", mode: "tasked",
+        task: { status: "assigned", revision: 1, kind: "investigate_records", power_allowance: 1, power_spent: 0 },
+        planning: {
+          status: "ready", opportunity_revision: 2, plan_revision: 2,
+          steps_total: 2, steps_completed: 0, deadline: "none",
+        },
+      }),
+    });
+    await act(async () => {
+      root.render(<MidnightArchiveClientView
+        state={readyState(current, [
+          "assign_mira_task", "cancel_mira_task", "set_mira_follow", "set_mira_hold",
+          "set_mira_regroup", "request_mira_plan", "prepare_mira_contribution",
+          "defer_mira_contribution", "stage_wait",
+        ])}
+        connection="live"
+        actionsEnabled
+        onAction={onAction}
+      />);
+    });
+    const click = async (selector: string) => {
+      const button = host.querySelector<HTMLButtonElement>(selector);
+      expect(button?.disabled).toBe(false);
+      await act(async () => button?.click());
+    };
+    await click('button[data-action-type="assign_mira_task"][aria-label="Assign Investigate Conservation with 1 power allowance"]');
+    expect(onAction).toHaveBeenLastCalledWith({
+      action: "assign_mira_task", task_kind: "investigate_conservation", power_allowance: 1,
+    });
+    for (const action of [
+      "cancel_mira_task", "set_mira_follow", "set_mira_hold", "set_mira_regroup",
+      "request_mira_plan", "prepare_mira_contribution", "defer_mira_contribution",
+    ]) {
+      await click(`button[data-action-type="${action}"]`);
+      expect(onAction).toHaveBeenLastCalledWith({ action });
+    }
+    await act(async () => root.unmount());
+  });
+
+  it("explains ineligible and replaced companion work while retaining the personal staged Action", () => {
+    const current = projection({
+      staged_action: { action_type: "stage_wait", turn_cost: 1, power_cost: 0 },
+      mira: rawMira({
+        presence: "active", location: "conservation", mode: "holding",
+        task: { status: "cancelled", revision: 8, kind: "none", power_allowance: 0, power_spent: 0 },
+        planning: {
+          status: "not_requested", opportunity_revision: 9, plan_revision: 0,
+          steps_total: 0, steps_completed: 0, deadline: "none",
+        },
+      }),
+    });
+    const markup = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState(current, ["assign_mira_task", "set_mira_follow", "stage_wait", "commit_turn"])} connection="live" actionsEnabled onAction={vi.fn()} />,
+    );
+    expect(markup).toContain("cancelled");
+    expect(markup).toContain("not requested · revision 0");
+    expect(markup).toContain("No current bounded plan has an eligible step.");
+    expect(markup).toContain("Wait in place");
+    expect(markup).toContain("Commit Turn");
+  });
+
+  it("shows a recorded parallel contribution and only Pack-disclosed verifier evidence", () => {
+    const current = projection({
+      power: 2,
+      verifier_result: { candidate_id: "ledger-amber", confidence: "verified" },
+      mira: rawMira({
+        presence: "active", location: "records", mode: "holding",
+        task: { status: "complete", revision: 2, kind: "investigate_records", power_allowance: 1, power_spent: 1 },
+        planning: {
+          status: "complete", opportunity_revision: 4, plan_revision: 4,
+          steps_total: 3, steps_completed: 3, deadline: "none",
+        },
+        knowledge: {
+          records: "private", conservation: "unknown",
+          verifier_result: { candidate_id: "ledger-amber", confidence: "verified" },
+        },
+        last_contribution: {
+          turn: 1, kind: "use_verifier", summary: "Mira ran the catalog verifier and disclosed its result.",
+        },
+      }),
+    });
+    const markup = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState(current, ["assign_mira_task", "stage_wait"])} connection="live" actionsEnabled onAction={vi.fn()} />,
+    );
+    expect(markup).toContain("Mira ran the catalog verifier and disclosed its result.");
+    expect(markup).toContain("Catalog verifier disclosed: Amber Folio · verified");
+    expect(markup).not.toContain("truth_marker");
+    expect(markup).not.toContain("private_plan");
   });
 });

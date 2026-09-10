@@ -7,6 +7,7 @@ import type {
 import type { ArchiveState, Role, StagedAction, VisibleCandidate } from "./model.js";
 import { record, stringValue } from "./model.js";
 import { authoredEvidenceSources, legalDestinations } from "./rules.js";
+import { miraActionOffers, planningStatus } from "./companions.js";
 
 export type AudienceSchema =
   | "public"
@@ -51,6 +52,7 @@ export function authorizedView(
   const role = viewerRole(core, viewer);
   const viewerType = stringValue(viewer.viewer_type, "viewer_type");
   const participant = role !== null && (viewerType === "participant" || viewerType === "historical");
+  const viewerMemberId = typeof viewer.member_id === "string" ? viewer.member_id : "none";
   const schema = audienceSchema(core, viewer, participant);
   if (!participant) {
     return {
@@ -67,8 +69,10 @@ export function authorizedView(
   return {
     schema,
     projection: participantProjection(state, role),
-    actionOffers: viewerType === "participant" && role === "lead"
-      ? leadActionOffers(state)
+    actionOffers: viewerType === "participant"
+      ? role === "lead"
+        ? [...leadActionOffers(state), ...miraActionOffers(state, role, viewerMemberId)]
+        : miraActionOffers(state, role, viewerMemberId)
       : [],
   };
 }
@@ -94,7 +98,7 @@ export function participantProjection(state: ArchiveState, role: Role): Canonica
         { label: "Marking", value: candidate.marking },
         { label: "Year", value: String(candidate.year) },
       ],
-      ...candidateEvidence(state, candidate),
+      ...candidateEvidence(state, candidate, role),
     })),
     staged_action: stagedProjection(state.staged_action),
     carried_candidate: state.carried_candidate_id === "none"
@@ -105,6 +109,7 @@ export function participantProjection(state: ArchiveState, role: Role): Canonica
       : { candidate_id: state.verifier_result, confidence: "verified" },
     preservation_agreement: preservationAgreementProjection(state),
     optional_objectives: optionalObjectivesProjection(state),
+    mira: miraProjection(state),
     debrief: debriefProjection(state),
     outcome: state.outcome.kind === "pending" ? null : { kind: state.outcome.kind },
   };
@@ -199,8 +204,11 @@ function optionalObjectivesProjection(state: ArchiveState): CanonicalObject {
   };
 }
 
-function candidateEvidence(state: ArchiveState, candidate: VisibleCandidate): CanonicalObject {
-  const observed = authoredEvidenceSources().filter((source) => state.evidence[source.source_id] === "observed");
+function candidateEvidence(state: ArchiveState, candidate: VisibleCandidate, role: Role): CanonicalObject {
+  const observed = authoredEvidenceSources().filter((source) =>
+    state.evidence[source.source_id] === "observed" ||
+    (role === "mira" && state.mira.knowledge[source.source_id] !== "unknown")
+  );
   const observedEvidence = observed.map((source) => ({
     source_id: source.source_id,
     source_label: source.source_label,
@@ -213,6 +221,38 @@ function candidateEvidence(state: ArchiveState, candidate: VisibleCandidate): Ca
   return {
     evidence_assessment: recommendation ? "recommended" : observedEvidence.length > 0 ? "observed" : "unknown",
     observed_evidence: observedEvidence,
+  };
+}
+
+function miraProjection(state: ArchiveState): CanonicalObject {
+  const status = planningStatus(state.mira);
+  const visiblePlan = status === "ready" || status === "complete";
+  return {
+    presence: state.mira.presence,
+    location: state.mira.location,
+    mode: state.mira.mode,
+    task: { ...state.mira.task },
+    planning: {
+      status,
+      opportunity_revision: state.mira.opportunity.revision,
+      plan_revision: visiblePlan ? state.mira.plan.revision : 0,
+      steps_total: visiblePlan ? state.mira.plan.steps.length : 0,
+      steps_completed: visiblePlan ? state.mira.plan.next_step_index : 0,
+      deadline: status === "waiting" ? state.mira.opportunity.deadline : "none",
+    },
+    preparation: {
+      status: state.mira.preparation.status,
+      for_turn: state.mira.preparation.for_turn,
+      summary: state.mira.preparation.summary,
+    },
+    knowledge: {
+      records: state.mira.knowledge.records,
+      conservation: state.mira.knowledge.conservation,
+      verifier_result: state.mira.knowledge.verifier_result === "none"
+        ? null
+        : { candidate_id: state.mira.knowledge.verifier_result, confidence: "verified" },
+    },
+    last_contribution: { ...state.mira.last_contribution },
   };
 }
 

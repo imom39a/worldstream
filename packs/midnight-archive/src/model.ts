@@ -30,6 +30,69 @@ export type StagedKind =
 
 export type PreservationAgreementStatus = "offered" | "accepted";
 export type CollectionPreservationStatus = "unprepared" | "prepared" | "preserved";
+export type MiraPresence = "absent" | "active" | "suspended";
+export type MiraMode = "unavailable" | "following" | "holding" | "tasked" | "regrouping";
+export type MiraTaskKind = "none" | "investigate_records" | "investigate_conservation";
+export type MiraTaskStatus = "none" | "assigned" | "complete" | "cancelled";
+export type MiraPlanningStatus = "not_requested" | "waiting" | "ready" | "expired" | "complete";
+export type MiraKnowledgeStatus = "unknown" | "private" | "shared";
+export type MiraStepType = "move" | "inspect_source" | "share_source" | "use_verifier";
+export type MiraContributionKind = MiraStepType | "follow_move" | "regroup_move" | "none";
+
+export interface MiraPlanStep {
+  readonly step_type: MiraStepType;
+  readonly destination: Location | "none";
+  readonly source_id: EvidenceSourceId | "none";
+  readonly power_cost: 0 | 1;
+}
+
+export interface MiraState {
+  readonly presence: MiraPresence;
+  readonly member_id: string;
+  readonly location: Location | "none";
+  readonly mode: MiraMode;
+  readonly task: {
+    readonly status: MiraTaskStatus;
+    readonly revision: number;
+    readonly kind: MiraTaskKind;
+    readonly power_allowance: 0 | 1;
+    readonly power_spent: 0 | 1;
+  };
+  readonly opportunity: {
+    readonly status: "none" | "open" | "expired" | "fulfilled";
+    readonly revision: number;
+    readonly task_revision: number;
+    readonly opened_at: string;
+    readonly deadline: string;
+  };
+  readonly plan: {
+    readonly status: "none" | "active" | "complete";
+    readonly revision: number;
+    readonly origin_member_id: string;
+    readonly origin_task_revision: number;
+    readonly origin_opportunity_revision: number;
+    readonly steps: readonly MiraPlanStep[];
+    readonly next_step_index: number;
+  };
+  readonly preparation: {
+    readonly status: "none" | "prepared" | "deferred";
+    readonly for_turn: number;
+    readonly task_revision: number;
+    readonly plan_revision: number;
+    readonly step_index: number;
+    readonly summary: string;
+  };
+  readonly knowledge: {
+    readonly records: MiraKnowledgeStatus;
+    readonly conservation: MiraKnowledgeStatus;
+    readonly verifier_result: CandidateReference;
+  };
+  readonly last_contribution: {
+    readonly turn: number;
+    readonly kind: MiraContributionKind;
+    readonly summary: string;
+  };
+}
 
 export interface VisibleCandidate {
   readonly candidate_id: CandidateId;
@@ -69,6 +132,7 @@ export interface ArchiveState {
   readonly preservation_agreement: PreservationAgreementStatus;
   readonly collection_preservation: CollectionPreservationStatus;
   readonly source_record_protected: boolean;
+  readonly mira: MiraState;
   readonly truth_marker: CandidateId;
   readonly verifier_result: CandidateReference;
   readonly carried_candidate_id: CandidateReference;
@@ -87,6 +151,12 @@ export type RejectionCode =
   | "insufficient_power"
   | "gate_closed"
   | "unknown_candidate"
+  | "companion_unavailable"
+  | "stale_plan"
+  | "task_violation"
+  | "plan_invalid"
+  | "preparation_required"
+  | "crew_not_regrouped"
   | "core_role_invariant";
 
 export class RuleRejection extends Error {

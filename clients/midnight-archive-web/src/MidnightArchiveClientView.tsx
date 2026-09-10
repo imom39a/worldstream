@@ -21,6 +21,7 @@ import {
   SectionHeading,
 } from "./presentation";
 import type { MidnightArchiveReplayState } from "./replay";
+import { MiraCrewCard } from "./MiraCrewCard";
 
 export type MidnightArchiveConnection =
   | "connecting"
@@ -182,6 +183,12 @@ function ReadyArchive({
 
         <aside className="archive-turn-column" id="archive-actions" aria-label="Turn controls">
           <CarriedLedgerCard projection={projection} />
+          <MiraCrewCard
+            projection={projection}
+            enabled={canAct}
+            offerTypes={offerTypes}
+            onAction={act}
+          />
           <OptionalObjectivesPanel projection={projection} />
           {projection.location === "conservation" ? (
             <ArchivistAgreementCard projection={projection} />
@@ -464,7 +471,8 @@ function ContextActions({
       : "Leave now with the carried ledger. Hidden authenticity resolves only in the outcome.",
     turns: 1,
     power: 0,
-    available: true,
+    available: projection.mira.presence !== "active" || projection.mira.location === "atrium",
+    unavailableReason: `Regroup Mira from ${locationLabel(state, projection.mira.location)} before extracting.`,
   });
   actions.push({
     intent: { action: "stage_wait" },

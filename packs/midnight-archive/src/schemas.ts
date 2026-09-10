@@ -232,6 +232,155 @@ function schemaParts() {
     required: ["from", "to", "gate"],
     type: "object",
   };
+  const miraPlanStep = {
+    additionalProperties: false,
+    properties: {
+      destination: locationOrNone,
+      power_cost: { enum: [0, 1] },
+      source_id: { enum: ["none", "records", "conservation"] },
+      step_type: { enum: ["move", "inspect_source", "share_source", "use_verifier"] },
+    },
+    required: ["step_type", "destination", "source_id", "power_cost"],
+    type: "object",
+  };
+  const miraTask = {
+    additionalProperties: false,
+    properties: {
+      kind: { enum: ["none", "investigate_records", "investigate_conservation"] },
+      power_allowance: { enum: [0, 1] },
+      power_spent: { enum: [0, 1] },
+      revision: { maximum: 65_535, minimum: 0, type: "integer" },
+      status: { enum: ["none", "assigned", "complete", "cancelled"] },
+    },
+    required: ["status", "revision", "kind", "power_allowance", "power_spent"],
+    type: "object",
+  };
+  const contributionKind = { enum: [
+    "none", "move", "inspect_source", "share_source", "use_verifier", "follow_move", "regroup_move",
+  ] };
+  const miraKnowledge = {
+    additionalProperties: false,
+    properties: {
+      conservation: { enum: ["unknown", "private", "shared"] },
+      records: { enum: ["unknown", "private", "shared"] },
+      verifier_result: candidateOrNone,
+    },
+    required: ["records", "conservation", "verifier_result"],
+    type: "object",
+  };
+  const miraState = {
+    additionalProperties: false,
+    properties: {
+      knowledge: miraKnowledge,
+      last_contribution: {
+        additionalProperties: false,
+        properties: {
+          kind: contributionKind,
+          summary: { maxLength: 96, type: "string" },
+          turn: { maximum: 16, minimum: 0, type: "integer" },
+        },
+        required: ["turn", "kind", "summary"],
+        type: "object",
+      },
+      location: locationOrNone,
+      member_id: { maxLength: 64, minLength: 1, type: "string" },
+      mode: { enum: ["unavailable", "following", "holding", "tasked", "regrouping"] },
+      opportunity: {
+        additionalProperties: false,
+        properties: {
+          deadline: { maxLength: 64, minLength: 4, type: "string" },
+          opened_at: { maxLength: 64, minLength: 4, type: "string" },
+          revision: { maximum: 65_535, minimum: 0, type: "integer" },
+          status: { enum: ["none", "open", "expired", "fulfilled"] },
+          task_revision: { maximum: 65_535, minimum: 0, type: "integer" },
+        },
+        required: ["status", "revision", "task_revision", "opened_at", "deadline"],
+        type: "object",
+      },
+      plan: {
+        additionalProperties: false,
+        properties: {
+          next_step_index: { maximum: 3, minimum: 0, type: "integer" },
+          origin_member_id: { maxLength: 64, minLength: 1, type: "string" },
+          origin_opportunity_revision: { maximum: 65_535, minimum: 0, type: "integer" },
+          origin_task_revision: { maximum: 65_535, minimum: 0, type: "integer" },
+          revision: { maximum: 65_535, minimum: 0, type: "integer" },
+          status: { enum: ["none", "active", "complete"] },
+          steps: { items: miraPlanStep, maxItems: 3, minItems: 0, type: "array" },
+        },
+        required: [
+          "status", "revision", "origin_member_id", "origin_task_revision",
+          "origin_opportunity_revision", "steps", "next_step_index",
+        ],
+        type: "object",
+      },
+      preparation: {
+        additionalProperties: false,
+        properties: {
+          for_turn: { maximum: 16, minimum: 0, type: "integer" },
+          plan_revision: { maximum: 65_535, minimum: 0, type: "integer" },
+          status: { enum: ["none", "prepared", "deferred"] },
+          step_index: { maximum: 3, minimum: 0, type: "integer" },
+          summary: { maxLength: 64, minLength: 4, type: "string" },
+          task_revision: { maximum: 65_535, minimum: 0, type: "integer" },
+        },
+        required: ["status", "for_turn", "task_revision", "plan_revision", "step_index", "summary"],
+        type: "object",
+      },
+      presence: { enum: ["absent", "active", "suspended"] },
+      task: miraTask,
+    },
+    required: [
+      "presence", "member_id", "location", "mode", "task", "opportunity", "plan",
+      "preparation", "knowledge", "last_contribution",
+    ],
+    type: "object",
+  };
+  const miraProjection = {
+    additionalProperties: false,
+    properties: {
+      knowledge: {
+        additionalProperties: false,
+        properties: {
+          conservation: { enum: ["unknown", "private", "shared"] },
+          records: { enum: ["unknown", "private", "shared"] },
+          verifier_result: verifierResultProjection,
+        },
+        required: ["records", "conservation", "verifier_result"],
+        type: "object",
+      },
+      last_contribution: miraState.properties.last_contribution,
+      location: locationOrNone,
+      mode: miraState.properties.mode,
+      planning: {
+        additionalProperties: false,
+        properties: {
+          deadline: { maxLength: 64, minLength: 4, type: "string" },
+          opportunity_revision: { maximum: 65_535, minimum: 0, type: "integer" },
+          plan_revision: { maximum: 65_535, minimum: 0, type: "integer" },
+          status: { enum: ["not_requested", "waiting", "ready", "expired", "complete"] },
+          steps_completed: { maximum: 3, minimum: 0, type: "integer" },
+          steps_total: { maximum: 3, minimum: 0, type: "integer" },
+        },
+        required: ["status", "opportunity_revision", "plan_revision", "steps_total", "steps_completed", "deadline"],
+        type: "object",
+      },
+      preparation: {
+        additionalProperties: false,
+        properties: {
+          for_turn: { maximum: 16, minimum: 0, type: "integer" },
+          status: { enum: ["none", "prepared", "deferred"] },
+          summary: { maxLength: 64, minLength: 4, type: "string" },
+        },
+        required: ["status", "for_turn", "summary"],
+        type: "object",
+      },
+      presence: miraState.properties.presence,
+      task: miraTask,
+    },
+    required: ["presence", "location", "mode", "task", "planning", "preparation", "knowledge", "last_contribution"],
+    type: "object",
+  };
   return {
     candidate,
     candidateOrNull,
@@ -241,6 +390,8 @@ function schemaParts() {
     location,
     mapEdge,
     mapLocation,
+    miraProjection,
+    miraState,
     outcome,
     outcomeProjection,
     observedEvidence,
@@ -266,6 +417,7 @@ export function stateSchema(): CanonicalObject {
       collection_preservation: { enum: ["unprepared", "prepared", "preserved"] },
       gates: part.gates,
       location: part.location,
+      mira: part.miraState,
       objective: { maxLength: 256, minLength: 1, type: "string" },
       outcome: part.outcome,
       phase: { enum: ["briefing", "active", "complete"] },
@@ -283,7 +435,7 @@ export function stateSchema(): CanonicalObject {
     required: [
       "phase", "scenario_id", "objective", "location", "turn_limit", "turns_used",
       "power_remaining", "gates", "candidates", "evidence", "preservation_agreement",
-      "collection_preservation", "source_record_protected", "truth_marker", "verifier_result",
+      "collection_preservation", "source_record_protected", "mira", "truth_marker", "verifier_result",
       "carried_candidate_id", "carried_confidence", "staged_action", "outcome", "role_notes",
     ],
     type: "object",
@@ -348,6 +500,7 @@ export function participantProjectionSchema(): CanonicalObject {
         required: ["locations", "connections"],
         type: "object",
       },
+      mira: part.miraProjection,
       objective: { maxLength: 384, minLength: 1, type: "string" },
       outcome: part.outcomeProjection,
       phase: { enum: ["briefing", "active", "complete"] },
@@ -360,7 +513,7 @@ export function participantProjectionSchema(): CanonicalObject {
     required: [
       "phase", "objective", "location", "turns_used", "turns_remaining", "power",
       "gates", "map", "candidates", "staged_action", "carried_candidate", "debrief",
-      "preservation_agreement", "optional_objectives",
+      "preservation_agreement", "optional_objectives", "mira",
       "verifier_result", "outcome",
     ],
     type: "object",

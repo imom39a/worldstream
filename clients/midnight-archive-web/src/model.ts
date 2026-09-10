@@ -28,6 +28,66 @@ export type AgreementConditionId =
   | "lead_acceptance"
   | "collection_preparation"
   | "equipment_energized";
+export type MiraPresence = "absent" | "active" | "suspended";
+export type MiraMode = "unavailable" | "following" | "holding" | "tasked" | "regrouping";
+export type MiraTaskKind = "none" | "investigate_records" | "investigate_conservation";
+export type MiraTaskStatus = "none" | "assigned" | "complete" | "cancelled";
+export type MiraPlanningStatus = "not_requested" | "waiting" | "ready" | "expired" | "complete";
+export type MiraPreparationStatus = "none" | "prepared" | "deferred";
+export type MiraKnowledgeStatus = "unknown" | "private" | "shared";
+export type MiraContributionKind =
+  | "none"
+  | "move"
+  | "inspect_source"
+  | "share_source"
+  | "use_verifier"
+  | "follow_move"
+  | "regroup_move";
+
+export interface MiraCrewState {
+  readonly presence: MiraPresence;
+  readonly location: ArchiveLocation | "none";
+  readonly mode: MiraMode;
+  readonly task: {
+    readonly status: MiraTaskStatus;
+    readonly revision: number;
+    readonly kind: MiraTaskKind;
+    readonly powerAllowance: 0 | 1;
+    readonly powerSpent: 0 | 1;
+  };
+  readonly planning: {
+    readonly status: MiraPlanningStatus;
+    readonly opportunityRevision: number;
+    readonly planRevision: number;
+    readonly stepsTotal: number;
+    readonly stepsCompleted: number;
+    readonly deadline: "none" | string;
+  };
+  readonly preparation: {
+    readonly status: MiraPreparationStatus;
+    readonly forTurn: number;
+    readonly summary:
+      | "none"
+      | "Mira will move one open passage."
+      | "Mira will inspect the assigned source."
+      | "Mira will share one inspected source."
+      | "Mira will run the catalog verifier."
+      | "Mira will not contribute this turn.";
+  };
+  readonly knowledge: {
+    readonly records: MiraKnowledgeStatus;
+    readonly conservation: MiraKnowledgeStatus;
+    readonly verifierResult: null | {
+      readonly candidateId: ArchiveCandidateId;
+      readonly confidence: "verified";
+    };
+  };
+  readonly lastContribution: {
+    readonly turn: number;
+    readonly kind: MiraContributionKind;
+    readonly summary: string;
+  };
+}
 
 export interface PreservationAgreementCondition {
   readonly conditionId: AgreementConditionId;
@@ -152,6 +212,7 @@ export interface MidnightArchiveProjection {
   readonly candidates: readonly ArchiveCandidate[];
   readonly preservationAgreement: PreservationAgreement;
   readonly optionalObjectives: ArchiveOptionalObjectives;
+  readonly mira: MiraCrewState;
   readonly debrief: null | {
     readonly evidenceStatus: "none" | "partial" | "complete";
     readonly message: string;
@@ -183,7 +244,19 @@ export type MidnightArchiveActionIntent =
   | { readonly action: "stage_protect_source_record" }
   | { readonly action: "stage_extract" }
   | { readonly action: "stage_wait" }
-  | { readonly action: "commit_turn" };
+  | { readonly action: "commit_turn" }
+  | {
+      readonly action: "assign_mira_task";
+      readonly task_kind: Exclude<MiraTaskKind, "none">;
+      readonly power_allowance: 0 | 1;
+    }
+  | { readonly action: "cancel_mira_task" }
+  | { readonly action: "set_mira_follow" }
+  | { readonly action: "set_mira_hold" }
+  | { readonly action: "set_mira_regroup" }
+  | { readonly action: "request_mira_plan" }
+  | { readonly action: "prepare_mira_contribution" }
+  | { readonly action: "defer_mira_contribution" };
 
 export interface ArchiveActionCost {
   readonly turns: 0 | 1;
@@ -206,6 +279,7 @@ const ROOT_KEYS = [
   "gates",
   "location",
   "map",
+  "mira",
   "objective",
   "outcome",
   "optional_objectives",
@@ -287,6 +361,7 @@ export function readMidnightArchiveProjection(
   const gates = readGates(source.gates);
   const map = readMap(source.map);
   const candidates = readCandidates(source.candidates);
+  const mira = readMira(source.mira);
   const preservationAgreement = readPreservationAgreement(source.preservation_agreement);
   const optionalObjectives = readOptionalObjectives(source.optional_objectives);
   const debrief = readDebrief(source.debrief);
@@ -300,7 +375,7 @@ export function readMidnightArchiveProjection(
   if (
     phase === null || objective === null || location === null
     || turnsUsed === null || turnsRemaining === null || power === null
-    || gates === null || map === null || candidates === null
+    || gates === null || map === null || candidates === null || mira === null
     || preservationAgreement === null || optionalObjectives === null
     || debrief === undefined
     || stagedAction === undefined || carriedCandidate === undefined
@@ -318,6 +393,7 @@ export function readMidnightArchiveProjection(
     || (stagedAction?.actionType === "stage_recover_candidate"
       && !candidateIds.has(stagedAction.candidateId))
     || !agreementStateIsConsistent(preservationAgreement, optionalObjectives, gates)
+    || !miraStateFitsProjection(mira, turnsUsed, power, candidates, verifierResult)
     || !stagedActionFitsProjection(
       stagedAction,
       location,
@@ -355,6 +431,7 @@ export function readMidnightArchiveProjection(
     gates,
     map,
     candidates,
+    mira,
     preservationAgreement,
     optionalObjectives,
     debrief,
@@ -371,6 +448,14 @@ export function actionCost(action: MidnightArchiveActionType): ArchiveActionCost
     case "stage_energize_preservation_equipment": return { turns: 1, power: 1 };
     case "stage_protect_source_record": return { turns: 1, power: 1 };
     case "stage_open_service_hatch": return { turns: 1, power: 2 };
+    case "assign_mira_task":
+    case "cancel_mira_task":
+    case "set_mira_follow":
+    case "set_mira_hold":
+    case "set_mira_regroup":
+    case "request_mira_plan":
+    case "prepare_mira_contribution":
+    case "defer_mira_contribution":
     case "commit_turn": return { turns: 0, power: 0 };
     default: return { turns: 1, power: 0 };
   }
@@ -382,6 +467,11 @@ export function actionPayload(intent: MidnightArchiveActionIntent): JsonValue {
       return { destination: intent.destination };
     case "stage_recover_candidate":
       return { candidate_id: intent.candidate_id };
+    case "assign_mira_task":
+      return {
+        task_kind: intent.task_kind,
+        power_allowance: intent.power_allowance,
+      };
     default:
       return {};
   }
@@ -557,6 +647,179 @@ function readCandidates(value: unknown): readonly ArchiveCandidate[] | null {
   return result;
 }
 
+const MIRA_PREPARATION_SUMMARIES = new Set([
+  "none",
+  "Mira will move one open passage.",
+  "Mira will inspect the assigned source.",
+  "Mira will share one inspected source.",
+  "Mira will run the catalog verifier.",
+  "Mira will not contribute this turn.",
+]);
+const MIRA_CONTRIBUTION_SUMMARIES: Readonly<Record<MiraContributionKind, string>> = {
+  none: "No Mira contribution has completed.",
+  move: "Mira moved one open passage.",
+  inspect_source: "Mira inspected the assigned source privately.",
+  share_source: "Mira shared one inspected source with the crew.",
+  use_verifier: "Mira ran the catalog verifier and disclosed its result.",
+  follow_move: "Mira followed the lead through one open passage.",
+  regroup_move: "Mira moved one open passage toward the Atrium.",
+};
+const UTC_MILLISECOND_DEADLINE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
+
+function readMira(value: unknown): MiraCrewState | null {
+  const source = exactRecord(value, [
+    "knowledge", "last_contribution", "location", "mode", "planning", "preparation", "presence", "task",
+  ]);
+  if (source === null) return null;
+  const presence = source.presence;
+  const location = source.location === "none" ? "none" : readLocation(source.location);
+  const mode = source.mode;
+  const task = exactRecord(source.task, ["kind", "power_allowance", "power_spent", "revision", "status"]);
+  const planning = exactRecord(source.planning, [
+    "deadline", "opportunity_revision", "plan_revision", "status", "steps_completed", "steps_total",
+  ]);
+  const preparation = exactRecord(source.preparation, ["for_turn", "status", "summary"]);
+  const knowledge = exactRecord(source.knowledge, ["conservation", "records", "verifier_result"]);
+  const lastContribution = exactRecord(source.last_contribution, ["kind", "summary", "turn"]);
+  if (
+    (presence !== "absent" && presence !== "active" && presence !== "suspended")
+    || location === null
+    || (mode !== "unavailable" && mode !== "following" && mode !== "holding"
+      && mode !== "tasked" && mode !== "regrouping")
+    || task === null || planning === null || preparation === null || knowledge === null
+    || lastContribution === null
+    || !isMiraTaskStatus(task.status) || !isMiraTaskKind(task.kind)
+    || integerInRange(task.revision, 0, 65_535) === null
+    || (task.power_allowance !== 0 && task.power_allowance !== 1)
+    || (task.power_spent !== 0 && task.power_spent !== 1)
+    || !isMiraPlanningStatus(planning.status)
+    || integerInRange(planning.opportunity_revision, 0, 65_535) === null
+    || integerInRange(planning.plan_revision, 0, 65_535) === null
+    || integerInRange(planning.steps_total, 0, 3) === null
+    || integerInRange(planning.steps_completed, 0, 3) === null
+    || typeof planning.deadline !== "string" || byteLength(planning.deadline) > 64
+    || !isMiraPreparationStatus(preparation.status)
+    || integerInRange(preparation.for_turn, 0, 16) === null
+    || typeof preparation.summary !== "string" || !MIRA_PREPARATION_SUMMARIES.has(preparation.summary)
+    || !isMiraKnowledgeStatus(knowledge.records) || !isMiraKnowledgeStatus(knowledge.conservation)
+    || !isMiraContributionKind(lastContribution.kind)
+    || integerInRange(lastContribution.turn, 0, 16) === null
+    || lastContribution.summary !== MIRA_CONTRIBUTION_SUMMARIES[lastContribution.kind]
+  ) return null;
+  const verifierResult = readVerifierResult(knowledge.verifier_result);
+  if (verifierResult === undefined) return null;
+  return {
+    presence,
+    location,
+    mode,
+    task: {
+      status: task.status,
+      revision: task.revision as number,
+      kind: task.kind,
+      powerAllowance: task.power_allowance,
+      powerSpent: task.power_spent,
+    },
+    planning: {
+      status: planning.status,
+      opportunityRevision: planning.opportunity_revision as number,
+      planRevision: planning.plan_revision as number,
+      stepsTotal: planning.steps_total as number,
+      stepsCompleted: planning.steps_completed as number,
+      deadline: planning.deadline,
+    },
+    preparation: {
+      status: preparation.status,
+      forTurn: preparation.for_turn as number,
+      summary: preparation.summary as MiraCrewState["preparation"]["summary"],
+    },
+    knowledge: {
+      records: knowledge.records,
+      conservation: knowledge.conservation,
+      verifierResult,
+    },
+    lastContribution: {
+      turn: lastContribution.turn as number,
+      kind: lastContribution.kind,
+      summary: lastContribution.summary,
+    },
+  };
+}
+
+function miraStateFitsProjection(
+  mira: MiraCrewState,
+  turnsUsed: number,
+  power: number,
+  candidates: readonly ArchiveCandidate[],
+  verifierResult: MidnightArchiveProjection["verifierResult"],
+): boolean {
+  const { task, planning, preparation, knowledge, lastContribution } = mira;
+  const taskHasAssignment = task.status === "assigned" || task.status === "complete";
+  const deadlineIsCanonical = isCanonicalUtcDeadline(planning.deadline);
+  const planningValid = planning.stepsCompleted <= planning.stepsTotal && (
+    planning.status === "not_requested"
+      ? planning.deadline === "none" && planning.planRevision === 0
+        && planning.stepsTotal === 0 && planning.stepsCompleted === 0
+      : planning.status === "waiting"
+        ? deadlineIsCanonical && planning.opportunityRevision > 0 && planning.planRevision === 0
+          && planning.stepsTotal === 0 && planning.stepsCompleted === 0
+        : planning.status === "ready"
+          ? planning.deadline === "none" && planning.opportunityRevision > 0
+            && planning.planRevision === planning.opportunityRevision
+            && planning.stepsTotal >= 1 && planning.stepsCompleted < planning.stepsTotal
+          : planning.status === "expired"
+            ? planning.deadline === "none" && planning.opportunityRevision > 0 && planning.planRevision === 0
+              && planning.stepsTotal === 0 && planning.stepsCompleted === 0
+            : planning.deadline === "none" && planning.planRevision > 0
+              && planning.planRevision === planning.opportunityRevision
+              && planning.stepsTotal >= 1 && planning.stepsCompleted === planning.stepsTotal
+  );
+  const preparationValid = preparation.status === "none"
+    ? preparation.forTurn === 0 && preparation.summary === "none"
+    : preparation.forTurn === turnsUsed + 1 && (
+      preparation.status === "deferred"
+        ? preparation.summary === "Mira will not contribute this turn."
+        : preparation.summary !== "none" && preparation.summary !== "Mira will not contribute this turn."
+          && planning.status === "ready"
+    );
+  const sourceIsShared = (source: "records" | "conservation") => candidates.every((candidate) => (
+    candidate.observedEvidence.some((evidence) => evidence.sourceId === source)
+  ));
+  const absenceIsCanonical = mira.presence !== "absent" || (
+    mira.location === "none" && mira.mode === "unavailable"
+    && task.status === "none" && task.revision === 0 && task.kind === "none"
+    && task.powerAllowance === 0 && task.powerSpent === 0
+    && planning.status === "not_requested" && planning.opportunityRevision === 0
+    && preparation.status === "none"
+    && knowledge.records === "unknown" && knowledge.conservation === "unknown"
+    && knowledge.verifierResult === null
+    && lastContribution.turn === 0 && lastContribution.kind === "none"
+  );
+  return absenceIsCanonical
+    && (mira.presence !== "active" || mira.location !== "none")
+    && (mira.presence === "active" ? mira.mode !== "unavailable" : mira.mode === "unavailable")
+    && (taskHasAssignment || (task.kind === "none" && task.powerAllowance === 0 && task.powerSpent === 0))
+    && (!taskHasAssignment || task.kind !== "none")
+    && (task.status !== "none" || task.revision === 0)
+    && (task.status === "assigned") === (mira.mode === "tasked")
+    && (planning.status === "waiting" || planning.status === "ready" || planning.status === "expired"
+      ? task.status === "assigned"
+      : true)
+    && (task.status !== "complete" || planning.status === "complete")
+    && (preparation.status === "none" || task.status === "assigned")
+    && task.powerSpent <= task.powerAllowance
+    && task.powerSpent <= 3 - power
+    && planningValid
+    && preparationValid
+    && lastContribution.turn <= turnsUsed
+    && (lastContribution.kind !== "none" || lastContribution.turn === 0)
+    && (knowledge.records !== "shared" || sourceIsShared("records"))
+    && (knowledge.conservation !== "shared" || sourceIsShared("conservation"))
+    && (knowledge.verifierResult === null || (
+      mira.presence !== "absent"
+      && verifierResult?.candidateId === knowledge.verifierResult.candidateId
+    ));
+}
+
 function readPreservationAgreement(value: unknown): PreservationAgreement | null {
   const source = exactRecord(value, ["commitment", "conditions", "speaker", "statement"]);
   if (
@@ -655,7 +918,7 @@ function readOptionalObjectives(value: unknown): ArchiveOptionalObjectives | nul
 
 function readStagedAction(value: unknown): ArchiveStagedAction | null | undefined {
   if (value === null) return null;
-  if (!isRecord(value) || !isMidnightArchiveActionType(value.action_type) || value.action_type === "commit_turn") {
+  if (!isRecord(value) || !isMidnightArchiveActionType(value.action_type) || !value.action_type.startsWith("stage_")) {
     return undefined;
   }
   const cost = actionCost(value.action_type);
@@ -696,7 +959,13 @@ function readStagedAction(value: unknown): ArchiveStagedAction | null | undefine
   if (value.action_type === "stage_inspect_records" || value.action_type === "stage_inspect_conservation") {
     return { actionType: value.action_type, turnCost: 1, powerCost: 0 };
   }
-  return { actionType: value.action_type, turnCost: 1, powerCost: 0 };
+  if (
+    value.action_type === "stage_accept_preservation_agreement"
+    || value.action_type === "stage_prepare_collection"
+    || value.action_type === "stage_extract"
+    || value.action_type === "stage_wait"
+  ) return { actionType: value.action_type, turnCost: 1, powerCost: 0 };
+  return undefined;
 }
 
 function readVerifierResult(
@@ -838,6 +1107,31 @@ function isAgreementCommitment(value: unknown): value is AgreementCommitment {
   return value === "not_accepted" || value === "accepted" || value === "honored";
 }
 
+function isMiraTaskStatus(value: unknown): value is MiraTaskStatus {
+  return value === "none" || value === "assigned" || value === "complete" || value === "cancelled";
+}
+
+function isMiraTaskKind(value: unknown): value is MiraTaskKind {
+  return value === "none" || value === "investigate_records" || value === "investigate_conservation";
+}
+
+function isMiraPlanningStatus(value: unknown): value is MiraPlanningStatus {
+  return value === "not_requested" || value === "waiting" || value === "ready"
+    || value === "expired" || value === "complete";
+}
+
+function isMiraPreparationStatus(value: unknown): value is MiraPreparationStatus {
+  return value === "none" || value === "prepared" || value === "deferred";
+}
+
+function isMiraKnowledgeStatus(value: unknown): value is MiraKnowledgeStatus {
+  return value === "unknown" || value === "private" || value === "shared";
+}
+
+function isMiraContributionKind(value: unknown): value is MiraContributionKind {
+  return Object.hasOwn(MIRA_CONTRIBUTION_SUMMARIES, String(value));
+}
+
 function candidateId(value: unknown): ArchiveCandidateId | undefined {
   return value === "ledger-amber" || value === "ledger-cobalt" || value === "ledger-violet"
     ? value
@@ -849,6 +1143,16 @@ function boundedText(value: unknown, maximumBytes: number): string | null {
     && new TextEncoder().encode(value).length <= maximumBytes
     ? value
     : null;
+}
+
+function byteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+function isCanonicalUtcDeadline(value: string): boolean {
+  if (value === "none" || !UTC_MILLISECOND_DEADLINE.test(value)) return false;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }
 
 function integerInRange(value: unknown, minimum: number, maximum: number): number | null {

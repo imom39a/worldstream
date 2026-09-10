@@ -14,7 +14,8 @@
     "./releases/inspector-web-v2.json",
     "./releases/midnight-archive-web-v1.json",
     "./releases/midnight-archive-web-v2.json",
-    "./releases/midnight-archive-web-v3.json"
+    "./releases/midnight-archive-web-v3.json",
+    "./releases/midnight-archive-web-v4.json"
   ],
   "bindings_file": "./local-bindings.json"
 }

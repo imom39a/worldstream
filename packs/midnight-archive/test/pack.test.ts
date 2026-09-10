@@ -19,6 +19,15 @@ import {
   validateAuthoredScenario,
 } from "../src/rules.js";
 import { authorizedView, participantProjection } from "../src/view.js";
+import {
+  MIRA_PLAN_ATTENTION_REASON,
+  MIRA_PLAN_TIMER_ID,
+  applyMiraLeadControl,
+  expireMiraOpportunity,
+  initialMiraState,
+  reconcileMira,
+  submitMiraPlan,
+} from "../src/companions.js";
 
 test("declares the generic Activity Start contract and optional companion Roles", () => {
   assert.equal(pack.descriptor.packId, "worldstream.midnight-archive");
@@ -36,14 +45,44 @@ test("declares the generic Activity Start contract and optional companion Roles"
   });
 });
 
+test("lead Action offers remain in descriptor order after assigning Mira", () => {
+  const assigned = miraControl(freshActiveWithMira(), "assign_mira_task", {
+    task_kind: "investigate_records",
+    power_allowance: 0,
+  });
+  const offered = authorizedView(
+    assigned,
+    core(),
+    { viewer_type: "participant", member_id: "lead-1" },
+  ).actionOffers.map((offer) => typeof offer === "string" ? offer : offer.actionType);
+  const descriptorOrder = new Map(
+    pack.descriptor.actions.map((action, index) => [action.actionType, index]),
+  );
+  const offeredOrder = offered.map((actionType) => descriptorOrder.get(actionType));
+
+  assert.deepEqual(offered, [
+    "stage_move",
+    "stage_extract",
+    "stage_wait",
+    "assign_mira_task",
+    "cancel_mira_task",
+    "set_mira_follow",
+    "set_mira_hold",
+    "set_mira_regroup",
+    "request_mira_plan",
+    "defer_mira_contribution",
+  ]);
+  assert.deepEqual(offeredOrder, [...offeredOrder].sort((left, right) => left! - right!));
+});
+
 test("briefing is a complete safe projection with no Action offers", () => {
   const state = freshBriefing();
   const view = authorizedView(state, core(), { viewer_type: "participant", member_id: "lead-1" });
   assert.equal(view.schema, "participant");
   assert.deepEqual(view.actionOffers, []);
   assert.deepEqual(Object.keys(view.projection).sort(), [
-    "candidates", "carried_candidate", "debrief", "gates", "location", "map", "objective",
-    "optional_objectives", "outcome", "phase", "power", "preservation_agreement",
+    "candidates", "carried_candidate", "debrief", "gates", "location", "map", "mira",
+    "objective", "optional_objectives", "outcome", "phase", "power", "preservation_agreement",
     "staged_action", "turns_remaining", "turns_used", "verifier_result",
   ]);
   assert.equal(view.projection.phase, "briefing");
@@ -593,12 +632,406 @@ test("terminal debrief reports partial evidence without claiming a hidden verifi
   assertNoTruth(projection);
 });
 
+test("Mira advances one planned step beside each committed lead action and keeps inspection private until sharing", () => {
+  let state = freshActiveWithMira();
+  state = miraControl(state, "assign_mira_task", {
+    task_kind: "investigate_records",
+    power_allowance: 0,
+  });
+  state = applyLeadAction(state, "stage_move", { destination: "conservation" }, core()).state;
+  const requested = applyMiraLeadControl(
+    state,
+    "request_mira_plan",
+    {},
+    core(),
+    "2026-09-09T12:00:00.125Z",
+    {},
+  );
+  state = requested.state;
+  assert.equal(state.staged_action.kind, "move");
+  assert.equal(state.turns_used, 0);
+  assert.equal(state.mira.opportunity.deadline, "2026-09-09T12:00:15.125Z");
+  assert.equal(requested.attentionSignals.length, 1);
+  assert.equal(requested.timerRequests.length, 1);
+
+  state = submitMiraPlan(state, {
+    task_revision: 1,
+    opportunity_revision: 1,
+    steps: [
+      { step_type: "move", destination: "records", source_id: "none", power_cost: 0 },
+      { step_type: "inspect_source", destination: "none", source_id: "records", power_cost: 0 },
+      { step_type: "share_source", destination: "none", source_id: "records", power_cost: 0 },
+    ],
+  }, core(), "mira-1", "2026-09-09T12:00:01.000Z", {}).state;
+  assert.equal(canonicalStringify(participantProjection(state, "lead")).includes("inspect_source"), false);
+
+  state = miraControl(state, "prepare_mira_contribution", {});
+  state = applyLeadAction(state, "commit_turn", {}, core()).state;
+  assert.equal(state.location, "conservation");
+  assert.equal(state.mira.location, "records");
+  assert.equal(state.mira.plan.next_step_index, 1);
+  assert.equal(state.turns_used, 1);
+
+  state = applyLeadAction(state, "stage_inspect_conservation", {}, core()).state;
+  state = miraControl(state, "prepare_mira_contribution", {});
+  state = applyLeadAction(state, "commit_turn", {}, core()).state;
+  assert.equal(state.evidence.records, "unknown");
+  assert.equal(state.evidence.conservation, "observed");
+  assert.equal(state.mira.knowledge.records, "private");
+  const leadEvidence = participantProjection(state, "lead").candidates as { observed_evidence: unknown[] }[];
+  const miraEvidence = participantProjection(state, "mira").candidates as { observed_evidence: unknown[] }[];
+  assert.equal(leadEvidence[0]!.observed_evidence.length, 1);
+  assert.equal(miraEvidence[0]!.observed_evidence.length, 2);
+
+  state = applyLeadAction(state, "stage_wait", {}, core()).state;
+  state = miraControl(state, "prepare_mira_contribution", {});
+  state = applyLeadAction(state, "commit_turn", {}, core()).state;
+  assert.equal(state.evidence.records, "observed");
+  assert.equal(state.mira.knowledge.records, "shared");
+  assert.equal(state.mira.plan.status, "complete");
+  assert.equal(state.mira.plan.next_step_index, 3);
+  assert.equal(state.mira.mode, "holding");
+});
+
+test("the reducer authenticates Mira's one-shot plan and replays without a provider", () => {
+  const active = freshActiveWithMira();
+  const assigned = reduceArchive(reduceInput(active, {
+    stimulus_type: "participant_action",
+    member_id: "lead-1",
+    action_type: "assign_mira_task",
+    canonical_payload: { task_kind: "investigate_records", power_allowance: 0 },
+  }));
+  assert.equal(assigned.activity_disposition_type, "apply");
+  if (assigned.activity_disposition_type !== "apply") throw new Error("assignment did not apply");
+  const assignedState = assigned.next_activity_state as unknown as ArchiveState;
+  const requestInput = reduceInput(assignedState, {
+    stimulus_type: "participant_action",
+    member_id: "lead-1",
+    action_type: "request_mira_plan",
+    admitted_at: "2026-09-09T12:00:00.000Z",
+    canonical_payload: {},
+  });
+  const requested = reduceArchive(requestInput);
+  const replayed = reduceArchive(requestInput);
+  assert.equal(
+    canonicalStringify(requested as unknown as CanonicalJson),
+    canonicalStringify(replayed as unknown as CanonicalJson),
+  );
+  assert.equal(requested.activity_disposition_type, "apply");
+  if (requested.activity_disposition_type !== "apply") throw new Error("plan request did not apply");
+  assert.equal(requested.ordered_attention_signals.length, 1);
+  assert.equal(
+    (requested.ordered_attention_signals[0] as CanonicalObject | undefined)?.reason,
+    "companion_plan_requested",
+  );
+  assert.equal(MIRA_PLAN_ATTENTION_REASON, "companion_plan_requested");
+  assert.equal(requested.timer_requests.length, 1);
+  assert.equal(canonicalStringify(requested as unknown as CanonicalJson).includes("provider"), false);
+  const waiting = requested.next_activity_state as unknown as ArchiveState;
+
+  const unauthorized = reduceArchive(reduceInput(waiting, {
+    stimulus_type: "participant_action",
+    member_id: "jonah-1",
+    action_type: "submit_companion_plan",
+    canonical_payload: {
+      task_revision: 1,
+      opportunity_revision: 1,
+      steps: [{ step_type: "move", destination: "records", source_id: "none", power_cost: 0 }],
+    },
+  }));
+  assert.equal(unauthorized.activity_disposition_type, "reject");
+  assert.equal(unauthorized.declared_code, "role_violation");
+
+  const submitted = reduceArchive(reduceInput(waiting, {
+    stimulus_type: "participant_action",
+    member_id: "mira-1",
+    action_type: "submit_companion_plan",
+    admitted_at: "2026-09-09T12:00:01.000Z",
+    canonical_payload: {
+      task_revision: 1,
+      opportunity_revision: 1,
+      steps: [{ step_type: "move", destination: "records", source_id: "none", power_cost: 0 }],
+    },
+  }));
+  assert.equal(submitted.activity_disposition_type, "apply");
+  if (submitted.activity_disposition_type !== "apply") throw new Error("Mira plan did not apply");
+  assert.equal((submitted.next_activity_state as unknown as ArchiveState).mira.plan.status, "active");
+});
+
+test("an exhausted short plan preserves its standing task and enables a bounded replan", () => {
+  let state = freshActiveWithMira();
+  assert.equal(contextualOffers(state).includes("request_mira_plan"), false);
+  assert.equal(contextualOffers(state).includes("defer_mira_contribution"), false);
+  assert.equal(contextualOffers(state).includes("cancel_mira_task"), false);
+
+  state = miraControl(state, "assign_mira_task", {
+    task_kind: "investigate_records",
+    power_allowance: 0,
+  });
+  assert.equal(contextualOffers(state).includes("request_mira_plan"), true);
+  assert.equal(contextualOffers(state).includes("defer_mira_contribution"), true);
+  assert.equal(contextualOffers(state).includes("prepare_mira_contribution"), false);
+
+  state = applyMiraLeadControl(
+    state, "request_mira_plan", {}, core(), "2026-09-09T12:00:00.000Z", {},
+  ).state;
+  assert.equal(contextualOffers(state).includes("request_mira_plan"), false);
+  assert.equal(contextualOffers(state).includes("defer_mira_contribution"), true);
+  state = submitMiraPlan(state, {
+    task_revision: 1,
+    opportunity_revision: 1,
+    steps: [{ step_type: "move", destination: "records", source_id: "none", power_cost: 0 }],
+  }, core(), "mira-1", "2026-09-09T12:00:01.000Z", {}).state;
+  assertRule("task_violation", () => applyMiraLeadControl(
+    state, "request_mira_plan", {}, core(), "2026-09-09T12:00:02.000Z", {},
+  ));
+  state = applyLeadAction(state, "stage_wait", {}, core()).state;
+  state = miraControl(state, "prepare_mira_contribution", {});
+  state = applyLeadAction(state, "commit_turn", {}, core()).state;
+
+  assert.equal(state.mira.location, "records");
+  assert.equal(state.mira.plan.status, "complete");
+  assert.equal(state.mira.task.status, "assigned");
+  assert.equal(state.mira.mode, "tasked");
+  assert.equal(state.mira.knowledge.records, "unknown");
+  assert.equal(contextualOffers(state).includes("request_mira_plan"), true);
+  assert.equal(contextualOffers(state).includes("prepare_mira_contribution"), false);
+
+  state = applyMiraLeadControl(
+    state, "request_mira_plan", {}, core(), "2026-09-09T12:00:03.000Z", {},
+  ).state;
+  state = submitMiraPlan(state, {
+    task_revision: 1,
+    opportunity_revision: 2,
+    steps: [
+      { step_type: "inspect_source", destination: "none", source_id: "records", power_cost: 0 },
+      { step_type: "share_source", destination: "none", source_id: "records", power_cost: 0 },
+    ],
+  }, core(), "mira-1", "2026-09-09T12:00:04.000Z", {}).state;
+  assertRule("plan_invalid", () => submitMiraPlan(
+    applyMiraLeadControl(
+      miraControl(state, "assign_mira_task", {
+        task_kind: "investigate_records", power_allowance: 0,
+      }),
+      "request_mira_plan", {}, core(), "2026-09-09T12:00:05.000Z", {},
+    ).state,
+    {
+      task_revision: 2,
+      opportunity_revision: 3,
+      steps: [
+        { step_type: "inspect_source", destination: "none", source_id: "records", power_cost: 0 },
+        { step_type: "share_source", destination: "none", source_id: "records", power_cost: 0 },
+        { step_type: "move", destination: "atrium", source_id: "none", power_cost: 0 },
+      ],
+    },
+    core(), "mira-1", "2026-09-09T12:00:06.000Z", {},
+  ));
+  for (let index = 0; index < 2; index += 1) {
+    state = applyLeadAction(state, "stage_wait", {}, core()).state;
+    state = miraControl(state, "prepare_mira_contribution", {});
+    state = applyLeadAction(state, "commit_turn", {}, core()).state;
+  }
+  assert.equal(state.mira.knowledge.records, "shared");
+  assert.equal(state.mira.task.status, "complete");
+  assert.equal(state.mira.mode, "holding");
+});
+
+test("terminal turns close Mira planning and cancel its one-shot timer", () => {
+  let state = freshActiveWithMira();
+  state = miraControl(state, "assign_mira_task", {
+    task_kind: "investigate_records",
+    power_allowance: 0,
+  });
+  state = applyMiraLeadControl(
+    state, "request_mira_plan", {}, core(), "2026-09-09T12:00:00.000Z", {},
+  ).state;
+  state = applyLeadAction(state, "stage_extract", {}, core()).state;
+  state = miraControl(state, "defer_mira_contribution", {});
+  const input = {
+    ...reduceInput(state, {
+      stimulus_type: "participant_action",
+      member_id: "lead-1",
+      action_type: "commit_turn",
+      canonical_payload: {},
+    }),
+    scheduled_timers: { [MIRA_PLAN_TIMER_ID]: { generation: 7 } },
+  };
+  const terminal = reduceArchive(input);
+  assert.equal(terminal.activity_disposition_type, "apply");
+  if (terminal.activity_disposition_type !== "apply") throw new Error("terminal commit did not apply");
+  const finished = terminal.next_activity_state as unknown as ArchiveState;
+  assert.equal(finished.phase, "complete");
+  assert.equal(finished.mira.opportunity.status, "expired");
+  assert.equal(finished.mira.preparation.status, "none");
+  assert.deepEqual(terminal.timer_requests, [{
+    timer_request_type: "cancel_current",
+    timer_id: MIRA_PLAN_TIMER_ID,
+    expected_generation: 7,
+  }]);
+  assertRule("inactive", () => submitMiraPlan(finished, {
+    task_revision: 1,
+    opportunity_revision: 1,
+    steps: [{ step_type: "move", destination: "records", source_id: "none", power_cost: 0 }],
+  }, core(), "mira-1", "2026-09-09T12:00:01.000Z", {}));
+});
+
+test("extraction rejects a prepared companion move away from the Atrium", () => {
+  let state = freshActiveWithMira();
+  state = miraControl(state, "assign_mira_task", {
+    task_kind: "investigate_records",
+    power_allowance: 0,
+  });
+  state = applyMiraLeadControl(
+    state, "request_mira_plan", {}, core(), "2026-09-09T12:00:00.000Z", {},
+  ).state;
+  state = submitMiraPlan(state, {
+    task_revision: 1,
+    opportunity_revision: 1,
+    steps: [{ step_type: "move", destination: "records", source_id: "none", power_cost: 0 }],
+  }, core(), "mira-1", "2026-09-09T12:00:01.000Z", {}).state;
+  state = applyLeadAction(state, "stage_extract", {}, core()).state;
+  state = miraControl(state, "prepare_mira_contribution", {});
+
+  assertRule("crew_not_regrouped", () => applyLeadAction(state, "commit_turn", {}, core()));
+  assert.equal(state.phase, "active");
+  assert.equal(state.mira.location, "atrium");
+});
+
+test("late, stale, and replaced Companion Plans cannot execute", () => {
+  let state = freshActiveWithMira();
+  state = miraControl(state, "assign_mira_task", {
+    task_kind: "investigate_records",
+    power_allowance: 0,
+  });
+  state = applyMiraLeadControl(
+    state, "request_mira_plan", {}, core(), "2026-09-09T12:00:00.000Z", {},
+  ).state;
+  const move = {
+    task_revision: 1,
+    opportunity_revision: 1,
+    steps: [{ step_type: "move", destination: "records", source_id: "none", power_cost: 0 }],
+  };
+  assertRule("stale_plan", () =>
+    submitMiraPlan(state, move, core(), "mira-1", "2026-09-09T12:00:15.000Z", {})
+  );
+  const expired = expireMiraOpportunity(state, {
+    timer_id: MIRA_PLAN_TIMER_ID,
+    canonical_payload: {
+      timer: "mira_plan_opportunity",
+      opportunity_revision: 1,
+      task_revision: 1,
+    },
+  }).state;
+  assert.equal(expired.mira.opportunity.status, "expired");
+  assertRule("stale_plan", () =>
+    submitMiraPlan(expired, move, core(), "mira-1", "2026-09-09T12:00:02.000Z", {})
+  );
+
+  const replacementCore = coreWithMira("mira-2", "enabled");
+  const replaced = reconcileMira(state, replacementCore, {}).state;
+  assert.equal(replaced.mira.member_id, "mira-2");
+  assert.equal(replaced.mira.plan.status, "none");
+  assert.equal(replaced.mira.preparation.status, "none");
+  assertRule("role_violation", () =>
+    submitMiraPlan(replaced, move, replacementCore, "mira-1", "2026-09-09T12:00:02.000Z", {})
+  );
+  const suspended = reconcileMira(replaced, coreWithMira("mira-2", "suspended"), {}).state;
+  assert.equal(suspended.mira.presence, "suspended");
+  assert.equal(suspended.mira.task.status, "cancelled");
+});
+
+test("task allowance fences verifier use and tasked turns require prepare or defer", () => {
+  let state = freshActiveWithMira();
+  state = miraControl(state, "assign_mira_task", {
+    task_kind: "investigate_records",
+    power_allowance: 0,
+  });
+  state = applyMiraLeadControl(
+    state, "request_mira_plan", {}, core(), "2026-09-09T12:00:00.000Z", {},
+  ).state;
+  assertRule("task_violation", () => submitMiraPlan(state, {
+    task_revision: 1,
+    opportunity_revision: 1,
+    steps: [
+      { step_type: "move", destination: "records", source_id: "none", power_cost: 0 },
+      { step_type: "use_verifier", destination: "none", source_id: "records", power_cost: 1 },
+    ],
+  }, core(), "mira-1", "2026-09-09T12:00:01.000Z", {}));
+  state = applyLeadAction(state, "stage_wait", {}, core()).state;
+  assertRule("preparation_required", () => applyLeadAction(state, "commit_turn", {}, core()));
+  state = miraControl(state, "defer_mira_contribution", {});
+  state = applyLeadAction(state, "commit_turn", {}, core()).state;
+  assert.equal(state.turns_used, 1);
+  assert.equal(state.mira.location, "atrium");
+
+  let powered = freshActiveWithMira();
+  powered = miraControl(powered, "assign_mira_task", {
+    task_kind: "investigate_records",
+    power_allowance: 1,
+  });
+  powered = applyMiraLeadControl(
+    powered, "request_mira_plan", {}, core(), "2026-09-09T12:00:00.000Z", {},
+  ).state;
+  powered = submitMiraPlan(powered, {
+    task_revision: 1,
+    opportunity_revision: 1,
+    steps: [
+      { step_type: "move", destination: "records", source_id: "none", power_cost: 0 },
+      { step_type: "use_verifier", destination: "none", source_id: "records", power_cost: 1 },
+    ],
+  }, core(), "mira-1", "2026-09-09T12:00:01.000Z", {}).state;
+  for (let index = 0; index < 2; index += 1) {
+    powered = applyLeadAction(powered, "stage_wait", {}, core()).state;
+    powered = miraControl(powered, "prepare_mira_contribution", {});
+    powered = applyLeadAction(powered, "commit_turn", {}, core()).state;
+  }
+  assert.equal(powered.power_remaining, 2);
+  assert.equal(powered.mira.task.power_spent, 1);
+  assert.equal(powered.mira.knowledge.verifier_result, "ledger-violet");
+  assert.equal(powered.verifier_result, "ledger-violet");
+});
+
+test("regrouping moves one deterministic open edge per lead commit and gates extraction", () => {
+  let state: ArchiveState = {
+    ...freshActiveWithMira(),
+    mira: { ...initialMiraState("mira-1"), location: "plant" as const, mode: "holding" as const },
+  };
+  state = applyLeadAction(state, "stage_extract", {}, core()).state;
+  assertRule("crew_not_regrouped", () => applyLeadAction(state, "commit_turn", {}, core()));
+  state = miraControl(state, "set_mira_regroup", {});
+  state = applyLeadAction(state, "stage_wait", {}, core()).state;
+  state = applyLeadAction(state, "commit_turn", {}, core()).state;
+  assert.equal(state.mira.location, "records");
+  state = applyLeadAction(state, "stage_wait", {}, core()).state;
+  state = applyLeadAction(state, "commit_turn", {}, core()).state;
+  assert.equal(state.mira.location, "atrium");
+  assert.equal(state.mira.mode, "holding");
+  state = applyLeadAction(state, "stage_extract", {}, core()).state;
+  state = applyLeadAction(state, "commit_turn", {}, core()).state;
+  assert.equal(state.outcome.kind, "no_ledger");
+});
+
 function freshBriefing(): ArchiveState {
   return initializeArchiveState({ scenario_id: "standard-v1" });
 }
 
 function freshActive(): ArchiveState {
   return startArchive(freshBriefing());
+}
+
+function freshActiveWithMira(): ArchiveState {
+  return { ...freshActive(), mira: initialMiraState("mira-1") };
+}
+
+function miraControl(state: ArchiveState, actionType: string, actionPayload: CanonicalObject): ArchiveState {
+  return applyMiraLeadControl(
+    state,
+    actionType,
+    actionPayload,
+    core(),
+    "2026-09-09T12:00:02.000Z",
+    {},
+  ).state;
 }
 
 function commit(
@@ -671,6 +1104,17 @@ function core(): CanonicalObject {
   };
 }
 
+function coreWithMira(memberId: string, standing: "enabled" | "suspended"): CanonicalObject {
+  const value = core();
+  const memberships = value.memberships as CanonicalObject;
+  return {
+    memberships: {
+      ...Object.fromEntries(Object.entries(memberships).filter(([id]) => id !== "mira-1")),
+      [memberId]: { ...membership(memberId, "mira", "agent"), standing },
+    },
+  };
+}
+
 function membership(
   memberId: string,
   role: "lead" | "mira" | "jonah",
@@ -687,10 +1131,14 @@ function membership(
 }
 
 function reduceInput(state: ArchiveState, stimulus: CanonicalObject): CanonicalObject {
+  const recordedStimulus = stimulus.stimulus_type === "participant_action" && stimulus.admitted_at === undefined
+    ? { ...stimulus, admitted_at: "2026-09-09T12:00:00.000Z" }
+    : stimulus;
   return {
     prior_activity_state: state as unknown as CanonicalJson,
     core_before: core(),
     proposed_core_after: core(),
-    recorded_stimulus: stimulus,
+    recorded_stimulus: recordedStimulus,
+    scheduled_timers: {},
   };
 }

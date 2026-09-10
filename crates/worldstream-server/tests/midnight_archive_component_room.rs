@@ -1,4 +1,4 @@
-//! Live qualification lane for the solo Midnight Archive route.
+//! Live qualification lanes for solo and companion Midnight Archive Rooms.
 //!
 //! The test uses the retained reviewed Bundle, the production portable
 //! Component Host, and the same SQLite gateway/WebSocket boundary used by the
@@ -35,8 +35,12 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const PACK_ID: &str = "worldstream.midnight-archive";
 const PACK_VERSION: &str = "0.1.0";
 const CURRENT_BUNDLE_DIGEST: &str =
-    "blake3:877702b321352288553cc0e5ea6510f1f8dea3e18687759658714ebc09a3c269";
+    "blake3:ea79ce7ff3e90ab5d073409486af1227286b82512daec98db3e921097dd8ac99";
 const CURRENT_REVISION_DIGEST: &str =
+    "blake3:ec4689e090f05f1c1894f21c1dba95e1f56b3afc49fc88c5c8f3530a03a80b61";
+const RETAINED_AGREEMENT_BUNDLE_DIGEST: &str =
+    "blake3:877702b321352288553cc0e5ea6510f1f8dea3e18687759658714ebc09a3c269";
+const RETAINED_AGREEMENT_REVISION_DIGEST: &str =
     "blake3:6c3ad825a65307b9f5434d4a9140b7db4bd70d1f7830c66d6f6af1d2ba9dc0da";
 const RETAINED_EVIDENCE_BUNDLE_DIGEST: &str =
     "blake3:e0626769fa745fafd0e41238473902988f446b453f283c7a7a7155a9122cf03f";
@@ -50,7 +54,7 @@ const FORBIDDEN_PRIVATE_KEYS: &[&str] = &["authentic_candidate_id", "is_authenti
 
 fn client_binding_identity() -> TestResult<(String, String)> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config/activity-clients/releases/midnight-archive-web-v3.json");
+        .join("../../config/activity-clients/releases/midnight-archive-web-v4.json");
     let release: Value = serde_json::from_slice(&fs::read(path)?)?;
     let release_digest = release["release_digest"]
         .as_str()
@@ -60,7 +64,7 @@ fn client_binding_identity() -> TestResult<(String, String)> {
         .as_array()
         .and_then(|surfaces| {
             surfaces.iter().find_map(|surface| {
-                (surface["entrypoint"] == "/midnight-archive-v3/")
+                (surface["entrypoint"] == "/midnight-archive-v4/")
                     .then(|| surface["surface_id"].as_str())
                     .flatten()
             })
@@ -82,8 +86,8 @@ fn release_bundle_path(bundle_digest: &str) -> PathBuf {
 
 fn current_bundle_path() -> PathBuf {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let proof_path = workspace
-        .join("packs/midnight-archive/evidence/production-proof-0.1.0-agreement-route.json");
+    let proof_path =
+        workspace.join("packs/midnight-archive/evidence/production-proof-0.1.0-mira.json");
     let proof: Value = serde_json::from_slice(
         &fs::read(&proof_path)
             .unwrap_or_else(|error| panic!("read Archive proof {proof_path:?}: {error}")),
@@ -213,6 +217,15 @@ async fn post(routes: &Router, authority: &str, path: &str, body: Value) -> Test
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> TestResult {
+    run_archive_witness(false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mira_task_assignment_commits_with_descriptor_ordered_offers() -> TestResult {
+    run_archive_witness(true).await
+}
+
+async fn run_archive_witness(with_mira: bool) -> TestResult {
     let (client_release_digest, client_surface_id) = client_binding_identity()?;
     let current_path = current_bundle_path();
     let current_bytes = fs::read(&current_path)?;
@@ -252,86 +265,139 @@ async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> 
     assert!(witness.chunks_exact(2).all(|turn| {
         turn[0].action_type.starts_with("stage_") && turn[1].action_type == "commit_turn"
     }));
-    let evidence_path = release_bundle_path(RETAINED_EVIDENCE_BUNDLE_DIGEST);
-    let evidence_bytes = fs::read(&evidence_path)?;
-    let evidence_verified = PackBundleVerifierV1.inspect(Arc::<[u8]>::from(evidence_bytes))?;
-    let evidence_inspection = evidence_verified.inspection();
-    assert_eq!(evidence_inspection.pack_id, PACK_ID);
-    assert_eq!(evidence_inspection.explanatory_version, PACK_VERSION);
-    assert_eq!(
-        evidence_inspection.bundle_digest.to_string(),
-        RETAINED_EVIDENCE_BUNDLE_DIGEST,
-        "retained release path must contain the exact IMO-200 Bundle bytes"
-    );
-    assert_eq!(
-        evidence_inspection.revision_digest.to_string(),
-        RETAINED_EVIDENCE_REVISION_DIGEST,
-        "retained Bundle must inspect as the exact IMO-200 revision"
-    );
-    let evidence_revision_digest = evidence_verified.revision_digest().clone();
-    let first_playable_path = release_bundle_path(RETAINED_FIRST_PLAYABLE_BUNDLE_DIGEST);
-    let first_playable_bytes = fs::read(&first_playable_path)?;
-    let first_playable_verified =
-        PackBundleVerifierV1.inspect(Arc::<[u8]>::from(first_playable_bytes))?;
-    let first_playable_inspection = first_playable_verified.inspection();
-    assert_eq!(first_playable_inspection.pack_id, PACK_ID);
-    assert_eq!(first_playable_inspection.explanatory_version, PACK_VERSION);
-    assert_eq!(
-        first_playable_inspection.bundle_digest.to_string(),
-        RETAINED_FIRST_PLAYABLE_BUNDLE_DIGEST,
-        "retained release path must contain the exact IMO-199 Bundle bytes"
-    );
-    assert_eq!(
-        first_playable_inspection.revision_digest.to_string(),
-        RETAINED_FIRST_PLAYABLE_REVISION_DIGEST,
-        "retained Bundle must inspect as the exact IMO-199 revision"
-    );
-    let first_playable_revision_digest = first_playable_verified.revision_digest().clone();
+    let registry = if with_mira {
+        let admission = ComponentPackHostV1::new()?.admit(
+            verified,
+            PackRegistryStatusV1 {
+                selectable_for_new_rooms: true,
+                runnable_for_retained_rooms: true,
+                approved_for_activity_start: true,
+            },
+        )?;
+        builtin_counter_registry()?.admit_portable([admission])?
+    } else {
+        let evidence_path = release_bundle_path(RETAINED_EVIDENCE_BUNDLE_DIGEST);
+        let evidence_bytes = fs::read(&evidence_path)?;
+        let evidence_verified = PackBundleVerifierV1.inspect(Arc::<[u8]>::from(evidence_bytes))?;
+        let evidence_inspection = evidence_verified.inspection();
+        assert_eq!(evidence_inspection.pack_id, PACK_ID);
+        assert_eq!(evidence_inspection.explanatory_version, PACK_VERSION);
+        assert_eq!(
+            evidence_inspection.bundle_digest.to_string(),
+            RETAINED_EVIDENCE_BUNDLE_DIGEST,
+            "retained release path must contain the exact IMO-200 Bundle bytes"
+        );
+        assert_eq!(
+            evidence_inspection.revision_digest.to_string(),
+            RETAINED_EVIDENCE_REVISION_DIGEST,
+            "retained Bundle must inspect as the exact IMO-200 revision"
+        );
+        let evidence_revision_digest = evidence_verified.revision_digest().clone();
+        let agreement_path = release_bundle_path(RETAINED_AGREEMENT_BUNDLE_DIGEST);
+        let agreement_bytes = fs::read(&agreement_path)?;
+        let agreement_verified =
+            PackBundleVerifierV1.inspect(Arc::<[u8]>::from(agreement_bytes))?;
+        let agreement_inspection = agreement_verified.inspection();
+        assert_eq!(agreement_inspection.pack_id, PACK_ID);
+        assert_eq!(agreement_inspection.explanatory_version, PACK_VERSION);
+        assert_eq!(
+            agreement_inspection.bundle_digest.to_string(),
+            RETAINED_AGREEMENT_BUNDLE_DIGEST,
+            "retained release path must contain the exact IMO-201 Bundle bytes"
+        );
+        assert_eq!(
+            agreement_inspection.revision_digest.to_string(),
+            RETAINED_AGREEMENT_REVISION_DIGEST,
+            "retained Bundle must inspect as the exact IMO-201 revision"
+        );
+        let agreement_revision_digest = agreement_verified.revision_digest().clone();
+        let first_playable_path = release_bundle_path(RETAINED_FIRST_PLAYABLE_BUNDLE_DIGEST);
+        let first_playable_bytes = fs::read(&first_playable_path)?;
+        let first_playable_verified =
+            PackBundleVerifierV1.inspect(Arc::<[u8]>::from(first_playable_bytes))?;
+        let first_playable_inspection = first_playable_verified.inspection();
+        assert_eq!(first_playable_inspection.pack_id, PACK_ID);
+        assert_eq!(first_playable_inspection.explanatory_version, PACK_VERSION);
+        assert_eq!(
+            first_playable_inspection.bundle_digest.to_string(),
+            RETAINED_FIRST_PLAYABLE_BUNDLE_DIGEST,
+            "retained release path must contain the exact IMO-199 Bundle bytes"
+        );
+        assert_eq!(
+            first_playable_inspection.revision_digest.to_string(),
+            RETAINED_FIRST_PLAYABLE_REVISION_DIGEST,
+            "retained Bundle must inspect as the exact IMO-199 revision"
+        );
+        let first_playable_revision_digest = first_playable_verified.revision_digest().clone();
 
-    let component_host = ComponentPackHostV1::new()?;
-    let first_playable_admission = component_host.admit(
-        first_playable_verified,
-        PackRegistryStatusV1 {
-            selectable_for_new_rooms: false,
-            runnable_for_retained_rooms: true,
-            approved_for_activity_start: true,
-        },
-    )?;
-    let evidence_admission = component_host.admit(
-        evidence_verified,
-        PackRegistryStatusV1 {
-            selectable_for_new_rooms: false,
-            runnable_for_retained_rooms: true,
-            approved_for_activity_start: true,
-        },
-    )?;
-    let current_admission = component_host.admit(
-        verified,
-        PackRegistryStatusV1 {
-            selectable_for_new_rooms: true,
-            runnable_for_retained_rooms: true,
-            approved_for_activity_start: true,
-        },
-    )?;
-    // Registry construction executes and verifies both immutable golden corpora.
-    let registry = builtin_counter_registry()?.admit_portable([
-        first_playable_admission,
-        evidence_admission,
-        current_admission,
-    ])?;
-    registry.load_retained(&first_playable_revision_digest)?;
-    registry.load_retained(&evidence_revision_digest)?;
-    registry.load_retained(&current_revision_digest)?;
-    for retained_revision in [&first_playable_revision_digest, &evidence_revision_digest] {
-        let retained_catalog = registry.catalog_revision(retained_revision)?;
-        assert!(!retained_catalog.selectable_for_new_rooms);
-        assert!(retained_catalog.runnable_for_retained_rooms);
-        assert!(retained_catalog.approved_for_activity_start);
-    }
-    let current_catalog = registry.catalog_revision(&current_revision_digest)?;
-    assert!(current_catalog.selectable_for_new_rooms);
-    assert!(current_catalog.runnable_for_retained_rooms);
-    assert!(current_catalog.approved_for_activity_start);
+        let component_host = ComponentPackHostV1::new()?;
+        let first_playable_admission = component_host.admit(
+            first_playable_verified,
+            PackRegistryStatusV1 {
+                selectable_for_new_rooms: false,
+                runnable_for_retained_rooms: true,
+                approved_for_activity_start: true,
+            },
+        )?;
+        let evidence_admission = component_host.admit(
+            evidence_verified,
+            PackRegistryStatusV1 {
+                selectable_for_new_rooms: false,
+                runnable_for_retained_rooms: true,
+                approved_for_activity_start: true,
+            },
+        )?;
+        let agreement_admission = component_host.admit(
+            agreement_verified,
+            PackRegistryStatusV1 {
+                selectable_for_new_rooms: false,
+                runnable_for_retained_rooms: true,
+                approved_for_activity_start: true,
+            },
+        )?;
+        let current_admission = component_host.admit(
+            verified,
+            PackRegistryStatusV1 {
+                selectable_for_new_rooms: true,
+                runnable_for_retained_rooms: true,
+                approved_for_activity_start: true,
+            },
+        )?;
+        // Registry construction executes and verifies both immutable golden corpora.
+        let registry = builtin_counter_registry()?.admit_portable([
+            first_playable_admission,
+            evidence_admission,
+            agreement_admission,
+            current_admission,
+        ])?;
+        registry.load_retained(&first_playable_revision_digest)?;
+        registry.load_retained(&evidence_revision_digest)?;
+        registry.load_retained(&agreement_revision_digest)?;
+        registry.load_retained(&current_revision_digest)?;
+        for retained_revision in [
+            &first_playable_revision_digest,
+            &evidence_revision_digest,
+            &agreement_revision_digest,
+        ] {
+            let retained_catalog = registry.catalog_revision(retained_revision)?;
+            assert!(!retained_catalog.selectable_for_new_rooms);
+            assert!(retained_catalog.runnable_for_retained_rooms);
+            assert!(retained_catalog.approved_for_activity_start);
+        }
+        let current_catalog = registry.catalog_revision(&current_revision_digest)?;
+        assert!(current_catalog.selectable_for_new_rooms);
+        assert!(current_catalog.runnable_for_retained_rooms);
+        assert!(current_catalog.approved_for_activity_start);
+
+        registry
+    };
+    let descriptor_action_order = registry
+        .load_retained(&current_revision_digest)?
+        .descriptor()
+        .actions
+        .iter()
+        .map(|action| action.action_type.clone())
+        .collect::<Vec<_>>();
 
     let directory = tempfile::tempdir()?;
     let file = tempfile::NamedTempFile::new_in(directory.path())?;
@@ -352,17 +418,34 @@ async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> 
     let routes =
         operator_router(OperatorState::new(EffectiveConfig::default())?.with_backend(backend));
     let host_header = format!("Bearer {}", BearerWireV1::from_bytes([0xc1; 32]).to_wire());
-    let created: CreateRoomResponse = serde_json::from_value(post(
-        &routes,
-        &host_header,
-        "/v1/rooms",
-        json!({
-            "pack":{"id":PACK_ID,"version":PACK_VERSION,"digest":digest},
-            "configuration":configuration,
-            "members":[{"principal_id":"01ARZ3NDEKTSV4RRFFQ69G5G14","principal_kind":"human","role":"lead","access_mode":"participant"}],
-            "idempotency_key":"midnight-archive-live-witness"
-        }),
-    ).await?)?;
+    let mut members = vec![json!({
+        "principal_id":"01ARZ3NDEKTSV4RRFFQ69G5G14", "principal_kind":"human",
+        "role":"lead", "access_mode":"participant"
+    })];
+    if with_mira {
+        members.push(json!({
+            "principal_id":"01ARZ3NDEKTSV4RRFFQ69G5G16", "principal_kind":"agent",
+            "role":"mira", "access_mode":"participant"
+        }));
+    }
+    let created: CreateRoomResponse = serde_json::from_value(
+        post(
+            &routes,
+            &host_header,
+            "/v1/rooms",
+            json!({
+                "pack":{"id":PACK_ID,"version":PACK_VERSION,"digest":digest},
+                "configuration":configuration,
+                "members":members,
+                "idempotency_key":"midnight-archive-live-witness"
+            }),
+        )
+        .await?,
+    )?;
+    assert_eq!(created.member_ids.len(), if with_mira { 2 } else { 1 });
+    if with_mira {
+        assert_ne!(created.member_ids[0], created.member_ids[1]);
+    }
     let member = created
         .member_ids
         .first()
@@ -428,6 +511,44 @@ async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> 
         let mut offers = action_offers(&active)
             .cloned()
             .ok_or("active action offers missing")?;
+        if with_mira {
+            assert_eq!(state["mira"]["presence"], "active");
+            assert_eq!(state["mira"]["task"]["status"], "none");
+            assert!(offers.iter().any(|offer| offer["action_type"] == "assign_mira_task"));
+            send(&mut socket, "action.submit", &json!({
+                "action_id":"01ARZ3NDEKSTV4RRFFQ69G5G23",
+                "based_on_room_seq":last_seq,
+                "action_type":"assign_mira_task",
+                "payload":{"task_kind":"investigate_records","power_allowance":0}
+            }), "01ARZ3NDEKSTV4RRFFQ69G5G24")?;
+            // Acceptance must include preparation and durable commitment of
+            // every Membership's resulting view, not only Pack reduction.
+            let receipt = receive(&mut socket, "action.accepted")?;
+            let observation = receive(&mut socket, "observation.deliver")?;
+            state = projection(&observation);
+            offers = action_offers(&observation)
+                .cloned()
+                .ok_or("task assignment action offers missing")?;
+            let next_seq = room_seq(&observation);
+            assert_eq!(next_seq, last_seq + 1);
+            assert_eq!(receipt["room_head"]["room_seq"], next_seq);
+            assert_eq!(turns_used(&state), 0, "assignment must not commit an Activity Turn");
+            assert_eq!(state["mira"]["task"]["status"], "assigned");
+            assert_eq!(state["mira"]["task"]["kind"], "investigate_records");
+            assert_eq!(state["mira"]["task"]["power_allowance"], 0);
+            let indices = offers.iter().map(|offer| {
+                descriptor_action_order.iter()
+                    .position(|action| offer["action_type"] == action.as_str())
+                    .ok_or("offered Action is absent from the admitted descriptor")
+            }).collect::<Result<Vec<_>, _>>()?;
+            assert!(indices.windows(2).all(|pair| pair[0] < pair[1]),
+                "assignment offers must follow the exact descriptor order without duplicates");
+            for action in ["cancel_mira_task", "request_mira_plan", "defer_mira_contribution"] {
+                assert!(offers.iter().any(|offer| offer["action_type"] == action),
+                    "task assignment did not offer {action}");
+            }
+            return Ok((next_seq, state));
+        }
         send(&mut socket, "action.submit", &json!({
             "action_id":"01ARZ3NDEKSTV4RRFFQ69G5G23",
             "based_on_room_seq":last_seq,
@@ -517,6 +638,12 @@ async fn solo_archive_witness_uses_real_component_host_and_replays_exactly() -> 
     assert_eq!(replay["requested_room_seq"], last_seq);
     assert_eq!(projection(&replay)["phase"], final_state["phase"]);
     assert_eq!(projection(&replay)["outcome"], final_state["outcome"]);
+    if with_mira {
+        assert_eq!(
+            projection(&replay)["mira"]["task"],
+            final_state["mira"]["task"]
+        );
+    }
     reject_private(&replay);
     Ok(())
 }

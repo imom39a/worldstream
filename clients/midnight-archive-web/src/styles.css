@@ -244,12 +244,12 @@ code { font-family: var(--ws-mono-font); }
   margin-top: 18px;
 }
 .archive-main-column, .archive-turn-column { display: grid; align-content: start; gap: 18px; min-width: 0; }
-.archive-map-panel, .candidate-board, .carried-card, .context-actions, .commit-panel, .verifier-result, .agreement-card, .optional-objectives {
+.archive-map-panel, .candidate-board, .carried-card, .context-actions, .commit-panel, .verifier-result, .agreement-card, .optional-objectives, .mira-crew-card {
   border: 1px solid var(--archive-line);
   border-radius: 5px;
   background: rgba(14, 25, 29, .94);
 }
-.archive-map-panel, .candidate-board, .context-actions, .commit-panel, .agreement-card, .optional-objectives { padding: 24px; }
+.archive-map-panel, .candidate-board, .context-actions, .commit-panel, .agreement-card, .optional-objectives, .mira-crew-card { padding: 24px; }
 .candidate-evidence {
   display: grid;
   gap: 5px;
@@ -396,6 +396,44 @@ code { font-family: var(--ws-mono-font); }
 .verifier-result small { color: #95b9b5; text-transform: uppercase; }
 .verifier-result strong { color: #e2f5f0; }
 .verifier-result p { margin: 0; color: var(--archive-cyan); font-size: .7rem; }
+
+.mira-crew-card { border-color: #416866; background: linear-gradient(150deg, rgba(17, 43, 43, .98), rgba(13, 27, 31, .98)); }
+.mira-crew-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.mira-crew-card h2 { color: #e2f5f0; font-size: 1.7rem; }
+.mira-presence { padding: 5px 8px; border: 1px solid #4e7773; border-radius: 999px; color: var(--archive-cyan); font: 700 .63rem/1 var(--ws-ui-font); letter-spacing: .08em; text-transform: uppercase; }
+.mira-presence.presence-suspended { border-color: #765947; color: #d2a38d; }
+.mira-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin: 16px 0; }
+.mira-facts div { min-width: 0; padding: 9px; border: 1px solid #385250; background: rgba(9, 26, 28, .65); }
+.mira-facts dt { color: #91aaa6; font-size: .6rem; letter-spacing: .06em; text-transform: uppercase; }
+.mira-facts dd { margin: 4px 0 0; color: #dce9e5; font-size: .7rem; font-weight: 700; }
+.mira-plan-status { margin: 0 0 12px; padding: 10px; border-left: 3px solid var(--archive-cyan); color: #c4dcda; background: rgba(13, 49, 48, .6); font-size: .72rem; }
+.mira-preparation, .mira-knowledge, .mira-last-contribution { display: grid; gap: 5px; margin-top: 10px; padding: 11px; border: 1px solid #385250; background: #0d1c20; }
+.mira-preparation small, .mira-knowledge small, .mira-last-contribution small { color: #92aaa6; font-size: .61rem; letter-spacing: .07em; text-transform: uppercase; }
+.mira-preparation strong { color: #d8e6e1; font-size: .76rem; }
+.mira-preparation span { color: var(--archive-gold); font-size: .65rem; }
+.mira-preparation.preparation-prepared { border-color: #82714d; background: #23251f; }
+.mira-knowledge p, .mira-last-contribution p { margin: 0; color: #b8c9c5; font-size: .68rem; }
+.mira-knowledge .mira-verified { color: var(--archive-cyan); }
+.mira-controls { display: grid; gap: 8px; margin-top: 18px; padding-top: 16px; border-top: 1px solid #3a5553; }
+.mira-controls h3 { margin-top: 8px; color: #e3eee9; font-size: 1rem; }
+.mira-controls > p { margin: 0; color: var(--archive-muted); font-size: .68rem; }
+.mira-task-grid, .mira-control-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.mira-task-grid button, .mira-control button {
+  min-height: 46px;
+  padding: 8px 10px;
+  border: 1px solid #52716d;
+  border-radius: 3px;
+  color: #d8ebe6;
+  background: #1b3533;
+  cursor: pointer;
+}
+.mira-task-grid button { display: grid; align-content: center; justify-items: start; gap: 6px; text-align: left; }
+.mira-task-grid button > small { color: #aebfba; font-size: .62rem; }
+.mira-task-grid button:disabled, .mira-control button:disabled { border-color: #354447; color: #788885; background: #172326; cursor: not-allowed; }
+.mira-control { display: grid; align-content: start; gap: 4px; }
+.mira-control button { width: 100%; }
+.mira-control small, .mira-unavailable { color: #d3a48f !important; font-size: .62rem !important; line-height: 1.35; }
+.mira-control-note { padding-top: 6px; color: #bcae90 !important; }
 
 .context-actions .section-heading { margin-bottom: 12px; }
 .action-card-list { display: grid; gap: 8px; }
@@ -555,7 +593,7 @@ code { font-family: var(--ws-mono-font); }
   .archive-workspace { grid-template-columns: 1fr; }
   .archive-turn-column { grid-row: 1; }
   .commit-panel { position: static; }
-  .archive-map-panel, .candidate-board, .context-actions, .commit-panel, .agreement-card, .optional-objectives { padding: 17px; }
+  .archive-map-panel, .candidate-board, .context-actions, .commit-panel, .agreement-card, .optional-objectives, .mira-crew-card { padding: 17px; }
   .archive-map { min-height: 430px; }
   .map-location { width: 105px; min-height: 76px; padding: 8px 5px; }
   .map-location small { max-width: 92px; }
@@ -586,6 +624,8 @@ code { font-family: var(--ws-mono-font); }
   .action-card button { width: 100%; min-height: 50px; }
   .agreement-card li { grid-template-columns: auto minmax(0, 1fr); }
   .agreement-card li .cost-pills { grid-column: 2; }
+  .mira-facts, .mira-task-grid, .mira-control-row { grid-template-columns: 1fr; }
+  .mira-task-grid button, .mira-control button { min-height: 50px; }
   .commit-button { min-height: 72px; }
 }
 

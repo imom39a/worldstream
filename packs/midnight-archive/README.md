@@ -1,11 +1,13 @@
 # Midnight Archive Activity Pack
 
-`worldstream.midnight-archive` is a deterministic solo escape-room Activity
-Pack. One human `lead` explores a small archive, spends a fixed power budget,
-chooses among visible ledger candidates, and extracts before the sixteenth
-turn ends. The optional `mira` and `jonah` Roles are declared for later
-companion work; they can observe their own private projection but cannot act
-in version 0.1.0.
+`worldstream.midnight-archive` is a deterministic escape-room Activity Pack.
+One human `lead` explores a small archive, spends a fixed power budget, chooses
+among visible ledger candidates, and extracts before the sixteenth turn ends.
+The mission remains fully playable alone. When the optional agent Role `mira`
+is filled, the lead can delegate a bounded investigation, request a one-shot
+Companion Plan, and prepare one eligible contribution for each human turn.
+The optional `jonah` Role remains reserved for later companion work and cannot
+act in version 0.1.0.
 
 The current source adds two authored evidence sources and the archivist's
 fixed preservation agreement. A committed Records inspection reveals a
@@ -52,6 +54,27 @@ then sends `commit_turn` to spend one turn. The declared actions are:
 | `stage_wait` | `{}` | Spend a turn without moving |
 | `commit_turn` | `{}` | Commit the currently staged action |
 
+When Mira is present, the lead also receives structured controls that do not
+advance the turn by themselves:
+
+| Action | Payload | Effect |
+| --- | --- | --- |
+| `assign_mira_task` | `{"task_kind":"investigate_records|investigate_conservation","power_allowance":0|1}` | Assign or replace Mira's bounded standing investigation |
+| `cancel_mira_task` | `{}` | Cancel the task and invalidate its plan and preparation |
+| `set_mira_follow` | `{}` | Have Mira follow one legal edge when the lead moves |
+| `set_mira_hold` | `{}` | Keep Mira at her current location |
+| `set_mira_regroup` | `{}` | Have Mira move one legal edge toward the lead per committed turn |
+| `request_mira_plan` | `{}` | Open a short, revision-fenced planning opportunity for Mira |
+| `prepare_mira_contribution` | `{}` | Select the next eligible plan step for the lead's next commit |
+| `defer_mira_contribution` | `{}` | Explicitly skip Mira's contribution on the lead's next commit |
+
+Mira alone may submit `submit_companion_plan` with one to three typed steps for
+the exact open task and opportunity revisions. A submitted plan never advances
+the world automatically. The lead must prepare a still-eligible step, and at
+most one prepared step resolves with the next committed human turn. Invalid or
+stale plans, preparations, memberships, locations, and power allowances are
+rejected or invalidated before they can affect Activity State.
+
 The locations are `atrium`, `records`, `conservation`, `plant`, and `vault`.
 Open edges connect Atrium–Records, Atrium–Conservation,
 Records–Conservation, and Records–Plant. Conservation–Vault opens after both
@@ -66,12 +89,15 @@ turn ends with `exhausted_inside`.
 ## Participant projection
 
 Every participant projection has the same bounded shape, including during
-briefing:
+briefing. Mira is represented by a public, typed summary of her location,
+mode, task, planning opportunity, plan progress, preparation, disclosed
+knowledge, and last contribution. Private Runner inputs and undisclosed
+evidence do not enter participant or public projections.
 
 ```text
 phase, objective, location, turns_used, turns_remaining, power,
 gates, map, candidates, staged_action, carried_candidate, debrief,
-verifier_result, preservation_agreement, optional_objectives, outcome
+verifier_result, preservation_agreement, optional_objectives, mira, outcome
 ```
 
 `staged_action` is `null` or an exact staged action object with
@@ -106,9 +132,24 @@ also cover the eleven-turn agreement route, independent preservation,
 insufficient power, a recoverable committed wait, exact authored terms,
 human-only acceptance, briefing and exact start, restaging, closed-gate
 traversal, replay, malformed and illegal actions, wrong/no-ledger extraction,
-exhaustion, turn-16 extraction, and projection privacy.
+exhaustion, turn-16 extraction, and projection privacy. Focused companion tests
+also cover authenticated one-shot planning, standing-task replanning, one
+prepared step per committed turn, private inspection and explicit sharing,
+allowance and shared-power checks, replacement/suspension invalidation,
+terminal timer cancellation, following and one-edge regrouping.
 
-The current agreement-route 0.1.0 bundle is
+The current Mira 0.1.0 bundle is
+[`worldstream-midnight-archive-ea79ce7ff3e90ab5d073409486af1227286b82512daec98db3e921097dd8ac99.wspack`](releases/0.1.0/worldstream-midnight-archive-ea79ce7ff3e90ab5d073409486af1227286b82512daec98db3e921097dd8ac99.wspack).
+Its physical bundle digest is
+`blake3:ea79ce7ff3e90ab5d073409486af1227286b82512daec98db3e921097dd8ac99`,
+its semantic revision is
+`blake3:ec4689e090f05f1c1894f21c1dba95e1f56b3afc49fc88c5c8f3530a03a80b61`,
+its Component digest is
+`blake3:adf00ecdfa0df9285b813d77277c3b695ff33faacf954093835e15865e14c862`,
+and its production proof is retained in
+[`evidence/production-proof-0.1.0-mira.json`](evidence/production-proof-0.1.0-mira.json).
+
+The agreement-route 0.1.0 bundle remains retained at
 [`worldstream-midnight-archive-877702b321352288553cc0e5ea6510f1f8dea3e18687759658714ebc09a3c269.wspack`](releases/0.1.0/worldstream-midnight-archive-877702b321352288553cc0e5ea6510f1f8dea3e18687759658714ebc09a3c269.wspack).
 Its physical bundle digest is
 `blake3:877702b321352288553cc0e5ea6510f1f8dea3e18687759658714ebc09a3c269`,
