@@ -9,6 +9,7 @@ import {
   assertHostedDevelopmentAllowed,
   assertHostedDevelopmentBrowserAddressUnused,
   assertHostedDevelopmentPortsAvailable,
+  hostedDevelopmentBuildEnvironment,
   hostedDevelopmentGatewayConfiguration,
   hostedDevelopmentPorts,
   hostedDevelopmentListingAllowlist,
@@ -16,6 +17,7 @@ import {
   hostedDevelopmentReadinessProbeIdentity,
   hasRetainedHostedDevelopmentSetup,
   reconcileHostedDevelopment,
+  retryHostedServerStart,
   HOSTED_LOCAL_RECONCILIATION_SECRET,
   HOSTED_LOCAL_SMOKE_IDEMPOTENCY_KEY,
   hostedLocalSmokeIdempotencyKey,
@@ -25,6 +27,84 @@ import {
   installHostedNativeBinaries,
   renderHostedDevelopmentConfig,
 } from "./hosted-dev.mjs";
+
+test("hosted development builds immutable browser artifacts in production mode", () => {
+  assert.deepEqual(hostedDevelopmentBuildEnvironment({
+    NODE_ENV: "development",
+    WORLDSTREAM_DEPLOYMENT_ENVIRONMENT: "development",
+  }), {
+    NODE_ENV: "production",
+    WORLDSTREAM_DEPLOYMENT_ENVIRONMENT: "development",
+  });
+});
+
+test("hosted server start retries the bounded Runtime-restart startup sequence", async () => {
+  const attempts = [];
+  const pauses = [];
+  const result = await retryHostedServerStart(async () => {
+    attempts.push("start");
+    return [
+      {
+        code: 3,
+        stdout: JSON.stringify({ command: "server start", code: "controller_unavailable" }),
+        stderr: "The local controller is unavailable.",
+      },
+      {
+        code: 4,
+        stdout: JSON.stringify({ command: "server start", code: "lifecycle_incomplete", stage: "runtime_restart" }),
+        stderr: "The Runtime is restarting.",
+      },
+      { code: 0, stdout: "", stderr: "" },
+    ][attempts.length - 1];
+  }, async (milliseconds) => {
+    pauses.push(milliseconds);
+  });
+  assert.equal(result.code, 0);
+  assert.deepEqual(attempts, ["start", "start", "start"]);
+  assert.deepEqual(pauses, [1_000, 1_000]);
+});
+
+test("hosted server start stops after its fixed transient retry bound", async () => {
+  const attempts = [];
+  const pauses = [];
+  const exhausted = {
+    code: 4,
+    stdout: JSON.stringify({ command: "server start", code: "lifecycle_incomplete", stage: "runtime_restart" }),
+    stderr: "The Runtime is restarting.",
+  };
+  const result = await retryHostedServerStart(async () => {
+    attempts.push("start");
+    return exhausted;
+  }, async (milliseconds) => {
+    pauses.push(milliseconds);
+  }, 4);
+  assert.equal(result, exhausted);
+  assert.deepEqual(attempts, ["start", "start", "start", "start"]);
+  assert.deepEqual(pauses, [1_000, 1_000, 1_000]);
+});
+
+test("hosted server start retries only exact controller and Runtime-restart reports", async () => {
+  const nonTransientReports = [
+    { code: 3, command: "server start", reportCode: "lifecycle_incomplete", stage: "runtime_restart" },
+    { code: 4, command: "server start", reportCode: "lifecycle_incomplete", stage: "controller_start" },
+    { code: 3, command: "server status", reportCode: "controller_unavailable" },
+  ];
+  for (const { code, command, reportCode, stage } of nonTransientReports) {
+    const attempts = [];
+    const result = await retryHostedServerStart(async () => {
+      attempts.push("start");
+      return {
+        code,
+        stdout: JSON.stringify({ command, code: reportCode, ...(stage === undefined ? {} : { stage }) }),
+        stderr: "non-transient failure",
+      };
+    }, async () => {
+      throw new Error("non-transient failures must not pause or retry");
+    });
+    assert.equal(result.code, code);
+    assert.deepEqual(attempts, ["start"]);
+  }
+});
 
 test("the browser-visible Gateway port must also be unused on IPv6 localhost", async (context) => {
   const blocker = createServer();

@@ -121,6 +121,34 @@ export function hostedDevelopmentLaunchHttpAccepted(status) {
   return status === 200 || status === 202;
 }
 
+/** Retry only the bounded Runtime-restart startup races. */
+export async function retryHostedServerStart(
+  start,
+  pause = delay,
+  maximumAttempts = SERVER_START_MAX_ATTEMPTS,
+) {
+  let result = await start();
+  for (let attempt = 1;
+    attempt < maximumAttempts && isTransientHostedServerStartFailure(result);
+    attempt += 1) {
+    await pause(SERVER_START_RETRY_DELAY_MS);
+    result = await start();
+  }
+  return result;
+}
+
+function isTransientHostedServerStartFailure(result) {
+  if ((result?.code !== 3 && result?.code !== 4) || typeof result.stdout !== "string") return false;
+  try {
+    const report = JSON.parse(result.stdout);
+    if (report?.command !== "server start") return false;
+    return (result.code === 3 && report.code === "controller_unavailable") ||
+      (result.code === 4 && report.code === "lifecycle_incomplete" && report.stage === "runtime_restart");
+  } catch {
+    return false;
+  }
+}
+
 /**
  * A retained local installation may legitimately hold the single pre-Genesis
  * capacity reservation for the development identity.  The readiness probe
@@ -158,6 +186,8 @@ const FAKE_OPENROUTER_KEY = "worldstream-development-key-000000000000";
 const SUPABASE_EXCLUDES =
   "realtime,storage-api,imgproxy,mailpit,postgres-meta,studio,edge-runtime,logflare,vector,supavisor";
 const READINESS_TIMEOUT_MS = 60_000;
+const SERVER_START_RETRY_DELAY_MS = 1_000;
+const SERVER_START_MAX_ATTEMPTS = 30;
 
 export function hostedDevelopmentPorts(environment = process.env) {
   const ports = {
@@ -204,6 +234,10 @@ export function assertHostedDevelopmentAllowed(environment = process.env) {
   if (environment.NODE_ENV === "production" || environment.VERCEL_ENV === "production") {
     throw new Error("hosted development substitutes are forbidden in production");
   }
+}
+
+export function hostedDevelopmentBuildEnvironment(environment) {
+  return { ...environment, NODE_ENV: "production" };
 }
 
 export function hostedNativeBuildPlan(
@@ -409,15 +443,16 @@ async function main() {
         profile: native.profile,
       })}\n`);
     }
+    const buildEnvironment = hostedDevelopmentBuildEnvironment(commonEnvironment);
     await Promise.all([
       run("pnpm", ["--filter", "@worldstream/platform", "build"], {
-        environment: commonEnvironment,
+        environment: buildEnvironment,
       }),
       run("pnpm", ["--filter", "@worldstream/pack-sdk", "build"], {
-        environment: commonEnvironment,
+        environment: buildEnvironment,
       }),
-      run("pnpm", ["--filter", "@worldstream/agent-heist-client", "build"], { environment: commonEnvironment }),
-      run("pnpm", ["--filter", "@worldstream/console", "build"], { environment: commonEnvironment }),
+      run("pnpm", ["--filter", "@worldstream/agent-heist-client", "build"], { environment: buildEnvironment }),
+      run("pnpm", ["--filter", "@worldstream/console", "build"], { environment: buildEnvironment }),
     ]);
     const internalCandidates = await readInternalCandidates();
 
@@ -512,7 +547,14 @@ async function main() {
       await run(worldstreamctl, ["--config", configFile, "pack", "restart-readiness"], { environment: commonEnvironment });
     }
 
-    await ctl(["server", "start", "--participant-console-origin", heistOrigin]);
+    const serverStart = await retryHostedServerStart(() => ctl(
+      ["server", "start", "--participant-console-origin", heistOrigin],
+      { allowFailure: true, capture: true, quiet: true },
+    ));
+    if (serverStart.code !== 0) {
+      const detail = tail(serverStart.stderr || serverStart.stdout, 20);
+      throw new Error(`worldstreamctl server start failed with status ${serverStart.signal ?? serverStart.code}: ${detail}`);
+    }
     managedStarted = true;
 
     const platformOrigin = `http://127.0.0.1:${ports.platform}`;
