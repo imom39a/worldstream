@@ -23,6 +23,35 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+it("keeps saved history visible with a delayed status and never overlaps slow refreshes", async () => {
+  vi.useFakeTimers();
+  const saved = {
+    version: "platform_my_games.v1", refresh_delayed: true,
+    items: [{ launch_id: "10000000-0000-4000-8000-000000000001", title: "Saved activity", state: "live", participation: "human", action: "return_to_game" }], next: null,
+  };
+  let finish!: (value: unknown) => void;
+  mocks.readMyGames.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }))
+    .mockRejectedValueOnce(new Error("dependency unavailable"))
+    .mockResolvedValue({ ...saved, refresh_delayed: false });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => root.render(<MyGamesPage onNavigate={vi.fn()} />));
+  await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+  expect(mocks.readMyGames).toHaveBeenCalledTimes(1);
+  await act(async () => { finish(saved); });
+  expect(container.textContent).toContain("Latest status is delayed");
+  expect(container.textContent).toContain("Saved activity");
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(container.textContent).toContain("Saved activity");
+  expect(container.textContent).toContain("Latest status is delayed");
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(container.textContent).not.toContain("Latest status is delayed");
+  await act(async () => root.unmount());
+  await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+  expect(mocks.readMyGames).toHaveBeenCalledTimes(3);
+});
+
 it("moves a mounted personal-history page from publication pending to a verified result", async () => {
   vi.useFakeTimers();
   const launchId = "10000000-0000-4000-8000-000000000004";

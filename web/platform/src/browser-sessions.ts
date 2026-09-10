@@ -1,4 +1,5 @@
 import { encodeCanonical, type CanonicalObject } from "@worldstream/pack-sdk";
+import { reportPlatformFailure } from "./diagnostics.js";
 
 const MAX_GATEWAY_RESPONSE_BYTES = 16 * 1024;
 const BLAKE3_PATTERN = /^blake3:[0-9a-f]{64}$/u;
@@ -288,6 +289,7 @@ export class HttpHostedBrowserSessionClient implements HostedBrowserSessionClien
         signal: AbortSignal.timeout(this.#timeoutMs),
       });
     } catch (error) {
+      reportPlatformFailure("fly_browser_session", error);
       throw new HostedBrowserSessionUnavailableError(undefined, { cause: error });
     }
     if (!response.ok) {
@@ -295,6 +297,7 @@ export class HttpHostedBrowserSessionClient implements HostedBrowserSessionClien
       if ([400, 403, 409, 422].includes(response.status)) {
         throw new HostedBrowserSessionRejectedError();
       }
+      reportPlatformFailure("fly_browser_session", undefined, { status: response.status });
       throw new HostedBrowserSessionUnavailableError();
     }
     const bytes = await readBoundedBody(response, MAX_GATEWAY_RESPONSE_BYTES);

@@ -6,6 +6,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { isIP } from "node:net";
+import { reportPlatformFailure } from "./diagnostics.js";
 
 import {
   HostedBrowserSessionMissingError,
@@ -647,6 +648,7 @@ async function readMyGames(
     });
     return index === null ? clearSessionError(401, "session_invalid") : privateJson(200, presentMyGames(index));
   } catch (error) {
+    reportPlatformFailure("history_read", error);
     return credentialWasRejected(error) ? clearSessionError(401, "session_invalid") : temporarilyUnavailable();
   }
 }
@@ -944,6 +946,7 @@ async function verifiedRead(
       ? clearSessionError(401, "session_invalid")
       : { payload, account };
   } catch (error) {
+    reportPlatformFailure("account_verification", error);
     return credentialWasRejected(error) ? refreshRequired(payload) : temporarilyUnavailable();
   }
 }
@@ -958,6 +961,7 @@ function formationError(error: unknown, rejectedCode = "formation_unavailable"):
   if (error instanceof PlatformActivityCapacityUnavailableError) {
     return privateError(409, "activity_capacity_unavailable");
   }
+  reportPlatformFailure("formation", error);
   if (
     error instanceof HostedFormationUnavailableError ||
     error instanceof PlatformDependencyUnavailableError
@@ -1514,6 +1518,7 @@ async function enterRun(
       client_url: client.toString(),
     });
   } catch (error) {
+    reportPlatformFailure("run_entry", error);
     return error instanceof HostedBrowserSessionRejectedError
       ? privateError(403, "run_entry_rejected")
       : temporarilyUnavailable();
@@ -1693,6 +1698,7 @@ async function verifiedMutation(
     if (account === null) return privateError(429, "rate_limited");
     return { ...admitted, account };
   } catch (error) {
+    reportPlatformFailure("account_verification", error);
     return credentialWasRejected(error)
       ? clearSessionError(401, "session_invalid")
       : temporarilyUnavailable();

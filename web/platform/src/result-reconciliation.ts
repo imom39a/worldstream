@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { reportPlatformFailure } from "./diagnostics.js";
 
 import {
   ContractViolation,
@@ -336,6 +337,7 @@ export class HttpHostedResultSourceClient implements HostedResultSourceClient {
         signal: AbortSignal.timeout(this.#timeoutMs),
       });
     } catch (error) {
+      reportPlatformFailure("fly_result_source", error);
       throw new ResultReconciliationUnavailableError("result_source_unavailable", {
         cause: error,
       });
@@ -344,6 +346,7 @@ export class HttpHostedResultSourceClient implements HostedResultSourceClient {
       if ([400, 401, 403, 404, 409, 422].includes(response.status)) {
         throw new ResultReconciliationRejectedError("result_source_rejected");
       }
+      reportPlatformFailure("fly_result_source", undefined, { status: response.status });
       throw new ResultReconciliationUnavailableError("result_source_unavailable");
     }
     const bytes = await readBoundedBody(response, MAX_GATEWAY_RESPONSE_BYTES);

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { reportPlatformFailure } from "./diagnostics.js";
 
 import { deriveRoomSetup } from "@worldstream/hosted-contract";
 import {
@@ -703,6 +704,7 @@ export class HttpHostedFormationGateway implements HostedFormationGateway {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (error) {
+      reportPlatformFailure("fly_formation", error);
       throw new HostedFormationUnavailableError(undefined, { cause: error });
     }
     if (!response.ok) {
@@ -712,6 +714,7 @@ export class HttpHostedFormationGateway implements HostedFormationGateway {
       if ([400, 401, 403, 404, 409, 422].includes(response.status)) {
         throw new HostedFormationRejectedError();
       }
+      reportPlatformFailure("fly_formation", undefined, { status: response.status });
       throw new HostedFormationUnavailableError();
     }
     const bytes = await boundedResponse(response, MAX_GATEWAY_RESPONSE_BYTES);

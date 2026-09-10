@@ -63,6 +63,8 @@ export interface HostedLaunch {
 
 export interface MyGamesIndex {
   readonly version: "platform_my_games.v1";
+  /** Transport freshness only; not authority to enter or infer Room state. */
+  readonly refresh_delayed?: boolean;
   readonly items: readonly {
     readonly launch_id: string;
     readonly title: string;
@@ -245,14 +247,14 @@ export async function readLaunch(launchId: string): Promise<HostedLaunch> {
   return requestLaunch(`/api/launches/${encodeURIComponent(launchId)}`);
 }
 
-export async function readMyGames(cursor?: MyGamesIndex["next"]): Promise<MyGamesIndex> {
+export async function readMyGames(cursor?: MyGamesIndex["next"], signal?: AbortSignal): Promise<MyGamesIndex> {
   const query = cursor === undefined || cursor === null ? "" : `?before_at=${encodeURIComponent(cursor.before_at)}&before_launch_id=${encodeURIComponent(cursor.before_launch_id)}`;
-  const response = await fetch(`/api/my-games${query}`, { credentials: "same-origin" });
+  const response = await fetch(`/api/my-games${query}`, { credentials: "same-origin", signal });
   const value = await safeJson(response);
   if (!response.ok || value.version !== "platform_my_games.v1" || !Array.isArray(value.items)) {
     throw new Error(errorCode(value) ?? "my_games_unavailable");
   }
-  return value as unknown as MyGamesIndex;
+  return { ...value, refresh_delayed: response.headers.get("x-worldstream-refresh") === "delayed" } as unknown as MyGamesIndex;
 }
 
 export async function createLaunch(
