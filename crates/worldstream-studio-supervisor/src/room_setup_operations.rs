@@ -256,7 +256,10 @@ impl RoomSetupOperationsV1 {
             .map_err(|_| RoomSetupOperationErrorV1::Unavailable)?;
         let resolved = resolve_setup_specification(&bytes, &catalog)?;
         self.validate_dependencies(&resolved)?;
-        if catalog.revision.lobby_compatibility.is_none() && !request.acknowledge_start {
+        if catalog.revision.lobby_compatibility.is_none()
+            && catalog.revision.activity_start_compatibility.is_none()
+            && !request.acknowledge_start
+        {
             return Err(RoomSetupOperationErrorV1::AcknowledgementRequired);
         }
         let spectators = resolved.spectators.clone();

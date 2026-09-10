@@ -17,6 +17,19 @@ export const activityClientMounts = Object.freeze([
   Object.freeze({ prefix: "/negotiate-v3/", root: resolve(workspace, "clients/negotiate-web/dist") }),
   Object.freeze({ prefix: "/negotiate-v2/", root: resolve(workspace, "config/activity-clients/artifacts/negotiate-web-v2") }),
   Object.freeze({ prefix: "/negotiate/", root: resolve(workspace, "config/activity-clients/artifacts/negotiate-web-v1") }),
+  Object.freeze({ prefix: "/midnight-archive-v13/", root: resolve(workspace, "clients/midnight-archive-web/dist") }),
+  Object.freeze({ prefix: "/midnight-archive-v12/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v12") }),
+  Object.freeze({ prefix: "/midnight-archive-v11/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v11") }),
+  Object.freeze({ prefix: "/midnight-archive-v10/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v10") }),
+  Object.freeze({ prefix: "/midnight-archive-v9/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v9") }),
+  Object.freeze({ prefix: "/midnight-archive-v8/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v8") }),
+  Object.freeze({ prefix: "/midnight-archive-v7/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v7") }),
+  Object.freeze({ prefix: "/midnight-archive-v6/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v6") }),
+  Object.freeze({ prefix: "/midnight-archive-v5/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v5") }),
+  Object.freeze({ prefix: "/midnight-archive-v4/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v4") }),
+  Object.freeze({ prefix: "/midnight-archive-v3/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v3") }),
+  Object.freeze({ prefix: "/midnight-archive-v2/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v2") }),
+  Object.freeze({ prefix: "/midnight-archive-v1/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v1") }),
   Object.freeze({ prefix: "/inspector-v2/", root: resolve(workspace, "web/console/dist") }),
   Object.freeze({ prefix: "/inspector/", root: resolve(workspace, "config/activity-clients/artifacts/inspector-web-v1") }),
   // Inspector v1 used root-relative assets. Preserve those exact bytes too.
@@ -44,17 +57,21 @@ export async function startActivityClientHost({
   hostname = "127.0.0.1",
   port = 5173,
   controllerOrigin = "http://127.0.0.1:9420",
+  browserStreamOrigin,
+  mounts = activityClientMounts,
 } = {}) {
   if (hostname !== "127.0.0.1" && hostname !== "localhost") throw new Error("Activity Client Host must bind to loopback");
   if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) throw new Error("Activity Client Host port is invalid");
-  const authorizedControllerOrigin = exactLoopbackOrigin(controllerOrigin);
-  await Promise.all(activityClientMounts.map(async ({ root }) => {
+  const authorizedConnectOrigins = [exactLoopbackOrigin(controllerOrigin),
+    ...(browserStreamOrigin === undefined ? [] : [exactLoopbackOrigin(browserStreamOrigin),
+      exactLoopbackOrigin(browserStreamOrigin).replace(/^http:/u, "ws:")])].join(" ");
+  await Promise.all(mounts.map(async ({ root }) => {
     await activityClientBuildDigest(root);
     await stat(resolve(root, "index.html"));
   }));
   const server = createServer((request, response) => {
-    void serve(request, response, authorizedControllerOrigin).catch(() => {
-      if (!response.headersSent) response.writeHead(500, commonHeaders("text/plain; charset=utf-8", authorizedControllerOrigin));
+    void serve(request, response, authorizedConnectOrigins, mounts).catch(() => {
+      if (!response.headersSent) response.writeHead(500, commonHeaders("text/plain; charset=utf-8", authorizedConnectOrigins));
       response.end("Activity Client Host failed to read a retained artifact.\n");
     });
   });
@@ -72,7 +89,7 @@ export async function startActivityClientHost({
   };
 }
 
-async function serve(request, response, controllerOrigin) {
+async function serve(request, response, controllerOrigin, mounts) {
   if (request.method !== "GET" && request.method !== "HEAD") {
     response.writeHead(405, { ...commonHeaders("text/plain; charset=utf-8", controllerOrigin), Allow: "GET, HEAD" });
     response.end("Method not allowed.\n");
@@ -89,12 +106,12 @@ async function serve(request, response, controllerOrigin) {
     response.end();
     return;
   }
-  if (activityClientMounts.some(({ prefix }) => prefix !== "/" && prefix.slice(0, -1) === url.pathname)) {
+  if (mounts.some(({ prefix }) => prefix !== "/" && prefix.slice(0, -1) === url.pathname)) {
     response.writeHead(308, { ...commonHeaders("text/plain; charset=utf-8", controllerOrigin), Location: `${url.pathname}/${url.search}` });
     response.end();
     return;
   }
-  const mount = activityClientMounts.find(({ prefix }) => url.pathname.startsWith(prefix));
+  const mount = mounts.find(({ prefix }) => url.pathname.startsWith(prefix));
   if (mount === undefined) {
     response.writeHead(404, commonHeaders("text/plain; charset=utf-8", controllerOrigin));
     response.end("Not found.\n");

@@ -2387,7 +2387,7 @@ mod tests {
             .unwrap_or_else(|error| unreachable!("reviewed catalog: {error}"));
         assert_eq!(
             revisions.len(),
-            33,
+            35,
             "update this regression when the catalog grows"
         );
         assert!(listings.len() <= MAX_REVIEWED_HOSTED_CATALOG_REVISIONS);
@@ -2831,6 +2831,152 @@ mod tests {
             HostedHouseRunnerRetirementDispositionV1::RunTerminal,
         ));
         assert_eq!(wrong, Err(HostedHouseRunnerErrorV1::Conflict));
+    }
+
+    #[test]
+    fn terminal_retirement_race_and_restart_reuse_one_slot_without_resetting_identity_or_allowance()
+    {
+        use crate::house_model::{
+            DeterministicHouseProviderFaultV1, DeterministicHouseProviderPortV1,
+            FileHouseAllowanceLedgerV1, HouseAllowancePeriodV1, HouseInvocationIdentityV1,
+            HouseModelExecutorV1, HouseProposedActionV1, HouseSpendLimitsV1,
+        };
+
+        let directory = tempdir().unwrap();
+        let source = FakeSource::ready();
+        let (operations, listing, revisions) = make_operations(directory.path(), source.clone());
+        let first_request = request(1, 1, "navigator", &revisions[0], &listing);
+        let reservation = operations.reserve(&first_request).unwrap();
+        let assignment = "20000000-0000-4000-8000-000000000001";
+        let launch = launch(
+            &listing,
+            vec![HostedHouseRunnerAssignmentV1 {
+                house_agent_assignment_id: assignment.to_owned(),
+                reservation_receipt: reservation.clone(),
+            }],
+        );
+        operations.bind_launch(&launch).unwrap();
+        let bindings = prepare_data_directory(&directory.path().join("runtime-bindings")).unwrap();
+        let binding_path = bindings.join(format!("{}.json", reservation.reservation_operation_id));
+        persist_new(&binding_path, &runtime_binding(&reservation, assignment)).unwrap();
+        let binding_bytes = fs::read(&binding_path).unwrap();
+
+        // Consume real durable allowance before terminal evidence arrives. No
+        // network call or provider credential is needed by this deterministic port.
+        let period = HouseAllowancePeriodV1::from_unix_seconds(1_783_036_800).unwrap();
+        let ledger_root = directory.path().join("allowance-ledger");
+        let ledger = FileHouseAllowanceLedgerV1::open_at(
+            &ledger_root,
+            HouseSpendLimitsV1::hobby_preview(),
+            period,
+        )
+        .unwrap();
+        let executor = HouseModelExecutorV1::new(
+            DeterministicHouseProviderPortV1::new(
+                HouseProposedActionV1 {
+                    offer_id: "4:0:wait".to_owned(),
+                    payload: serde_json::json!({}),
+                },
+                DeterministicHouseProviderFaultV1::Timeout,
+            ),
+            ledger.clone(),
+        );
+        let identity = HouseInvocationIdentityV1::new(
+            "local-assignment-01",
+            "activation-01",
+            1,
+            &format!("blake3:{}", "a".repeat(64)),
+        )
+        .unwrap();
+        assert!(
+            executor
+                .execute(
+                    &HouseProviderCredentialV1::new(Zeroizing::new(
+                        b"synthetic-test-credential-not-a-secret".to_vec(),
+                    ))
+                    .unwrap(),
+                    &revisions[0],
+                    &identity,
+                    &serde_json::json!({"phase": "planning"}),
+                    &serde_json::json!({
+                        "schema": "worldstream/assignment-action-offer-list/v1",
+                        "precondition": {"room_seq": 4, "head_hash": format!("blake3:{}", "c".repeat(64))},
+                        "offers": [{"action_type": "wait", "offer_id": "4:0:wait", "payload_schema": {
+                            "schema_id": "agent-heist/wait/v1",
+                            "schema_digest": format!("blake3:{}", "b".repeat(64)),
+                            "schema": {"type": "object", "additionalProperties": false, "properties": {}}
+                        }}]
+                    }),
+                    period,
+                )
+                .is_err()
+        );
+        let usage = ledger.usage("local-assignment-01").unwrap();
+        assert_eq!(usage.attempts, 1);
+        assert!(usage.consumed_input_units > 0);
+        assert!(usage.consumed_output_units > 0);
+        let allowance_bytes = fs::read(ledger_root.join("allowances.json")).unwrap();
+
+        for index in 2..=4 {
+            assert_eq!(
+                operations
+                    .reserve(&request(index, index, "navigator", &revisions[0], &listing))
+                    .unwrap()
+                    .outcome,
+                HostedHouseRunnerReservationOutcomeV1::Succeeded
+            );
+        }
+        let retirement = retirement_request(
+            &reservation,
+            Some(assignment),
+            HostedHouseRunnerRetirementDispositionV1::RunTerminal,
+        );
+        let barrier = std::sync::Barrier::new(2);
+        let receipts = std::thread::scope(|scope| {
+            let reconcile = || {
+                barrier.wait();
+                operations.retire(&retirement).unwrap()
+            };
+            let first = scope.spawn(reconcile);
+            let duplicate = scope.spawn(reconcile);
+            (first.join().unwrap(), duplicate.join().unwrap())
+        });
+        assert_eq!(receipts.0, receipts.1);
+        drop(operations);
+
+        let (reopened, _, _) = make_operations(directory.path(), source.clone());
+        assert_eq!(reopened.retire(&retirement).unwrap(), receipts.0);
+        assert_eq!(
+            source.retirements.lock().unwrap().as_slice(),
+            &[Some("local-assignment-01".to_owned())]
+        );
+        assert_eq!(reopened.reserve(&first_request).unwrap(), reservation);
+        assert_eq!(fs::read(&binding_path).unwrap(), binding_bytes);
+        assert_eq!(
+            fs::read(ledger_root.join("allowances.json")).unwrap(),
+            allowance_bytes
+        );
+        assert_eq!(ledger.usage("local-assignment-01").unwrap(), usage);
+        let next = reopened
+            .reserve(&request(5, 5, "navigator", &revisions[0], &listing))
+            .unwrap();
+        assert_eq!(
+            next.outcome,
+            HostedHouseRunnerReservationOutcomeV1::Succeeded
+        );
+        assert_ne!(next.runner_unit_id, reservation.runner_unit_id);
+        assert_eq!(
+            reopened
+                .reserve(&request(6, 6, "navigator", &revisions[0], &listing))
+                .unwrap()
+                .failure_code
+                .as_deref(),
+            Some("house_runner_capacity_exhausted"),
+            "duplicate and restarted reconciliation release exactly one slot"
+        );
+        assert_eq!(reopened.bind_launch(&launch), Ok(()));
+        assert!(reopened.operator_retired(&reservation).unwrap());
+        assert!(source.starts.lock().unwrap().is_empty());
     }
 
     #[test]

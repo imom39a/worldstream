@@ -102,8 +102,7 @@ async fn public_room_launch_reuses_the_retained_input_after_a_lost_reply()
     assert_eq!(committed["launch"]["state"], "launched");
     assert_eq!(committed["readiness"]["ready_to_launch"], false);
     let ledger = launches.lock().unwrap_or_else(PoisonError::into_inner);
-    assert_eq!(ledger.calls.len(), 2);
-    assert_eq!(ledger.calls[0], ledger.calls[1]);
+    assert_eq!(ledger.calls.len(), 1);
     Ok(())
 }
 
@@ -1351,8 +1350,19 @@ impl TaskRunnerReadinessSourceV1 for ManagedReferenceRunner {
 struct LaunchLedger {
     calls: Vec<LobbyLaunchRequest>,
     response: Option<LobbyLaunchResponse>,
+    corrupt_launch_response: Option<LaunchResponseCorruption>,
     lose_first_response: bool,
     hide_committed_head_once: bool,
+    reject_resolve: bool,
+    reject_launch: bool,
+    preserve_resolve_duplicate: bool,
+}
+
+#[derive(Clone, Copy)]
+enum LaunchResponseCorruption {
+    WrongPack,
+    InvalidTransition,
+    SequenceJump,
 }
 
 #[derive(Clone)]
@@ -1366,6 +1376,23 @@ fn launched_head() -> RoomHead {
 }
 
 impl DaemonTaskLaunchSourceV1 for Launcher {
+    fn resolve(
+        &self,
+        _room_id: &str,
+        _request: &LobbyLaunchRequest,
+    ) -> Result<Option<LobbyLaunchResponse>, TaskLaunchAttemptErrorV1> {
+        let ledger = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if ledger.reject_resolve {
+            return Err(TaskLaunchAttemptErrorV1::Ambiguous);
+        }
+        Ok(ledger.response.clone().map(|mut response| {
+            if !ledger.preserve_resolve_duplicate {
+                response.duplicate = true;
+            }
+            response
+        }))
+    }
+
     fn launch(
         &self,
         room_id: &str,
@@ -1373,7 +1400,10 @@ impl DaemonTaskLaunchSourceV1 for Launcher {
     ) -> Result<LobbyLaunchResponse, TaskLaunchAttemptErrorV1> {
         let mut ledger = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         ledger.calls.push(request.clone());
-        let response = ledger
+        if ledger.reject_launch {
+            return Err(TaskLaunchAttemptErrorV1::Rejected);
+        }
+        let mut response = ledger
             .response
             .get_or_insert_with(|| LobbyLaunchResponse {
                 room_id: room_id.to_owned(),
@@ -1383,6 +1413,18 @@ impl DaemonTaskLaunchSourceV1 for Launcher {
                 duplicate: false,
             })
             .clone();
+        match ledger.corrupt_launch_response {
+            Some(LaunchResponseCorruption::WrongPack) => {
+                response.room_head.pack_digest = format!("blake3:{}", "0".repeat(64));
+            }
+            Some(LaunchResponseCorruption::InvalidTransition) => {
+                response.transition_id = "not-a-transition".to_owned();
+            }
+            Some(LaunchResponseCorruption::SequenceJump) => {
+                response.room_head.room_seq = request.based_on_room_seq.saturating_add(2);
+            }
+            None => {}
+        }
         if ledger.lose_first_response {
             ledger.lose_first_response = false;
             Err(TaskLaunchAttemptErrorV1::Ambiguous)
@@ -1402,6 +1444,107 @@ impl DaemonTaskLaunchSourceV1 for Launcher {
             .as_ref()
             .map(|response| response.room_head.clone())
             .ok_or(TaskLaunchAttemptErrorV1::Ambiguous)
+    }
+}
+
+#[test]
+fn first_receipt_resolution_failure_is_durable_without_claiming_a_launch_attempt() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let launches = Arc::new(Mutex::new(LaunchLedger {
+        reject_resolve: true,
+        ..LaunchLedger::default()
+    }));
+    let make = || {
+        open_launch_ready_setup(
+            directory.path(),
+            DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
+            ConsoleHealth(Arc::new(Mutex::new(
+                ParticipantConsoleSessionHealthV1::Usable,
+            ))),
+            RunnerHealth(Arc::new(Mutex::new(RunnerMode::Ready))),
+            Launcher(Arc::clone(&launches)),
+        )
+    };
+    let first = make();
+    first
+        .start("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("setup: {error:?}"));
+    let attention = first
+        .launch("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("initial receipt resolution: {error:?}"));
+    let launch = attention
+        .launch
+        .as_ref()
+        .unwrap_or_else(|| unreachable!("retained launch intent"));
+    assert_eq!(launch.state, TaskLaunchStateV1::NeedsAttention);
+    assert_eq!(launch.attempts, 0);
+    assert!(
+        launches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .calls
+            .is_empty()
+    );
+    drop(first);
+
+    launches
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .reject_resolve = false;
+    let recovered = make()
+        .launch("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("retry retained receipt resolution: {error:?}"));
+    let launch = recovered
+        .launch
+        .as_ref()
+        .unwrap_or_else(|| unreachable!("recovered launch"));
+    assert_eq!(launch.state, TaskLaunchStateV1::Launched);
+    assert_eq!(launch.attempts, 1);
+    assert_eq!(
+        launches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .calls
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn launch_request_carries_pack_digest_only_for_generic_activity_start() {
+    for (applicability, expected_digest) in [
+        (
+            TaskLaunchApplicabilityV1::ActivityStart,
+            Some(DIGEST.to_owned()),
+        ),
+        (TaskLaunchApplicabilityV1::LobbyLaunch, None),
+    ] {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+        let launches = Arc::new(Mutex::new(LaunchLedger::default()));
+        let supervisor = open_setup(
+            directory.path(),
+            DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
+        )
+        .with_launch_applicability(LaunchApplicability(applicability))
+        .with_launch_readiness(
+            ConsoleHealth(Arc::new(Mutex::new(
+                ParticipantConsoleSessionHealthV1::Usable,
+            ))),
+            RunnerHealth(Arc::new(Mutex::new(RunnerMode::Ready))),
+            Launcher(Arc::clone(&launches)),
+        );
+        supervisor
+            .start("setup-alpha")
+            .unwrap_or_else(|error| unreachable!("setup: {error:?}"));
+        supervisor
+            .launch("setup-alpha")
+            .unwrap_or_else(|error| unreachable!("launch: {error:?}"));
+        let calls = &launches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .calls;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].pack_digest, expected_digest);
     }
 }
 
@@ -1573,9 +1716,8 @@ fn lost_launch_response_restart_and_readiness_change_resolve_the_same_committed_
     *runner_health.lock().unwrap_or_else(PoisonError::into_inner) = RunnerMode::Full;
 
     let restarted = make();
-    let committed = restarted
-        .launch("setup-alpha")
-        .unwrap_or_else(|error| unreachable!("retry: {error:?}"));
+    let committed = restarted.launch("setup-alpha");
+    let committed = committed.unwrap_or_else(|error| unreachable!("retry: {error:?}"));
     assert_eq!(
         committed.launch.as_ref().map(|value| value.state),
         Some(TaskLaunchStateV1::Launched)
@@ -1585,8 +1727,146 @@ fn lost_launch_response_restart_and_readiness_change_resolve_the_same_committed_
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .calls;
-    assert_eq!(calls.len(), 2);
-    assert_eq!(calls[0], calls[1]);
+    assert_eq!(calls.len(), 1);
+}
+
+#[test]
+fn launch_rejects_receipts_that_are_not_the_exact_successor_for_the_reviewed_pack() {
+    for corruption in [
+        LaunchResponseCorruption::WrongPack,
+        LaunchResponseCorruption::InvalidTransition,
+        LaunchResponseCorruption::SequenceJump,
+    ] {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+        let launches = Arc::new(Mutex::new(LaunchLedger {
+            corrupt_launch_response: Some(corruption),
+            ..LaunchLedger::default()
+        }));
+        let supervisor = open_launch_ready_setup(
+            directory.path(),
+            DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
+            ConsoleHealth(Arc::new(Mutex::new(
+                ParticipantConsoleSessionHealthV1::Usable,
+            ))),
+            RunnerHealth(Arc::new(Mutex::new(RunnerMode::Ready))),
+            Launcher(Arc::clone(&launches)),
+        );
+        supervisor
+            .start("setup-alpha")
+            .unwrap_or_else(|error| unreachable!("setup: {error:?}"));
+        let rejected = supervisor
+            .launch("setup-alpha")
+            .unwrap_or_else(|error| unreachable!("launch: {error:?}"));
+        assert_eq!(
+            rejected.launch.as_ref().map(|value| value.state),
+            Some(TaskLaunchStateV1::NeedsAttention)
+        );
+        assert_eq!(
+            launches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .calls
+                .len(),
+            1
+        );
+    }
+}
+
+#[test]
+fn receipt_resolution_requires_the_daemon_to_mark_the_result_as_a_duplicate() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let launches = Arc::new(Mutex::new(LaunchLedger {
+        lose_first_response: true,
+        preserve_resolve_duplicate: true,
+        ..LaunchLedger::default()
+    }));
+    let supervisor = open_launch_ready_setup(
+        directory.path(),
+        DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
+        ConsoleHealth(Arc::new(Mutex::new(
+            ParticipantConsoleSessionHealthV1::Usable,
+        ))),
+        RunnerHealth(Arc::new(Mutex::new(RunnerMode::Ready))),
+        Launcher(Arc::clone(&launches)),
+    );
+    supervisor
+        .start("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("setup: {error:?}"));
+    let ambiguous = supervisor
+        .launch("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("first launch: {error:?}"));
+    assert_eq!(
+        ambiguous.launch.as_ref().map(|value| value.state),
+        Some(TaskLaunchStateV1::NeedsAttention)
+    );
+
+    let rejected = supervisor
+        .launch("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("resolve: {error:?}"));
+    assert_eq!(
+        rejected.launch.as_ref().map(|value| value.state),
+        Some(TaskLaunchStateV1::NeedsAttention)
+    );
+    assert_eq!(
+        launches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .calls
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn uncommitted_launch_is_not_dispatched_again_while_required_readiness_is_lost() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let provisions = Arc::new(Mutex::new(ProvisionLedger::default()));
+    let launches = Arc::new(Mutex::new(LaunchLedger {
+        reject_launch: true,
+        ..LaunchLedger::default()
+    }));
+    let runner_health = Arc::new(Mutex::new(RunnerMode::Ready));
+    let make = || {
+        open_launch_ready_setup(
+            directory.path(),
+            DurableProvisioner(Arc::clone(&provisions)),
+            ConsoleHealth(Arc::new(Mutex::new(
+                ParticipantConsoleSessionHealthV1::Usable,
+            ))),
+            RunnerHealth(Arc::clone(&runner_health)),
+            Launcher(Arc::clone(&launches)),
+        )
+    };
+    let first = make();
+    first
+        .start("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("setup: {error:?}"));
+    let rejected = first
+        .launch("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("launch: {error:?}"));
+    assert_eq!(
+        rejected.launch.as_ref().map(|value| value.state),
+        Some(TaskLaunchStateV1::NeedsAttention)
+    );
+    drop(first);
+
+    *runner_health.lock().unwrap_or_else(PoisonError::into_inner) = RunnerMode::Full;
+    let restarted = make();
+    let pending = restarted
+        .launch("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("retry: {error:?}"));
+    assert_eq!(
+        pending.launch.as_ref().map(|value| value.state),
+        Some(TaskLaunchStateV1::NeedsAttention)
+    );
+    assert_eq!(
+        launches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .calls
+            .len(),
+        1
+    );
 }
 
 #[test]

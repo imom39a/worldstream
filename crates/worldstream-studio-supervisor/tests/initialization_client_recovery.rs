@@ -30,73 +30,20 @@ fn exact_client_retry_completes_orphan_status_but_never_recreates_lost_status() 
     initialize_local(&installation)?;
     let declarations = directory.path().join("declarations");
     fs::create_dir_all(declarations.join("releases"))?;
-    for (name, bytes) in [
-        (
-            "releases/inspector-web.json",
-            include_bytes!("../../../config/activity-clients/releases/inspector-web.json")
-                .as_slice(),
-        ),
-        (
-            "releases/agent-heist-web-v2.json",
-            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v2.json")
-                .as_slice(),
-        ),
-        (
-            "releases/negotiate-web-v2.json",
-            include_bytes!("../../../config/activity-clients/releases/negotiate-web-v2.json")
-                .as_slice(),
-        ),
-        (
-            "releases/inspector-web-v2.json",
-            include_bytes!("../../../config/activity-clients/releases/inspector-web-v2.json")
-                .as_slice(),
-        ),
-        (
-            "releases/agent-heist-web.json",
-            include_bytes!("../../../config/activity-clients/releases/agent-heist-web.json")
-                .as_slice(),
-        ),
-        (
-            "releases/agent-heist-web-v3.json",
-            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v3.json")
-                .as_slice(),
-        ),
-        (
-            "releases/agent-heist-web-v4.json",
-            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v4.json")
-                .as_slice(),
-        ),
-        (
-            "releases/agent-heist-web-v5.json",
-            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v5.json")
-                .as_slice(),
-        ),
-        (
-            "releases/agent-heist-web-v6.json",
-            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v6.json")
-                .as_slice(),
-        ),
-        (
-            "releases/negotiate-web.json",
-            include_bytes!("../../../config/activity-clients/releases/negotiate-web.json")
-                .as_slice(),
-        ),
-        (
-            "releases/negotiate-web-v3.json",
-            include_bytes!("../../../config/activity-clients/releases/negotiate-web-v3.json")
-                .as_slice(),
-        ),
-        (
-            "local-bindings.json",
-            include_bytes!("../../../config/activity-clients/local-bindings.json").as_slice(),
-        ),
-        (
-            "cli-import.json",
-            include_bytes!("../../../config/activity-clients/cli-import.json").as_slice(),
-        ),
-    ] {
-        fs::write(declarations.join(name), bytes)?;
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/activity-clients");
+    let declaration_bytes = fs::read(source.join("cli-import.json"))?;
+    let declaration =
+        worldstream_studio_supervisor::initialization_inputs::parse_client_declaration(
+            &declaration_bytes,
+        )?;
+    for release in &declaration.release_files {
+        fs::copy(source.join(release), declarations.join(release))?;
     }
+    fs::copy(
+        source.join(&declaration.bindings_file),
+        declarations.join(&declaration.bindings_file),
+    )?;
+    fs::write(declarations.join("cli-import.json"), declaration_bytes)?;
     let mut request = InitializationImportRequest {
         installation,
         runner_templates: Vec::new(),

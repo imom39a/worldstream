@@ -556,6 +556,66 @@ test("terminal without outcome releases terminal flow without inventing a result
   assert.equal(data.writes.filter(({ kind }) => kind === "result").length, 0);
 });
 
+test("expired Midnight Archive retains terminal-without-outcome evidence across retries without publishing a result", async () => {
+  const artifacts = {
+    listingBytes: artifact("config/hosted/listings/midnight-archive-0.2.0.json"),
+    projectorBytes: artifact("config/hosted/result-projectors/midnight-archive-0.2.0.json"),
+    runtimeBytes: artifact("config/hosted/result-projector-runtimes/declarative-runtime-1.0.0.json"),
+    projectionSchemaBytes: artifact("config/hosted/schemas/midnight-archive-public-projection-v2.schema.json"),
+    outputSchemaBytes: artifact("config/hosted/schemas/midnight-archive-terminal-summary-v1.schema.json"),
+  };
+  const listing = readListingRevision(artifacts.listingBytes);
+  assert.equal(listing.value.result.projector.id, "worldstream.midnight-archive.result");
+  assert.equal(listing.value.result.projector.version, "0.2.0");
+  const base = sourceEvidence("agent-heist-terminal-without-outcome-input.json");
+  const publicProjection = {
+    projection_schema: listing.value.result.projection.schema,
+    authorized_core: { access_mode: "spectator" },
+    projection: {
+      phase: "expired", lifecycle: "terminal", outcome: null,
+      session_deadline: "2026-09-10T12:00:00Z", location: "records", turns_used: 2,
+    },
+    action_offers: [],
+  } satisfies CanonicalObject;
+  // Expiry is a terminal disposition, so this private Listing needs no
+  // publishable Outcome or Replay summary before retaining terminal evidence.
+  const { replay: _replay, ...withoutReplay } = base;
+  const evidence = {
+    ...withoutReplay,
+    listing_revision_digest: listing.digest,
+    pack: listing.value.pack,
+    source_head: { ...base.source_head, pack_digest: listing.value.pack.digest },
+    projection_schema: listing.value.result.projection.schema,
+    public_projection: publicProjection,
+    projection_hash: projectionHash(publicProjection),
+  };
+  const data = new MemoryData();
+  const source = new MutableSource(evidence);
+  const deps = {
+    source, data, houseRetirement: new MemoryHouseRetirement(),
+    projectors: new PinnedResultProjectorRegistry([artifacts]),
+  };
+  assert.equal((await reconcileActivityResult(candidate(listing.digest), deps)).outcome, "terminal_private");
+  assert.equal(data.terminal.projectorStatus, "terminal_without_outcome");
+  const terminal = data.writes.find(({ kind }) => kind === "terminal")?.document;
+  assert.equal(terminal?.result_projector_revision_digest, taggedBlake3(artifacts.projectorBytes));
+  assert.equal(terminal?.projection_hash, evidence.projection_hash);
+  const retry = await reconcileActivityResult(candidate(listing.digest), {
+    ...deps,
+    source: new MutableSource(evidence),
+    projectors: new PinnedResultProjectorRegistry([artifacts]),
+  });
+  assert.equal(retry.outcome, "terminal_private");
+  assert.equal(retry.safeCode, "terminal_already_recorded");
+  assert.deepEqual(data.writes.filter(({ kind }) => kind === "terminal").map(({ document }) => document),
+    [terminal, terminal]);
+  assert.deepEqual(deps.houseRetirement.requests, []);
+  assert.equal(data.result.resultRecorded, false);
+  assert.equal(data.result.publishable, false);
+  assert.equal(data.resultPayload, null);
+  assert.equal(data.writes.some(({ kind }) => kind === "result"), false);
+});
+
 test("healthy terminal summary is projected and published from Replay-equal evidence", async () => {
   const source = new MutableSource(sourceEvidence("agent-heist-terminal-input.json"));
   const data = new MemoryData();
@@ -581,6 +641,28 @@ test("shared reconciliation projects a reviewed non-Heist result with a differen
     contract_id: "contract-42",
     rounds: 3,
   });
+});
+
+test("disabled publication records terminal evidence without indexing an Outcome", async () => {
+  const fixture = nonHeistContract();
+  const listingBytes = encodeCanonical({ ...fixture.listing.value, result: {
+    ...fixture.listing.value.result,
+    publication: { policy: "disabled", attribution: "none", public_output: "none", suppression: "unhealthy_inconclusive_or_conflict" },
+  }} as unknown as CanonicalObject);
+  const listing = readListingRevision(listingBytes);
+  const evidence = { ...nonHeistEvidence(), listing_revision_digest: listing.digest };
+  const { replay: _replay, ...withoutReplay } = evidence;
+  for (const selected of [evidence, withoutReplay]) {
+    const data = new MemoryData();
+    const report = await reconcileActivityResult(candidate(listing.digest), {
+      source: new MutableSource(selected), data, houseRetirement: new MemoryHouseRetirement(),
+      projectors: new PinnedResultProjectorRegistry([{ ...fixture, listingBytes }]),
+    });
+    assert.equal(report.outcome, "terminal_private");
+    assert.equal(data.terminal.terminalRecorded, true);
+    assert.equal(data.writes.some(({ kind }) => kind === "result"), false);
+    assert.equal(data.resultPayload, null);
+  }
 });
 
 test("only retained terminal evidence can trigger exact House retirement", async () => {

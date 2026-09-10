@@ -20,6 +20,11 @@ use worldstream_server::{
     MemberCapabilityIssueResponse, OperatorState, SqliteGatewayBackend, operator_router,
 };
 use worldstream_sqlite::SqliteRoomStore;
+use worldstream_studio_supervisor::{
+    participant_handoff::{ParticipantConsoleReadinessSourceV1, ParticipantConsoleSessionHealthV1},
+    secrets::{FileSecretVaultV1, SecretKindV1},
+    task_setup::HttpDaemonTaskRuntimeV1,
+};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -154,6 +159,11 @@ async fn direct_sync_ack_qualifies_membership_until_disconnect() -> TestResult {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let routes = fixture.routes.clone();
+    let runtime_state = tempfile::tempdir()?;
+    let vault = FileSecretVaultV1::open(&runtime_state.path().join("vault"))?;
+    let host_reference = vault.store(SecretKindV1::HostAuthority, &[0xa9; 32])?;
+    let runtime =
+        HttpDaemonTaskRuntimeV1::new(address, Duration::from_secs(3), vault, Some(host_reference));
     let server = tokio::spawn(async move {
         axum::serve(
             listener,
@@ -161,7 +171,7 @@ async fn direct_sync_ack_qualifies_membership_until_disconnect() -> TestResult {
         )
         .await
     });
-    let runtime = tokio::runtime::Handle::current();
+    let tokio_runtime = tokio::runtime::Handle::current();
     let result=tokio::task::spawn_blocking(move || -> TestResult {
         let stream=TcpStream::connect(address)?;
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -173,15 +183,29 @@ async fn direct_sync_ack_qualifies_membership_until_disconnect() -> TestResult {
         receive(&mut socket,"server.welcome")?;
         send(&mut socket,"room.attach",&json!({"room_id":fixture.room,"member_id":fixture.member,"after_frame_seq":null}))?;
         let attached=receive(&mut socket,"room.attached")?;
-        assert_eq!(runtime.block_on(presence(&fixture,true))?.1["synchronized"],false);
+        assert_eq!(tokio_runtime.block_on(presence(&fixture,true))?.1["synchronized"],false);
+        assert_eq!(
+            runtime.session_health(&fixture.room, &fixture.member),
+            ParticipantConsoleSessionHealthV1::Missing
+        );
         send(&mut socket,"room.sync_ack",&json!({"room_id":fixture.room,"member_id":fixture.member,"through_frame_head":attached["frame_head"],"sync_token":attached["sync_token"]}))?;
         receive(&mut socket,"room.sync_acked")?;
-        assert_eq!(runtime.block_on(presence(&fixture,true))?.1,json!({"version":"membership_presence.v1","synchronized":true}));
+        assert_eq!(tokio_runtime.block_on(presence(&fixture,true))?.1,json!({"version":"membership_presence.v1","synchronized":true}));
+        assert_eq!(
+            runtime.session_health(&fixture.room, &fixture.member),
+            ParticipantConsoleSessionHealthV1::Usable
+        );
         socket.close(None)?;
         let _=socket.read();
         drop(socket);
         for _ in 0..50 {
-            if runtime.block_on(presence(&fixture,true))?.1["synchronized"]==false {return Ok(());}
+            if tokio_runtime.block_on(presence(&fixture,true))?.1["synchronized"]==false {
+                assert_ne!(
+                    runtime.session_health(&fixture.room, &fixture.member),
+                    ParticipantConsoleSessionHealthV1::Usable
+                );
+                return Ok(());
+            }
             std::thread::sleep(Duration::from_millis(10));
         }
         Err("disconnected membership remained ready".into())

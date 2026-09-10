@@ -1,6 +1,8 @@
 import {
   CANONICAL_CODEC_ID,
   EXECUTION_PROFILE_ID,
+  GENERATED_PACK_LIMITS,
+  GENERATED_REJECTION_SCHEMA,
   HOST_CONTRACT_ID,
   OPERATION_CODEC_ID,
   REVISION_LOCK_ID,
@@ -50,7 +52,7 @@ export function generateSemanticArtifacts(evidence: BehavioralEvidence): Generat
   const schemaIds: Record<string, string> = {};
   const documents: SchemaDocument[] = [];
   const add = (key: string, suffix: string, schema: JsonValue): SchemaDocument => {
-    const schemaId = `${evidence.packId}/${suffix}/v1`;
+    const schemaId = `${evidence.packId}/${suffix}/v${evidence.schemaVersion}`;
     const document = {
       canonical_schema: schema,
       schema_digest: taggedBlake3(canonicalBytes(schema)),
@@ -60,34 +62,34 @@ export function generateSemanticArtifacts(evidence: BehavioralEvidence): Generat
     documents.push(document);
     return document;
   };
-  const objectSchema = { type: "object" } satisfies JsonValue;
-  const configuration = add("configuration", "configuration", objectSchema);
-  const state = add("state", "state", objectSchema);
-  const publicProjection = add("projection:public", "public-projection", objectSchema);
-  const participantProjection = add(
-    "projection:participant",
-    "participant-projection",
-    objectSchema,
-  );
-  const publicObservation = add("observation:public", "public-observation", objectSchema);
-  const participantObservation = add(
-    "observation:participant",
-    "participant-observation",
-    objectSchema,
-  );
+  const objectSchema = GENERATED_REJECTION_SCHEMA satisfies JsonValue;
+  const configuration = add("configuration", "configuration", evidence.configurationSchema);
+  const state = add("state", "state", evidence.stateSchema);
+  const legacyPublicProjection = evidence.declaresAudienceSchemas
+    ? undefined
+    : add("projection:public", "public-projection", objectSchema);
+  const legacyParticipantProjection = evidence.declaresAudienceSchemas
+    ? undefined
+    : add("projection:participant", "participant-projection", objectSchema);
+  const legacyPublicObservation = evidence.declaresAudienceSchemas
+    ? undefined
+    : add("observation:public", "public-observation", objectSchema);
+  const legacyParticipantObservation = evidence.declaresAudienceSchemas
+    ? undefined
+    : add("observation:participant", "participant-observation", objectSchema);
   const rejection = add("rejection", "rejection-detail", objectSchema);
   const timerPayload = add("stimulus:timer_fired", "stimulus-timer-fired", objectSchema);
   const timerRequest = add("output:timer_request", "output-timer-request", objectSchema);
   const actionDigests: Record<string, string> = {};
   const actions = evidence.actions.map((action) => {
-    const schema = add(`action:${action}`, `action-${action}`, objectSchema);
-    actionDigests[action] = schema.schema_digest;
-    return { action_type: action, payload_schema: reference(schema) };
+    const schema = add(`action:${action.actionType}`, `action-${action.actionType}`, action.payloadSchema);
+    actionDigests[action.actionType] = schema.schema_digest;
+    return { action_type: action.actionType, payload_schema: reference(schema) };
   });
   const eventSchemas: Record<string, JsonValue> = {};
   for (const event of evidence.events) {
-    const schema = add(`event:${event}`, `event-${event}`, objectSchema);
-    eventSchemas[event] = reference(schema);
+    const schema = add(`event:${event.eventType}`, `event-${event.eventType}`, event.payloadSchema);
+    eventSchemas[event.eventType] = reference(schema);
   }
   const outputSchemas: Record<string, JsonValue> = {};
   outputSchemas.timer_request = reference(timerRequest);
@@ -98,18 +100,6 @@ export function generateSemanticArtifacts(evidence: BehavioralEvidence): Generat
     const schema = add(`attention:${reason}`, `attention-${reason}`, objectSchema);
     outputSchemas[`attention:${reason}`] = reference(schema);
   }
-  documents.sort((left, right) => left.schema_id.localeCompare(right.schema_id));
-  const schemas: JsonValue = {
-    schemas: documents.map((document) => ({
-      canonical_schema: document.canonical_schema,
-      schema_digest: document.schema_digest,
-      schema_id: document.schema_id,
-    })),
-  };
-  const schemaReferences = documents.map(reference);
-  const schemaBundleDigest = taggedBlake3(
-    canonicalBytes({ domain: "worldstream/pack-schema-bundle/v1", schemas: schemaReferences }),
-  );
   const codecBundle = {
     codec_id: CANONICAL_CODEC_ID,
     kinds: [
@@ -129,35 +119,67 @@ export function generateSemanticArtifacts(evidence: BehavioralEvidence): Generat
   const codecBundleDigest = taggedBlake3(
     canonicalBytes({ domain: "worldstream/pack-codec-bundle/v1", bundle: codecBundle }),
   );
-  const publicRef = reference(publicProjection);
-  const participantRef = reference(participantProjection);
-  const publicObservationRef = reference(publicObservation);
-  const participantObservationRef = reference(participantObservation);
   const projectionSchemas: Record<string, JsonValue> = {};
   const observationSchemas: Record<string, JsonValue> = {};
   for (const viewer of VIEWER_CLASSES) {
     const isParticipant = viewer === "participant" || viewer === "historical_participant";
-    projectionSchemas[viewer] = isParticipant ? participantRef : publicRef;
-    observationSchemas[viewer] = isParticipant ? participantObservationRef : publicObservationRef;
+    const projection = evidence.declaresAudienceSchemas
+      ? add(`projection:${viewer}`, `${viewer}-projection`, evidence.projectionSchemas[viewer]!)
+      : isParticipant ? legacyParticipantProjection! : legacyPublicProjection!;
+    const observation = evidence.declaresAudienceSchemas
+      ? add(`observation:${viewer}`, `${viewer}-observation`, evidence.observationSchemas[viewer]!)
+      : isParticipant ? legacyParticipantObservation! : legacyPublicObservation!;
+    projectionSchemas[viewer] = reference(projection);
+    observationSchemas[viewer] = reference(observation);
+    if (!evidence.declaresAudienceSchemas) {
+      schemaIds[`projection:${viewer}`] = projection.schema_id;
+      schemaIds[`observation:${viewer}`] = observation.schema_id;
+    }
   }
+  const stimulusSchemas: Record<string, JsonValue> = { timer_fired: reference(timerPayload) };
+  for (const [inputType, schema] of Object.entries(evidence.externalInputSchemas)) {
+    stimulusSchemas[inputType] = reference(add(`stimulus:${inputType}`, `stimulus-${inputType}`, schema));
+  }
+  documents.sort((left, right) => left.schema_id.localeCompare(right.schema_id));
+  const schemas: JsonValue = {
+    schemas: documents.map((document) => ({
+      canonical_schema: document.canonical_schema,
+      schema_digest: document.schema_digest,
+      schema_id: document.schema_id,
+    })),
+  };
+  const schemaReferences = documents.map(reference);
+  const schemaBundleDigest = taggedBlake3(
+    canonicalBytes({ domain: "worldstream/pack-schema-bundle/v1", schemas: schemaReferences }),
+  );
   const descriptorContent = {
     actions,
     attention_reasons: [...evidence.attentionReasons],
+    ...(evidence.activityStartContract === undefined
+      ? {}
+      : {
+          activity_start_contract: {
+            canonical_payload: evidence.activityStartContract.canonicalPayload,
+            contract: evidence.activityStartContract.contract,
+            input_type: evidence.activityStartContract.inputType,
+            pre_start_phase: evidence.activityStartContract.preStartPhase,
+          },
+        }),
     canonical_codec: CANONICAL_CODEC_ID,
     configuration_schema: reference(configuration),
     event_schemas: eventSchemas,
     explanatory_version: evidence.version,
     host_contract: HOST_CONTRACT_ID,
     limits: {
-      maximum_attention_signals: 16,
-      maximum_collection_items: 256,
-      maximum_events: 32,
-      maximum_nesting: 32,
-      maximum_observation_bytes: 65536,
-      maximum_projection_bytes: 65536,
-      maximum_state_bytes: 262144,
-      maximum_text_bytes: 16384,
-      maximum_timer_requests: 16,
+      maximum_attention_signals: GENERATED_PACK_LIMITS.maximumAttentionSignals,
+      maximum_collection_items: GENERATED_PACK_LIMITS.maximumCollectionItems,
+      maximum_events: GENERATED_PACK_LIMITS.maximumEvents,
+      maximum_nesting: GENERATED_PACK_LIMITS.maximumNesting,
+      maximum_observation_bytes: GENERATED_PACK_LIMITS.maximumObservationBytes,
+      maximum_projection_bytes: GENERATED_PACK_LIMITS.maximumProjectionBytes,
+      maximum_state_bytes: GENERATED_PACK_LIMITS.maximumStateBytes,
+      maximum_text_bytes: GENERATED_PACK_LIMITS.maximumTextBytes,
+      maximum_timer_requests: GENERATED_PACK_LIMITS.maximumTimerRequests,
     },
     name: evidence.name,
     observation_schemas: observationSchemas,
@@ -165,9 +187,9 @@ export function generateSemanticArtifacts(evidence: BehavioralEvidence): Generat
     pack_id: evidence.packId,
     projection_schemas: projectionSchemas,
     rejection_codes: [...evidence.rejectionCodes],
-    roles: evidence.roles.map((role) => ({ maximum: 1, minimum: 1, role })),
+    roles: evidence.roles.map((role) => ({ maximum: role.maximum, minimum: role.minimum, role: role.role })),
     state_schema: reference(state),
-    stimulus_schemas: { timer_fired: reference(timerPayload) },
+    stimulus_schemas: stimulusSchemas,
   } satisfies JsonValue;
   const dependencyLock = {
     dependency_lock_id: "worldstream/typescript-pack-dependency-lock/v1",
@@ -224,11 +246,9 @@ export function finalizeArtifacts(
     revision_digest: revisionDigest,
   } satisfies JsonValue;
   const fixture = evidence.goldenFixture as Record<string, JsonValue>;
-  const buyer = fixture.buyer as Record<string, JsonValue>;
-  const seller = fixture.seller as Record<string, JsonValue>;
   const participants = Array.isArray(fixture.participants)
     ? fixture.participants as Record<string, JsonValue>[]
-    : [buyer, seller];
+    : [fixture.buyer as Record<string, JsonValue>, fixture.seller as Record<string, JsonValue>];
   const createdAt = typeof fixture.created_at === "string"
     ? fixture.created_at
     : "2026-08-30T12:00:00Z";
@@ -250,6 +270,26 @@ export function finalizeArtifacts(
       };
     }),
     corpus_id: "worldstream/pack-golden-corpus/v1",
+    ...(evidence.externalInputs.length === 0
+      ? {}
+      : {
+          external_inputs: evidence.externalInputs.map((item) => {
+            const external = item as Record<string, JsonValue>;
+            const references = external.immutable_resource_references;
+            return {
+              input: {
+                canonical_payload: external.canonical_payload!,
+                immutable_resource_references: Array.isArray(references) ? references : [],
+                input_id: String(external.input_id),
+                input_type: String(external.input_type),
+                recorded_at: typeof external.recorded_at === "string"
+                  ? external.recorded_at
+                  : "2026-08-30T12:00:01Z",
+                source_id: String(external.source_id),
+              },
+            };
+          }),
+        }),
     expected_transcript_digest: evidence.retainedTranscriptDigest,
     genesis: {
       configuration: fixture.configuration!,

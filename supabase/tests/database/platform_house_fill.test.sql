@@ -767,6 +767,12 @@ select
 from platform_store.launch_requests launches
 where launches.launch_request_id = (select launch_request_id from house_launch);
 
+-- The launch reader is reconstruction material, not a live-capacity view.
+create temporary table terminal_launch_material_fixture as
+select platform_api.read_hosted_launch_material_v1(creator_account_id, launch_request_id) as material
+from platform_store.launch_requests
+where launch_request_id = (select launch_request_id from house_launch);
+
 create temporary table terminal_house_retirement_fixture as
 select
   assignments.house_agent_assignment_id,
@@ -941,6 +947,35 @@ select ok(
        join terminal_house_retirement_fixture fixture
          on fixture.reservation_operation_id = reservations.reservation_operation_id),
   'retirement never changes retained Assignment allowance or reservation history'
+);
+
+select is(
+  (select platform_api.read_hosted_launch_material_v1(creator_account_id, launch_request_id)
+   from platform_store.launch_requests
+   where launch_request_id = (select launch_request_id from house_launch)),
+  (select material from terminal_launch_material_fixture),
+  'partial terminal retirement preserves the exact frozen launch reconstruction material'
+);
+select ok(
+  (select bool_and(platform_api.record_terminal_house_runner_retirement_v1(
+    '24000000-0000-4000-8000-000000000001', house_agent_assignment_id,
+    canonical_receipt, extensions.digest(canonical_receipt, 'sha256')))
+   from terminal_house_retirement_fixture),
+  'terminal retirement completes without replacing any Assignment'
+);
+select is(
+  (select platform_api.read_hosted_launch_material_v1(creator_account_id, launch_request_id)
+   from platform_store.launch_requests
+   where launch_request_id = (select launch_request_id from house_launch)),
+  (select material from terminal_launch_material_fixture),
+  'fully retired House runners retain exact original principals, Assignment IDs and reservation receipts for re-entry'
+);
+select is(
+  (select count(*)::integer from platform_store.house_runner_reservations
+   where launch_request_id = (select launch_request_id from house_launch)
+     and state = 'released' and released_at is not null),
+  2,
+  'reading terminal launch material does not revive either retired capacity unit'
 );
 
 -- An expired House claim window still permits the creator's existing, pre-Host

@@ -268,6 +268,13 @@ impl FakeGateway {
 }
 
 impl ParticipantConsoleGatewayV1 for FakeGateway {
+    fn membership_status(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        self.current_membership(authority, None)
+    }
+
     fn current_membership(
         &self,
         authority: &HumanSeatAuthorityV1,
@@ -358,9 +365,93 @@ impl ParticipantConsoleGatewayV1 for FakeGateway {
 }
 
 #[derive(Clone)]
+struct SingleAttachGateway {
+    current: CurrentMembershipSnapshotV1,
+    membership_status_calls: Arc<Mutex<usize>>,
+    current_membership_calls: Arc<Mutex<usize>>,
+}
+
+impl SingleAttachGateway {
+    fn new(current: CurrentMembershipSnapshotV1) -> Self {
+        Self {
+            current,
+            membership_status_calls: Arc::new(Mutex::new(0)),
+            current_membership_calls: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    fn call_counts(&self) -> (usize, usize) {
+        (
+            *self
+                .membership_status_calls
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            *self
+                .current_membership_calls
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    }
+}
+
+impl ParticipantConsoleGatewayV1 for SingleAttachGateway {
+    fn membership_status(
+        &self,
+        _: &HumanSeatAuthorityV1,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        *self
+            .membership_status_calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) += 1;
+        Ok(self.current.clone())
+    }
+
+    fn current_membership(
+        &self,
+        _: &HumanSeatAuthorityV1,
+        _: Option<u64>,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        let mut calls = self
+            .current_membership_calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *calls += 1;
+        if *calls == 1 {
+            Ok(self.current.clone())
+        } else {
+            Err(ParticipantConsoleGatewayErrorV1::Unavailable)
+        }
+    }
+
+    fn observe(
+        &self,
+        _: &HumanSeatAuthorityV1,
+        _: Option<u64>,
+    ) -> Result<ParticipantConsoleObservationV1, ParticipantConsoleGatewayErrorV1> {
+        Err(ParticipantConsoleGatewayErrorV1::Unavailable)
+    }
+
+    fn act(
+        &self,
+        _: &HumanSeatAuthorityV1,
+        _: Option<u64>,
+        _: &participant_handoff::ParticipantActionRequestV1,
+    ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
+        Err(ParticipantConsoleGatewayErrorV1::Unavailable)
+    }
+}
+
+#[derive(Clone)]
 struct LeakingGateway;
 
 impl ParticipantConsoleGatewayV1 for LeakingGateway {
+    fn membership_status(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        self.current_membership(authority, None)
+    }
+
     fn current_membership(
         &self,
         authority: &HumanSeatAuthorityV1,
@@ -700,6 +791,32 @@ async fn redemption_is_origin_bound_one_use_and_rotates_a_scoped_http_only_cooki
         json_response(replay).await["code"],
         "participant_handoff_invalid"
     );
+}
+
+#[tokio::test]
+async fn issuance_does_not_consume_the_only_membership_attach_needed_by_redemption() {
+    let gateway = SingleAttachGateway::new(CurrentMembershipSnapshotV1 {
+        pack: agent_heist_pack("0.2.0", AGENT_HEIST_0_2_DIGEST),
+        access_mode: AccessMode::Participant,
+        role: Some("navigator".to_owned()),
+    });
+    let broker = ParticipantHandoffBrokerV1::new(
+        STUDIO_ORIGIN,
+        CONSOLE_ORIGIN,
+        Duration::from_secs(30),
+        16,
+        FakeAuthoritySource::usable(),
+        gateway.clone(),
+        FakeClientSelectionSource::selected("/agent-heist/"),
+    )
+    .unwrap_or_else(|error| panic!("test broker must be valid: {error:?}"));
+    let router = participant_handoff_router(broker);
+
+    let (_, handoff) = issue_handoff(&router).await;
+    let redeemed = redeem_handoff(&router, &handoff, None).await;
+
+    assert_eq!(redeemed.status(), StatusCode::OK);
+    assert_eq!(gateway.call_counts(), (1, 1));
 }
 
 #[tokio::test]
@@ -1225,6 +1342,50 @@ fn fixed_daemon_gateway_sanitizes_projection_and_attaches_health_to_exact_member
         .unwrap_or_else(|error| panic!("daemon fixture thread: {error:?}"));
 }
 
+#[test]
+fn fixed_daemon_observe_finishes_after_the_declared_projection_reset() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| panic!("bind open daemon fixture: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("open daemon fixture address: {error}"));
+    let (release, hold_open) = std::sync::mpsc::channel();
+    let server = spawn_open_projection_fixture(listener, hold_open);
+    let authority = HumanSeatAuthorityV1::new(
+        ROOM_ID,
+        MEMBER_ID,
+        PackReference {
+            id: "worldstream.agent-heist".to_owned(),
+            version: "0.2.0".to_owned(),
+            digest: AGENT_HEIST_0_2_DIGEST.to_owned(),
+        },
+        AccessMode::Participant,
+        Some("navigator".to_owned()),
+        SealedCapabilityBearerV1::parse(BEARER.to_owned())
+            .unwrap_or_else(|error| panic!("fixture bearer: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("fixture authority: {error:?}"));
+    let gateway = FixedDaemonParticipantConsoleGatewayV1::new(address, Duration::from_secs(3));
+    let started = std::time::Instant::now();
+    let observed = gateway
+        .observe(&authority, None)
+        .unwrap_or_else(|error| panic!("bounded production observe: {error:?}"));
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "observe waited for an idle socket after receiving the declared reset"
+    );
+    assert_eq!(
+        observed.browser_value["delivery"][0]["kind"],
+        "projection_reset"
+    );
+    release
+        .send(())
+        .unwrap_or_else(|error| panic!("release open daemon fixture: {error}"));
+    server
+        .join()
+        .unwrap_or_else(|error| panic!("open daemon fixture thread: {error:?}"));
+}
+
 #[tokio::test]
 async fn protected_console_keeps_its_browser_frame_head_out_of_the_membership_cursor() {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -1310,7 +1471,7 @@ async fn protected_console_returns_a_sanitized_rejected_action_receipt() {
         .local_addr()
         .unwrap_or_else(|error| panic!("rejected receipt fixture address: {error}"));
     let server = thread::spawn(move || {
-        serve_cursor_enforcing_connection(&listener, None);
+        serve_membership_status_fixture_connection(&listener);
         serve_cursor_enforcing_connection(&listener, None);
         serve_membership_status_fixture_connection(&listener);
         serve_cursor_enforcing_connection(&listener, Some("action.rejected"));
@@ -1361,11 +1522,40 @@ fn spawn_daemon_fixture(listener: TcpListener) -> thread::JoinHandle<()> {
     })
 }
 
+fn spawn_open_projection_fixture(
+    listener: TcpListener,
+    hold_open: std::sync::mpsc::Receiver<()>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let (stream, _) = listener
+            .accept()
+            .unwrap_or_else(|error| panic!("accept open daemon fixture: {error}"));
+        let mut socket = accept_hdr(stream, authorize_fixture_handshake)
+            .unwrap_or_else(|error| panic!("open fixture websocket handshake: {error}"));
+        let _hello = socket
+            .read()
+            .unwrap_or_else(|error| panic!("read open fixture hello: {error}"));
+        send_fixture_message(&mut socket, "server.welcome", &json!({}));
+        let attach = read_fixture_message(&mut socket, "open fixture attach");
+        assert_eq!(attach["body"]["room_id"], ROOM_ID);
+        assert_eq!(attach["body"]["member_id"], MEMBER_ID);
+        send_fixture_message(
+            &mut socket,
+            "room.attached",
+            &fixture_attached(MEMBER_ID, "enabled"),
+        );
+        send_fixture_message(&mut socket, "projection.reset", &fixture_projection_reset());
+        hold_open
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap_or_else(|error| panic!("observe did not finish before socket close: {error}"));
+    })
+}
+
 fn spawn_cursor_enforcing_daemon_fixture(listener: TcpListener) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        // Issuance and redemption attach. Subsequent operations revalidate
-        // authority without an extra stream attach of their own.
-        serve_cursor_enforcing_connection(&listener, None);
+        // Issuance reads authority; redemption attaches. Subsequent operations
+        // revalidate authority without an extra stream attach of their own.
+        serve_membership_status_fixture_connection(&listener);
         serve_cursor_enforcing_connection(&listener, None);
         for action_receipt in [None, None, Some("action.accepted"), None] {
             serve_membership_status_fixture_connection(&listener);
@@ -1504,6 +1694,7 @@ fn serve_cursor_enforcing_connection(listener: &TcpListener, action_receipt: Opt
         "room.attached",
         &fixture_attached(MEMBER_ID, "enabled"),
     );
+    send_fixture_message(&mut socket, "projection.reset", &fixture_projection_reset());
     if let Some(action_receipt) = action_receipt {
         let sync_ack = read_fixture_message(&mut socket, "cursor sync ack");
         assert_eq!(sync_ack["type"], "room.sync_ack");

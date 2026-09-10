@@ -18,13 +18,16 @@ export function CatalogPage({ onNavigate }: { onNavigate: Navigate }) {
   const { session, developmentSignInAvailable, reload } = usePlatformSession();
 
   useEffect(() => {
-    void readCatalog()
+    let current = true;
+    void readCatalog(session.state === "authenticated")
       .then((value) => {
+        if (!current) return;
         setActivities(value);
         setCatalogState("ready");
       })
-      .catch(() => setCatalogState("unavailable"));
-  }, []);
+      .catch(() => { if (current) setCatalogState("unavailable"); });
+    return () => { current = false; };
+  }, [session.state]);
 
   return (
     <div className="site-shell hosted-shell discovery-shell">
@@ -132,7 +135,7 @@ function ActivityCard({ activity, onChoose }: { activity: HostedActivitySummary;
         <p>{activity.description}</p>
         <div className="activity-facts">
           <span>{activity.publicViewingAvailable ? "Spectators welcome" : "Private viewing"}</span>
-          <span>{activity.houseFillAvailable ? "Optional House Agents" : "People and external agents"}</span>
+          <span>{participationLabel(activity)}</span>
         </div>
       </div>
       <div className="activity-card-footer">
@@ -163,9 +166,17 @@ function LaunchPanel({
   onNavigate: Navigate;
   session: ReturnType<typeof usePlatformSession>["session"];
 }) {
-  const firstSeat = activity.seats[0]?.key ?? "";
+  const [rosterOption, setRosterOption] = useState(activity.defaultRosterOption);
+  const selectedOption = activity.rosterOptions?.find(({ key }) => key === rosterOption);
+  const selectableSeats = selectedOption === undefined ? activity.seats
+    : activity.seats.filter(({ key }) => selectedOption.creatorSeatKeys.includes(key));
+  const firstSeat = selectableSeats[0]?.key ?? "";
+  const solo = (selectedOption?.seatKeys.length ?? activity.seats.length) === 1 && !activity.creatorMaySpectate;
   const [seat, setSeat] = useState(firstSeat);
   const [fillMode, setFillMode] = useState<"people_only" | "house_agents">(activity.houseFillAvailable ? "house_agents" : "people_only");
+  const chosenFillMode = selectedOption === undefined ? fillMode
+    : selectedOption.suppliedAgents > 0 ? "house_agents" : "people_only";
+  const launchKeyScope = `${activity.slug}${rosterOption === undefined ? "" : `:${rosterOption}`}`;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -186,12 +197,13 @@ function LaunchPanel({
     setBusy(true);
     setError(null);
     try {
-      let idempotencyKey = retainedLaunchKey(activity.slug, seat, fillMode);
+      let idempotencyKey = retainedLaunchKey(launchKeyScope, seat, chosenFillMode);
       let launch = await createLaunch(session.csrf, {
         listingSlug: activity.slug,
         creatorAccess: "seat",
         creatorSeat: seat,
-        fillMode,
+        fillMode: chosenFillMode,
+        ...(rosterOption === undefined ? {} : { rosterOption }),
         idempotencyKey,
       });
       // A create response can have been lost while the server retained its
@@ -200,17 +212,18 @@ function LaunchPanel({
       // server proves that old request terminal, then make one fresh attempt
       // in the same user action.
       if (allowsFreshLaunchRetry(launch.state)) {
-        clearRetainedLaunchKey(activity.slug, seat, fillMode, idempotencyKey);
-        idempotencyKey = retainedLaunchKey(activity.slug, seat, fillMode);
+        clearRetainedLaunchKey(launchKeyScope, seat, chosenFillMode, idempotencyKey);
+        idempotencyKey = retainedLaunchKey(launchKeyScope, seat, chosenFillMode);
         launch = await createLaunch(session.csrf, {
           listingSlug: activity.slug,
           creatorAccess: "seat",
           creatorSeat: seat,
-          fillMode,
+          fillMode: chosenFillMode,
+          ...(rosterOption === undefined ? {} : { rosterOption }),
           idempotencyKey,
         });
       }
-      clearRetainedLaunchKey(activity.slug, seat, fillMode, idempotencyKey);
+      clearRetainedLaunchKey(launchKeyScope, seat, chosenFillMode, idempotencyKey);
       onNavigate(`/launches/${launch.launch_id}`);
     } catch (cause) {
       setError(friendlyError(cause));
@@ -229,12 +242,25 @@ function LaunchPanel({
         <button className="dialog-close" type="button" aria-label="Close" onClick={onClose}>×</button>
         <span className="eyebrow">Your next activity / live room</span>
         <h2 id="launch-title">{activity.title}</h2>
-        <p className="launch-summary">Choose your role and who you want to play with.</p>
+        <p className="launch-summary">{activity.description}</p>
+        <p>{solo ? `Play solo as ${selectableSeats[0]?.label}.` : selectableSeats.length === 1
+          ? `You will participate as ${selectableSeats[0]?.label}.` : "Choose your role and who you want to play with."}</p>
 
-        <fieldset>
+        {activity.rosterOptions !== undefined ? <fieldset>
+          <legend>Choose your participants</legend>
+          <div className="choice-stack">
+            {activity.rosterOptions.map((option) => <label key={option.key}>
+              <input type="radio" name="roster-option" checked={option.key === rosterOption}
+                onChange={() => { setRosterOption(option.key); setSeat(option.creatorSeatKeys[0] ?? ""); }} />
+              <span><strong>{option.label}</strong><small>{option.description}</small></span>
+            </label>)}
+          </div>
+        </fieldset> : null}
+
+        {selectableSeats.length > 1 ? <fieldset>
           <legend>Choose your role</legend>
           <div className="choice-grid">
-            {activity.seats.map((candidate) => (
+            {selectableSeats.map((candidate) => (
               <label key={candidate.key} className={seat === candidate.key ? "choice-selected" : ""}>
                 <input type="radio" name="seat" value={candidate.key} checked={seat === candidate.key} onChange={() => setSeat(candidate.key)} />
                 <strong>{candidate.label}</strong>
@@ -242,9 +268,9 @@ function LaunchPanel({
               </label>
             ))}
           </div>
-        </fieldset>
+        </fieldset> : null}
 
-        <fieldset>
+        {selectedOption === undefined && !solo && activity.houseFillAvailable ? <fieldset>
           <legend>Fill open seats</legend>
           <div className="choice-stack">
             {activity.houseFillAvailable ? <label className={fillMode === "house_agents" ? "choice-selected" : ""}>
@@ -253,17 +279,18 @@ function LaunchPanel({
             </label> : null}
             <label className={fillMode === "people_only" ? "choice-selected" : ""}>
               <input type="radio" name="fill" checked={fillMode === "people_only"} onChange={() => setFillMode("people_only")} />
-              <span><strong>People and their agents only</strong><small>You invite every required participant.</small></span>
+              <span><strong>{activity.participationKinds?.includes("external_agent") ? "People and their agents only" : "People only"}</strong><small>You invite every required participant.</small></span>
             </label>
           </div>
-        </fieldset>
+        </fieldset> : null}
 
         <div className="terms-card">
           <strong>Before you join</strong>
           <p>{activity.resultPublication} {activity.attribution}</p>
-          {fillMode === "house_agents" && activity.houseTerms !== null ? (
+          {chosenFillMode === "house_agents" && activity.houseTerms !== null ? (
             <p>
-              House Runs are permanent exhibitions. Each House Agent has at most {activity.houseTerms.maximumCallsPerAgent} model calls, {activity.houseTerms.maximumInputTokensPerAgent.toLocaleString()} input tokens, and {activity.houseTerms.maximumOutputTokensPerAgent.toLocaleString()} output tokens.
+              {activity.houseTerms.includedAtNoCharge ? "These platform-supplied companions are included at no charge for this experiment. " : ""}
+              Runs with platform-supplied companions are permanently marked as unranked exhibitions. Each House Agent has at most {activity.houseTerms.maximumCallsPerAgent} model calls, {activity.houseTerms.maximumInputTokensPerAgent.toLocaleString()} input tokens, and {activity.houseTerms.maximumOutputTokensPerAgent.toLocaleString()} output tokens. Each launch starts fresh; a familiar companion name does not carry memory from another Run.
             </p>
           ) : null}
         </div>
@@ -279,13 +306,22 @@ function LaunchPanel({
           </div>
         ) : (
           <button className="primary-launch" type="button" disabled={busy || session.state !== "authenticated"} onClick={() => void beginLaunch()}>
-            {busy ? "Creating one room…" : session.state === "unavailable" ? "Sign-in service unavailable" : "Create waiting room"}
+            {busy ? "Creating one room…" : session.state === "unavailable" ? "Sign-in service unavailable" : solo ? "Prepare solo activity" : "Create waiting room"}
           </button>
         )}
         {error !== null ? <p className="form-error" role="alert">{error}</p> : null}
       </section>
     </dialog>
   );
+}
+
+function participationLabel(activity: HostedActivitySummary): string {
+  if (activity.houseFillAvailable) return "Optional House Agents";
+  if (activity.seats.length === 1 && activity.participationKinds?.length === 1
+      && activity.participationKinds[0] === "human") return "Solo adventure";
+  if (activity.participationKinds?.includes("external_agent")) return "People and external agents";
+  if (activity.participationKinds?.includes("human")) return "Play with people";
+  return "Participation options under review";
 }
 
 export function allowsFreshLaunchRetry(state: string): boolean {

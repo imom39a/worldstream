@@ -2649,7 +2649,9 @@ mod tests {
     }
 
     fn trusted_counter_v2_executor_bytes() -> Vec<u8> {
-        let source = include_bytes!("../../worldstream-core/src/counter.rs");
+        let source = include_bytes!(
+            "../../worldstream-core/src/retained_executor_artifacts/counter-v1-v2.rs"
+        );
         let mut artifact = b"worldstream/counter-executor-source/v1\0".to_vec();
         artifact.extend_from_slice(b"2.0.0");
         artifact.push(0);

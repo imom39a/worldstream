@@ -70,6 +70,10 @@ _Avoid_: Agent integrator, Pack Author when rule ownership is meant, host operat
 An Application Integrator-owned, versioned integration manifest that proposes separately identified Activity Pack Bundles, Activity Client Releases, optional Runner integrations, documentation, and deployment templates without merging their authority or execution boundaries. A template may name required capabilities and secrets but contains no secret value, approval, Client Deployment, or Client Binding Store state, and importing or publishing it grants no operational approval.
 _Avoid_: Activity Pack, Activity Pack Bundle, plugin package, executable Pack
 
+**Activity Start Contract**:
+The declared compatibility requirements under which a Host may start an activity from its pre-start Activity Phase. It grants the caller neither general Room administration nor arbitrary external-input authority.
+_Avoid_: Host approval, Activity Phase, generic Host Stimulus Source
+
 **Room Setup Specification**:
 A reusable, non-authoritative description of one intended Room's exact Activity Pack Revision, configuration, seats, and execution requirements. It grants no approval and does not define replacement state for an existing Room.
 _Avoid_: Activity Distribution, Room, desired Room state, server configuration, setup operation
@@ -177,6 +181,10 @@ _Avoid_: Activity Pack operation, Activity Client result, generic score extracto
 **Launch Request**:
 A Hosted Activity Platform's idempotent pre-Genesis request to start one exact Activity Listing Revision with schema-allowed inputs. It gathers permitted Seat Claims and House Agent Assignments for fixed seats, freezes one roster and Room Setup Specification, and maps to at most one Host-local Room Setup Operation; only a terminal failure proven to precede Genesis has no Activity Run, while ambiguous state reconciles the same operation and any observed Genesis creates exactly one Run.
 _Avoid_: Room Setup Operation, Activity Run, Room, generic remote administration
+
+**Roster Option**:
+One reviewed participant configuration offered by an Activity Listing Revision, specifying which of its predeclared seats will be provisioned. Selecting it does not change those seats' Roles or participation policies.
+_Avoid_: Membership, mutable in-game roster, arbitrary Room Setup Specification
 
 **Hosted Launch Closure**:
 An idempotent, creator-authorized request to terminally fence one Launch Request's retained Host setup lineage. It either proves the lineage closed before Genesis or archives its one canonical Room, retires its House Runners, and returns exact Host evidence before platform capacity is released. It deletes neither the Room nor its history and grants no general Room administration authority.
@@ -427,6 +435,10 @@ _Avoid_: Runner, model, House Agent when the gameplay relationship is meant
 **Companion Task**:
 An activity-level objective with explicit execution limits delegated to an AI Companion. It does not change the Participants' underlying Roles or Action permissions.
 _Avoid_: Invocation, Activation Intent, House Agent Assignment
+
+**Companion Plan**:
+A bounded sequence of intended task steps accepted from an AI Companion for one Companion Task. Its remaining steps are conditional on current game facts, task limits and participant eligibility.
+_Avoid_: Companion Task, model reasoning, future protocol requests
 
 **Activity Turn**:
 An Activity Pack-defined unit of gameplay progression. It is distinct from a canonical Transition and may encompass several accepted Actions.

@@ -1,4 +1,6 @@
 import { Buffer } from "node:buffer";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,7 +9,9 @@ import {
   createDevelopmentPlatformBff,
   DEVELOPMENT_IDENTITY_MODE,
   type PlatformBff,
+  type BffDependencies,
 } from "./bff.js";
+import type { ResultReconcilerDependencies } from "./result-reconciliation.js";
 import { HttpHostedBrowserSessionClient } from "./browser-sessions.js";
 import {
   HostedFormationCoordinator,
@@ -18,10 +22,14 @@ import {
   withHostedResultReconciliation,
 } from "./reconciliation-service.js";
 import { createSupabaseBffDependencies } from "./supabase.js";
+import { reviewedActivityByDigest } from "./hosted-catalog.js";
 
 const MAX_HTTP_BODY_BYTES = 32 * 1024;
 
-export function createDevelopmentPlatformServer(environment = process.env) {
+export function createDevelopmentPlatformServer(environment = process.env, qualification: {
+  readonly internalCandidates?: Pick<BffDependencies, "internalCandidateListingDigests" | "hostedActivityAvailable" | "reviewedActivities">;
+  readonly projectors?: ResultReconcilerDependencies["projectors"];
+} = {}) {
   const bind = required(environment, "WORLDSTREAM_PLATFORM_BIND");
   if (bind !== "127.0.0.1") throw new Error("development_platform_bind_must_be_loopback");
   const port = portValue(environment.WORLDSTREAM_PLATFORM_PORT ?? "3000");
@@ -35,6 +43,10 @@ export function createDevelopmentPlatformServer(environment = process.env) {
   const hostedFormation = hostedFormationDependencies(environment, dependencies);
   const hostedPublicStreamBaseUrl =
     environment.WORLDSTREAM_LOCAL_BROWSER_STREAM_URL ?? environment.WORLDSTREAM_HOSTED_GATEWAY_URL;
+  const internalCandidates: Pick<BffDependencies,
+    "internalCandidateListingDigests" | "hostedActivityAvailable" | "reviewedActivities"
+  > = qualification.internalCandidates ?? localInternalCandidates(environment, canonicalOrigin);
+  const resolveReviewedActivity = (digest: string) => reviewedActivityByDigest(digest, internalCandidates.reviewedActivities);
   const platform = createDevelopmentPlatformBff(
     {
       canonicalOrigin,
@@ -54,6 +66,7 @@ export function createDevelopmentPlatformServer(environment = process.env) {
     hostedBrowserSessions,
     hostedFormation,
     hostedPublicStreamBaseUrl,
+    internalCandidates,
   );
   const serviceAuthority = environment.WORLDSTREAM_VERCEL_SERVICE_AUTHORITY;
   const hostedGatewayUrl = environment.WORLDSTREAM_HOSTED_GATEWAY_URL;
@@ -66,6 +79,7 @@ export function createDevelopmentPlatformServer(environment = process.env) {
           dataSecretKey: required(environment, "SUPABASE_DATA_SECRET_KEY"),
           hostedGatewayUrl,
           serviceAuthority,
+          ...(qualification.projectors === undefined ? {} : { projectors: qualification.projectors }),
         }),
         hostedFormation === undefined
           ? undefined
@@ -79,6 +93,7 @@ export function createDevelopmentPlatformServer(environment = process.env) {
                 hostedFormation.data,
                 hostedFormation.gateway,
                 hostedFormation.hostInstallationId,
+                resolveReviewedActivity,
               ).recover(launchId),
               listPendingClosures: async (limit: number) => (await hostedFormation.data
                 .listPendingLaunchClosures(limit)).map(({ launchRequestId }) => launchRequestId),
@@ -91,6 +106,7 @@ export function createDevelopmentPlatformServer(environment = process.env) {
                 hostedFormation.data,
                 hostedFormation.gateway,
                 hostedFormation.hostInstallationId,
+                resolveReviewedActivity,
               ).abandonPrestart(launchId),
             },
       );
@@ -98,6 +114,33 @@ export function createDevelopmentPlatformServer(environment = process.env) {
     void dispatch(bff, canonicalOrigin, request, response);
   });
   return { bind, port, server };
+}
+
+function localInternalCandidates(environment: NodeJS.ProcessEnv, canonicalOrigin: string) {
+  const digests = environment.WORLDSTREAM_LOCAL_INTERNAL_LISTING_DIGESTS;
+  // hosted-dev serializes an empty reviewed candidate manifest as "".
+  // Absence and that exact empty value both select the public-only platform.
+  if (digests === undefined || digests === "") return {};
+  if (!/^blake3:[0-9a-f]{64}(,blake3:[0-9a-f]{64}){0,7}$/u.test(digests)) {
+    throw new Error("invalid_internal_candidate_allowlist");
+  }
+  const execute = promisify(execFile);
+  const script = required(environment, "WORLDSTREAM_LOCAL_ACTIVITY_AVAILABILITY_SCRIPT");
+  const args = [
+    required(environment, "WORLDSTREAM_LOCAL_CTL"), required(environment, "WORLDSTREAM_LOCAL_CONFIG"),
+    required(environment, "WORLDSTREAM_LOCAL_STATE_DIRECTORY"), required(environment, "WORLDSTREAM_LOCAL_CONTROLLER"),
+    canonicalOrigin, required(environment, "WORLDSTREAM_LOCAL_ACTIVITY_CLIENT_TARGET"),
+  ];
+  return {
+    internalCandidateListingDigests: digests.split(","),
+    hostedActivityAvailable: async (digest: string, launchInputs?: Readonly<Record<string, string>>) => {
+      if (!digests.split(",").includes(digest)) return false;
+      const { stdout } = await execute(process.execPath, [script, ...args, digest, ...(launchInputs === undefined ? [] : [JSON.stringify(launchInputs)])], {
+        timeout: 15_000, maxBuffer: 16_384,
+      });
+      return JSON.parse(stdout).available === true;
+    },
+  };
 }
 
 function hostedFormationDependencies(

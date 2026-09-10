@@ -27,6 +27,7 @@ use crate::secrets::{FileSecretVaultV1, SecretKindV1, SecretReferenceV1};
 const MAX_CATALOG_REVISIONS: usize = 256;
 const MAX_DESCRIPTOR_ROWS: usize = 256;
 const MAX_DESCRIPTOR_TEXT_BYTES: usize = 256;
+const MAX_ACTIVITY_START_PAYLOAD_BYTES: usize = 16_384;
 
 /// Closed failures safe to expose across the Studio browser boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -372,6 +373,8 @@ fn validate_detail(
     let revision = &detail.revision;
     if detail.version != ACTIVITY_PACK_CATALOG_VERSION
         || revision.summary.pack.digest != requested_digest
+        || (revision.lobby_compatibility.is_some()
+            && revision.activity_start_compatibility.is_some())
         || revision.roles.len() > MAX_DESCRIPTOR_ROWS
         || revision.actions.len() > MAX_DESCRIPTOR_ROWS
         || !is_bounded_text(&revision.summary.pack.id)
@@ -399,6 +402,23 @@ fn validate_detail(
                     &lobby.configuration_schema.schema_digest,
                 )
         })
+        || revision
+            .activity_start_compatibility
+            .as_ref()
+            .is_some_and(|start| {
+                start.contract != "worldstream/activity-start/v1"
+                    || !is_bounded_text(&start.contract)
+                    || !is_bounded_text(&start.pre_start_phase)
+                    || !is_bounded_text(&start.input_type)
+                    || !is_schema(
+                        &start.input_schema.schema_id,
+                        &start.input_schema.schema_digest,
+                    )
+                    || match serde_json::to_vec(&start.canonical_payload) {
+                        Ok(payload) => payload.len() > MAX_ACTIVITY_START_PAYLOAD_BYTES,
+                        Err(_) => true,
+                    }
+            })
     {
         return Err(ActivityPackProxyErrorV1::InvalidResponse);
     }
@@ -439,7 +459,7 @@ mod tests {
 
     use super::{
         ActivityPackProxyErrorV1, DaemonActivityPackSource, HttpDaemonActivityPackSource,
-        activity_pack_router,
+        activity_pack_router, validate_detail,
     };
     use crate::secrets::{FileSecretVaultV1, SecretKindV1};
 
@@ -587,6 +607,29 @@ mod tests {
             .await
             .unwrap_or_else(|error| unreachable!("response: {error}"));
         assert_eq!(unknown.status(), 404);
+    }
+
+    #[test]
+    fn activity_start_payload_uses_the_core_declaration_bound() {
+        let mut detail = fixture().detail;
+        detail.revision.activity_start_compatibility = Some(
+            serde_json::from_value(serde_json::json!({
+                "contract": "worldstream/activity-start/v1",
+                "pre_start_phase": "briefing",
+                "input_type": "fixture/start/v1",
+                "canonical_payload": "x".repeat(16_385),
+                "input_schema": {
+                    "schema_id": "fixture.start.v1",
+                    "schema_digest": format!("blake3:{}", "c".repeat(64)),
+                    "schema": { "type": "string" }
+                }
+            }))
+            .unwrap_or_else(|error| unreachable!("Activity Start fixture: {error}")),
+        );
+        assert_eq!(
+            validate_detail(&detail, DIGEST),
+            Err(ActivityPackProxyErrorV1::InvalidResponse)
+        );
     }
 
     #[test]

@@ -1,0 +1,829 @@
+from __future__ import annotations
+
+import asyncio
+import copy
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+from examples.midnight_archive import companion_runner, run_jonah, run_mira
+
+PACK = {
+    "id": companion_runner.PACK_ID,
+    "version": "0.1.0",
+    "digest": "blake3:" + "1" * 64,
+}
+TEST_PLAN = {
+    "task_revision": 1,
+    "opportunity_revision": 1,
+    "dialogue": "",
+    "steps": [{
+        "step_type": "move",
+        "destination": "records",
+        "source_id": "none",
+        "power_cost": 0,
+    }],
+}
+
+
+class RunnerContractError(ValueError):
+    pass
+
+
+def policy(selector: Mock | None = None) -> companion_runner.CompanionRunnerPolicy:
+    return companion_runner.CompanionRunnerPolicy(
+        expected_role="mira",
+        select_plan=selector or Mock(return_value=copy.deepcopy(TEST_PLAN)),
+        contract_error=RunnerContractError,
+        mismatch_code="test_contract_mismatch",
+    )
+
+
+def transport() -> tuple[SimpleNamespace, SimpleNamespace, SimpleNamespace, dict]:
+    async def no_events():
+        await asyncio.Event().wait()
+        yield {}
+
+    projection = {
+        "core": {},
+        "activity": {
+            "phase": "active",
+            "private_canary": "never-returned",
+            "mira": {
+                "presence": "active",
+                "mode": "tasked",
+                "task": {"status": "assigned", "revision": 1},
+                "planning": {"status": "waiting", "opportunity_revision": 1},
+            },
+        },
+        "action_offers": [{
+            "domain": companion_runner.ACTION_OFFER_DOMAIN,
+            "action_type": companion_runner.ACTION,
+            "payload_schema_digest": "blake3:" + "2" * 64,
+        }],
+    }
+    head = {
+        "room_id": "room",
+        "room_seq": 8,
+        "pack_digest": PACK["digest"],
+    }
+    offer = {
+        "activation_id": "activation",
+        "room_id": "room",
+        "member_id": "mira-member",
+        "reason_code": companion_runner.REASON,
+        "cause_room_seq": 8,
+        "deadline": "2026-09-09T12:00:15Z",
+    }
+    context = {
+        "activation_id": "activation",
+        "claim_id": "claim",
+        "lease_generation": 1,
+        "reason_code": companion_runner.REASON,
+        "cause_room_seq": 8,
+        "deadline": "2026-09-09T12:00:15Z",
+        "projection_schema": companion_runner.PROJECTION_SCHEMA,
+        "room_head": copy.deepcopy(head),
+        "projection": copy.deepcopy(projection),
+        "action_offers": copy.deepcopy(projection["action_offers"]),
+        "runner_budget": {
+            "schema": "worldstream/runner-budget/v1",
+            "max_action_submissions": 1,
+        },
+        "runner_limits": {
+            "schema": "worldstream/runner-limits/v1",
+            "max_runtime_ms": 30_000,
+            "max_result_bytes": 65_536,
+        },
+    }
+    runner = SimpleNamespace(
+        poll_offers=AsyncMock(return_value={"offers": [offer]}),
+        claim=AsyncMock(return_value={
+            "code": "granted",
+            "activation_id": "activation",
+            "claim_id": "claim",
+            "lease_generation": 1,
+            "context": context,
+        }),
+        complete=AsyncMock(return_value={
+            "code": "completed",
+            "state": "completed",
+            "activation_id": "activation",
+            "claim_id": "claim",
+            "lease_generation": 1,
+        }),
+    )
+    client = SimpleNamespace(projection=AsyncMock(return_value={
+        "room_head": copy.deepcopy(head),
+        "projection": copy.deepcopy(projection),
+    }))
+    room = SimpleNamespace(
+        room_id="room",
+        member_id="mira-member",
+        events=Mock(side_effect=no_events),
+        ack=AsyncMock(),
+        act=AsyncMock(return_value={
+            "transition_id": "transition",
+            "room_head": {**head, "room_seq": 9},
+        }),
+    )
+    return room, runner, client, projection
+
+
+def test_shared_activation_path_submits_once_at_the_claimed_head_then_completes():
+    room, runner, client, projection = transport()
+    selector = Mock(return_value=copy.deepcopy(TEST_PLAN))
+    result = asyncio.run(
+        companion_runner.answer_once(room, runner, client, PACK, policy(selector))
+    )
+    assert result == {"status": "handled", "submitted_actions": 1}
+    selector.assert_called_once_with(projection)
+    room.act.assert_awaited_once_with(
+        companion_runner.ACTION,
+        TEST_PLAN,
+        expected_room_seq=8,
+    )
+    runner.complete.assert_awaited_once_with("activation", "claim", 1, "handled")
+
+
+@pytest.mark.parametrize("schema_version", [4, 5])
+@pytest.mark.parametrize("scenario", ["standard-v1", "low-reserve-v1"])
+@pytest.mark.parametrize("role", ["mira", "jonah"])
+def test_actual_pack_projection_reaches_each_companion_provider(
+    schema_version, scenario, role
+):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "crates/worldstream-studio-supervisor/src/house_model/fixtures"
+        / f"archive-v{schema_version}-model-context.json"
+    )
+    fixture = json.loads(fixture_path.read_text())
+    room, runner, client, projection = transport()
+    pack = {**PACK, "digest": fixture["provenance"]["pack_revision_digest"]}
+    projection["activity"] = fixture["projections"][scenario][role]
+    projection["action_offers"][0]["payload_schema_digest"] = (
+        fixture["payload_schema"]["schema_digest"]
+    )
+    if schema_version == 5:
+        assert projection["activity"]["session_deadline"] == "2026-09-10T12:00:00Z"
+    context = runner.claim.return_value["context"]
+    context["projection_schema"] = (
+        f"worldstream.midnight-archive/participant-projection/v{schema_version}"
+    )
+    context["projection"] = copy.deepcopy(projection)
+    context["action_offers"] = copy.deepcopy(projection["action_offers"])
+    context["room_head"]["pack_digest"] = pack["digest"]
+    client.projection.return_value["projection"] = copy.deepcopy(projection)
+    client.projection.return_value["room_head"]["pack_digest"] = pack["digest"]
+    room.member_id = f"{role}-member"
+    runner.poll_offers.return_value["offers"][0]["member_id"] = room.member_id
+    room.act.return_value["room_head"]["pack_digest"] = pack["digest"]
+    adapter = run_mira if role == "mira" else run_jonah
+    expected_plan = adapter.select_plan(projection)
+    provider = SimpleNamespace(propose=AsyncMock(return_value=expected_plan))
+    attempt = companion_runner.ProviderInvocationAttempt()
+    role_policy = companion_runner.CompanionRunnerPolicy(
+        expected_role=role,
+        select_plan=adapter.select_plan,
+        contract_error=RunnerContractError,
+        mismatch_code="test_contract_mismatch",
+    )
+    result = asyncio.run(companion_runner.answer_once(
+        room, runner, client, pack, role_policy,
+        provider=provider, provider_attempt=attempt, provider_timeout_seconds=1,
+    ))
+    assert result == {"status": "handled", "submitted_actions": 1}
+    assert attempt.consumed is True
+    provider.propose.assert_awaited_once()
+    assert provider.propose.call_args.args[0].projection == projection
+    room.act.assert_awaited_once_with(
+        companion_runner.ACTION, expected_plan, expected_room_seq=8,
+    )
+    runner.complete.assert_awaited_once_with("activation", "claim", 1, "handled")
+
+
+def test_delayed_provider_uses_the_claimed_invocation_once_before_submission():
+    room, runner, client, projection = transport()
+    plan = copy.deepcopy(TEST_PLAN)
+    requests = []
+
+    class DelayedProvider:
+        async def propose(self, request):
+            requests.append(request)
+            await asyncio.sleep(0)
+            return plan
+
+    attempt = companion_runner.ProviderInvocationAttempt()
+    result = asyncio.run(
+        companion_runner.answer_once(
+            room,
+            runner,
+            client,
+            PACK,
+            policy(),
+            provider=DelayedProvider(),
+            provider_attempt=attempt,
+            provider_timeout_seconds=1,
+        )
+    )
+
+    assert result == {"status": "handled", "submitted_actions": 1}
+    assert attempt.consumed is True
+    assert attempt.in_flight is False
+    assert len(requests) == 1
+    assert requests[0].activation_id == "activation"
+    assert requests[0].projection == projection
+    assert client.projection.await_count == 2
+    room.act.assert_awaited_once_with(
+        companion_runner.ACTION, plan, expected_room_seq=8
+    )
+
+
+def test_missing_provider_times_out_once_and_records_failed_completion():
+    room, runner, client, _ = transport()
+    cancelled = asyncio.Event()
+
+    class MissingProvider:
+        async def propose(self, _request):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    attempt = companion_runner.ProviderInvocationAttempt()
+    result = asyncio.run(
+        companion_runner.answer_once(
+            room,
+            runner,
+            client,
+            PACK,
+            policy(),
+            provider=MissingProvider(),
+            provider_attempt=attempt,
+            provider_timeout_seconds=0.01,
+        )
+    )
+
+    assert result == {
+        "status": "provider_timeout",
+        "submitted_actions": 0,
+        "provider_attempts_consumed": 1,
+    }
+    assert attempt.consumed is True
+    assert attempt.in_flight is False
+    assert cancelled.is_set()
+    room.act.assert_not_called()
+    runner.complete.assert_awaited_once_with("activation", "claim", 1, "failed")
+
+
+def test_rejected_provider_consumes_once_and_records_declined_completion():
+    room, runner, client, _ = transport()
+
+    class RejectingProvider:
+        async def propose(self, _request):
+            raise companion_runner.ProviderRejected
+
+    attempt = companion_runner.ProviderInvocationAttempt()
+    result = asyncio.run(
+        companion_runner.answer_once(
+            room,
+            runner,
+            client,
+            PACK,
+            policy(),
+            provider=RejectingProvider(),
+            provider_attempt=attempt,
+        )
+    )
+
+    assert result == {
+        "status": "provider_rejected",
+        "submitted_actions": 0,
+        "provider_attempts_consumed": 1,
+    }
+    assert attempt.consumed is True
+    assert attempt.in_flight is False
+    room.act.assert_not_called()
+    runner.complete.assert_awaited_once_with("activation", "claim", 1, "declined")
+
+
+def test_provider_attempt_is_consumed_before_await_and_blocks_double_dispatch():
+    attempt = companion_runner.ProviderInvocationAttempt()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    class BlockingProvider:
+        async def propose(self, _request):
+            nonlocal calls
+            calls += 1
+            assert attempt.consumed is True
+            assert attempt.in_flight is True
+            started.set()
+            await release.wait()
+            return {"task_revision": 1}
+
+    request = companion_runner.ProviderRequest(
+        activation_id="activation",
+        claim_id="claim",
+        lease_generation=1,
+        room_head={"room_id": "room", "room_seq": 8},
+        projection={},
+    )
+
+    async def scenario():
+        first = asyncio.create_task(
+            companion_runner.invoke_provider(
+                BlockingProvider(), request, attempt, timeout_seconds=1
+            )
+        )
+        await started.wait()
+        with pytest.raises(companion_runner.ProviderAttemptRejected):
+            await companion_runner.invoke_provider(
+                BlockingProvider(), request, attempt, timeout_seconds=1
+            )
+        release.set()
+        assert await first == {"task_revision": 1}
+        with pytest.raises(companion_runner.ProviderAttemptRejected):
+            await companion_runner.invoke_provider(
+                BlockingProvider(), request, attempt, timeout_seconds=1
+            )
+
+    asyncio.run(scenario())
+    assert calls == 1
+    assert attempt.consumed is True
+    assert attempt.in_flight is False
+
+
+@pytest.mark.parametrize(
+    "planning_status,presence,expected_status,disposition",
+    [
+        ("not_requested", "active", "cancelled", "declined"),
+        ("expired", "active", "expired", "declined"),
+        ("waiting", "active", "stale_head", "failed"),
+        ("waiting", "suspended", "ineligible", "declined"),
+    ],
+)
+def test_changed_head_after_provider_is_terminal_and_never_retried(
+    planning_status, presence, expected_status, disposition,
+):
+    room, runner, client, _ = transport()
+    latest_projection = {
+        "core": {},
+        "activity": {
+            "phase": "active",
+            "mira": {
+                "presence": presence,
+                "mode": "tasked",
+                "task": {"status": "assigned"},
+                "planning": {"status": planning_status},
+            },
+        },
+        "action_offers": [],
+    }
+    latest_head = {
+        "room_id": "room",
+        "room_seq": 9,
+        "pack_digest": PACK["digest"],
+    }
+    client.projection.side_effect = [
+        client.projection.return_value,
+        {"room_head": latest_head, "projection": latest_projection},
+    ]
+    provider = SimpleNamespace(propose=AsyncMock(return_value=copy.deepcopy(TEST_PLAN)))
+
+    result = asyncio.run(
+        companion_runner.answer_once(
+            room, runner, client, PACK, policy(), provider=provider
+        )
+    )
+
+    assert result == {
+        "status": expected_status,
+        "submitted_actions": 0,
+        "provider_attempts_consumed": 1,
+    }
+    provider.propose.assert_awaited_once()
+    room.act.assert_not_called()
+    runner.complete.assert_awaited_once_with(
+        "activation", "claim", 1, disposition
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("runner_budget", {"schema": "worldstream/runner-budget/v1",
+                           "max_action_submissions": 1, "extra": 0}),
+        ("runner_budget", {"schema": "worldstream/runner-budget/v1",
+                           "max_action_submissions": 2}),
+        ("runner_limits", {"schema": "worldstream/runner-limits/v1",
+                           "max_runtime_ms": 30_000, "max_result_bytes": 65_537}),
+    ],
+)
+def test_malformed_runtime_witnesses_prevent_provider_dispatch(field, value):
+    room, runner, client, _ = transport()
+    runner.claim.return_value["context"][field] = value
+    provider = SimpleNamespace(propose=AsyncMock(return_value=copy.deepcopy(TEST_PLAN)))
+
+    result = asyncio.run(
+        companion_runner.answer_once(
+            room, runner, client, PACK, policy(), provider=provider
+        )
+    )
+
+    assert result == {
+        "status": "malformed",
+        "submitted_actions": 0,
+        "provider_attempts_consumed": 0,
+    }
+    provider.propose.assert_not_called()
+    room.act.assert_not_called()
+    runner.complete.assert_awaited_once_with("activation", "claim", 1, "failed")
+
+
+def test_provider_timeout_must_leave_the_claimed_runtime_completion_margin():
+    room, runner, client, _ = transport()
+    provider = SimpleNamespace(propose=AsyncMock(return_value=copy.deepcopy(TEST_PLAN)))
+
+    result = asyncio.run(
+        companion_runner.answer_once(
+            room,
+            runner,
+            client,
+            PACK,
+            policy(),
+            provider=provider,
+            provider_timeout_seconds=26,
+        )
+    )
+
+    assert result == {
+        "status": "malformed",
+        "submitted_actions": 0,
+        "provider_attempts_consumed": 0,
+    }
+    provider.propose.assert_not_called()
+    runner.complete.assert_awaited_once_with("activation", "claim", 1, "failed")
+
+
+def test_ineligible_current_projection_never_consumes_a_provider_attempt():
+    room, runner, client, _ = transport()
+    for projected in (
+        client.projection.return_value["projection"],
+        runner.claim.return_value["context"]["projection"],
+    ):
+        projected["activity"]["mira"]["presence"] = "suspended"
+    provider = SimpleNamespace(propose=AsyncMock(return_value=copy.deepcopy(TEST_PLAN)))
+
+    result = asyncio.run(
+        companion_runner.answer_once(
+            room, runner, client, PACK, policy(), provider=provider
+        )
+    )
+
+    assert result == {
+        "status": "ineligible",
+        "submitted_actions": 0,
+        "provider_attempts_consumed": 0,
+    }
+    provider.propose.assert_not_called()
+    room.act.assert_not_called()
+    runner.complete.assert_awaited_once_with("activation", "claim", 1, "declined")
+
+
+@pytest.mark.parametrize(
+    "provider_result",
+    [
+        {"steps": "private"},
+        {**TEST_PLAN, "task_revision": 2},
+        {**TEST_PLAN, "opportunity_revision": 2},
+        {
+            **TEST_PLAN,
+            "steps": [{
+                "step_type": "arbitrary_script",
+                "destination": "outside",
+                "source_id": "secret",
+                "power_cost": 0,
+            }],
+        },
+    ],
+)
+def test_malformed_provider_result_is_failed_without_action_submission(provider_result):
+    room, runner, client, _ = transport()
+    provider = SimpleNamespace(propose=AsyncMock(return_value=provider_result))
+
+    result = asyncio.run(
+        companion_runner.answer_once(
+            room, runner, client, PACK, policy(), provider=provider
+        )
+    )
+
+    assert result == {
+        "status": "malformed",
+        "submitted_actions": 0,
+        "provider_attempts_consumed": 1,
+    }
+    provider.propose.assert_awaited_once()
+    room.act.assert_not_called()
+    runner.complete.assert_awaited_once_with("activation", "claim", 1, "failed")
+
+
+@pytest.mark.parametrize("field,value", [
+    ("reason_code", "other"),
+    ("cause_room_seq", 7),
+    ("claim_id", "other"),
+    ("lease_generation", True),
+    ("deadline", "2026-09-09T12:00:16.000Z"),
+    ("projection_schema", "worldstream.midnight-archive/participant-projection/v1"),
+    ("projection_schema", "worldstream.midnight-archive/participant-projection/v6"),
+    ("projection_schema", "worldstream.midnight-archive/participant-observation/v5"),
+])
+def test_shared_claim_context_mismatch_records_malformed_without_submission(field, value):
+    room, runner, client, _ = transport()
+    runner.claim.return_value["context"][field] = value
+    result = asyncio.run(
+        companion_runner.answer_once(room, runner, client, PACK, policy())
+    )
+    assert result == {
+        "status": "malformed",
+        "submitted_actions": 0,
+        "provider_attempts_consumed": 0,
+    }
+    room.act.assert_not_called()
+    runner.complete.assert_awaited_once_with("activation", "claim", 1, "failed")
+
+
+def test_offer_for_another_companion_membership_is_never_claimed():
+    room, runner, client, _ = transport()
+    runner.poll_offers.return_value["offers"][0]["member_id"] = "jonah-member"
+    result = asyncio.run(
+        companion_runner.answer_once(room, runner, client, PACK, policy())
+    )
+    assert result == {"status": "no_opportunity", "submitted_actions": 0}
+    runner.claim.assert_not_called()
+    client.projection.assert_not_called()
+    room.act.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "claim_code,expected_status",
+    [
+        ("expired", "expired"),
+        ("cancelled", "cancelled"),
+        ("stale_lease", "stale_head"),
+        ("not_available", "activation_rejected"),
+    ],
+)
+def test_terminal_claim_outcomes_never_dispatch_or_complete(
+    claim_code, expected_status,
+):
+    room, runner, client, _ = transport()
+    runner.claim.return_value["code"] = claim_code
+    provider = SimpleNamespace(propose=AsyncMock(return_value=copy.deepcopy(TEST_PLAN)))
+
+    result = asyncio.run(
+        companion_runner.answer_once(
+            room, runner, client, PACK, policy(), provider=provider
+        )
+    )
+
+    assert result == {
+        "status": expected_status,
+        "submitted_actions": 0,
+        "provider_attempts_consumed": 0,
+    }
+    provider.propose.assert_not_called()
+    client.projection.assert_not_called()
+    room.act.assert_not_called()
+    runner.complete.assert_not_called()
+
+
+def test_idle_offer_wait_acks_multiple_observations_and_stops_before_action():
+    room, runner, client, _ = transport()
+    offer = runner.poll_offers.return_value["offers"][0]
+    observations_acked = asyncio.Event()
+    drain_stopped = asyncio.Event()
+    acknowledged: list[int] = []
+
+    async def events_until_cancelled():
+        try:
+            yield {"frame_seq": 9}
+            yield {"frame_seq": 10}
+            await asyncio.Event().wait()
+        finally:
+            drain_stopped.set()
+
+    async def ack(frame_seq: int):
+        acknowledged.append(frame_seq)
+        if acknowledged == [9, 10]:
+            observations_acked.set()
+
+    async def offer_after_observations(*_args):
+        await observations_acked.wait()
+        return {"offers": [offer]}
+
+    async def act_after_drain(*_args, **_kwargs):
+        assert drain_stopped.is_set()
+        return {
+            "transition_id": "transition",
+            "room_head": {
+                "room_id": "room",
+                "room_seq": 9,
+                "pack_digest": PACK["digest"],
+            },
+        }
+
+    room.events = Mock(side_effect=events_until_cancelled)
+    room.ack.side_effect = ack
+    room.act.side_effect = act_after_drain
+    runner.poll_offers.side_effect = offer_after_observations
+    result = asyncio.run(
+        companion_runner.answer_once(
+            room, runner, client, PACK, policy(), wait_seconds=1
+        )
+    )
+    assert result == {"status": "handled", "submitted_actions": 1}
+    assert acknowledged == [9, 10]
+    assert drain_stopped.is_set()
+
+
+def test_no_opportunity_cancels_and_awaits_the_membership_drain():
+    room, runner, client, _ = transport()
+    drain_started = asyncio.Event()
+    drain_stopped = asyncio.Event()
+
+    async def events_until_cancelled():
+        try:
+            drain_started.set()
+            await asyncio.Event().wait()
+            yield {}
+        finally:
+            drain_stopped.set()
+
+    async def no_offer_after_drain_started(*_args):
+        await drain_started.wait()
+        return {"offers": []}
+
+    room.events = Mock(side_effect=events_until_cancelled)
+    runner.poll_offers.side_effect = no_offer_after_drain_started
+    result = asyncio.run(
+        companion_runner.answer_once(
+            room, runner, client, PACK, policy(), wait_seconds=0
+        )
+    )
+    assert result == {"status": "no_opportunity", "submitted_actions": 0}
+    assert drain_stopped.is_set()
+    runner.claim.assert_not_called()
+    room.act.assert_not_called()
+
+
+def test_membership_drain_failure_prevents_claim_and_submission():
+    room, runner, client, _ = transport()
+    invalid_delivery_started = asyncio.Event()
+    offer = runner.poll_offers.return_value["offers"][0]
+
+    async def invalid_events():
+        invalid_delivery_started.set()
+        yield {"frame_seq": 0}
+
+    async def offer_after_invalid_delivery(*_args):
+        await invalid_delivery_started.wait()
+        await asyncio.sleep(0)
+        return {"offers": [offer]}
+
+    room.events = Mock(side_effect=invalid_events)
+    runner.poll_offers.side_effect = offer_after_invalid_delivery
+    with pytest.raises(RunnerContractError, match="^test_contract_mismatch$"):
+        asyncio.run(
+            companion_runner.answer_once(
+                room, runner, client, PACK, policy(), wait_seconds=1
+            )
+        )
+    runner.claim.assert_not_called()
+    client.projection.assert_not_called()
+    room.act.assert_not_called()
+
+
+def test_idle_offer_wait_accepts_180_seconds_but_rejects_a_broader_window():
+    room, runner, _, _ = transport()
+    offer = asyncio.run(
+        companion_runner.wait_for_matching_offer(room, runner, policy(), 180)
+    )
+    assert offer is runner.poll_offers.return_value["offers"][0]
+    with pytest.raises(RunnerContractError, match="^test_contract_mismatch$"):
+        asyncio.run(
+            companion_runner.wait_for_matching_offer(room, runner, policy(), 181)
+        )
+
+
+def credentials() -> tuple[dict, dict]:
+    membership = {
+        "schema": "worldstream/membership-credentials/v1",
+        "operation": "operation",
+        "seat": "mira-seat",
+        "room_id": "room",
+        "member_id": "mira-member",
+        "principal_id": "mira-principal",
+        "runtime_url": "ws://127.0.0.1:9000/v1/stream",
+        "role": "mira",
+        "pack": PACK,
+        "bearer": "wsb1:" + "a" * 64,
+    }
+    runner = {
+        "schema": "worldstream/runner-credentials/v1",
+        "operation": "operation",
+        "seat": "mira-seat",
+        "runner_id": "mira-runner",
+        "pack": PACK,
+        "owner_principal_id": "mira-principal",
+        "runtime_url": "ws://127.0.0.1:9000/v1/runner/stream",
+        "permitted_memberships": [{"room_id": "room", "member_id": "mira-member"}],
+        "bearer": "wsb1:" + "b" * 64,
+    }
+    return membership, runner
+
+
+def test_valid_role_pinned_pair_opens_only_its_membership_and_runner(monkeypatch, tmp_path):
+    membership, runner_document = credentials()
+    room, runner, membership_client, _ = transport()
+    room.attached = {"pack": PACK}
+    room.welcome = {
+        "authenticated_principal": {"principal_id": "mira-principal", "kind": "agent"}
+    }
+    room.sync = AsyncMock()
+    room.close = AsyncMock()
+    runner.close = AsyncMock()
+    membership_client.open_room = AsyncMock(return_value=room)
+    runner_client = SimpleNamespace(open_runner=AsyncMock(return_value=runner))
+    clients = Mock(side_effect=[membership_client, runner_client])
+    monkeypatch.setattr(companion_runner, "load_membership", lambda _: membership)
+    monkeypatch.setattr(companion_runner, "load_runner", lambda _: runner_document)
+    monkeypatch.setattr(companion_runner, "Client", clients)
+
+    result = asyncio.run(
+        companion_runner.run_for_role(
+            policy(),
+            tmp_path / "membership",
+            tmp_path / "runner",
+            PACK["digest"],
+        )
+    )
+
+    assert result == {"status": "handled", "submitted_actions": 1}
+    membership_client.open_room.assert_awaited_once_with("room", "mira-member")
+    runner_client.open_runner.assert_awaited_once_with(
+        "mira-runner", 1, [companion_runner.PACK_ID], [PACK]
+    )
+    runner.close.assert_awaited_once()
+    room.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize("invalid", [
+    "wrong_role",
+    "wrong_seat",
+    "swapped_runner",
+    "broad_runner",
+])
+def test_role_and_single_membership_authority_fail_before_connecting(
+    monkeypatch, tmp_path: Path, invalid: str,
+):
+    membership, runner = credentials()
+    if invalid == "wrong_role":
+        membership["role"] = "jonah"
+    elif invalid == "wrong_seat":
+        runner["seat"] = "jonah-seat"
+    elif invalid == "swapped_runner":
+        runner.update(seat="jonah-seat", owner_principal_id="jonah-principal")
+        runner["permitted_memberships"] = [{"room_id": "room", "member_id": "jonah-member"}]
+    else:
+        runner["permitted_memberships"].append(
+            {"room_id": "room", "member_id": "lead-member"}
+        )
+    monkeypatch.setattr(companion_runner, "load_membership", lambda _: membership)
+    monkeypatch.setattr(companion_runner, "load_runner", lambda _: runner)
+    client = AsyncMock()
+    monkeypatch.setattr(companion_runner, "Client", client)
+    with pytest.raises((RunnerContractError, ValueError)):
+        asyncio.run(
+            companion_runner.run_for_role(
+                policy(),
+                tmp_path / "membership",
+                tmp_path / "runner",
+                PACK["digest"],
+            )
+        )
+    client.assert_not_called()
+
+@pytest.mark.parametrize("text,allowed", [
+    ("a" * 160, True), ("é" * 80, True), ("😀" * 40, True),
+    ('"' * 46 + 'aa', True), ('"' * 47, False), ("a" * 161, False),
+    ("é" * 81, False), ("\n", False), ("\ud800", False),
+])
+def test_dialogue_independent_byte_validation(text, allowed):
+    view = transport()[3]
+    view["activity"]["mira"]["dialogue_allowed"] = True
+    assert companion_runner.valid_plan_payload({**TEST_PLAN, "dialogue": text}, 1000, view, policy()) is allowed

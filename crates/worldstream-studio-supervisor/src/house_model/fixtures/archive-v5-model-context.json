@@ -1,0 +1,1989 @@
+{
+  "provenance": {
+    "pack_revision_digest": "blake3:aea45a1c056c4a7da744be33d38df672499062fd2548302fae43adc49b833b07",
+    "pack_bundle_digest": "blake3:de3cd1d9fa45087b69cb107a663596305864c350f620fe4d7260e0341214d47a",
+    "method": "Real Pack helpers: both-source lead route; four accepted three-step plans with utterances at the 192-byte double-JSON limit; then a fresh hatch planning opportunity for each Role."
+  },
+  "eligibility_window": {
+    "opens_at": "2026-09-09T12:00:11Z",
+    "deadline": "2026-09-09T12:00:26Z"
+  },
+  "projection_schema": "worldstream.midnight-archive/participant-projection/v5",
+  "observation_schema": "worldstream.midnight-archive/participant-observation/v5",
+  "payload_schema": {
+    "schema_id": "worldstream.midnight-archive/action-submit_companion_plan/v5",
+    "schema_digest": "blake3:182cde07ceecab6588161db0695f6b0fdc5cb0ee5cce640d9b38e1d67f52f74c",
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "dialogue": {
+          "maxLength": 160,
+          "type": "string"
+        },
+        "opportunity_revision": {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "steps": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "destination": {
+                "enum": [
+                  "none",
+                  "atrium",
+                  "records",
+                  "conservation",
+                  "plant",
+                  "vault"
+                ]
+              },
+              "power_cost": {
+                "enum": [
+                  0,
+                  1,
+                  2
+                ]
+              },
+              "source_id": {
+                "enum": [
+                  "none",
+                  "records",
+                  "conservation"
+                ]
+              },
+              "step_type": {
+                "enum": [
+                  "move",
+                  "inspect_source",
+                  "share_source",
+                  "use_verifier",
+                  "open_service_hatch",
+                  "collect_assay_sample",
+                  "complete_field_assay"
+                ]
+              }
+            },
+            "required": [
+              "step_type",
+              "destination",
+              "source_id",
+              "power_cost"
+            ],
+            "type": "object"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "type": "array"
+        },
+        "task_revision": {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_revision",
+        "opportunity_revision",
+        "steps",
+        "dialogue"
+      ],
+      "type": "object"
+    }
+  },
+  "projections": {
+    "standard-v1": {
+      "mira": {
+        "companion_dialogue": [
+          {
+            "speaker": "mira",
+            "turn": 4,
+            "text": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"aa"
+          },
+          {
+            "speaker": "mira",
+            "turn": 4,
+            "text": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"aa"
+          },
+          {
+            "speaker": "mira",
+            "turn": 4,
+            "text": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"aa"
+          },
+          {
+            "speaker": "mira",
+            "turn": 4,
+            "text": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"aa"
+          }
+        ],
+        "phase": "active",
+        "session_deadline": "2026-09-10T12:00:00Z",
+        "scenario": {
+          "id": "standard-v1",
+          "label": "Standard"
+        },
+        "objective": "Recover the authentic ledger, return to the Atrium, and extract before turn 16 ends. Mira wants every claim grounded in visible evidence.",
+        "location": "conservation",
+        "turns_used": 4,
+        "turns_remaining": 12,
+        "power": 3,
+        "initial_power": 3,
+        "method_costs": {
+          "ordinary_service_hatch": 2,
+          "verifier": 1
+        },
+        "operation_costs": {
+          "accept_preservation_agreement": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "companion_inspect_source": {
+            "power_cost": 0,
+            "turn_cost": 0
+          },
+          "companion_move": {
+            "power_cost": 0,
+            "turn_cost": 0
+          },
+          "companion_share_source": {
+            "power_cost": 0,
+            "turn_cost": 0
+          },
+          "companion_verifier": {
+            "power_cost": 1,
+            "turn_cost": 0
+          },
+          "energize_preservation_equipment": {
+            "power_cost": 1,
+            "turn_cost": 1
+          },
+          "extract": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "inspect_conservation": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "inspect_records": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "jonah_open_service_hatch": {
+            "power_cost": 1,
+            "turn_cost": 0
+          },
+          "mira_field_assay": {
+            "power_cost": 0,
+            "turn_cost": 0
+          },
+          "mira_open_service_hatch": {
+            "power_cost": 2,
+            "turn_cost": 0
+          },
+          "move": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "open_service_hatch": {
+            "power_cost": 2,
+            "turn_cost": 1
+          },
+          "prepare_collection": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "protect_source_record": {
+            "power_cost": 1,
+            "turn_cost": 1
+          },
+          "recover_candidate": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "use_verifier": {
+            "power_cost": 1,
+            "turn_cost": 1
+          },
+          "wait": {
+            "power_cost": 0,
+            "turn_cost": 1
+          }
+        },
+        "gates": {
+          "archive_gate": "closed",
+          "service_hatch": "closed"
+        },
+        "map": {
+          "locations": [
+            {
+              "id": "atrium",
+              "name": "Atrium",
+              "description": "Arrival hall and the only extraction point."
+            },
+            {
+              "id": "records",
+              "name": "Records",
+              "description": "Intake shelves and a powered catalog verifier."
+            },
+            {
+              "id": "conservation",
+              "name": "Conservation",
+              "description": "Restoration benches beside the sealed archive gate."
+            },
+            {
+              "id": "plant",
+              "name": "Plant",
+              "description": "Building controls for the service hatch."
+            },
+            {
+              "id": "vault",
+              "name": "Vault",
+              "description": "Three ledger candidates await recovery."
+            }
+          ],
+          "connections": [
+            {
+              "from": "atrium",
+              "to": "records",
+              "gate": null
+            },
+            {
+              "from": "atrium",
+              "to": "conservation",
+              "gate": null
+            },
+            {
+              "from": "records",
+              "to": "conservation",
+              "gate": null
+            },
+            {
+              "from": "records",
+              "to": "plant",
+              "gate": null
+            },
+            {
+              "from": "conservation",
+              "to": "vault",
+              "gate": "archive_gate"
+            },
+            {
+              "from": "plant",
+              "to": "vault",
+              "gate": "service_hatch"
+            }
+          ]
+        },
+        "candidates": [
+          {
+            "candidate_id": "ledger-amber",
+            "label": "Amber Ledger",
+            "visible_attributes": [
+              {
+                "label": "Binding",
+                "value": "calfskin"
+              },
+              {
+                "label": "Marking",
+                "value": "compass_rose"
+              },
+              {
+                "label": "Year",
+                "value": "1891"
+              }
+            ],
+            "evidence_assessment": "observed",
+            "observed_evidence": [
+              {
+                "source_id": "records",
+                "source_label": "Records intake card",
+                "attribute_label": "Binding",
+                "observed_value": "calfskin",
+                "candidate_value": "calfskin",
+                "relation": "matches"
+              },
+              {
+                "source_id": "conservation",
+                "source_label": "Conservation restoration note",
+                "attribute_label": "Marking",
+                "observed_value": "split_star",
+                "candidate_value": "compass_rose",
+                "relation": "does_not_match"
+              }
+            ]
+          },
+          {
+            "candidate_id": "ledger-cobalt",
+            "label": "Cobalt Ledger",
+            "visible_attributes": [
+              {
+                "label": "Binding",
+                "value": "linen"
+              },
+              {
+                "label": "Marking",
+                "value": "split_star"
+              },
+              {
+                "label": "Year",
+                "value": "1891"
+              }
+            ],
+            "evidence_assessment": "observed",
+            "observed_evidence": [
+              {
+                "source_id": "records",
+                "source_label": "Records intake card",
+                "attribute_label": "Binding",
+                "observed_value": "calfskin",
+                "candidate_value": "linen",
+                "relation": "does_not_match"
+              },
+              {
+                "source_id": "conservation",
+                "source_label": "Conservation restoration note",
+                "attribute_label": "Marking",
+                "observed_value": "split_star",
+                "candidate_value": "split_star",
+                "relation": "matches"
+              }
+            ]
+          },
+          {
+            "candidate_id": "ledger-violet",
+            "label": "Violet Ledger",
+            "visible_attributes": [
+              {
+                "label": "Binding",
+                "value": "calfskin"
+              },
+              {
+                "label": "Marking",
+                "value": "split_star"
+              },
+              {
+                "label": "Year",
+                "value": "1904"
+              }
+            ],
+            "evidence_assessment": "recommended",
+            "observed_evidence": [
+              {
+                "source_id": "records",
+                "source_label": "Records intake card",
+                "attribute_label": "Binding",
+                "observed_value": "calfskin",
+                "candidate_value": "calfskin",
+                "relation": "matches"
+              },
+              {
+                "source_id": "conservation",
+                "source_label": "Conservation restoration note",
+                "attribute_label": "Marking",
+                "observed_value": "split_star",
+                "candidate_value": "split_star",
+                "relation": "matches"
+              }
+            ]
+          }
+        ],
+        "staged_action": null,
+        "carried_candidate": null,
+        "verifier_result": null,
+        "preservation_agreement": {
+          "speaker": "Archivist",
+          "statement": "Preserve the threatened collection and I will open the Conservation–Vault gate.",
+          "commitment": "not_accepted",
+          "conditions": [
+            {
+              "condition_id": "lead_acceptance",
+              "label": "Human lead accepts this fixed agreement",
+              "status": "pending",
+              "turn_cost": 1,
+              "power_cost": 0
+            },
+            {
+              "condition_id": "collection_preparation",
+              "label": "Prepare the threatened collection",
+              "status": "pending",
+              "turn_cost": 1,
+              "power_cost": 0
+            },
+            {
+              "condition_id": "equipment_energized",
+              "label": "Energize the preservation equipment",
+              "status": "blocked",
+              "turn_cost": 1,
+              "power_cost": 1
+            }
+          ]
+        },
+        "optional_objectives": {
+          "collection_preserved": {
+            "label": "Preserve the threatened collection",
+            "status": "not_started",
+            "turn_cost": 2,
+            "power_cost": 1
+          },
+          "source_record_protected": {
+            "label": "Protect the source's identifying record",
+            "status": "locked",
+            "turn_cost": 1,
+            "power_cost": 1
+          }
+        },
+        "mira": {
+          "dialogue_allowed": true,
+          "field_assay": {
+            "steps_completed": 0,
+            "result": null
+          },
+          "presence": "active",
+          "location": "conservation",
+          "mode": "tasked",
+          "task": {
+            "status": "assigned",
+            "revision": 5,
+            "kind": "open_service_hatch",
+            "power_allowance": 2,
+            "power_spent": 0
+          },
+          "planning": {
+            "status": "waiting",
+            "opportunity_revision": 5,
+            "plan_revision": 0,
+            "steps_total": 0,
+            "steps_completed": 0,
+            "deadline": "2026-09-09T12:00:26Z"
+          },
+          "preparation": {
+            "status": "none",
+            "for_turn": 0,
+            "summary": "none"
+          },
+          "knowledge": {
+            "records": "unknown",
+            "conservation": "unknown",
+            "verifier_result": null
+          },
+          "last_contribution": {
+            "kind": "follow_move",
+            "summary": "Mira followed the lead through one open passage.",
+            "turn": 3
+          }
+        },
+        "jonah": {
+          "dialogue_allowed": true,
+          "field_assay": {
+            "steps_completed": 0,
+            "result": null
+          },
+          "presence": "active",
+          "location": "conservation",
+          "mode": "following",
+          "task": {
+            "kind": "none",
+            "power_allowance": 0,
+            "power_spent": 0,
+            "revision": 0,
+            "status": "none"
+          },
+          "planning": {
+            "status": "not_requested",
+            "opportunity_revision": 0,
+            "plan_revision": 0,
+            "steps_total": 0,
+            "steps_completed": 0,
+            "deadline": "none"
+          },
+          "preparation": {
+            "status": "none",
+            "for_turn": 0,
+            "summary": "none"
+          },
+          "knowledge": {
+            "records": "unknown",
+            "conservation": "unknown",
+            "verifier_result": null
+          },
+          "last_contribution": {
+            "kind": "follow_move",
+            "summary": "Jonah followed the lead through one open passage.",
+            "turn": 3
+          }
+        },
+        "turn_resolution": {
+          "status": "clear",
+          "power_reserved": 0,
+          "prepared_roles": [],
+          "deferred_roles": [],
+          "unprepared_roles": [
+            "mira"
+          ],
+          "reservations": [],
+          "conflicts": []
+        },
+        "extraction": {
+          "status": "none",
+          "revision": 8,
+          "for_turn": 0,
+          "extracted_roles": [],
+          "left_behind_roles": []
+        },
+        "crew_debrief": {
+          "starting_roles": [
+            "lead",
+            "mira",
+            "jonah"
+          ],
+          "extracted_roles": [],
+          "left_behind_roles": [],
+          "completed_work": [
+            {
+              "kind": "follow_move",
+              "role": "mira",
+              "turn": 1
+            },
+            {
+              "kind": "follow_move",
+              "role": "jonah",
+              "turn": 1
+            },
+            {
+              "kind": "follow_move",
+              "role": "mira",
+              "turn": 3
+            },
+            {
+              "kind": "follow_move",
+              "role": "jonah",
+              "turn": 3
+            }
+          ]
+        },
+        "debrief": null,
+        "outcome": null
+      },
+      "jonah": {
+        "companion_dialogue": [
+          {
+            "speaker": "jonah",
+            "turn": 4,
+            "text": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"aa"
+          },
+          {
+            "speaker": "jonah",
+            "turn": 4,
+            "text": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"aa"
+          },
+          {
+            "speaker": "jonah",
+            "turn": 4,
+            "text": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"aa"
+          },
+          {
+            "speaker": "jonah",
+            "turn": 4,
+            "text": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"aa"
+          }
+        ],
+        "phase": "active",
+        "session_deadline": "2026-09-10T12:00:00Z",
+        "scenario": {
+          "id": "standard-v1",
+          "label": "Standard"
+        },
+        "objective": "Recover the authentic ledger, return to the Atrium, and extract before turn 16 ends. Jonah wants the source record protected.",
+        "location": "conservation",
+        "turns_used": 4,
+        "turns_remaining": 12,
+        "power": 3,
+        "initial_power": 3,
+        "method_costs": {
+          "ordinary_service_hatch": 2,
+          "verifier": 1
+        },
+        "operation_costs": {
+          "accept_preservation_agreement": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "companion_inspect_source": {
+            "power_cost": 0,
+            "turn_cost": 0
+          },
+          "companion_move": {
+            "power_cost": 0,
+            "turn_cost": 0
+          },
+          "companion_share_source": {
+            "power_cost": 0,
+            "turn_cost": 0
+          },
+          "companion_verifier": {
+            "power_cost": 1,
+            "turn_cost": 0
+          },
+          "energize_preservation_equipment": {
+            "power_cost": 1,
+            "turn_cost": 1
+          },
+          "extract": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "inspect_conservation": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "inspect_records": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "jonah_open_service_hatch": {
+            "power_cost": 1,
+            "turn_cost": 0
+          },
+          "mira_field_assay": {
+            "power_cost": 0,
+            "turn_cost": 0
+          },
+          "mira_open_service_hatch": {
+            "power_cost": 2,
+            "turn_cost": 0
+          },
+          "move": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "open_service_hatch": {
+            "power_cost": 2,
+            "turn_cost": 1
+          },
+          "prepare_collection": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "protect_source_record": {
+            "power_cost": 1,
+            "turn_cost": 1
+          },
+          "recover_candidate": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "use_verifier": {
+            "power_cost": 1,
+            "turn_cost": 1
+          },
+          "wait": {
+            "power_cost": 0,
+            "turn_cost": 1
+          }
+        },
+        "gates": {
+          "archive_gate": "closed",
+          "service_hatch": "closed"
+        },
+        "map": {
+          "locations": [
+            {
+              "id": "atrium",
+              "name": "Atrium",
+              "description": "Arrival hall and the only extraction point."
+            },
+            {
+              "id": "records",
+              "name": "Records",
+              "description": "Intake shelves and a powered catalog verifier."
+            },
+            {
+              "id": "conservation",
+              "name": "Conservation",
+              "description": "Restoration benches beside the sealed archive gate."
+            },
+            {
+              "id": "plant",
+              "name": "Plant",
+              "description": "Building controls for the service hatch."
+            },
+            {
+              "id": "vault",
+              "name": "Vault",
+              "description": "Three ledger candidates await recovery."
+            }
+          ],
+          "connections": [
+            {
+              "from": "atrium",
+              "to": "records",
+              "gate": null
+            },
+            {
+              "from": "atrium",
+              "to": "conservation",
+              "gate": null
+            },
+            {
+              "from": "records",
+              "to": "conservation",
+              "gate": null
+            },
+            {
+              "from": "records",
+              "to": "plant",
+              "gate": null
+            },
+            {
+              "from": "conservation",
+              "to": "vault",
+              "gate": "archive_gate"
+            },
+            {
+              "from": "plant",
+              "to": "vault",
+              "gate": "service_hatch"
+            }
+          ]
+        },
+        "candidates": [
+          {
+            "candidate_id": "ledger-amber",
+            "label": "Amber Ledger",
+            "visible_attributes": [
+              {
+                "label": "Binding",
+                "value": "calfskin"
+              },
+              {
+                "label": "Marking",
+                "value": "compass_rose"
+              },
+              {
+                "label": "Year",
+                "value": "1891"
+              }
+            ],
+            "evidence_assessment": "observed",
+            "observed_evidence": [
+              {
+                "source_id": "records",
+                "source_label": "Records intake card",
+                "attribute_label": "Binding",
+                "observed_value": "calfskin",
+                "candidate_value": "calfskin",
+                "relation": "matches"
+              },
+              {
+                "source_id": "conservation",
+                "source_label": "Conservation restoration note",
+                "attribute_label": "Marking",
+                "observed_value": "split_star",
+                "candidate_value": "compass_rose",
+                "relation": "does_not_match"
+              }
+            ]
+          },
+          {
+            "candidate_id": "ledger-cobalt",
+            "label": "Cobalt Ledger",
+            "visible_attributes": [
+              {
+                "label": "Binding",
+                "value": "linen"
+              },
+              {
+                "label": "Marking",
+                "value": "split_star"
+              },
+              {
+                "label": "Year",
+                "value": "1891"
+              }
+            ],
+            "evidence_assessment": "observed",
+            "observed_evidence": [
+              {
+                "source_id": "records",
+                "source_label": "Records intake card",
+                "attribute_label": "Binding",
+                "observed_value": "calfskin",
+                "candidate_value": "linen",
+                "relation": "does_not_match"
+              },
+              {
+                "source_id": "conservation",
+                "source_label": "Conservation restoration note",
+                "attribute_label": "Marking",
+                "observed_value": "split_star",
+                "candidate_value": "split_star",
+                "relation": "matches"
+              }
+            ]
+          },
+          {
+            "candidate_id": "ledger-violet",
+            "label": "Violet Ledger",
+            "visible_attributes": [
+              {
+                "label": "Binding",
+                "value": "calfskin"
+              },
+              {
+                "label": "Marking",
+                "value": "split_star"
+              },
+              {
+                "label": "Year",
+                "value": "1904"
+              }
+            ],
+            "evidence_assessment": "recommended",
+            "observed_evidence": [
+              {
+                "source_id": "records",
+                "source_label": "Records intake card",
+                "attribute_label": "Binding",
+                "observed_value": "calfskin",
+                "candidate_value": "calfskin",
+                "relation": "matches"
+              },
+              {
+                "source_id": "conservation",
+                "source_label": "Conservation restoration note",
+                "attribute_label": "Marking",
+                "observed_value": "split_star",
+                "candidate_value": "split_star",
+                "relation": "matches"
+              }
+            ]
+          }
+        ],
+        "staged_action": null,
+        "carried_candidate": null,
+        "verifier_result": null,
+        "preservation_agreement": {
+          "speaker": "Archivist",
+          "statement": "Preserve the threatened collection and I will open the Conservation–Vault gate.",
+          "commitment": "not_accepted",
+          "conditions": [
+            {
+              "condition_id": "lead_acceptance",
+              "label": "Human lead accepts this fixed agreement",
+              "status": "pending",
+              "turn_cost": 1,
+              "power_cost": 0
+            },
+            {
+              "condition_id": "collection_preparation",
+              "label": "Prepare the threatened collection",
+              "status": "pending",
+              "turn_cost": 1,
+              "power_cost": 0
+            },
+            {
+              "condition_id": "equipment_energized",
+              "label": "Energize the preservation equipment",
+              "status": "blocked",
+              "turn_cost": 1,
+              "power_cost": 1
+            }
+          ]
+        },
+        "optional_objectives": {
+          "collection_preserved": {
+            "label": "Preserve the threatened collection",
+            "status": "not_started",
+            "turn_cost": 2,
+            "power_cost": 1
+          },
+          "source_record_protected": {
+            "label": "Protect the source's identifying record",
+            "status": "locked",
+            "turn_cost": 1,
+            "power_cost": 1
+          }
+        },
+        "mira": {
+          "dialogue_allowed": true,
+          "field_assay": {
+            "steps_completed": 0,
+            "result": null
+          },
+          "presence": "active",
+          "location": "conservation",
+          "mode": "following",
+          "task": {
+            "kind": "none",
+            "power_allowance": 0,
+            "power_spent": 0,
+            "revision": 0,
+            "status": "none"
+          },
+          "planning": {
+            "status": "not_requested",
+            "opportunity_revision": 0,
+            "plan_revision": 0,
+            "steps_total": 0,
+            "steps_completed": 0,
+            "deadline": "none"
+          },
+          "preparation": {
+            "status": "none",
+            "for_turn": 0,
+            "summary": "none"
+          },
+          "knowledge": {
+            "records": "unknown",
+            "conservation": "unknown",
+            "verifier_result": null
+          },
+          "last_contribution": {
+            "kind": "follow_move",
+            "summary": "Mira followed the lead through one open passage.",
+            "turn": 3
+          }
+        },
+        "jonah": {
+          "dialogue_allowed": true,
+          "field_assay": {
+            "steps_completed": 0,
+            "result": null
+          },
+          "presence": "active",
+          "location": "conservation",
+          "mode": "tasked",
+          "task": {
+            "status": "assigned",
+            "revision": 5,
+            "kind": "open_service_hatch",
+            "power_allowance": 1,
+            "power_spent": 0
+          },
+          "planning": {
+            "status": "waiting",
+            "opportunity_revision": 5,
+            "plan_revision": 0,
+            "steps_total": 0,
+            "steps_completed": 0,
+            "deadline": "2026-09-09T12:00:26Z"
+          },
+          "preparation": {
+            "status": "none",
+            "for_turn": 0,
+            "summary": "none"
+          },
+          "knowledge": {
+            "records": "unknown",
+            "conservation": "unknown",
+            "verifier_result": null
+          },
+          "last_contribution": {
+            "kind": "follow_move",
+            "summary": "Jonah followed the lead through one open passage.",
+            "turn": 3
+          }
+        },
+        "turn_resolution": {
+          "status": "clear",
+          "power_reserved": 0,
+          "prepared_roles": [],
+          "deferred_roles": [],
+          "unprepared_roles": [
+            "jonah"
+          ],
+          "reservations": [],
+          "conflicts": []
+        },
+        "extraction": {
+          "status": "none",
+          "revision": 8,
+          "for_turn": 0,
+          "extracted_roles": [],
+          "left_behind_roles": []
+        },
+        "crew_debrief": {
+          "starting_roles": [
+            "lead",
+            "mira",
+            "jonah"
+          ],
+          "extracted_roles": [],
+          "left_behind_roles": [],
+          "completed_work": [
+            {
+              "kind": "follow_move",
+              "role": "mira",
+              "turn": 1
+            },
+            {
+              "kind": "follow_move",
+              "role": "jonah",
+              "turn": 1
+            },
+            {
+              "kind": "follow_move",
+              "role": "mira",
+              "turn": 3
+            },
+            {
+              "kind": "follow_move",
+              "role": "jonah",
+              "turn": 3
+            }
+          ]
+        },
+        "debrief": null,
+        "outcome": null
+      }
+    },
+    "low-reserve-v1": {
+      "mira": {
+        "companion_dialogue": [
+          {
+            "speaker": "mira",
+            "turn": 4,
+            "text": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"aa"
+          },
+          {
+            "speaker": "mira",
+            "turn": 4,
+            "text": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"aa"
+          },
+          {
+            "speaker": "mira",
+            "turn": 4,
+            "text": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"aa"
+          },
+          {
+            "speaker": "mira",
+            "turn": 4,
+            "text": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"aa"
+          }
+        ],
+        "phase": "active",
+        "session_deadline": "2026-09-10T12:00:00Z",
+        "scenario": {
+          "id": "low-reserve-v1",
+          "label": "Low Reserve"
+        },
+        "objective": "Recover the authentic ledger, return to the Atrium, and extract before turn 16 ends. Mira wants every claim grounded in visible evidence.",
+        "location": "conservation",
+        "turns_used": 4,
+        "turns_remaining": 12,
+        "power": 2,
+        "initial_power": 2,
+        "method_costs": {
+          "ordinary_service_hatch": 2,
+          "verifier": 1
+        },
+        "operation_costs": {
+          "accept_preservation_agreement": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "companion_inspect_source": {
+            "power_cost": 0,
+            "turn_cost": 0
+          },
+          "companion_move": {
+            "power_cost": 0,
+            "turn_cost": 0
+          },
+          "companion_share_source": {
+            "power_cost": 0,
+            "turn_cost": 0
+          },
+          "companion_verifier": {
+            "power_cost": 1,
+            "turn_cost": 0
+          },
+          "energize_preservation_equipment": {
+            "power_cost": 1,
+            "turn_cost": 1
+          },
+          "extract": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "inspect_conservation": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "inspect_records": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "jonah_open_service_hatch": {
+            "power_cost": 1,
+            "turn_cost": 0
+          },
+          "mira_field_assay": {
+            "power_cost": 0,
+            "turn_cost": 0
+          },
+          "mira_open_service_hatch": {
+            "power_cost": 2,
+            "turn_cost": 0
+          },
+          "move": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "open_service_hatch": {
+            "power_cost": 2,
+            "turn_cost": 1
+          },
+          "prepare_collection": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "protect_source_record": {
+            "power_cost": 1,
+            "turn_cost": 1
+          },
+          "recover_candidate": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "use_verifier": {
+            "power_cost": 1,
+            "turn_cost": 1
+          },
+          "wait": {
+            "power_cost": 0,
+            "turn_cost": 1
+          }
+        },
+        "gates": {
+          "archive_gate": "closed",
+          "service_hatch": "closed"
+        },
+        "map": {
+          "locations": [
+            {
+              "id": "atrium",
+              "name": "Atrium",
+              "description": "Arrival hall and the only extraction point."
+            },
+            {
+              "id": "records",
+              "name": "Records",
+              "description": "Intake shelves and a powered catalog verifier."
+            },
+            {
+              "id": "conservation",
+              "name": "Conservation",
+              "description": "Restoration benches beside the sealed archive gate."
+            },
+            {
+              "id": "plant",
+              "name": "Plant",
+              "description": "Building controls for the service hatch."
+            },
+            {
+              "id": "vault",
+              "name": "Vault",
+              "description": "Three ledger candidates await recovery."
+            }
+          ],
+          "connections": [
+            {
+              "from": "atrium",
+              "to": "records",
+              "gate": null
+            },
+            {
+              "from": "atrium",
+              "to": "conservation",
+              "gate": null
+            },
+            {
+              "from": "records",
+              "to": "conservation",
+              "gate": null
+            },
+            {
+              "from": "records",
+              "to": "plant",
+              "gate": null
+            },
+            {
+              "from": "conservation",
+              "to": "vault",
+              "gate": "archive_gate"
+            },
+            {
+              "from": "plant",
+              "to": "vault",
+              "gate": "service_hatch"
+            }
+          ]
+        },
+        "candidates": [
+          {
+            "candidate_id": "ledger-amber",
+            "label": "Amber Ledger",
+            "visible_attributes": [
+              {
+                "label": "Binding",
+                "value": "calfskin"
+              },
+              {
+                "label": "Marking",
+                "value": "split_star"
+              },
+              {
+                "label": "Year",
+                "value": "1904"
+              }
+            ],
+            "evidence_assessment": "observed",
+            "observed_evidence": [
+              {
+                "source_id": "records",
+                "source_label": "Records intake card",
+                "attribute_label": "Binding",
+                "observed_value": "calfskin",
+                "candidate_value": "calfskin",
+                "relation": "matches"
+              },
+              {
+                "source_id": "conservation",
+                "source_label": "Conservation restoration note",
+                "attribute_label": "Marking",
+                "observed_value": "compass_rose",
+                "candidate_value": "split_star",
+                "relation": "does_not_match"
+              }
+            ]
+          },
+          {
+            "candidate_id": "ledger-cobalt",
+            "label": "Cobalt Ledger",
+            "visible_attributes": [
+              {
+                "label": "Binding",
+                "value": "calfskin"
+              },
+              {
+                "label": "Marking",
+                "value": "compass_rose"
+              },
+              {
+                "label": "Year",
+                "value": "1891"
+              }
+            ],
+            "evidence_assessment": "recommended",
+            "observed_evidence": [
+              {
+                "source_id": "records",
+                "source_label": "Records intake card",
+                "attribute_label": "Binding",
+                "observed_value": "calfskin",
+                "candidate_value": "calfskin",
+                "relation": "matches"
+              },
+              {
+                "source_id": "conservation",
+                "source_label": "Conservation restoration note",
+                "attribute_label": "Marking",
+                "observed_value": "compass_rose",
+                "candidate_value": "compass_rose",
+                "relation": "matches"
+              }
+            ]
+          },
+          {
+            "candidate_id": "ledger-violet",
+            "label": "Violet Ledger",
+            "visible_attributes": [
+              {
+                "label": "Binding",
+                "value": "linen"
+              },
+              {
+                "label": "Marking",
+                "value": "compass_rose"
+              },
+              {
+                "label": "Year",
+                "value": "1904"
+              }
+            ],
+            "evidence_assessment": "observed",
+            "observed_evidence": [
+              {
+                "source_id": "records",
+                "source_label": "Records intake card",
+                "attribute_label": "Binding",
+                "observed_value": "calfskin",
+                "candidate_value": "linen",
+                "relation": "does_not_match"
+              },
+              {
+                "source_id": "conservation",
+                "source_label": "Conservation restoration note",
+                "attribute_label": "Marking",
+                "observed_value": "compass_rose",
+                "candidate_value": "compass_rose",
+                "relation": "matches"
+              }
+            ]
+          }
+        ],
+        "staged_action": null,
+        "carried_candidate": null,
+        "verifier_result": null,
+        "preservation_agreement": {
+          "speaker": "Archivist",
+          "statement": "Preserve the threatened collection and I will open the Conservation–Vault gate.",
+          "commitment": "not_accepted",
+          "conditions": [
+            {
+              "condition_id": "lead_acceptance",
+              "label": "Human lead accepts this fixed agreement",
+              "status": "pending",
+              "turn_cost": 1,
+              "power_cost": 0
+            },
+            {
+              "condition_id": "collection_preparation",
+              "label": "Prepare the threatened collection",
+              "status": "pending",
+              "turn_cost": 1,
+              "power_cost": 0
+            },
+            {
+              "condition_id": "equipment_energized",
+              "label": "Energize the preservation equipment",
+              "status": "blocked",
+              "turn_cost": 1,
+              "power_cost": 1
+            }
+          ]
+        },
+        "optional_objectives": {
+          "collection_preserved": {
+            "label": "Preserve the threatened collection",
+            "status": "not_started",
+            "turn_cost": 2,
+            "power_cost": 1
+          },
+          "source_record_protected": {
+            "label": "Protect the source's identifying record",
+            "status": "locked",
+            "turn_cost": 1,
+            "power_cost": 1
+          }
+        },
+        "mira": {
+          "dialogue_allowed": true,
+          "field_assay": {
+            "steps_completed": 0,
+            "result": null
+          },
+          "presence": "active",
+          "location": "conservation",
+          "mode": "tasked",
+          "task": {
+            "status": "assigned",
+            "revision": 5,
+            "kind": "open_service_hatch",
+            "power_allowance": 2,
+            "power_spent": 0
+          },
+          "planning": {
+            "status": "waiting",
+            "opportunity_revision": 5,
+            "plan_revision": 0,
+            "steps_total": 0,
+            "steps_completed": 0,
+            "deadline": "2026-09-09T12:00:26Z"
+          },
+          "preparation": {
+            "status": "none",
+            "for_turn": 0,
+            "summary": "none"
+          },
+          "knowledge": {
+            "records": "unknown",
+            "conservation": "unknown",
+            "verifier_result": null
+          },
+          "last_contribution": {
+            "kind": "follow_move",
+            "summary": "Mira followed the lead through one open passage.",
+            "turn": 3
+          }
+        },
+        "jonah": {
+          "dialogue_allowed": true,
+          "field_assay": {
+            "steps_completed": 0,
+            "result": null
+          },
+          "presence": "active",
+          "location": "conservation",
+          "mode": "following",
+          "task": {
+            "kind": "none",
+            "power_allowance": 0,
+            "power_spent": 0,
+            "revision": 0,
+            "status": "none"
+          },
+          "planning": {
+            "status": "not_requested",
+            "opportunity_revision": 0,
+            "plan_revision": 0,
+            "steps_total": 0,
+            "steps_completed": 0,
+            "deadline": "none"
+          },
+          "preparation": {
+            "status": "none",
+            "for_turn": 0,
+            "summary": "none"
+          },
+          "knowledge": {
+            "records": "unknown",
+            "conservation": "unknown",
+            "verifier_result": null
+          },
+          "last_contribution": {
+            "kind": "follow_move",
+            "summary": "Jonah followed the lead through one open passage.",
+            "turn": 3
+          }
+        },
+        "turn_resolution": {
+          "status": "clear",
+          "power_reserved": 0,
+          "prepared_roles": [],
+          "deferred_roles": [],
+          "unprepared_roles": [
+            "mira"
+          ],
+          "reservations": [],
+          "conflicts": []
+        },
+        "extraction": {
+          "status": "none",
+          "revision": 8,
+          "for_turn": 0,
+          "extracted_roles": [],
+          "left_behind_roles": []
+        },
+        "crew_debrief": {
+          "starting_roles": [
+            "lead",
+            "mira",
+            "jonah"
+          ],
+          "extracted_roles": [],
+          "left_behind_roles": [],
+          "completed_work": [
+            {
+              "kind": "follow_move",
+              "role": "mira",
+              "turn": 1
+            },
+            {
+              "kind": "follow_move",
+              "role": "jonah",
+              "turn": 1
+            },
+            {
+              "kind": "follow_move",
+              "role": "mira",
+              "turn": 3
+            },
+            {
+              "kind": "follow_move",
+              "role": "jonah",
+              "turn": 3
+            }
+          ]
+        },
+        "debrief": null,
+        "outcome": null
+      },
+      "jonah": {
+        "companion_dialogue": [
+          {
+            "speaker": "jonah",
+            "turn": 4,
+            "text": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"aa"
+          },
+          {
+            "speaker": "jonah",
+            "turn": 4,
+            "text": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"aa"
+          },
+          {
+            "speaker": "jonah",
+            "turn": 4,
+            "text": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"aa"
+          },
+          {
+            "speaker": "jonah",
+            "turn": 4,
+            "text": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"aa"
+          }
+        ],
+        "phase": "active",
+        "session_deadline": "2026-09-10T12:00:00Z",
+        "scenario": {
+          "id": "low-reserve-v1",
+          "label": "Low Reserve"
+        },
+        "objective": "Recover the authentic ledger, return to the Atrium, and extract before turn 16 ends. Jonah wants the source record protected.",
+        "location": "conservation",
+        "turns_used": 4,
+        "turns_remaining": 12,
+        "power": 2,
+        "initial_power": 2,
+        "method_costs": {
+          "ordinary_service_hatch": 2,
+          "verifier": 1
+        },
+        "operation_costs": {
+          "accept_preservation_agreement": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "companion_inspect_source": {
+            "power_cost": 0,
+            "turn_cost": 0
+          },
+          "companion_move": {
+            "power_cost": 0,
+            "turn_cost": 0
+          },
+          "companion_share_source": {
+            "power_cost": 0,
+            "turn_cost": 0
+          },
+          "companion_verifier": {
+            "power_cost": 1,
+            "turn_cost": 0
+          },
+          "energize_preservation_equipment": {
+            "power_cost": 1,
+            "turn_cost": 1
+          },
+          "extract": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "inspect_conservation": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "inspect_records": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "jonah_open_service_hatch": {
+            "power_cost": 1,
+            "turn_cost": 0
+          },
+          "mira_field_assay": {
+            "power_cost": 0,
+            "turn_cost": 0
+          },
+          "mira_open_service_hatch": {
+            "power_cost": 2,
+            "turn_cost": 0
+          },
+          "move": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "open_service_hatch": {
+            "power_cost": 2,
+            "turn_cost": 1
+          },
+          "prepare_collection": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "protect_source_record": {
+            "power_cost": 1,
+            "turn_cost": 1
+          },
+          "recover_candidate": {
+            "power_cost": 0,
+            "turn_cost": 1
+          },
+          "use_verifier": {
+            "power_cost": 1,
+            "turn_cost": 1
+          },
+          "wait": {
+            "power_cost": 0,
+            "turn_cost": 1
+          }
+        },
+        "gates": {
+          "archive_gate": "closed",
+          "service_hatch": "closed"
+        },
+        "map": {
+          "locations": [
+            {
+              "id": "atrium",
+              "name": "Atrium",
+              "description": "Arrival hall and the only extraction point."
+            },
+            {
+              "id": "records",
+              "name": "Records",
+              "description": "Intake shelves and a powered catalog verifier."
+            },
+            {
+              "id": "conservation",
+              "name": "Conservation",
+              "description": "Restoration benches beside the sealed archive gate."
+            },
+            {
+              "id": "plant",
+              "name": "Plant",
+              "description": "Building controls for the service hatch."
+            },
+            {
+              "id": "vault",
+              "name": "Vault",
+              "description": "Three ledger candidates await recovery."
+            }
+          ],
+          "connections": [
+            {
+              "from": "atrium",
+              "to": "records",
+              "gate": null
+            },
+            {
+              "from": "atrium",
+              "to": "conservation",
+              "gate": null
+            },
+            {
+              "from": "records",
+              "to": "conservation",
+              "gate": null
+            },
+            {
+              "from": "records",
+              "to": "plant",
+              "gate": null
+            },
+            {
+              "from": "conservation",
+              "to": "vault",
+              "gate": "archive_gate"
+            },
+            {
+              "from": "plant",
+              "to": "vault",
+              "gate": "service_hatch"
+            }
+          ]
+        },
+        "candidates": [
+          {
+            "candidate_id": "ledger-amber",
+            "label": "Amber Ledger",
+            "visible_attributes": [
+              {
+                "label": "Binding",
+                "value": "calfskin"
+              },
+              {
+                "label": "Marking",
+                "value": "split_star"
+              },
+              {
+                "label": "Year",
+                "value": "1904"
+              }
+            ],
+            "evidence_assessment": "observed",
+            "observed_evidence": [
+              {
+                "source_id": "records",
+                "source_label": "Records intake card",
+                "attribute_label": "Binding",
+                "observed_value": "calfskin",
+                "candidate_value": "calfskin",
+                "relation": "matches"
+              },
+              {
+                "source_id": "conservation",
+                "source_label": "Conservation restoration note",
+                "attribute_label": "Marking",
+                "observed_value": "compass_rose",
+                "candidate_value": "split_star",
+                "relation": "does_not_match"
+              }
+            ]
+          },
+          {
+            "candidate_id": "ledger-cobalt",
+            "label": "Cobalt Ledger",
+            "visible_attributes": [
+              {
+                "label": "Binding",
+                "value": "calfskin"
+              },
+              {
+                "label": "Marking",
+                "value": "compass_rose"
+              },
+              {
+                "label": "Year",
+                "value": "1891"
+              }
+            ],
+            "evidence_assessment": "recommended",
+            "observed_evidence": [
+              {
+                "source_id": "records",
+                "source_label": "Records intake card",
+                "attribute_label": "Binding",
+                "observed_value": "calfskin",
+                "candidate_value": "calfskin",
+                "relation": "matches"
+              },
+              {
+                "source_id": "conservation",
+                "source_label": "Conservation restoration note",
+                "attribute_label": "Marking",
+                "observed_value": "compass_rose",
+                "candidate_value": "compass_rose",
+                "relation": "matches"
+              }
+            ]
+          },
+          {
+            "candidate_id": "ledger-violet",
+            "label": "Violet Ledger",
+            "visible_attributes": [
+              {
+                "label": "Binding",
+                "value": "linen"
+              },
+              {
+                "label": "Marking",
+                "value": "compass_rose"
+              },
+              {
+                "label": "Year",
+                "value": "1904"
+              }
+            ],
+            "evidence_assessment": "observed",
+            "observed_evidence": [
+              {
+                "source_id": "records",
+                "source_label": "Records intake card",
+                "attribute_label": "Binding",
+                "observed_value": "calfskin",
+                "candidate_value": "linen",
+                "relation": "does_not_match"
+              },
+              {
+                "source_id": "conservation",
+                "source_label": "Conservation restoration note",
+                "attribute_label": "Marking",
+                "observed_value": "compass_rose",
+                "candidate_value": "compass_rose",
+                "relation": "matches"
+              }
+            ]
+          }
+        ],
+        "staged_action": null,
+        "carried_candidate": null,
+        "verifier_result": null,
+        "preservation_agreement": {
+          "speaker": "Archivist",
+          "statement": "Preserve the threatened collection and I will open the Conservation–Vault gate.",
+          "commitment": "not_accepted",
+          "conditions": [
+            {
+              "condition_id": "lead_acceptance",
+              "label": "Human lead accepts this fixed agreement",
+              "status": "pending",
+              "turn_cost": 1,
+              "power_cost": 0
+            },
+            {
+              "condition_id": "collection_preparation",
+              "label": "Prepare the threatened collection",
+              "status": "pending",
+              "turn_cost": 1,
+              "power_cost": 0
+            },
+            {
+              "condition_id": "equipment_energized",
+              "label": "Energize the preservation equipment",
+              "status": "blocked",
+              "turn_cost": 1,
+              "power_cost": 1
+            }
+          ]
+        },
+        "optional_objectives": {
+          "collection_preserved": {
+            "label": "Preserve the threatened collection",
+            "status": "not_started",
+            "turn_cost": 2,
+            "power_cost": 1
+          },
+          "source_record_protected": {
+            "label": "Protect the source's identifying record",
+            "status": "locked",
+            "turn_cost": 1,
+            "power_cost": 1
+          }
+        },
+        "mira": {
+          "dialogue_allowed": true,
+          "field_assay": {
+            "steps_completed": 0,
+            "result": null
+          },
+          "presence": "active",
+          "location": "conservation",
+          "mode": "following",
+          "task": {
+            "kind": "none",
+            "power_allowance": 0,
+            "power_spent": 0,
+            "revision": 0,
+            "status": "none"
+          },
+          "planning": {
+            "status": "not_requested",
+            "opportunity_revision": 0,
+            "plan_revision": 0,
+            "steps_total": 0,
+            "steps_completed": 0,
+            "deadline": "none"
+          },
+          "preparation": {
+            "status": "none",
+            "for_turn": 0,
+            "summary": "none"
+          },
+          "knowledge": {
+            "records": "unknown",
+            "conservation": "unknown",
+            "verifier_result": null
+          },
+          "last_contribution": {
+            "kind": "follow_move",
+            "summary": "Mira followed the lead through one open passage.",
+            "turn": 3
+          }
+        },
+        "jonah": {
+          "dialogue_allowed": true,
+          "field_assay": {
+            "steps_completed": 0,
+            "result": null
+          },
+          "presence": "active",
+          "location": "conservation",
+          "mode": "tasked",
+          "task": {
+            "status": "assigned",
+            "revision": 5,
+            "kind": "open_service_hatch",
+            "power_allowance": 1,
+            "power_spent": 0
+          },
+          "planning": {
+            "status": "waiting",
+            "opportunity_revision": 5,
+            "plan_revision": 0,
+            "steps_total": 0,
+            "steps_completed": 0,
+            "deadline": "2026-09-09T12:00:26Z"
+          },
+          "preparation": {
+            "status": "none",
+            "for_turn": 0,
+            "summary": "none"
+          },
+          "knowledge": {
+            "records": "unknown",
+            "conservation": "unknown",
+            "verifier_result": null
+          },
+          "last_contribution": {
+            "kind": "follow_move",
+            "summary": "Jonah followed the lead through one open passage.",
+            "turn": 3
+          }
+        },
+        "turn_resolution": {
+          "status": "clear",
+          "power_reserved": 0,
+          "prepared_roles": [],
+          "deferred_roles": [],
+          "unprepared_roles": [
+            "jonah"
+          ],
+          "reservations": [],
+          "conflicts": []
+        },
+        "extraction": {
+          "status": "none",
+          "revision": 8,
+          "for_turn": 0,
+          "extracted_roles": [],
+          "left_behind_roles": []
+        },
+        "crew_debrief": {
+          "starting_roles": [
+            "lead",
+            "mira",
+            "jonah"
+          ],
+          "extracted_roles": [],
+          "left_behind_roles": [],
+          "completed_work": [
+            {
+              "kind": "follow_move",
+              "role": "mira",
+              "turn": 1
+            },
+            {
+              "kind": "follow_move",
+              "role": "jonah",
+              "turn": 1
+            },
+            {
+              "kind": "follow_move",
+              "role": "mira",
+              "turn": 3
+            },
+            {
+              "kind": "follow_move",
+              "role": "jonah",
+              "turn": 3
+            }
+          ]
+        },
+        "debrief": null,
+        "outcome": null
+      }
+    }
+  }
+}

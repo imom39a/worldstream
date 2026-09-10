@@ -12,16 +12,19 @@ const printIdentities = process.argv.includes("--print-identities");
 const buildRoots = new Map([
   ["worldstream.agent-heist.web", "clients/agent-heist-web/dist"],
   ["worldstream.negotiate.web", "clients/negotiate-web/dist"],
+  ["worldstream.midnight-archive.web", "clients/midnight-archive-web/dist"],
   ["worldstream.inspector.web", "web/console/dist"],
 ]);
 const currentReleaseFiles = new Map([
   ["worldstream.agent-heist.web", "agent-heist-web-v9.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
+  ["worldstream.midnight-archive.web", "midnight-archive-web-v13.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const currentEvidenceFiles = new Map([
   ["worldstream.agent-heist.web", "agent-heist-web-v9.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
+  ["worldstream.midnight-archive.web", "midnight-archive-web-v13.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const expectedChecks = new Map([
@@ -46,6 +49,15 @@ const expectedChecks = new Map([
     "projection-reset-replaces-authorized-state",
     "participant-and-spectator-access-mode-gating",
     "prepared-action-queue-and-replay-validation-boundaries",
+  ]],
+  ["worldstream.midnight-archive.web", [
+    "release-and-host-binding-exact-references",
+    "live-adapter-starts-empty",
+    "briefing-reset-and-activity-start-gating",
+    "projection-reset-replaces-authorized-state",
+    "participant-access-and-private-truth-gating",
+    "staged-action-and-explicit-commit-boundaries",
+    "responsive-map-and-contextual-action-controls",
   ]],
 ]);
 const hostMounts = new Map(activityClientMounts.map((mount) => [mount.prefix, mount.root]));
@@ -83,10 +95,44 @@ for (const { name, value: evidence } of evidenceDocuments) {
   check(
     JSON.stringify(evidence.checks) === JSON.stringify([
       ...expectedChecks.get(evidence.subject.client_id),
+      ...(evidence.subject.client_id === "worldstream.midnight-archive.web" ? (
+        ["midnight-archive-web-v5.json", "midnight-archive-web-v6.json", "midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json", "midnight-archive-web-v12.json", "midnight-archive-web-v13.json"].includes(name) ? [
+          "fixed-agreement-and-optional-objective-projection-boundaries",
+          "all-four-starting-roster-component-host-witnesses",
+          "structured-specialist-task-plan-and-private-knowledge-boundaries",
+          "separate-human-mira-and-jonah-membership-live-browser-witness",
+          "one-specialist-step-per-human-commit-and-provider-free-replay",
+          "typed-turn-reservation-and-conflict-boundaries",
+          "staged-extraction-preview-and-exact-crew-acknowledgement",
+          "terminal-full-and-partial-crew-debrief-work-attribution",
+          "responsive-specialist-controls",
+          ...(["midnight-archive-web-v10.json", "midnight-archive-web-v11.json", "midnight-archive-web-v12.json", "midnight-archive-web-v13.json"].includes(name) ? [
+            "authored-standard-and-low-reserve-scenario-boundaries",
+            "closed-genesis-operation-cost-schedule",
+          ] : []),
+        ] : name === "midnight-archive-web-v4.json" ? [
+          "fixed-agreement-and-optional-objective-projection-boundaries",
+          "solo-eleven-and-fifteen-turn-component-host-browser-and-replay-witnesses",
+          "structured-mira-task-plan-and-private-knowledge-boundaries",
+          "separate-human-and-agent-membership-live-browser-witness",
+          "one-companion-step-per-human-commit-and-provider-free-replay",
+          "responsive-mira-controls",
+        ] : name === "midnight-archive-web-v3.json" ? [
+          "fixed-agreement-and-optional-objective-projection-boundaries",
+          "solo-eleven-and-fifteen-turn-component-host-browser-and-replay-witnesses",
+        ] : ["solo-ten-turn-component-host-browser-and-replay-witness"]
+      ) : []),
       ...(["agent-heist-web-v2.json", "agent-heist-web-v3.json", "agent-heist-web-v4.json", "agent-heist-web-v5.json", "agent-heist-web-v6.json", "agent-heist-web-v7.json", "agent-heist-web-v8.json", "agent-heist-web-v9.json"].includes(name) ? [
         "deployment-owned-stream-bootstrap-and-recovery",
         "separate-local-kernel-and-hosted-entrypoints-without-auth-fallback",
       ] : []),
+      ...(["midnight-archive-web-v2.json", "midnight-archive-web-v3.json", "midnight-archive-web-v4.json", "midnight-archive-web-v5.json", "midnight-archive-web-v6.json", "midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json", "midnight-archive-web-v12.json", "midnight-archive-web-v13.json"].includes(name)
+        ? ["bounded-idempotent-upstream-retry"] : []),
+      ...(["midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json", "midnight-archive-web-v12.json", "midnight-archive-web-v13.json"].includes(name)
+        ? ["unavailable-companion-plan-continuation-boundaries"] : []),
+      ...(["midnight-archive-web-v11.json", "midnight-archive-web-v12.json", "midnight-archive-web-v13.json"].includes(name) ? ["bounded-companion-dialogue-literal-rendering-and-schema-boundaries"] : []),
+      ...(["midnight-archive-web-v12.json", "midnight-archive-web-v13.json"].includes(name) ? ["recorded-session-expiry-and-terminal-replay-boundaries"] : []),
+      ...(name === "midnight-archive-web-v13.json" ? ["hosted-live-and-terminal-house-exhibition-disclosure"] : []),
     ]),
     `${evidence.subject.client_id} conformance checks do not match the exercised canonical lane`,
   );
@@ -165,6 +211,31 @@ for (const { name, value: release } of releaseDocuments) {
 }
 
 check(Object.keys(expectedIdentities).length === buildRoots.size, "the current first-party Release set is incomplete");
+// A fresh import sees only its declared Release files, not the whole repository
+// directory. Check that closure independently of the artifact inventory above.
+for (const declarationName of ["cli-import.json", "hosted-local-import.json"]) {
+  const declaration = await readJson(resolve(configuration, declarationName));
+  exactKeys(declaration, ["schema", "release_files", "bindings_file"]);
+  check(declaration.schema === "worldstream/client-declaration-import/v1", `${declarationName} has an unknown import schema`);
+  const imported = new Map();
+  for (const releaseFile of declaration.release_files) {
+    const release = await readJson(resolve(configuration, releaseFile));
+    const key = `${release.client_id}\0${release.release_digest}`;
+    check(declaredReleaseIndex.has(key), `${declarationName} imports an unavailable exact Release`);
+    check(!imported.has(key), `${declarationName} imports a duplicate Release`);
+    imported.set(key, release);
+  }
+  const declaredBindings = await readJson(resolve(configuration, declaration.bindings_file));
+  for (const deployment of declaredBindings.deployments) {
+    const release = imported.get(`${deployment.client_id}\0${deployment.release_digest}`);
+    check(release !== undefined, `${declarationName}: ${deployment.deployment_id} requires a Release absent from release_files`);
+    for (const surface of deployment.surfaces) {
+      check(release.surfaces.some((candidate) => candidate.surface_id === surface.surface_id
+        && candidate.entrypoint === new URL(surface.launch_url).pathname),
+      `${declarationName}: ${deployment.deployment_id} exposes a surface outside its imported Release`);
+    }
+  }
+}
 for (const distribution of distributions) {
   exactKeys(distribution, ["schema", "distribution_id", "version", "pack_bundles", "clients", "client_compatibility", "integration_artifacts"]);
   check(distribution.schema === "worldstream/activity-distribution/v1", "unknown Activity Distribution schema");
@@ -268,15 +339,15 @@ async function verifySourceBoundaries() {
     "crates/worldstream-studio-supervisor/src/participant_handoff.rs",
   ]) {
     const source = await readFile(resolve(workspace, relativePath), "utf8");
-    check(!/worldstream\.(?:agent-heist|negotiate)|\/(?:agent-heist|negotiate|inspector)\//i.test(source), `Supervisor contains a Pack/client route branch in ${relativePath}`);
+    check(!/worldstream\.(?:agent-heist|negotiate|midnight-archive)|\/(?:agent-heist|negotiate|midnight-archive|inspector)\//i.test(source), `Supervisor contains a Pack/client route branch in ${relativePath}`);
   }
   const inspector = await readFile(resolve(workspace, "web/console/src/HandedOffParticipant.tsx"), "utf8");
-  check(!/Negotiate|worldstream\.negotiate|agent-heist/i.test(inspector), "generic Inspector imports a Pack-specific renderer");
+  check(!/Negotiate|Midnight Archive|worldstream\.(?:negotiate|midnight-archive)|agent-heist/i.test(inspector), "generic Inspector imports a Pack-specific renderer");
   const gallery = await readFile(resolve(workspace, "web/console/src/App.tsx"), "utf8");
   check(!/useLiveSession|liveSession|liveTransport|liveReplayClient/.test(gallery), "recorded gallery can still overlay live authorized state");
   const clientHostMain = await readFile(resolve(workspace, "web/console/src/main.tsx"), "utf8");
   check(
-    !/@worldstream\/(?:agent-heist|negotiate)-client|clientSurface === "(?:agent-heist|negotiate)"|NegotiateLiveApp|consumeNegotiateConsoleBootstrap|consumeLiveSessionBootstrap/.test(clientHostMain),
+    !/@worldstream\/(?:agent-heist|negotiate|midnight-archive)-client|clientSurface === "(?:agent-heist|negotiate|midnight-archive)"|NegotiateLiveApp|MidnightArchiveLiveApp|consumeNegotiateConsoleBootstrap|consumeLiveSessionBootstrap/.test(clientHostMain),
     "Inspector/recorded-gallery artifact still embeds a Pack-specific live client",
   );
   const heistWebMcp = await readFile(resolve(workspace, "clients/agent-heist-web/src/webmcp.ts"), "utf8");
@@ -299,6 +370,16 @@ async function verifySourceBoundaries() {
     ["/negotiate-v3/", "clients/negotiate-web/dist"],
     ["/negotiate-v2/", "config/activity-clients/artifacts/negotiate-web-v2"],
     ["/negotiate/", "config/activity-clients/artifacts/negotiate-web-v1"],
+    ["/midnight-archive-v10/", "config/activity-clients/artifacts/midnight-archive-web-v10"],
+    ["/midnight-archive-v9/", "config/activity-clients/artifacts/midnight-archive-web-v9"],
+    ["/midnight-archive-v8/", "config/activity-clients/artifacts/midnight-archive-web-v8"],
+    ["/midnight-archive-v7/", "config/activity-clients/artifacts/midnight-archive-web-v7"],
+    ["/midnight-archive-v6/", "config/activity-clients/artifacts/midnight-archive-web-v6"],
+    ["/midnight-archive-v5/", "config/activity-clients/artifacts/midnight-archive-web-v5"],
+    ["/midnight-archive-v4/", "config/activity-clients/artifacts/midnight-archive-web-v4"],
+    ["/midnight-archive-v3/", "config/activity-clients/artifacts/midnight-archive-web-v3"],
+    ["/midnight-archive-v2/", "config/activity-clients/artifacts/midnight-archive-web-v2"],
+    ["/midnight-archive-v1/", "config/activity-clients/artifacts/midnight-archive-web-v1"],
     ["/inspector-v2/", "web/console/dist"],
     ["/inspector/", "config/activity-clients/artifacts/inspector-web-v1"],
     ["/", "config/activity-clients/artifacts/inspector-web-v1"],
@@ -309,6 +390,7 @@ async function verifySourceBoundaries() {
   for (const path of [
     "clients/agent-heist-web/src/liveAdapter.ts",
     "clients/negotiate-web/src/liveAdapter.ts",
+    "clients/midnight-archive-web/src/liveAdapter.ts",
   ]) {
     const source = await readFile(resolve(workspace, path), "utf8");
     check(/return \{ kind: "awaiting" \};/.test(source), `${path} does not start from empty authorized state`);

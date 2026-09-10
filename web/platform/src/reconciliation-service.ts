@@ -2,40 +2,7 @@ import { Buffer } from "node:buffer";
 import { timingSafeEqual } from "node:crypto";
 import { reportPlatformFailure } from "./diagnostics.js";
 
-import {
-  agentHeistListingBase64,
-  retainedAgentHeistListing025Base64,
-  retainedAgentHeistListing024Base64,
-  retainedAgentHeistListing023Base64,
-  retainedAgentHeistListing022Base64,
-  retainedAgentHeistListing021Base64,
-  retainedAgentHeistListing020Base64,
-  retainedAgentHeistListing019Base64,
-  retainedAgentHeistListing018Base64,
-  retainedAgentHeistListing017Base64,
-  retainedAgentHeistListing016Base64,
-  retainedAgentHeistListing015Base64,
-  retainedAgentHeistListing014Base64,
-  retainedAgentHeistListing013Base64,
-  retainedAgentHeistListing012Base64,
-  retainedAgentHeistListing011Base64,
-  retainedAgentHeistResultProjector03Base64,
-  retainedAgentHeistListing010Base64,
-  retainedAgentHeistListing02Base64,
-  retainedAgentHeistListing03Base64,
-  retainedAgentHeistListing04Base64,
-  retainedAgentHeistListing05Base64,
-  retainedAgentHeistListing06Base64,
-  retainedAgentHeistListing07Base64,
-  retainedAgentHeistListing08Base64,
-  retainedAgentHeistListing09Base64,
-  agentHeistPublicProjectionSchemaBase64,
-  agentHeistResultProjectorBase64,
-  retainedAgentHeistResultProjector04Base64,
-  retainedAgentHeistResultProjector02Base64,
-  declarativeResultProjectorRuntimeBase64,
-  resultSummarySchemaBase64,
-} from "./hosted-artifacts.generated.js";
+import { hostedProjectorArtifactBundles } from "./hosted-artifacts.generated.js";
 import type { PlatformBff } from "./bff.js";
 import {
   HttpHostedResultSourceClient,
@@ -65,6 +32,7 @@ export function createHostedResultReconciler(input: {
   readonly dataSecretKey: string;
   readonly hostedGatewayUrl: string;
   readonly serviceAuthority: string;
+  readonly projectors?: ResultReconcilerDependencies["projectors"];
 }): ResultReconcilerDependencies {
   return {
     data: createSupabaseResultReconciliationData(
@@ -79,19 +47,13 @@ export function createHostedResultReconciler(input: {
       baseUrl: input.hostedGatewayUrl,
       serviceAuthority: input.serviceAuthority,
     }),
-    projectors: new PinnedResultProjectorRegistry([
-      agentHeistListingBase64, retainedAgentHeistListing025Base64, retainedAgentHeistListing024Base64, retainedAgentHeistListing023Base64, retainedAgentHeistListing022Base64, retainedAgentHeistListing021Base64, retainedAgentHeistListing020Base64, retainedAgentHeistListing019Base64, retainedAgentHeistListing018Base64, retainedAgentHeistListing017Base64, retainedAgentHeistListing016Base64, retainedAgentHeistListing015Base64, retainedAgentHeistListing014Base64, retainedAgentHeistListing013Base64, retainedAgentHeistListing012Base64, retainedAgentHeistListing011Base64, retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64,
-      retainedAgentHeistListing04Base64, retainedAgentHeistListing05Base64, retainedAgentHeistListing06Base64, retainedAgentHeistListing07Base64, retainedAgentHeistListing08Base64, retainedAgentHeistListing09Base64, retainedAgentHeistListing010Base64,
-    ].map((listingBytes) => ({
-        listingBytes: decode(listingBytes),
-        projectorBytes: decode(listingBytes === agentHeistListingBase64 || listingBytes === retainedAgentHeistListing025Base64 || listingBytes === retainedAgentHeistListing024Base64 ? agentHeistResultProjectorBase64
-          : listingBytes === retainedAgentHeistListing012Base64 ? retainedAgentHeistResultProjector04Base64
-          : listingBytes === retainedAgentHeistListing023Base64 || listingBytes === retainedAgentHeistListing022Base64 || listingBytes === retainedAgentHeistListing021Base64 || listingBytes === retainedAgentHeistListing020Base64 || listingBytes === retainedAgentHeistListing019Base64 || listingBytes === retainedAgentHeistListing018Base64 || listingBytes === retainedAgentHeistListing017Base64 || listingBytes === retainedAgentHeistListing016Base64 || listingBytes === retainedAgentHeistListing015Base64 || listingBytes === retainedAgentHeistListing014Base64 || listingBytes === retainedAgentHeistListing013Base64 || listingBytes === retainedAgentHeistListing011Base64 || listingBytes === retainedAgentHeistListing07Base64 || listingBytes === retainedAgentHeistListing08Base64 || listingBytes === retainedAgentHeistListing09Base64 || listingBytes === retainedAgentHeistListing010Base64
-            ? retainedAgentHeistResultProjector03Base64 : retainedAgentHeistResultProjector02Base64),
-        runtimeBytes: decode(declarativeResultProjectorRuntimeBase64),
-        projectionSchemaBytes: decode(agentHeistPublicProjectionSchemaBase64),
-        outputSchemaBytes: decode(resultSummarySchemaBase64),
-      }))),
+    projectors: input.projectors ?? new PinnedResultProjectorRegistry(hostedProjectorArtifactBundles.map((bundle) => ({
+      listingBytes: decode(bundle.listingBase64),
+      projectorBytes: decode(bundle.projectorBase64),
+      runtimeBytes: decode(bundle.runtimeBase64),
+      projectionSchemaBytes: decode(bundle.projectionSchemaBase64),
+      outputSchemaBytes: decode(bundle.outputSchemaBase64),
+    }))),
   };
 }
 

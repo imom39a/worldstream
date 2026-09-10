@@ -40,7 +40,7 @@
       "selectable": 0,
       "retained_only": 1,
       "storage_profile": "sqlite-bundled",
-      "inventory_digest": "blake3:9c1567cd4252c376eb2b90fcfe7bf727683afb98b2084c493f9febcada695560",
+      "inventory_digest": "blake3:82176ab3fe5105147fabf2560b1b54edf6bf9131a756a573549324b845f53fc7",
       "entries": [
         {
           "pack_id": "worldstream.negotiate",
@@ -70,7 +70,7 @@
       "selectable": 1,
       "retained_only": 0,
       "storage_profile": "sqlite-bundled",
-      "inventory_digest": "blake3:b5dcb53c6296980fda81ea76b6901412ae0587cd539fca9bedd968ee960de0cd",
+      "inventory_digest": "blake3:42742ffd67ea284f24330b9ade95a1e63220cf76aaa6f63c2ee4868965681823",
       "entries": [
         {
           "pack_id": "worldstream.negotiate",
@@ -86,14 +86,14 @@
       "schema": "worldstream/pack-operator-receipt/v1",
       "status": "ready",
       "operation": "restart_readiness",
-      "embedded_revisions": 7,
+      "embedded_revisions": 9,
       "installed_bundles": 1,
       "installed_selectable": 1,
       "installed_retained_only": 0,
       "storage_profile": "sqlite-bundled",
       "deployment_binding": "<temporary-deployment-binding>",
-      "inventory_digest": "blake3:b5dcb53c6296980fda81ea76b6901412ae0587cd539fca9bedd968ee960de0cd",
-      "total_revisions": 8,
+      "inventory_digest": "blake3:42742ffd67ea284f24330b9ade95a1e63220cf76aaa6f63c2ee4868965681823",
+      "total_revisions": 10,
       "original_bytes_reverified": true,
       "production_component_host_admission": true,
       "room_replay_checked": true,
@@ -127,7 +127,7 @@
       "selectable": 0,
       "retained_only": 1,
       "storage_profile": "sqlite-bundled",
-      "inventory_digest": "blake3:9c1567cd4252c376eb2b90fcfe7bf727683afb98b2084c493f9febcada695560",
+      "inventory_digest": "blake3:a512b0341eb8305b5362e125931f6b4743cf5870203cae9a077d7a447b0de824",
       "entries": [
         {
           "pack_id": "worldstream.negotiate",

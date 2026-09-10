@@ -1,0 +1,14 @@
+{
+  "accepted_action": true,
+  "bundle_digest": "blake3:c32dced630dcfe41b364e44bec37a3ad005a03ec1606a6dc9a8c75768f2a9be5",
+  "declared_rejection": true,
+  "pack_id": "worldstream.archive-contract-fixture",
+  "private_views": 3,
+  "proof_type": "complete",
+  "retained_old_revision": true,
+  "revision_digest": "blake3:9b3efa73ee1ee389a4c06416c76f8440790e62d7b9daca643fca082556eaed83",
+  "roles": 3,
+  "room_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "status": "passed",
+  "transcript_digest": "blake3:e5681787ae6b1d1621858aeae132c4cecc03d96f447dbb0efa3a8ac5ab6e8d14"
+}

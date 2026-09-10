@@ -1,0 +1,64 @@
+{
+  "schema": "worldstream/activity-listing-revision/v1",
+  "listing_id": "worldstream.midnight-archive.internal-solo",
+  "version": "0.1.0",
+  "title": "Midnight Archive",
+  "description": "Identify the authentic ledger, gain access to the vault, and escape through the Atrium. Solo Standard expedition: 16 turns and 3 power charges; reading costs no turns.",
+  "catalog": {
+    "visibility": "unlisted",
+    "review_status": "reviewed"
+  },
+  "pack": {
+    "id": "worldstream.midnight-archive",
+    "version": "0.1.0",
+    "digest": "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64"
+  },
+  "client": {
+    "client_id": "worldstream.midnight-archive.web",
+    "release_digest": "sha256:9be6d6548f2d62baba805ec461b27fbd1021ed0d61fbd0e8ffd1d779616bc534",
+    "client_contract": "worldstream/activity-client-protocol/v1",
+    "surface_id": "midnight-archive-hosted-web"
+  },
+  "creator_access": "must_claim_seat",
+  "launch_input_schema": {
+    "schema": "worldstream/launch-input-schema/v1",
+    "accepts": "none",
+    "defaults": {}
+  },
+  "room_setup": {
+    "configuration": {
+      "scenario_id": "standard-v1"
+    }
+  },
+  "seats": [
+    {
+      "seat_id": "lead",
+      "role": "lead",
+      "display_name": "Expedition lead",
+      "required": true,
+      "allowed_participation": [
+        "account_human"
+      ],
+      "allowed_house_agent_revisions": []
+    }
+  ],
+  "pre_start_deadline_seconds": 1800,
+  "public_viewing_policy": "disabled",
+  "result": {
+    "projection": {
+      "schema": "worldstream.midnight-archive/public-projection/v3",
+      "digest": "blake3:d6042c76a9f09bc4bc1ea3fac8c443bc6f7f154f39aed4cd7aad5b60b956949f"
+    },
+    "projector": {
+      "id": "worldstream.midnight-archive.result",
+      "version": "0.1.0",
+      "digest": "blake3:099bb9dc1b0e1fa76ebfe3d67d8b1c0e239e53ec72c88b65e0892bf79f268821"
+    },
+    "publication": {
+      "policy": "disabled",
+      "attribution": "none",
+      "public_output": "none",
+      "suppression": "unhealthy_inconclusive_or_conflict"
+    }
+  }
+}

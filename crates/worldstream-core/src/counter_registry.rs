@@ -12,7 +12,10 @@ use crate::{
     PackDigestV1, PackGenesisRequestV1, PackGoldenActionV1, PackGoldenCorpusV1,
     PackGoldenViewerKindV1, PackGoldenViewerV1, PackRegistryErrorV1, PackRegistryStatusV1,
     PackRegistryV1, PrincipalKindV1,
-    activity_pack::{CanonicalPackCodecV1, PackRegistryArtifactsV1, PackRegistryEntryV1},
+    activity_pack::{
+        CanonicalPackCodecV1, PackRegistryArtifactsV1, PackRegistryEntryV1,
+        retained_executor_source_matches,
+    },
     counter::{counter_v1_revision, counter_v2_revision},
     counter_attention::counter_v3_revision,
     counter_attention_v4::counter_v4_revision,
@@ -478,6 +481,11 @@ fn counter_entry(
         CounterRevision::V3 => counter_v3_revision(),
         CounterRevision::V4 => counter_v4_revision(),
     };
+    if !counter_executor_sources_match_retained(revision) {
+        return Err(PackRegistryErrorV1::WrongExecutorProvenance(
+            descriptor.revision_digest.clone(),
+        ));
+    }
     let corpus = counter_corpus(revision, descriptor.revision_digest.clone());
     let artifacts = PackRegistryArtifactsV1 {
         expected_revision_digest: descriptor.revision_digest.clone(),
@@ -491,6 +499,7 @@ fn counter_entry(
     let status = PackRegistryStatusV1 {
         selectable_for_new_rooms,
         runnable_for_retained_rooms,
+        approved_for_activity_start: true,
     };
     Ok(match revision {
         CounterRevision::V1 => {
@@ -506,6 +515,62 @@ fn counter_entry(
             PackRegistryEntryV1::counter_v4(lock.clone(), descriptor, artifacts, status)
         }
     })
+}
+
+fn counter_executor_sources_match_retained(revision: CounterRevision) -> bool {
+    const CURRENT_COUNTER_BINDING: &str = r#"        artifact.extend_from_slice(&canonical_text_artifact(include_bytes!(
+            "retained_executor_artifacts/counter-v1-v2.rs"
+        )));
+"#;
+    const RETAINED_COUNTER_BINDING: &str = "        artifact.extend_from_slice(&canonical_text_artifact(include_bytes!(\"counter.rs\")));\n";
+    const CURRENT_DEPENDENT_COUNTER_BINDING: &str = r#"    artifact.extend_from_slice(&canonical_text_artifact(include_bytes!(
+        "retained_executor_artifacts/counter-v1-v2.rs"
+    )));
+"#;
+    const RETAINED_DEPENDENT_COUNTER_BINDING: &str = "    artifact.extend_from_slice(&canonical_text_artifact(include_bytes!(\"counter.rs\")));\n";
+    let counter_matches = retained_executor_source_matches(
+        include_str!("counter.rs"),
+        include_str!("retained_executor_artifacts/counter-v1-v2.rs"),
+        &[
+            ("        activity_start_contract: None,\n", ""),
+            (CURRENT_COUNTER_BINDING, RETAINED_COUNTER_BINDING),
+        ],
+    );
+    if !counter_matches {
+        return false;
+    }
+
+    match revision {
+        CounterRevision::V1 | CounterRevision::V2 => true,
+        CounterRevision::V3 => retained_executor_source_matches(
+            include_str!("counter_attention.rs"),
+            include_str!("retained_executor_artifacts/counter-attention-v3.rs"),
+            &[
+                (
+                    "        \"retained_executor_artifacts/counter-attention-v3.rs\"\n",
+                    "        \"counter_attention.rs\"\n",
+                ),
+                (
+                    CURRENT_DEPENDENT_COUNTER_BINDING,
+                    RETAINED_DEPENDENT_COUNTER_BINDING,
+                ),
+            ],
+        ),
+        CounterRevision::V4 => retained_executor_source_matches(
+            include_str!("counter_attention_v4.rs"),
+            include_str!("retained_executor_artifacts/counter-attention-v4.rs"),
+            &[
+                (
+                    "        \"retained_executor_artifacts/counter-attention-v4.rs\"\n",
+                    "        \"counter_attention_v4.rs\"\n",
+                ),
+                (
+                    CURRENT_DEPENDENT_COUNTER_BINDING,
+                    RETAINED_DEPENDENT_COUNTER_BINDING,
+                ),
+            ],
+        ),
+    }
 }
 
 #[allow(

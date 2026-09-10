@@ -1,12 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
 
 export interface HostedActivitySummary {
+  readonly rosterOptions?: readonly {
+    readonly key: string;
+    readonly label: string;
+    readonly description: string;
+    readonly seatKeys: readonly string[];
+    readonly creatorSeatKeys: readonly string[];
+    readonly suppliedAgents: number;
+  }[];
+  readonly defaultRosterOption?: string;
   readonly slug: string;
   readonly title: string;
   readonly description: string;
   readonly availability: "available" | "coming_soon" | "dependency_unavailable";
   readonly availabilityMessage: string;
   readonly seatSummary: string;
+  readonly participationKinds?: readonly ("human" | "external_agent")[];
   readonly seats: readonly { readonly key: string; readonly label: string; readonly required: boolean }[];
   readonly creatorMaySpectate: boolean;
   readonly houseFillAvailable: boolean;
@@ -16,6 +26,7 @@ export interface HostedActivitySummary {
   readonly clientPath: string | null;
   readonly houseTerms: {
     readonly exhibition: true;
+    readonly includedAtNoCharge: true;
     readonly maximumAgents: number;
     readonly maximumCallsPerAgent: number;
     readonly maximumInputTokensPerAgent: number;
@@ -84,6 +95,7 @@ export interface MyGamesIndex {
       | "activity_closed"
       | "live"
       | "publication_pending"
+      | "terminal_private"
       | "terminal_without_outcome"
       | "result_suppressed"
       | "dependency_failure"
@@ -221,8 +233,10 @@ export function usePlatformSession(): {
   return { session, developmentSignInAvailable, reload };
 }
 
-export async function readCatalog(): Promise<readonly HostedActivitySummary[]> {
-  const response = await fetch("/api/catalog");
+export async function readCatalog(authenticated = false): Promise<readonly HostedActivitySummary[]> {
+  const response = await fetch(authenticated ? "/api/catalog/internal" : "/api/catalog", {
+    ...(authenticated ? { cache: "no-store" as const } : {}),
+  });
   const value = await safeJson(response);
   if (!response.ok || !Array.isArray(value.activities)) throw new Error("catalog_unavailable");
   return value.activities as unknown as readonly HostedActivitySummary[];
@@ -269,6 +283,7 @@ export async function readMyGames(cursor?: MyGamesIndex["next"], signal?: AbortS
 export async function createLaunch(
   csrf: string,
   input: {
+    readonly rosterOption?: string;
     readonly listingSlug: string;
     readonly creatorAccess: "seat" | "spectator";
     readonly creatorSeat: string | null;
@@ -277,6 +292,7 @@ export async function createLaunch(
   },
 ): Promise<HostedLaunch> {
   return mutateLaunch("/api/launches", csrf, {
+    ...(input.rosterOption === undefined ? {} : { roster_option: input.rosterOption }),
     listing_slug: input.listingSlug,
     creator_access: input.creatorAccess,
     creator_seat: input.creatorSeat,

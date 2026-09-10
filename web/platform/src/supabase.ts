@@ -924,6 +924,7 @@ class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationD
           "activity_closed",
           "live",
           "publication_pending",
+          "terminal_private",
           "terminal_without_outcome",
           "result_suppressed",
           "dependency_failure",
@@ -1326,6 +1327,7 @@ function parseHouseFill(value: unknown): HouseFillRecord | null {
         "ambiguous",
         "succeeded",
         "terminal_failed",
+        "released",
       ]),
     })),
     assignments: requiredRecords(operation.assignments).map((assignment) => ({

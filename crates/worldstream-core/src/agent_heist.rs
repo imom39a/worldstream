@@ -2160,6 +2160,7 @@ fn build_revision() -> RevisionV1 {
         revision_digest: placeholder,
         host_contract: ACTIVITY_PACK_HOST_CONTRACT_ID.to_owned(),
         canonical_codec: CANONICAL_CODEC_ID.to_owned(),
+        activity_start_contract: None,
         configuration_schema: config.reference(),
         state_schema: state.reference(),
         roles: ROLES
@@ -2275,8 +2276,9 @@ fn build_revision() -> RevisionV1 {
             .insert(class, projection.reference());
     }
     let codecs = PackCodecBundleV1::canonical_v1();
-    let artifact_digest =
-        Blake3DigestV1::hash(&canonical_text_artifact(include_bytes!("agent_heist.rs")));
+    let artifact_digest = Blake3DigestV1::hash(&canonical_text_artifact(include_bytes!(
+        "retained_executor_artifacts/agent_heist-v1.rs"
+    )));
     let lock = PackRevisionLockV1 {
         revision_lock_id: PACK_REVISION_LOCK_ID.to_owned(),
         pack_id: descriptor.pack_id.clone(),

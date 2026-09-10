@@ -175,12 +175,14 @@ Select an explicit bounded set of existing descriptors:
 ```json
 {
   "schema": "worldstream/client-declaration-import/v1",
-  "release_files": ["./releases/agent-heist-web.json", "./releases/agent-heist-web-v2.json", "./releases/negotiate-web.json", "./releases/negotiate-web-v2.json", "./releases/inspector-web.json", "./releases/agent-heist-web-v3.json", "./releases/negotiate-web-v3.json", "./releases/inspector-web-v2.json"],
+  "release_files": ["./releases/agent-heist-web.json", "./releases/agent-heist-web-v2.json", "./releases/negotiate-web.json", "./releases/negotiate-web-v2.json", "./releases/inspector-web.json", "./releases/agent-heist-web-v3.json", "./releases/agent-heist-web-v4.json", "./releases/agent-heist-web-v5.json", "./releases/agent-heist-web-v6.json", "./releases/negotiate-web-v3.json", "./releases/inspector-web-v2.json", "./releases/midnight-archive-web-v1.json"],
   "bindings_file": "./local-bindings.json"
 }
 ```
 
-All three fields are required. `release_files` contains 1–16 local file paths.
+All three fields are required. `release_files` contains 1–64 local file paths,
+allowing retained exact Release history alongside current clients. Imports still
+load only the explicitly listed files; the limit does not enable directory scanning.
 `bindings_file` selects exactly one local file. This wrapper does not inline
 or replace the existing release, deployment, binding, or fallback contracts:
 

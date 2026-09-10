@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { test } from "vitest";
@@ -8,6 +9,9 @@ import { deriveRoomSetup, readListingRevision } from "@worldstream/hosted-contra
 
 import {
   AGENT_HEIST_LISTING_DIGEST,
+  MIDNIGHT_ARCHIVE_LISTING_DIGEST,
+  publicRosterOptions,
+  reviewedInternalActivities,
   listPublicHostedActivities,
   reviewedActivityByDigest,
   reviewedActivityBySlug,
@@ -16,7 +20,7 @@ import {
   reviewedSeatKey,
 } from "./hosted-catalog.js";
 
-test("the hosted catalog resolves only the reviewed Agent Heist revision", async () => {
+test("the hosted catalog retains the reviewed Agent Heist revision", async () => {
   const activity = reviewedActivityBySlug("agent-heist");
   assert.ok(activity);
   assert.equal(activity.listing.digest, AGENT_HEIST_LISTING_DIGEST);
@@ -66,6 +70,155 @@ test("client selection is a reviewed client-contract concern, not a Pack branch"
   const current = reviewedActivityBySlug("agent-heist");
   assert.ok(current);
   assert.equal(reviewedPublicViewerClientPath(current.public), "/agent-heist-v9/hosted/");
+});
+
+test("Archive offers exactly four reviewed human-led rosters and is excluded from public discovery", async () => {
+  const activity = reviewedActivityBySlug("midnight-archive");
+  assert.ok(activity);
+  assert.equal(activity.listing.digest, MIDNIGHT_ARCHIVE_LISTING_DIGEST);
+  assert.equal(activity.listing.value.version, "0.3.0");
+  assert.equal(activity.listing.value.catalog.visibility, "unlisted");
+  assert.equal(activity.listing.value.public_viewing_policy, "disabled");
+  assert.equal(activity.listing.value.result.publication.policy, "disabled");
+  assert.equal(activity.listing.value.result.projector.version, "0.2.0");
+  assert.equal(activity.listing.value.seats.length, 3);
+  assert.deepEqual(activity.listing.value.seats[0]?.allowed_participation, ["account_human"]);
+  assert.deepEqual(activity.listing.value.seats.slice(1).map((seat) => ({
+    id: seat.seat_id,
+    required: seat.required,
+    participation: seat.allowed_participation,
+    allowed: seat.allowed_house_agent_revisions,
+  })), [
+    {
+      id: "mira",
+      required: false,
+      participation: ["house_agent_fill"],
+      allowed: ["blake3:7e0b07b386009d509d605c9efdbe491a035f219d10ef7ebebc6f71e99461cdde"],
+    },
+    {
+      id: "jonah",
+      required: false,
+      participation: ["house_agent_fill"],
+      allowed: ["blake3:b88da2260f391c91593996c5913961469619b53a9e457c5ea0783cd3cac59db0"],
+    },
+  ]);
+  assert.deepEqual(activity.listing.value.room_setup.configuration, { scenario_id: "standard-v1" });
+  assert.equal(activity.listing.value.launch_input_schema.schema, "worldstream/launch-input-schema/v3");
+  assert.equal(activity.listing.value.launch_input_schema.accepts, "roster_option");
+  if (activity.listing.value.launch_input_schema.accepts !== "roster_option") assert.fail("roster schema expected");
+  assert.equal(activity.listing.value.launch_input_schema.defaults.roster_option, "solo");
+  assert.deepEqual(activity.listing.value.launch_input_schema.roster_options.map((option) => ({
+    id: option.option_id,
+    seats: option.seat_ids,
+    agents: option.house_agent_assignments.map((assignment) => assignment.seat_id),
+  })), [
+    { id: "solo", seats: ["lead"], agents: [] },
+    { id: "mira", seats: ["lead", "mira"], agents: ["mira"] },
+    { id: "jonah", seats: ["lead", "jonah"], agents: ["jonah"] },
+    { id: "full-crew", seats: ["lead", "mira", "jonah"], agents: ["mira", "jonah"] },
+  ]);
+  for (const option of activity.listing.value.launch_input_schema.roster_options) {
+    assert.equal(option.seat_ids[0], "lead");
+    assert.deepEqual(option.configuration, { scenario_id: "standard-v1" });
+  }
+  assert.match(activity.listing.value.description, /expires 24 hours after Activity Start/u);
+  assert.match(activity.listing.value.description, /closing or re-entering does not pause the deadline/u);
+  assert.match(activity.listing.value.description, /Expiry records no success or loss outcome/u);
+  assert.match(activity.listing.value.description, /included at no charge/u);
+  assert.match(activity.listing.value.description, /without memory from another Run/u);
+  assert.match(activity.listing.value.description, /16 turns and 3 power charges/u);
+  assert.equal(activity.houseAgents.size, 2);
+  assert.deepEqual([...activity.houseAgents.values()].map((house) => ({
+    id: house.value.house_agent_id,
+    digest: house.digest,
+    profile: house.value.agent_profile,
+    runner: house.value.runner_template,
+  })), [
+    {
+      id: "worldstream.house.mira",
+      digest: "blake3:7e0b07b386009d509d605c9efdbe491a035f219d10ef7ebebc6f71e99461cdde",
+      profile: { profile_id: "house-midnight-archive-mira", revision: "1" },
+      runner: { template_id: "openrouter-house-archive", revision: "1" },
+    },
+    {
+      id: "worldstream.house.jonah",
+      digest: "blake3:b88da2260f391c91593996c5913961469619b53a9e457c5ea0783cd3cac59db0",
+      profile: { profile_id: "house-midnight-archive-jonah", revision: "1" },
+      runner: { template_id: "openrouter-house-archive", revision: "1" },
+    },
+  ]);
+  assert.equal(activity.public.houseFillAvailable, true);
+  assert.equal(activity.public.houseTerms?.includedAtNoCharge, true);
+  assert.equal(activity.public.houseTerms?.maximumAgents, 2);
+  const reviewedOptions = publicRosterOptions(activity);
+  assert.equal(reviewedOptions.defaultRosterOption, "solo");
+  assert.deepEqual(reviewedOptions.rosterOptions.map((option) => ({
+    key: option.key,
+    description: option.description,
+    seats: option.seatKeys,
+    creator: option.creatorSeatKeys,
+    suppliedAgents: option.suppliedAgents,
+  })), activity.listing.value.launch_input_schema.roster_options.map((option) => ({
+    key: option.option_id,
+    description: option.description,
+    seats: option.seat_ids.map((seatId) => `seat-${activity.listing.value.seats.findIndex((seat) => seat.seat_id === seatId) + 1}`),
+    creator: ["seat-1"],
+    suppliedAgents: option.house_agent_assignments.length,
+  })));
+  assert.doesNotMatch(JSON.stringify(reviewedOptions), /blake3:|configuration|provider|model|profile_id|template_id/u);
+  assert.deepEqual(reviewedInternalActivities([]), []);
+  assert.deepEqual(reviewedInternalActivities([MIDNIGHT_ARCHIVE_LISTING_DIGEST]), [activity]);
+  assert.equal(listPublicHostedActivities(true).some(({ slug }) => slug === activity.slug), false);
+  const source = JSON.parse(await readFile(
+    resolve("../..", "config/hosted/listings/midnight-archive-0.3.0.json"),
+    "utf8",
+  ));
+  assert.deepEqual([...activity.listing.canonicalBytes], [...encodeCanonical(source)]);
+  const release = JSON.parse(await readFile(
+    resolve("../..", "config/activity-clients/releases/midnight-archive-web-v13.json"),
+    "utf8",
+  ));
+  assert.equal(activity.listing.value.client.release_digest, release.release_digest);
+  assert.equal(activity.public.clientPath, release.surfaces.find((surface: { surface_id: string }) =>
+    surface.surface_id === activity.listing.value.client.surface_id)?.entrypoint);
+  const proof = JSON.parse(await readFile(
+    resolve("../..", "packs/midnight-archive/evidence/production-proof-0.1.0-session-expiry.json"),
+    "utf8",
+  ));
+  const bundle = resolve("../..", `packs/midnight-archive/releases/0.1.0/worldstream-midnight-archive-${proof.bundleDigest.slice(7)}.wspack`);
+  const descriptor = JSON.parse(execFileSync("tar", ["-xOf", bundle, "descriptor.json"], { encoding: "utf8" }));
+  assert.equal(activity.listing.value.pack.digest, proof.revisionDigest);
+  // Host result-source evidence preserves the Runtime's Pack projection
+  // schema. Pin the Listing directly to the exact proven Bundle descriptor.
+  assert.equal(activity.listing.value.result.projection.schema, descriptor.projection_schemas.public.schema_id);
+  assert.equal(activity.listing.value.result.projection.digest, descriptor.projection_schemas.public.schema_digest);
+
+  const retained02Source = JSON.parse(await readFile(
+    resolve("../..", "config/hosted/listings/midnight-archive-0.2.0.json"),
+    "utf8",
+  ));
+  const retained02Listing = readListingRevision(encodeCanonical(retained02Source));
+  const retained02 = reviewedActivityByDigest(retained02Listing.digest);
+  assert.ok(retained02);
+  assert.equal(retained02.listing.value.version, "0.2.0");
+  assert.equal(retained02.public.clientPath, "/midnight-archive-v12/hosted/");
+  assert.equal(retained02.houseAgents.size, 0);
+  assert.equal(retained02.public.houseFillAvailable, false);
+
+  const retained01Source = JSON.parse(await readFile(
+    resolve("../..", "config/hosted/listings/midnight-archive-0.1.0.json"),
+    "utf8",
+  ));
+  const retained01Listing = readListingRevision(encodeCanonical(retained01Source));
+  const retained01 = reviewedActivityByDigest(retained01Listing.digest);
+  assert.ok(retained01);
+  assert.equal(retained01.listing.value.version, "0.1.0");
+  assert.equal(retained01.public.clientPath, "/midnight-archive-v10/hosted/");
+  const retainedRelease = JSON.parse(await readFile(
+    resolve("../..", "config/activity-clients/releases/midnight-archive-web-v10.json"),
+    "utf8",
+  ));
+  assert.equal(retained01.listing.value.client.release_digest, retainedRelease.release_digest);
 });
 
 test("new discovery retains old exact Listing resolution without replacing its client", () => {

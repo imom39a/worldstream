@@ -18,6 +18,7 @@ const runNamespace = `concurrency-${randomUUID()}`;
 const heistListing = "blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1";
 const houseHeistListing = "blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956";
 const singleListing = `blake3:${sha256(runNamespace)}`;
+const rosterListing = `blake3:${sha256(`${runNamespace}:roster`)}`;
 const houseHost = `house-concurrency-${sha256(runNamespace).slice(0, 16)}`;
 const packDigest = `blake3:${"2".repeat(64)}`;
 const accounts = Array.from({ length: 22 }, () => randomUUID());
@@ -72,6 +73,43 @@ try {
     from platform_store.house_agent_revisions revisions;
     notify pgrst, 'reload schema';
   `);
+
+  // Two reviewed choices compete under the same account/key. The first
+  // transaction freezes its input before its creator claim; all other requests
+  // either read that exact choice or conflict, even before any Host mutation.
+  const rosterSchema = { schema: "worldstream/launch-input-schema/v2", accepts: "roster_option",
+    defaults: { roster_option: "solo" }, roster_options: ["solo", "alternate"].map((option_id) => ({
+      option_id, label: option_id, seat_ids: ["host"], configuration: {}, house_agent_assignments: [],
+    })) };
+  psql(`
+    insert into platform_store.activity_listing_revisions
+    select (jsonb_populate_record(null::platform_store.activity_listing_revisions,
+      to_jsonb(source) || jsonb_build_object(
+        'listing_revision_digest', '${rosterListing}',
+        'listing_key', 'worldstream.test.roster.${sha256(runNamespace).slice(0, 16)}',
+        'canonical_document', '\\x' || encode(convert_to('${JSON.stringify({ launch_input_schema: rosterSchema })}', 'utf8'), 'hex')
+      ))).*
+    from platform_store.activity_listing_revisions source where listing_revision_digest = '${singleListing}';
+  `);
+  const competing = await Promise.all(Array.from({ length: 16 }, (_, index) => {
+    const input = Buffer.from(JSON.stringify({ roster_option: index % 2 === 0 ? "solo" : "alternate" }));
+    return rpcOutcome("create_launch_request_v1", {
+      ...launchBody({ accountId: accounts[21], listingDigest: rosterListing, namespace: runNamespace, key: "competing-options", seatId: "host" }),
+      p_canonical_launch_input: bytea(input), p_launch_input_digest: bytea(sha256Bytes(input)),
+    });
+  }));
+  const optionSuccesses = competing.filter((outcome) => outcome.ok).map((outcome) => expectSingleRow(outcome.value));
+  assert(optionSuccesses.length === 8, "competing reviewed options did not retain exactly one input class");
+  assert(new Set(optionSuccesses.map((row) => row.launch_request_id)).size === 1, "competing options created multiple requests");
+  assert(optionSuccesses.filter((row) => row.was_created).length === 1, "option selection had more than one initial creator");
+  assert(competing.filter((outcome) => !outcome.ok).every((outcome) =>
+    outcome.code === "23505" && outcome.message === "launch_idempotency_conflict"), "option change did not fail as immutable intent conflict");
+  const selectedId = stringField(optionSuccesses[0], "launch_request_id");
+  const selectedMaterial = expectRecord(await rpc("read_hosted_launch_material_v1", {
+    p_creator_account_id: accounts[21], p_launch_request_id: selectedId,
+  }));
+  assert(["solo", "alternate"].includes(selectedMaterial.launch_inputs.roster_option), "selected input was not retained");
+  assert(selectedMaterial.claims.length === 1 && selectedMaterial.claims[0].seat_id === "host", "option race changed creator seat lineage");
 
   const idempotentBody = launchBody({
     accountId: accounts[0],
@@ -264,7 +302,7 @@ try {
   );
 
   console.log(
-    `Formation concurrency verified: one launch, one invitation winner, one House draw, and ${admitted.length} fixture Run reservations above ${capacityBaseline.activeRuns} retained Runs.`,
+    `Formation concurrency verified: one retained reviewed option, one launch, one invitation winner, one House draw, and ${admitted.length} fixture Run reservations above ${capacityBaseline.activeRuns} retained Runs.`,
   );
 } finally {
   cleanup();
@@ -423,7 +461,7 @@ function cleanup() {
       where idempotency_namespace = '${runNamespace}'
     );
     delete from platform_store.launch_requests where idempotency_namespace = '${runNamespace}';
-    delete from platform_store.activity_listing_revisions where listing_revision_digest = '${singleListing}';
+    delete from platform_store.activity_listing_revisions where listing_revision_digest in ('${singleListing}', '${rosterListing}');
     delete from platform_store.house_agent_host_approvals where host_installation_id = '${houseHost}';
     delete from platform_store.platform_accounts where account_id in (${quotedAccounts});
     set session_replication_role = origin;

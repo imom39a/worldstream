@@ -1,0 +1,15 @@
+{
+  "schema": "worldstream/hosted-roster-qualification-fixture/v1",
+  "listing_id": "worldstream.qualification.archive-roster",
+  "version": "1",
+  "slug": "archive-roster-fixture",
+  "base_listing_file": "config/hosted/listings/midnight-archive-0.1.0.json",
+  "base_listing_digest": "blake3:fbe603c57e281038a0dca6cb4066d3dfcfdbf420d905e5a70893c1bdefbfc27b",
+  "house_agent_id": "worldstream.qualification.archive-assistant",
+  "profile_id": "qualification-archive-assistant",
+  "template_id": "qualification-archive-house",
+  "policy_id": "worldstream.qualification.archive-plan",
+  "policy_instructions": "Local qualification fixture, not a character or production policy. Return only the offered submit_companion_plan action with its exact task and opportunity revisions. For the assigned Records investigation, inspect_source at Records with no power, then share_source. Use only current authorized facts. Return no dialogue, invented evidence, tools, or extra actions.",
+  "route_source_file": "config/hosted/house-agents/cooperative-planner-17.json",
+  "execution": "visible-local-controlled-provider-only"
+}

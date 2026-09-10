@@ -63,6 +63,25 @@ interface SchemaReference {
   readonly digest: string;
 }
 
+interface RosterOptionBase {
+  readonly option_id: string;
+  readonly label: string;
+  readonly seat_ids: readonly string[];
+  readonly configuration: CanonicalJson;
+  readonly house_agent_assignments: readonly {
+    readonly seat_id: string;
+    readonly house_agent_revision_digest: string;
+  }[];
+}
+
+export type RosterOptionV2 = RosterOptionBase;
+
+export interface RosterOptionV3 extends RosterOptionBase {
+  readonly description: string;
+}
+
+export type RosterOption = RosterOptionV2 | RosterOptionV3;
+
 export interface ListingRevisionValue {
   readonly schema: "worldstream/activity-listing-revision/v1";
   readonly listing_id: string;
@@ -84,6 +103,16 @@ export interface ListingRevisionValue {
     readonly schema: "worldstream/launch-input-schema/v1";
     readonly accepts: "none";
     readonly defaults: Readonly<Record<string, never>>;
+  } | {
+    readonly schema: "worldstream/launch-input-schema/v2";
+    readonly accepts: "roster_option";
+    readonly defaults: { readonly roster_option: string };
+    readonly roster_options: readonly RosterOptionV2[];
+  } | {
+    readonly schema: "worldstream/launch-input-schema/v3";
+    readonly accepts: "roster_option";
+    readonly defaults: { readonly roster_option: string };
+    readonly roster_options: readonly RosterOptionV3[];
   };
   readonly room_setup: { readonly configuration: CanonicalJson };
   readonly seats: readonly ListingSeat[];
@@ -359,7 +388,7 @@ export function deriveRoomSetup(
   if (launch.listing_revision_digest !== listing.digest || roster.listing_revision_digest !== listing.digest) {
     throw new ContractViolation("reference_mismatch");
   }
-  closedRecord(launch.inputs, []);
+  const option = resolveRosterOption(listing, launch.inputs);
   const creator = closedRecord(launch.creator, ["participation", "principal_reference"]);
   const creatorParticipation = enumValue(creator.participation, ["seat", "spectator"]);
   const creatorPrincipalReference = publicReference(creator.principal_reference, 128);
@@ -396,15 +425,21 @@ export function deriveRoomSetup(
   }
   const seats: CanonicalJson[] = [];
   for (const listed of listing.value.seats) {
+    if (option !== null && !option.seat_ids.includes(listed.seat_id)) continue;
     const member = members.get(listed.seat_id);
     members.delete(listed.seat_id);
-    if (listed.required && member === undefined) throw new ContractViolation("invalid_shape");
+    if ((listed.required || option !== null) && member === undefined) throw new ContractViolation("invalid_shape");
     const seat: Record<string, CanonicalJson> = {
       label: listed.seat_id,
       role: listed.role,
       required: listed.required,
       display_name: member?.display_name ?? listed.display_name,
     };
+    const assigned = option?.house_agent_assignments.find(({ seat_id }) => seat_id === listed.seat_id);
+    if (option !== null && member !== undefined && (
+      assigned === undefined ? member.participation === "house_agent_fill"
+        : member.participation !== "house_agent_fill" || member.house_agent_revision_digest !== assigned.house_agent_revision_digest
+    )) throw new ContractViolation("invalid_shape");
     if (member !== undefined) installParticipation(seat, listed, member, houseAgentRevisions);
     seats.push(seat);
   }
@@ -438,7 +473,7 @@ export function deriveRoomSetup(
   const bytes = encodeCanonical({
     schema: "worldstream/room-setup/v2",
     pack: listing.value.pack as unknown as CanonicalObject,
-    configuration: listing.value.room_setup.configuration,
+    configuration: option === null ? listing.value.room_setup.configuration : option.configuration,
     seats,
     spectators,
     operator_view: false,
@@ -603,11 +638,7 @@ function validateListing(value: CanonicalJson): void {
   digest(client.release_digest, "sha256");
   identifier(client.client_contract, 128);
   identifier(client.surface_id, 128);
-  const inputSchema = closedRecord(listing.launch_input_schema, ["schema", "accepts", "defaults"]);
-  if (inputSchema.schema !== "worldstream/launch-input-schema/v1" || inputSchema.accepts !== "none") {
-    throw new ContractViolation("unsupported");
-  }
-  closedRecord(inputSchema.defaults, []);
+  validateLaunchInputSchema(listing);
   const setup = closedRecord(listing.room_setup, ["configuration"]);
   validateJson(setup.configuration);
   enumValue(listing.creator_access, ["must_claim_seat", "may_spectate"]);
@@ -636,6 +667,81 @@ function validateListing(value: CanonicalJson): void {
       throw new ContractViolation("invalid_shape");
     }
   }
+}
+
+/** Resolves only the reviewed identifier; configuration and assignments remain server-owned. */
+export function resolveRosterOption(listing: ListingRevision, inputs: CanonicalJson | undefined): RosterOption | null {
+  requireValidatedListing(listing);
+  const schema = listing.value.launch_input_schema;
+  if (schema.accepts === "none") {
+    closedRecord(inputs, []);
+    return null;
+  }
+  const input = closedRecord(inputs, ["roster_option"]);
+  const option = schema.roster_options.find(({ option_id }) => option_id === input.roster_option);
+  if (option === undefined) throw new ContractViolation("unsupported");
+  return option;
+}
+
+function validateLaunchInputSchema(listing: CanonicalObject): void {
+  const schema = record(listing.launch_input_schema);
+  if (schema.schema === "worldstream/launch-input-schema/v1" && schema.accepts === "none") {
+    closedKeys(schema, ["schema", "accepts", "defaults"]);
+    closedRecord(schema.defaults, []);
+    return;
+  }
+  const described = schema.schema === "worldstream/launch-input-schema/v3";
+  if (
+    (schema.schema !== "worldstream/launch-input-schema/v2" && !described)
+    || schema.accepts !== "roster_option"
+  ) {
+    throw new ContractViolation("unsupported");
+  }
+  closedKeys(schema, ["schema", "accepts", "defaults", "roster_options"]);
+  const defaults = closedRecord(schema.defaults, ["roster_option"]);
+  const options = array(schema.roster_options);
+  if (options.length < 1 || options.length > 16) throw new ContractViolation("unbounded");
+  const seats = array(listing.seats).map(record);
+  const ids = new Set<string>();
+  for (const value of options) {
+    const option = record(value);
+    closedKeys(option, [
+      "option_id", "label", ...(described ? ["description"] : []),
+      "seat_ids", "configuration", "house_agent_assignments",
+    ]);
+    const id = seatLabel(option.option_id);
+    text(option.label, 128);
+    if (described) text(option.description, 256);
+    if (ids.has(id)) throw new ContractViolation("invalid_shape");
+    ids.add(id);
+    const selected = array(option.seat_ids).map(seatLabel);
+    if (selected.length < 1 || selected.length > MAX_SEATS || new Set(selected).size !== selected.length
+      || selected.some((id) => !seats.some((seat) => seat.seat_id === id))
+      || seats.some((seat) => seat.required === true && !selected.includes(stringValue(seat.seat_id)))) {
+      throw new ContractViolation("invalid_shape");
+    }
+    validateJson(option.configuration);
+    const assignments = array(option.house_agent_assignments);
+    if (assignments.length > 2) throw new ContractViolation("unbounded");
+    const assignedSeats = new Set<string>();
+    const assignedRevisions = new Set<string>();
+    for (const value of assignments) {
+      const assignment = closedRecord(value, ["seat_id", "house_agent_revision_digest"]);
+      const seatId = seatLabel(assignment.seat_id);
+      const revision = digest(assignment.house_agent_revision_digest, "blake3");
+      const seat = seats.find((seat) => seat.seat_id === seatId);
+      if (!selected.includes(seatId) || assignedSeats.has(seatId) || assignedRevisions.has(revision)
+        || seat === undefined || !array(seat.allowed_participation).includes("house_agent_fill")
+        || !array(seat.allowed_house_agent_revisions).includes(revision)) throw new ContractViolation("invalid_shape");
+      assignedSeats.add(seatId);
+      assignedRevisions.add(revision);
+    }
+    if (selected.some((id) => !assignedSeats.has(id) && !seats.some((seat) => seat.seat_id === id
+      && array(seat.allowed_participation).some((kind) => kind === "account_human" || kind === "account_external_agent")))) {
+      throw new ContractViolation("invalid_shape");
+    }
+  }
+  if (!ids.has(stringValue(defaults.roster_option))) throw new ContractViolation("invalid_shape");
 }
 
 function validateHouseAgentRevision(value: CanonicalJson): void {

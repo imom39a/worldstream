@@ -155,6 +155,38 @@ export function renderHouseRunnerTemplate(executable, digest) {
 }
 
 /**
+ * The Archive companions use a distinct immutable Runner Template because the
+ * retained Heist template is compatible only with its exact Heist Pack. The
+ * executable bytes may be shared after their digest is verified and retained;
+ * the Host still installs and approves this separate template identity. The
+ * current Runner Template schema requires an instance and health contract;
+ * managed House startup uses this as a dormant exact reference and proves
+ * readiness through the separately launched managed child pair.
+ */
+export function renderArchiveHouseRunnerTemplate(executable, digest) {
+  if (!/^[0-9a-f]{64}$/u.test(digest)) throw new Error("invalid_runner_digest");
+  return {
+    schema: "worldstream/runner-template/v1",
+    template_id: "openrouter-house-archive",
+    revision: "1",
+    display_name: "Midnight Archive House Companions",
+    executable: { path: executable, blake3: digest },
+    compatibility: [{
+      activity_pack_id: "worldstream.midnight-archive",
+      exact_revisions: ["0.1.0"],
+    }],
+    capacity: { maximum_concurrent_invocations: 4 },
+    health: { path: "/healthz", timeout_ms: 1_000, stale_after_ms: 60_000 },
+    non_secret_environment: { WORLDSTREAM_RUNNER_MODE: "hosted-house" },
+    secret_environment: [],
+    instances: [{
+      instance_id: "hosted-archive-house-01",
+      health_address: "127.0.0.1:9608",
+    }],
+  };
+}
+
+/**
  * The hosted digest executable and its image asset use a raw 64-character
  * BLAKE3 hex value. Runner manifests use that same raw value in `blake3`.
  * Keep the comparison exact: a tagged contract digest is a distinct wire
@@ -356,9 +388,12 @@ async function initializeInstallation(layout, controllerAuthority) {
   const selected = [
     "init",
     "--runner-template", imports.runner,
+    "--runner-template", imports.archiveRunner,
     "--provider-declaration", imports.provider,
     "--agent-profile", imports.cooperative,
     "--agent-profile", imports.skeptical,
+    "--agent-profile", imports.mira,
+    "--agent-profile", imports.jonah,
     "--client-declaration", imports.client,
   ];
   const preview = await ctl(layout, [...selected, "--preview"], controllerAuthority);
@@ -387,6 +422,10 @@ async function writeInitializationImports(layout) {
     join(layout.generatedRoot, "openrouter-house-runner.json"),
     renderHouseRunnerTemplate(retainedRunner, runnerDigest),
   );
+  const archiveRunner = await writeJson(
+    join(layout.generatedRoot, "openrouter-house-archive-runner.json"),
+    renderArchiveHouseRunnerTemplate(retainedRunner, runnerDigest),
+  );
   const provider = await writeJson(join(layout.generatedRoot, "openrouter-provider.json"), {
     schema: "worldstream/model-provider-credential-import/v1",
     credential_id: "hosted-openrouter",
@@ -397,8 +436,11 @@ async function writeInitializationImports(layout) {
   const profiles = renderHouseAgentProfiles();
   const cooperative = await writeJson(join(layout.generatedRoot, "cooperative-planner.json"), profiles.cooperative);
   const skeptical = await writeJson(join(layout.generatedRoot, "skeptical-auditor.json"), profiles.skeptical);
+  const archiveProfiles = renderArchiveHouseAgentProfiles();
+  const mira = await writeJson(join(layout.generatedRoot, "midnight-archive-mira.json"), archiveProfiles.mira);
+  const jonah = await writeJson(join(layout.generatedRoot, "midnight-archive-jonah.json"), archiveProfiles.jonah);
   const client = await writeClientImport(layout);
-  return { runner, provider, cooperative, skeptical, client };
+  return { runner, archiveRunner, provider, cooperative, skeptical, mira, jonah, client };
 }
 
 // Shared by the local and Fly entrypoints so current House revisions cannot
@@ -428,6 +470,34 @@ export function renderHouseAgentProfiles() {
     managed_provider_credential_id: "hosted-openrouter",
   };
   return { cooperative, skeptical };
+}
+
+/** Exact reviewed source declarations for separately imported Archive Profiles. */
+export function renderArchiveHouseAgentProfiles() {
+  const hostContract = {
+    kind: "managed_house_openrouter",
+    host_contract_revision: "1",
+    runner_template: { template_id: "openrouter-house-archive", revision: "1" },
+  };
+  const mira = {
+    schema: "worldstream/studio-agent-profile-publish/v2",
+    profile_id: "house-midnight-archive-mira",
+    revision: "1",
+    display_name: "Mira — Evidence Specialist",
+    non_secret_configuration: {},
+    host_contract: hostContract,
+    managed_provider_credential_id: "hosted-openrouter",
+  };
+  const jonah = {
+    schema: "worldstream/studio-agent-profile-publish/v2",
+    profile_id: "house-midnight-archive-jonah",
+    revision: "1",
+    display_name: "Jonah — Service Specialist",
+    non_secret_configuration: {},
+    host_contract: hostContract,
+    managed_provider_credential_id: "hosted-openrouter",
+  };
+  return { mira, jonah };
 }
 
 async function writeClientImport(layout) {

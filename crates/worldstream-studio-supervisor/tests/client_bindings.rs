@@ -6,6 +6,7 @@ use worldstream_protocol::AccessMode;
 use worldstream_studio_supervisor::client_bindings::{
     ClientBindingStoreV1, ClientCandidateClassV1, ClientSelectionRequestV1, ClientSelectionV1,
 };
+use worldstream_studio_supervisor::initialization_inputs::parse_client_declaration;
 
 const PACK_DIGEST: &str = "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const RELEASE_DIGEST: &str =
@@ -318,6 +319,71 @@ fn revoked_deployment_blocks_new_handoffs_and_its_active_client() {
 }
 
 #[test]
+fn fresh_documented_imports_select_current_and_retained_archive_clients()
+-> Result<(), Box<dyn std::error::Error>> {
+    let configuration =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/activity-clients");
+    for (declaration_name, origin, suffix) in [
+        ("cli-import.json", "http://127.0.0.1:5173", "/"),
+        (
+            "hosted-local-import.json",
+            "http://127.0.0.1:5180",
+            "/hosted/",
+        ),
+    ] {
+        let declaration =
+            parse_client_declaration(&std::fs::read(configuration.join(declaration_name))?)?;
+        let releases: Vec<Vec<u8>> = declaration
+            .release_files
+            .iter()
+            .map(|file| std::fs::read(configuration.join(file)))
+            .collect::<Result<_, _>>()?;
+        let release_bytes: Vec<&[u8]> = releases.iter().map(Vec::as_slice).collect();
+        let bindings = std::fs::read(configuration.join(declaration.bindings_file))?;
+        let state = TempDir::new()?;
+        let store = ClientBindingStoreV1::open(
+            &state.path().join("client-bindings"),
+            &release_bytes,
+            &bindings,
+        )?;
+        for (generation, revision) in [
+            (
+                "v10",
+                "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64",
+            ),
+            (
+                "v11",
+                "blake3:26c51f969dc7949fb42556d013eeec555ae83dc9f28cb582c03f0541e420e776",
+            ),
+        ] {
+            // Hosted v11 Listing and candidate wiring are delivered together in IMO-209.
+            if generation == "v11" && declaration_name == "hosted-local-import.json" {
+                continue;
+            }
+            let request = ClientSelectionRequestV1 {
+                pack: ExactPackReferenceV1 {
+                    id: "worldstream.midnight-archive".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    digest: revision.to_owned(),
+                },
+                client_contract: "worldstream/activity-client-protocol/v1".to_owned(),
+                access_mode: AccessMode::Participant,
+                role: Some("lead".to_owned()),
+            };
+            assert!(
+                matches!(
+                    store.select(&request, None),
+                    Ok(ClientSelectionV1::Selected { candidate })
+                        if candidate.launch_url == format!("{origin}/midnight-archive-{generation}{suffix}")
+                ),
+                "{declaration_name} must select the exact {generation} surface after a fresh import"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn loads_the_repository_client_host_configuration_without_pack_specific_code() {
     let state = TempDir::new().unwrap_or_else(|error| unreachable!("state: {error}"));
     let configuration =
@@ -362,6 +428,65 @@ fn loads_the_repository_client_host_configuration_without_pack_specific_code() {
         Ok(ClientSelectionV1::Selected { candidate })
             if candidate.launch_url == "http://127.0.0.1:5173/negotiate/"
     ));
+
+    for (digest, expected_url) in [
+        (
+            "blake3:679022bf13c15ea014e18a7129b679c9bfd27873c570fd9cd0c02818f0880a7a",
+            "http://127.0.0.1:5173/midnight-archive-v1/",
+        ),
+        (
+            "blake3:ee85f264b9c3dfb185ebedc9646bea655740f351c287793cce997336f0f419f2",
+            "http://127.0.0.1:5173/midnight-archive-v2/",
+        ),
+        (
+            "blake3:6c3ad825a65307b9f5434d4a9140b7db4bd70d1f7830c66d6f6af1d2ba9dc0da",
+            "http://127.0.0.1:5173/midnight-archive-v3/",
+        ),
+        (
+            "blake3:ec4689e090f05f1c1894f21c1dba95e1f56b3afc49fc88c5c8f3530a03a80b61",
+            "http://127.0.0.1:5173/midnight-archive-v4/",
+        ),
+        (
+            "blake3:894f7a58c01b0ca99ac29b1b84a9083bab7f0f858f0b33ce495413255cf91339",
+            "http://127.0.0.1:5173/midnight-archive-v5/",
+        ),
+        (
+            "blake3:59bb814b920b0eb6f8b8886f2d368052189c0f9263d6c36c91894f639c8e19f5",
+            "http://127.0.0.1:5173/midnight-archive-v6/",
+        ),
+        (
+            "blake3:c3349a5688bf3b45e1497ee5d304231bb5d53bc2ef31f8a012082fa9aac28676",
+            "http://127.0.0.1:5173/midnight-archive-v7/",
+        ),
+        (
+            "blake3:94d59090be49f1abd4dc7413ce52b26d07f12bedd4d427b0c24569f90837845b",
+            "http://127.0.0.1:5173/midnight-archive-v8/",
+        ),
+        (
+            "blake3:d398d13df28f50edcc271aa8f6ffa75f1c26eca1851ac78215aa8e0f6017d8e5",
+            "http://127.0.0.1:5173/midnight-archive-v9/",
+        ),
+        (
+            "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64",
+            "http://127.0.0.1:5173/midnight-archive-v10/",
+        ),
+    ] {
+        let archive_participant = ClientSelectionRequestV1 {
+            pack: ExactPackReferenceV1 {
+                id: "worldstream.midnight-archive".to_owned(),
+                version: "0.1.0".to_owned(),
+                digest: digest.to_owned(),
+            },
+            client_contract: "worldstream/activity-client-protocol/v1".to_owned(),
+            access_mode: AccessMode::Participant,
+            role: Some("lead".to_owned()),
+        };
+        assert!(matches!(
+            store.select(&archive_participant, None),
+            Ok(ClientSelectionV1::Selected { candidate })
+                if candidate.launch_url == expected_url
+        ));
+    }
 
     let unknown_pack = ClientSelectionRequestV1 {
         pack: ExactPackReferenceV1 {

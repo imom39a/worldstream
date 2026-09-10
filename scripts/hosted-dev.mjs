@@ -18,13 +18,17 @@ import {
 import { createConnection, createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 import {
+  renderArchiveHouseAgentProfiles,
+  renderArchiveHouseRunnerTemplate,
   renderHouseAgentProfiles,
   renderHouseRunnerTemplate,
   retainRunnerExecutable,
 } from "./hosted-runtime.mjs";
 import { runHostedAcceptancePrerequisites } from "./hosted-acceptance-prerequisites.mjs";
+import { readInternalCandidates } from "./hosted-internal-candidates.mjs";
 import {
   HOSTED_ACCEPTANCE_SCHEMA,
   LOCAL_ACCEPTANCE_CHECKS,
@@ -72,8 +76,8 @@ const RETAINED_LISTING_DIGESTS = [
   "blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956",
 ];
 
-export function hostedDevelopmentListingAllowlist() {
-  return [LISTING_DIGEST, ...RETAINED_LISTING_DIGESTS].join(",");
+export function hostedDevelopmentListingAllowlist(internalCandidates = []) {
+  return [LISTING_DIGEST, ...RETAINED_LISTING_DIGESTS, ...internalCandidates].join(",");
 }
 
 export function hostedLocalSmokeIdempotencyKey(listingDigest = LISTING_DIGEST) {
@@ -117,6 +121,34 @@ export function hostedDevelopmentLaunchHttpAccepted(status) {
   return status === 200 || status === 202;
 }
 
+/** Retry only the bounded Runtime-restart startup races. */
+export async function retryHostedServerStart(
+  start,
+  pause = delay,
+  maximumAttempts = SERVER_START_MAX_ATTEMPTS,
+) {
+  let result = await start();
+  for (let attempt = 1;
+    attempt < maximumAttempts && isTransientHostedServerStartFailure(result);
+    attempt += 1) {
+    await pause(SERVER_START_RETRY_DELAY_MS);
+    result = await start();
+  }
+  return result;
+}
+
+function isTransientHostedServerStartFailure(result) {
+  if ((result?.code !== 3 && result?.code !== 4) || typeof result.stdout !== "string") return false;
+  try {
+    const report = JSON.parse(result.stdout);
+    if (report?.command !== "server start") return false;
+    return (result.code === 3 && report.code === "controller_unavailable") ||
+      (result.code === 4 && report.code === "lifecycle_incomplete" && report.stage === "runtime_restart");
+  } catch {
+    return false;
+  }
+}
+
 /**
  * A retained local installation may legitimately hold the single pre-Genesis
  * capacity reservation for the development identity.  The readiness probe
@@ -154,6 +186,8 @@ const FAKE_OPENROUTER_KEY = "worldstream-development-key-000000000000";
 const SUPABASE_EXCLUDES =
   "realtime,storage-api,imgproxy,mailpit,postgres-meta,studio,edge-runtime,logflare,vector,supavisor";
 const READINESS_TIMEOUT_MS = 60_000;
+const SERVER_START_RETRY_DELAY_MS = 1_000;
+const SERVER_START_MAX_ATTEMPTS = 30;
 
 export function hostedDevelopmentPorts(environment = process.env) {
   const ports = {
@@ -200,6 +234,10 @@ export function assertHostedDevelopmentAllowed(environment = process.env) {
   if (environment.NODE_ENV === "production" || environment.VERCEL_ENV === "production") {
     throw new Error("hosted development substitutes are forbidden in production");
   }
+}
+
+export function hostedDevelopmentBuildEnvironment(environment) {
+  return { ...environment, NODE_ENV: "production" };
 }
 
 export function hostedNativeBuildPlan(
@@ -304,6 +342,9 @@ secret_file = ${JSON.stringify(secretFile)}
 async function main() {
   const options = hostedDevelopmentArguments(process.argv.slice(2));
   assertHostedDevelopmentAllowed();
+  const rosterFixture = process.env.WORLDSTREAM_ROSTER_FIXTURE_QUALIFICATION === DEVELOPMENT_MODE;
+  if (process.env.WORLDSTREAM_ROSTER_FIXTURE_QUALIFICATION !== undefined && !rosterFixture) throw new Error("invalid_roster_fixture_opt_in");
+  if (rosterFixture && options.acceptance) throw new Error("roster_fixture_is_separate_from_heist_acceptance");
   const ports = hostedDevelopmentPorts();
   const productOrigin = `http://127.0.0.1:${ports.product}`;
   const gateway = hostedDevelopmentGatewayConfiguration();
@@ -402,14 +443,18 @@ async function main() {
         profile: native.profile,
       })}\n`);
     }
+    const buildEnvironment = hostedDevelopmentBuildEnvironment(commonEnvironment);
     await Promise.all([
       run("pnpm", ["--filter", "@worldstream/platform", "build"], {
-        environment: commonEnvironment,
+        environment: buildEnvironment,
       }),
       run("pnpm", ["--filter", "@worldstream/pack-sdk", "build"], {
-        environment: commonEnvironment,
+        environment: buildEnvironment,
       }),
+      run("pnpm", ["--filter", "@worldstream/agent-heist-client", "build"], { environment: buildEnvironment }),
+      run("pnpm", ["--filter", "@worldstream/console", "build"], { environment: buildEnvironment }),
     ]);
+    const internalCandidates = await readInternalCandidates();
 
     ownsSupabase = !(await succeeds("supabase", ["status", "-o", "env"], commonEnvironment));
     if (ownsSupabase) {
@@ -434,7 +479,7 @@ async function main() {
     await ctl(["init"]);
     await ctl(["server", "stop"], { allowFailure: true, quiet: true });
     await ctl(["server", "controller-stop"], { allowFailure: true, quiet: true });
-    const reuseHeist = await compatibleAgentHeistAlreadyRunning(ports.heist);
+    const reuseHeist = await compatibleAgentHeistAlreadyRunning(ports.heist, internalCandidates, gateway.browserStreamUrl);
     if (reuseHeist) {
       process.stdout.write(
         `[Agent Heist] Reusing the compatible approved client already on port ${ports.heist}.\n`,
@@ -470,15 +515,46 @@ async function main() {
         environment: commonEnvironment,
       });
     }
-    await importHostedDeclarations(
+    const fixtureImport = await importHostedDeclarations(
       ctl,
       stateDirectory,
       stateRoot,
       providerSecretFile,
       native.managedAgentHost,
+      rosterFixture,
     );
+    if (fixtureImport !== undefined) {
+      commonEnvironment.WORLDSTREAM_LOCAL_HOSTED_FIXTURE_DIRECTORY = join(fixtureImport.directory, "host");
+      const { rosterFixtureRegistrationSql } = await import("./hosted-roster-fixture-registration.mjs");
+      const sql = await rosterFixtureRegistrationSql({ stateDirectory, installationId: HOST_INSTALLATION_ID,
+        importReceipt: fixtureImport.receipt, environment: commonEnvironment });
+      const path = join(fixtureImport.directory, "register-local.sql");
+      await writeFile(path, sql, { mode: 0o600 });
+      await run("psql", [requiredSupabase(supabase, "DB_URL"), "-q", "-v", "ON_ERROR_STOP=1", "-f", path], {
+        capture: true, sensitive: true, environment: { ...commonEnvironment, PGOPTIONS: "-c worldstream.development_seed=visible-local-only" },
+      });
+    }
 
-    await ctl(["server", "start", "--participant-console-origin", heistOrigin]);
+    for (const candidate of internalCandidates) {
+      const bundle = resolve(REPOSITORY_ROOT, candidate.bundle_file);
+      const decisionTime = new Date().toISOString();
+      const rawPack = (args) => run(worldstreamctl, ["--config", configFile, "pack", ...args], { environment: commonEnvironment });
+      await rawPack(["approve", "--bundle", bundle, "--operator-id", "hosted-local-development", "--decided-at", decisionTime]);
+      await rawPack(["install", "--bundle", bundle, "--installed-at", decisionTime]);
+      await rawPack(["set-selectable", "--bundle-digest", candidate.bundle_digest, "--selectable", "true"]);
+    }
+    if (internalCandidates.length > 0) {
+      await run(worldstreamctl, ["--config", configFile, "pack", "restart-readiness"], { environment: commonEnvironment });
+    }
+
+    const serverStart = await retryHostedServerStart(() => ctl(
+      ["server", "start", "--participant-console-origin", heistOrigin],
+      { allowFailure: true, capture: true, quiet: true },
+    ));
+    if (serverStart.code !== 0) {
+      const detail = tail(serverStart.stderr || serverStart.stdout, 20);
+      throw new Error(`worldstreamctl server start failed with status ${serverStart.signal ?? serverStart.code}: ${detail}`);
+    }
     managedStarted = true;
 
     const platformOrigin = `http://127.0.0.1:${ports.platform}`;
@@ -504,6 +580,13 @@ async function main() {
       WORLDSTREAM_DEVELOPMENT_OPENROUTER_KEY: FAKE_OPENROUTER_KEY,
       WORLDSTREAM_LOCAL_PLATFORM_BFF_TARGET: platformOrigin,
       WORLDSTREAM_LOCAL_ACTIVITY_CLIENT_TARGET: heistOrigin,
+      WORLDSTREAM_LOCAL_INTERNAL_LISTING_DIGESTS: [...internalCandidates.map((candidate) => candidate.listing.digest),
+        ...(fixtureImport === undefined ? [] : [fixtureImport.descriptor.listing_digest])].join(","),
+      WORLDSTREAM_LOCAL_ACTIVITY_AVAILABILITY_SCRIPT: join(REPOSITORY_ROOT, "scripts/hosted-internal-candidates.mjs"),
+      WORLDSTREAM_LOCAL_CTL: worldstreamctl,
+      WORLDSTREAM_LOCAL_CONFIG: configFile,
+      WORLDSTREAM_LOCAL_STATE_DIRECTORY: stateDirectory,
+      WORLDSTREAM_LOCAL_CONTROLLER: `127.0.0.1:${ports.controller}`,
       // Server-only BFF calls use the IPv4 loopback bind. The browser stream
       // uses its separate public hostname below so platform cookies cannot
       // reach the credential-free Gateway upgrade.
@@ -518,13 +601,13 @@ async function main() {
       startChild(
         "Platform BFF",
         "node",
-        [join(REPOSITORY_ROOT, "web", "platform", "dist", "dev-server.js")],
+        [rosterFixture ? join(REPOSITORY_ROOT, "scripts/hosted-roster-fixture-platform.mjs") : join(REPOSITORY_ROOT, "web", "platform", "dist", "dev-server.js")],
         childEnvironment,
       ),
       startChild(
         "fake OpenRouter",
         "node",
-        [join(REPOSITORY_ROOT, "scripts", "hosted-fake-openrouter.mjs")],
+        [join(REPOSITORY_ROOT, "scripts", rosterFixture ? "hosted-roster-fixture-provider.mjs" : "hosted-fake-openrouter.mjs")],
         childEnvironment,
       ),
       startChild(
@@ -556,7 +639,8 @@ async function main() {
           WORLDSTREAM_HOSTED_CLIENT_ORIGIN: productOrigin,
           WORLDSTREAM_PUBLIC_AUTHORITY: gateway.publicAuthority,
           WORLDSTREAM_VERCEL_SERVICE_AUTHORITY: SERVICE_AUTHORITY,
-          WORLDSTREAM_LISTING_ALLOWLIST: hostedDevelopmentListingAllowlist(),
+          WORLDSTREAM_LISTING_ALLOWLIST: hostedDevelopmentListingAllowlist([...internalCandidates.map((candidate) => candidate.listing.digest),
+            ...(fixtureImport === undefined ? [] : [fixtureImport.descriptor.listing_digest])]),
           WORLDSTREAM_DEPLOYMENT_VERSION: "hosted-local-development",
           RUST_LOG: "worldstream_hosted_gateway=info",
         },
@@ -565,18 +649,12 @@ async function main() {
     if (!reuseHeist) {
       children.push(
         startChild(
-          "Agent Heist",
-          "pnpm",
+          "Activity Clients",
+          "node",
           [
-            "--dir",
-            "clients/agent-heist-web",
-            "exec",
-            "vite",
-            "--host",
-            "127.0.0.1",
+            "scripts/serve-hosted-local-clients.mjs",
             "--port",
             String(ports.heist),
-            "--strictPort",
           ],
           childEnvironment,
         ),
@@ -755,6 +833,7 @@ async function importHostedDeclarations(
   stateRoot,
   providerSecretFile,
   managedHost,
+  rosterFixture = false,
 ) {
   const declaration = await hostedClientDeclaration(stateDirectory, stateRoot);
   const { taggedBlake3 } = await import(
@@ -776,14 +855,35 @@ async function importHostedDeclarations(
   const generated = join(stateRoot, "generated-hosted-import");
   await mkdir(generated, { recursive: true, mode: 0o700 });
   const runner = join(generated, "openrouter-house-runner.json");
+  const archiveRunner = join(generated, "openrouter-house-archive-runner.json");
   const provider = join(generated, "openrouter-provider.json");
   const cooperative = join(generated, "cooperative-planner.json");
   const skeptical = join(generated, "skeptical-auditor.json");
+  const mira = join(generated, "midnight-archive-mira.json");
+  const jonah = join(generated, "midnight-archive-jonah.json");
   const profiles = renderHouseAgentProfiles();
+  const archiveProfiles = renderArchiveHouseAgentProfiles();
+  let houseRunner = renderHouseRunnerTemplate(retainedRunner, executableDigest);
+  let archiveHouseRunner = renderArchiveHouseRunnerTemplate(retainedRunner, executableDigest);
+  if (rosterFixture) {
+    // Qualification must not repin a pre-existing Heist Runner revision to the
+    // current build. Its independently retained executable remains authoritative.
+    houseRunner = await reuseExactInstalledRunnerTemplate(stateDirectory, houseRunner, taggedBlake3);
+    archiveHouseRunner = await reuseExactInstalledRunnerTemplate(
+      stateDirectory,
+      archiveHouseRunner,
+      taggedBlake3,
+    );
+  }
   await Promise.all([
     writeFile(
       runner,
-      `${JSON.stringify(renderHouseRunnerTemplate(retainedRunner, executableDigest))}\n`,
+      `${JSON.stringify(houseRunner)}\n`,
+      { mode: 0o600 },
+    ),
+    writeFile(
+      archiveRunner,
+      `${JSON.stringify(archiveHouseRunner)}\n`,
       { mode: 0o600 },
     ),
     writeFile(
@@ -800,6 +900,8 @@ async function importHostedDeclarations(
     ...[
       [profiles.cooperative, cooperative],
       [profiles.skeptical, skeptical],
+      [archiveProfiles.mira, mira],
+      [archiveProfiles.jonah, jonah],
     ].map(([profile, path]) =>
       writeFile(
         path,
@@ -811,11 +913,33 @@ async function importHostedDeclarations(
   const selected = [
     "init",
     "--runner-template", runner,
+    "--runner-template", archiveRunner,
     "--provider-declaration", provider,
     "--agent-profile", cooperative,
     "--agent-profile", skeptical,
+    "--agent-profile", mira,
+    "--agent-profile", jonah,
     "--client-declaration", declaration,
   ];
+  let fixture;
+  if (rosterFixture) {
+    const { renderRosterFixtureDirectory } = await import("./render-hosted-roster-fixture.mjs");
+    const directory = join(stateRoot, "roster-fixture");
+    let fixtureExecutable = { executable: retainedRunner, digest: executableDigest };
+    let previousTemplate;
+    try { previousTemplate = await readRegularJson(join(directory, "imports/runner-template.json")); }
+    catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
+    if (previousTemplate !== undefined) {
+      // This fixture revision is immutable across ordinary restarts/builds too.
+      // A changed Runner must receive a new reviewed fixture revision.
+      if (taggedBlake3(await readFile(previousTemplate.executable.path)) !== `blake3:${previousTemplate.executable.blake3}`)
+        throw new Error("retained qualification Runner executable changed");
+      fixtureExecutable = { executable: previousTemplate.executable.path, digest: previousTemplate.executable.blake3 };
+    }
+    const descriptor = await renderRosterFixtureDirectory(directory, fixtureExecutable);
+    selected.push("--runner-template", join(directory, "imports/runner-template.json"), "--agent-profile", join(directory, "imports/profile.json"));
+    fixture = { directory, descriptor };
+  }
   const preview = await ctl([...selected, "--preview"], { capture: true });
   let digest;
   try {
@@ -826,7 +950,31 @@ async function importHostedDeclarations(
   if (typeof digest !== "string" || !/^blake3:[0-9a-f]{64}$/u.test(digest)) {
     throw new Error("worldstreamctl client import review omitted its exact digest");
   }
-  await ctl([...selected, "--approve-imports", digest]);
+  const applied = await ctl([...selected, "--approve-imports", digest], { capture: rosterFixture });
+  if (fixture !== undefined) return { ...fixture, receipt: JSON.parse(applied.stdout) };
+}
+
+async function reuseExactInstalledRunnerTemplate(stateDirectory, expected, taggedBlake3) {
+  const installedPath = join(
+    stateDirectory,
+    "runner-templates/installed",
+    `${expected.template_id}--${expected.revision}.json`,
+  );
+  let installed;
+  try {
+    installed = await readRegularJson(installedPath);
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  }
+  if (installed === undefined) return expected;
+  const { executable: installedExecutable, ...installedContract } = installed;
+  const { executable: _currentExecutable, ...expectedContract } = expected;
+  if (!isDeepStrictEqual(installedContract, expectedContract)
+    || typeof installedExecutable?.path !== "string"
+    || taggedBlake3(await readFile(installedExecutable.path)) !== `blake3:${installedExecutable.blake3}`) {
+    throw new Error("retained Runner contract or executable does not match its exact revision");
+  }
+  return installed;
 }
 
 async function hostedClientDeclaration(stateDirectory, stateRoot) {
@@ -869,6 +1017,8 @@ async function hostedClientDeclaration(stateDirectory, stateRoot) {
   const retainedHeist = await readRegularJson(
     join(configuration, "releases", "agent-heist-web-v7.json"),
   );
+  const additionalReleases = (await readInternalCandidates()).map((candidate) =>
+    resolve(REPOSITORY_ROOT, candidate.client_release_file));
   template.deployments = [
     deployment,
     ...template.deployments.filter((candidate) => candidate.client_id !== "worldstream.inspector.web"),
@@ -901,7 +1051,12 @@ async function hostedClientDeclaration(stateDirectory, stateRoot) {
     generatedDeclaration,
     `${JSON.stringify({
       schema: "worldstream/client-declaration-import/v1",
-      release_files: ["./agent-heist-web.json", "./agent-heist-web-v7.json", "./retained-inspector-web.json"],
+      release_files: [
+        "./agent-heist-web.json",
+        "./agent-heist-web-v7.json",
+        "./retained-inspector-web.json",
+        ...additionalReleases,
+      ],
       bindings_file: "./hosted-local-bindings.json",
     })}\n`,
     { mode: 0o600 },
@@ -1004,7 +1159,7 @@ async function assertLoopbackPortAvailable(portNumber, host, message, allowUnsup
   });
 }
 
-async function compatibleAgentHeistAlreadyRunning(portNumber) {
+async function compatibleAgentHeistAlreadyRunning(portNumber, internalCandidates = [], browserStreamOrigin) {
   try {
     const response = await fetch(`http://127.0.0.1:${portNumber}/agent-heist-v9/hosted/`, {
       signal: AbortSignal.timeout(1_000),
@@ -1012,10 +1167,22 @@ async function compatibleAgentHeistAlreadyRunning(portNumber) {
     if (response.status !== 200) return false;
     const contentSecurityPolicy = response.headers.get("content-security-policy") ?? "";
     const body = await response.text();
-    return (
+    const retainedHeistAvailable = (
       contentSecurityPolicy.includes("connect-src 'self' http://127.0.0.1:9420") &&
       body.includes("<title>Agent Heist · WorldStream Activity Client</title>")
     );
+    if (!retainedHeistAvailable) return false;
+    for (const candidate of internalCandidates) {
+      const candidateResponse = await fetch(new URL(candidate.surface.entrypoint, `http://127.0.0.1:${portNumber}`), {
+        signal: AbortSignal.timeout(1_000),
+      });
+      if (!candidateResponse.ok || !(candidateResponse.headers.get("content-security-policy") ?? "")
+        .includes(browserStreamOrigin.replace(/^http:/u, "ws:"))) return false;
+      const entry = candidate.surface.entrypoint.replace(/^\/[^/]+\//u, "");
+      const expected = await readFile(join(REPOSITORY_ROOT, candidate.client_artifact_directory, entry, "index.html"));
+      if (!Buffer.from(await candidateResponse.arrayBuffer()).equals(expected)) return false;
+    }
+    return true;
   } catch {
     return false;
   }

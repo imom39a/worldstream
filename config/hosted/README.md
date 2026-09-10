@@ -13,10 +13,13 @@ They are not a Room Host allowlist.
   runtime registry entry, including digests of the exact Rust and TypeScript
   interpreter sources. Its canonical-byte digest is part of every projector identity,
   so runtime behavior changes require a new artifact and projector revision.
-- `house-agents/` contains the two reviewed exhibition-only House Agent
-  Revisions. Each revision pins one behavior policy, exact OpenRouter model and
-  provider route, Host profile and Runner template references, empty tool set,
-  accounting tokenizer, and fixed execution allowance.
+- `house-agents/` retains the reviewed Heist House Agent Revisions and contains
+  the exact named Mira and Jonah Archive revisions. Each revision pins one
+  behavior policy, exact OpenRouter model and provider route, Host profile and
+  Runner template references, empty tool set, accounting tokenizer, and fixed
+  execution allowance. `house-agent-profiles/` holds the reviewed publish
+  inputs for the named Archive Profiles; their import still grants no House
+  execution approval.
 - `schemas/` describes the closed JSON shapes. Rust and TypeScript readers also
   enforce byte, tree-depth, string, item-count, and immutable-reference bounds.
 

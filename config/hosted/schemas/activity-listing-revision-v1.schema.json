@@ -31,13 +31,207 @@
       }
     },
     "launch_input_schema": {
-      "type": "object", "additionalProperties": false,
-      "required": ["schema", "accepts", "defaults"],
-      "properties": {
-        "schema": {"const": "worldstream/launch-input-schema/v1"},
-        "accepts": {"const": "none"},
-        "defaults": {"type": "object", "maxProperties": 0}
-      }
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "accepts",
+            "defaults"
+          ],
+          "properties": {
+            "schema": {
+              "const": "worldstream/launch-input-schema/v1"
+            },
+            "accepts": {
+              "const": "none"
+            },
+            "defaults": {
+              "type": "object",
+              "maxProperties": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "accepts",
+            "defaults",
+            "roster_options"
+          ],
+          "properties": {
+            "schema": {
+              "const": "worldstream/launch-input-schema/v2"
+            },
+            "accepts": {
+              "const": "roster_option"
+            },
+            "defaults": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "roster_option"
+              ],
+              "properties": {
+                "roster_option": {
+                  "$ref": "#/$defs/seat_label"
+                }
+              }
+            },
+            "roster_options": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "option_id",
+                  "label",
+                  "seat_ids",
+                  "configuration",
+                  "house_agent_assignments"
+                ],
+                "properties": {
+                  "option_id": {
+                    "$ref": "#/$defs/seat_label"
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "seat_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "uniqueItems": true,
+                    "items": {
+                      "$ref": "#/$defs/seat_label"
+                    }
+                  },
+                  "configuration": {},
+                  "house_agent_assignments": {
+                    "type": "array",
+                    "maxItems": 2,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "seat_id",
+                        "house_agent_revision_digest"
+                      ],
+                      "properties": {
+                        "seat_id": {
+                          "$ref": "#/$defs/seat_label"
+                        },
+                        "house_agent_revision_digest": {
+                          "$ref": "#/$defs/blake3"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "accepts",
+            "defaults",
+            "roster_options"
+          ],
+          "properties": {
+            "schema": {
+              "const": "worldstream/launch-input-schema/v3"
+            },
+            "accepts": {
+              "const": "roster_option"
+            },
+            "defaults": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "roster_option"
+              ],
+              "properties": {
+                "roster_option": {
+                  "$ref": "#/$defs/seat_label"
+                }
+              }
+            },
+            "roster_options": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "option_id",
+                  "label",
+                  "description",
+                  "seat_ids",
+                  "configuration",
+                  "house_agent_assignments"
+                ],
+                "properties": {
+                  "option_id": {
+                    "$ref": "#/$defs/seat_label"
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "seat_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "uniqueItems": true,
+                    "items": {
+                      "$ref": "#/$defs/seat_label"
+                    }
+                  },
+                  "configuration": {},
+                  "house_agent_assignments": {
+                    "type": "array",
+                    "maxItems": 2,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "seat_id",
+                        "house_agent_revision_digest"
+                      ],
+                      "properties": {
+                        "seat_id": {
+                          "$ref": "#/$defs/seat_label"
+                        },
+                        "house_agent_revision_digest": {
+                          "$ref": "#/$defs/blake3"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "room_setup": {
       "type": "object", "additionalProperties": false,

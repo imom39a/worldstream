@@ -10,12 +10,17 @@ date: 2026-08-15
 > conclusions below. The five-operation `ActivityPackV1` semantics,
 > `PackRevisionLockV1`, immutable Room pin, exact retained execution, privacy,
 > Recovery, and Replay requirements remain authoritative.
+>
+> [ADR 0027](0027-declare-generic-hosted-starts-and-reviewed-roster-options.md)
+> additionally extends the registry-status enumeration with independent,
+> exact-revision Activity Start approval. The selection and retention status
+> meanings below remain unchanged.
 
 WorldStream freezes one trusted synchronous `ActivityPackV1` seam with exactly five operations: `descriptor`, `initialize`, `reduce`, `view`, and `observe`. The seam is deliberately smaller than a plugin system: packs receive canonical inputs and deterministic helpers, return bounded canonical values, and receive no clock, storage, network, filesystem, scheduler, Activation, Session, delivery, telemetry, or artifact-byte capability.
 
 The `view` result owns both the authorized Activity Projection and its ordered Action Offers. Those exact canonical Action Offer bytes are reused by Projection Reset, Observation Frames, Invocation Context, and host Action pre-admission; WorldStream does not maintain another legality representation.
 
-Every semantic pack revision has a build-computed `PackRevisionLockV1` digest covering its host-contract and codec versions, schemas, deterministic static data, rule source, and deterministic dependency lock. The embedded registry maps that exact digest to its executor, descriptor and schemas, codecs, golden-corpus digest, and two statuses: selectable for new Rooms and runnable for retained Rooms. Selectable implies runnable, and every digest referenced by retained lineage must remain runnable even after it is no longer selectable.
+Every semantic pack revision has a build-computed `PackRevisionLockV1` digest covering its host-contract and codec versions, schemas, deterministic static data, rule source, and deterministic dependency lock. The embedded registry maps that exact digest to its executor, descriptor and schemas, codecs, golden-corpus digest, and independent statuses for selection, retention, and the bounded hosted-start authority added by ADR 0027. Selectable implies runnable, and every digest referenced by retained lineage must remain runnable even after it is no longer selectable. Activity Start approval neither selects a revision for Room creation nor makes an unavailable executor runnable.
 
 A Room never changes its pinned digest or rewrites canonical Activity State in place. A new semantic revision creates a new Room; recovery, projection, advancement, and Replay of an old Room continue through the exact retained executor and codecs. Missing exact executable support is an explicit compatibility failure, not an invitation to dispatch old bytes through newer rules.
 

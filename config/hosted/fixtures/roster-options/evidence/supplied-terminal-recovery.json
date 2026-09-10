@@ -1,0 +1,133 @@
+{
+  "schema": "worldstream/roster-fixture-terminal-recovery/v1",
+  "status": "passed",
+  "original_failed_launch": "19d54560-2afc-40cc-85c3-54b715d835e5",
+  "authenticated_launch_read": {
+    "status": 200,
+    "state": "run_created"
+  },
+  "before": {
+    "active_capacity": 0,
+    "assignments": [
+      {
+        "assignment_id": "6d53ec2d-9b61-4267-be7f-cd59640f622c",
+        "house_agent_revision_digest": "blake3:92d2c28744483cd38384b993f8fdf2e6ee52e9f9830287e2c4ca485939a2aec2",
+        "principal_reference": "house:19d54560-2afc-40cc-85c3-54b715d835e5:mira",
+        "profile_id": "qualification-archive-assistant",
+        "profile_revision": "1",
+        "reservation_operation_id": "b2543058-03bd-48fa-993b-f8285ffc5b17",
+        "runner_unit_id": "house-cbb4c508124b46794345bbe8609b8624",
+        "seat_id": "mira",
+        "template_id": "qualification-archive-house",
+        "template_revision": "1"
+      }
+    ],
+    "frozen_roster_digest": "6344ee182156daa61a97a949af73007442ce73fcd7bf13d8e663e73f9ad5cea2",
+    "indexed_results": 0,
+    "launch_id": "19d54560-2afc-40cc-85c3-54b715d835e5",
+    "launch_input_digest": "6d3c5ce33be6dc4caf8cae07027fee83e847c393b015fa6ad67111dcace72f42",
+    "memberships": [
+      {
+        "assignment_id": null,
+        "membership_id": "01M25GQRS4F4F9JCDMKAYMKZ9P",
+        "participation_source": "account_human",
+        "principal_id": "0GVS68DE80HXZ5Y870P4CMQJTS",
+        "role": "lead"
+      },
+      {
+        "assignment_id": "6d53ec2d-9b61-4267-be7f-cd59640f622c",
+        "membership_id": "01M25GQRS42RGG9C9X4Q2ZVJBS",
+        "participation_source": "platform_house_agent",
+        "principal_id": "1X3AYPXWPAFYFFQ0GGPH5XBFV9",
+        "role": "mira"
+      }
+    ],
+    "pack_revision_digest": "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64",
+    "room_id": "01M25GQRS4CMYHV236PME0Y56E",
+    "room_setup_specification_digest": "blake3:b3a63ce69ba5ff9507aab915fda2c855c4c1e47bbf198082a08e1c14f9b972f9",
+    "roster_option": "supplied",
+    "run_id": "9c5f18ca-9c64-4dd6-a9a5-ff4645c673d9",
+    "runs_for_launch": 1
+  },
+  "after": {
+    "active_capacity": 0,
+    "assignments": [
+      {
+        "assignment_id": "6d53ec2d-9b61-4267-be7f-cd59640f622c",
+        "house_agent_revision_digest": "blake3:92d2c28744483cd38384b993f8fdf2e6ee52e9f9830287e2c4ca485939a2aec2",
+        "principal_reference": "house:19d54560-2afc-40cc-85c3-54b715d835e5:mira",
+        "profile_id": "qualification-archive-assistant",
+        "profile_revision": "1",
+        "reservation_operation_id": "b2543058-03bd-48fa-993b-f8285ffc5b17",
+        "runner_unit_id": "house-cbb4c508124b46794345bbe8609b8624",
+        "seat_id": "mira",
+        "template_id": "qualification-archive-house",
+        "template_revision": "1"
+      }
+    ],
+    "frozen_roster_digest": "6344ee182156daa61a97a949af73007442ce73fcd7bf13d8e663e73f9ad5cea2",
+    "indexed_results": 0,
+    "launch_id": "19d54560-2afc-40cc-85c3-54b715d835e5",
+    "launch_input_digest": "6d3c5ce33be6dc4caf8cae07027fee83e847c393b015fa6ad67111dcace72f42",
+    "memberships": [
+      {
+        "assignment_id": null,
+        "membership_id": "01M25GQRS4F4F9JCDMKAYMKZ9P",
+        "participation_source": "account_human",
+        "principal_id": "0GVS68DE80HXZ5Y870P4CMQJTS",
+        "role": "lead"
+      },
+      {
+        "assignment_id": "6d53ec2d-9b61-4267-be7f-cd59640f622c",
+        "membership_id": "01M25GQRS42RGG9C9X4Q2ZVJBS",
+        "participation_source": "platform_house_agent",
+        "principal_id": "1X3AYPXWPAFYFFQ0GGPH5XBFV9",
+        "role": "mira"
+      }
+    ],
+    "pack_revision_digest": "blake3:f40e0a287fcaac6e6bc56629d361ede079d6c3c60aa0068caa3a451dfb8c0b64",
+    "room_id": "01M25GQRS4CMYHV236PME0Y56E",
+    "room_setup_specification_digest": "blake3:b3a63ce69ba5ff9507aab915fda2c855c4c1e47bbf198082a08e1c14f9b972f9",
+    "roster_option": "supplied",
+    "run_id": "9c5f18ca-9c64-4dd6-a9a5-ff4645c673d9",
+    "runs_for_launch": 1
+  },
+  "execution": {
+    "runner_unit_id": "house-cbb4c508124b46794345bbe8609b8624",
+    "bindings": {
+      "profile_revision_digest": "blake3:1cc22c3bffbfbc73fce6a906e4ed24df87c5b53089512eedc6ab5c0b1e25c1e1",
+      "runner_template_revision_digest": "blake3:34a0c09f255aa2c54877d4984a215a29b86c94b2cc4bf5d97a22d4cfc1f61f97",
+      "executable_digest": "blake3:4c754b0229d31f54ebb4aee3d5be83e502a8cde87366341de4a40bbd87903c23"
+    },
+    "allowance": {
+      "revision_digest": "blake3:92d2c28744483cd38384b993f8fdf2e6ee52e9f9830287e2c4ca485939a2aec2",
+      "consumed_input_units": 10902,
+      "consumed_output_units": 331,
+      "attempts": [
+        {
+          "attempt_digest": "blake3:015b73fd3b467c6477b1f837a12604c5cebd369e74768ac39b246a993a8583b5",
+          "state": "completed",
+          "input_units": 10902,
+          "output_units": 331,
+          "response_digest": "blake3:616b7a7a2582368b9e2f394f4959b4fad2bf60af44107b72c67e56e1ab2cb38c"
+        }
+      ]
+    },
+    "retirement": {
+      "schema": "worldstream/house-runner-retirement-receipt/v1",
+      "disposition": "run_terminal",
+      "assignment_id": "6d53ec2d-9b61-4267-be7f-cd59640f622c",
+      "reservation_operation_id": "b2543058-03bd-48fa-993b-f8285ffc5b17",
+      "allowance_reset": false
+    }
+  },
+  "checks": [
+    "same_original_terminal_run",
+    "same_memberships_assignments_setup",
+    "same_completed_provider_attempt",
+    "same_consumed_allowance",
+    "same_durable_retirement",
+    "ordinary_service_restart",
+    "terminal_browser_reentry"
+  ]
+}

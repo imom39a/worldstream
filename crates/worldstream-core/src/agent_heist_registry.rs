@@ -7,7 +7,10 @@ use crate::{
     MembershipV1, PackDigestV1, PackGenesisRequestV1, PackGoldenActionV1, PackGoldenCorpusV1,
     PackGoldenExternalInputV1, PackGoldenViewerKindV1, PackGoldenViewerV1, PackRegistryErrorV1,
     PackRegistryStatusV1, PackRegistryV1, PrincipalKindV1,
-    activity_pack::{CanonicalPackCodecV1, PackRegistryArtifactsV1, PackRegistryEntryV1},
+    activity_pack::{
+        CanonicalPackCodecV1, PackRegistryArtifactsV1, PackRegistryEntryV1,
+        retained_executor_source_matches,
+    },
     agent_heist::{agent_heist_legacy_revision, agent_heist_revision},
     agent_heist_lobby::agent_heist_lobby_revision,
 };
@@ -73,6 +76,25 @@ pub(crate) fn builtin_embedded_agent_heist_registry() -> Result<PackRegistryV1, 
 fn build_agent_heist_registry(
     include_agent_ready_revision: bool,
 ) -> Result<PackRegistryV1, PackRegistryErrorV1> {
+    const CURRENT_ARTIFACT_BINDING: &str = r#"    let artifact_digest = Blake3DigestV1::hash(&canonical_text_artifact(include_bytes!(
+        "retained_executor_artifacts/agent_heist-v1.rs"
+    )));
+"#;
+    const RETAINED_ARTIFACT_BINDING: &str = r#"    let artifact_digest =
+        Blake3DigestV1::hash(&canonical_text_artifact(include_bytes!("agent_heist.rs")));
+"#;
+    if !retained_executor_source_matches(
+        include_str!("agent_heist.rs"),
+        include_str!("retained_executor_artifacts/agent_heist-v1.rs"),
+        &[
+            ("        activity_start_contract: None,\n", ""),
+            (CURRENT_ARTIFACT_BINDING, RETAINED_ARTIFACT_BINDING),
+        ],
+    ) {
+        return Err(PackRegistryErrorV1::WrongExecutorProvenance(
+            agent_heist_revision().0.revision_digest.clone(),
+        ));
+    }
     let (
         schema_safe_descriptor,
         schema_safe_lock,
@@ -126,6 +148,7 @@ fn build_agent_heist_registry(
     let lobby_status = PackRegistryStatusV1 {
         selectable_for_new_rooms: true,
         runnable_for_retained_rooms: true,
+        approved_for_activity_start: true,
     };
     let (descriptor, lock, schemas, codecs, artifact_digest) = agent_heist_revision();
     let corpus = golden_corpus(descriptor.revision_digest.clone(), TRANSCRIPT_DIGEST);
@@ -141,6 +164,7 @@ fn build_agent_heist_registry(
     let status = PackRegistryStatusV1 {
         selectable_for_new_rooms: true,
         runnable_for_retained_rooms: true,
+        approved_for_activity_start: true,
     };
     let (legacy_descriptor, legacy_lock, legacy_schemas, legacy_codecs, legacy_artifact_digest) =
         agent_heist_legacy_revision();
@@ -160,6 +184,7 @@ fn build_agent_heist_registry(
     let legacy_status = PackRegistryStatusV1 {
         selectable_for_new_rooms: false,
         runnable_for_retained_rooms: true,
+        approved_for_activity_start: true,
     };
     let mut entries = vec![
         PackRegistryEntryV1::agent_heist_lobby_v5(
@@ -169,6 +194,7 @@ fn build_agent_heist_registry(
             PackRegistryStatusV1 {
                 selectable_for_new_rooms: true,
                 runnable_for_retained_rooms: true,
+                approved_for_activity_start: true,
             },
         ),
         PackRegistryEntryV1::agent_heist_lobby_v3(
@@ -178,6 +204,7 @@ fn build_agent_heist_registry(
             PackRegistryStatusV1 {
                 selectable_for_new_rooms: true,
                 runnable_for_retained_rooms: true,
+                approved_for_activity_start: true,
             },
         ),
         PackRegistryEntryV1::agent_heist_lobby_v2(
@@ -217,6 +244,7 @@ fn build_agent_heist_registry(
             PackRegistryStatusV1 {
                 selectable_for_new_rooms: true,
                 runnable_for_retained_rooms: true,
+                approved_for_activity_start: true,
             },
         ));
     }
@@ -250,6 +278,10 @@ pub fn agent_heist_lobby_contract_declared(
     registry: &PackRegistryV1,
     digest: &PackDigestV1,
 ) -> bool {
+    let known_digest = digest == &crate::agent_heist_lobby_digest()
+        || digest == &crate::agent_heist_clock_safe_digest()
+        || digest == &crate::agent_heist_agent_ready_digest()
+        || digest == &crate::agent_heist_schema_safe_digest();
     crate::agent_heist_lobby::agent_heist_lobby_contract_declared(registry, digest)
         || crate::agent_heist_lobby_v3::agent_heist_lobby_contract_declared(registry, digest)
         || (digest == &crate::agent_heist_schema_safe_digest()
@@ -259,8 +291,16 @@ pub fn agent_heist_lobby_contract_declared(
                     .contains_key(crate::HOST_LAUNCH_INPUT_TYPE)
             }))
         || (digest == &crate::agent_heist_agent_ready_digest()
-            && registry.load_retained(digest).is_ok_and(|r| {
-                r.descriptor()
+            && registry.load_retained(digest).is_ok_and(|retained| {
+                retained
+                    .descriptor()
+                    .stimulus_schemas
+                    .contains_key(crate::HOST_LAUNCH_INPUT_TYPE)
+            }))
+        || (known_digest
+            && registry.catalog_revision(digest).is_ok_and(|revision| {
+                revision
+                    .descriptor
                     .stimulus_schemas
                     .contains_key(crate::HOST_LAUNCH_INPUT_TYPE)
             }))

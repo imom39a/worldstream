@@ -65,7 +65,8 @@ impl StartupPackRegistryV1 {
 
     /// Returns the digest of the exact, digest-sorted installed inventory
     /// snapshot admitted by this registry. The identity covers Pack/version,
-    /// physical bundle, semantic revision, and selectability state.
+    /// physical bundle, semantic revision, selectability, and current exact
+    /// Activity Start approval state.
     #[must_use]
     pub fn inventory_digest(&self) -> &str {
         &self.inventory_digest
@@ -148,20 +149,12 @@ pub fn assemble_startup_pack_registry(
     let mut portable = Vec::with_capacity(inventory_counts.installed);
 
     for entry in inventory.into_entries() {
+        let approved_for_activity_start = entry.approved_for_activity_start();
         let (installed, bundle) = entry.into_parts();
         if embedded_revision_digests.contains(bundle.revision_digest()) {
             continue;
         }
-        let status = match installed.install_state {
-            PackInstallStateV1::Selectable => PackRegistryStatusV1 {
-                selectable_for_new_rooms: true,
-                runnable_for_retained_rooms: true,
-            },
-            PackInstallStateV1::RetainedOnly => PackRegistryStatusV1 {
-                selectable_for_new_rooms: false,
-                runnable_for_retained_rooms: true,
-            },
-        };
+        let status = portable_registry_status(installed.install_state, approved_for_activity_start);
         portable.push(host.admit(bundle, status)?);
     }
 
@@ -203,6 +196,18 @@ struct StartupPackInventoryEntryIdentityV1 {
     bundle_digest: String,
     revision_digest: String,
     install_state: PackInstallStateV1,
+    approved_for_activity_start: bool,
+}
+
+const fn portable_registry_status(
+    install_state: PackInstallStateV1,
+    approved_for_activity_start: bool,
+) -> PackRegistryStatusV1 {
+    PackRegistryStatusV1 {
+        selectable_for_new_rooms: matches!(install_state, PackInstallStateV1::Selectable),
+        runnable_for_retained_rooms: true,
+        approved_for_activity_start,
+    }
 }
 
 #[derive(Serialize)]
@@ -231,6 +236,7 @@ pub(crate) fn startup_pack_inventory_digest(
                 bundle_digest: entry.installed().bundle_digest.to_string(),
                 revision_digest: entry.installed().revision_digest.to_string(),
                 install_state: entry.installed().install_state,
+                approved_for_activity_start: entry.approved_for_activity_start(),
             })
             .collect(),
     )
@@ -361,12 +367,27 @@ mod tests {
     use tempfile::tempdir;
     use worldstream_core::builtin_worldstream_registry;
     use worldstream_pack_bundle::MAX_INSTALLED_BUNDLE_COUNT;
+    use worldstream_pack_bundle::PackInstallStateV1;
     use worldstream_runtime::StorageProfile;
     use worldstream_transfer::DeploymentIdentityV1;
 
     use super::{
         StartupPackRegistryErrorV1, assemble_startup_pack_registry, pack_deployment_binding,
+        portable_registry_status,
     };
+
+    #[test]
+    fn retained_only_start_approval_is_independent_of_new_room_selection() {
+        let approved = portable_registry_status(PackInstallStateV1::RetainedOnly, true);
+        assert!(!approved.selectable_for_new_rooms);
+        assert!(approved.runnable_for_retained_rooms);
+        assert!(approved.approved_for_activity_start);
+
+        let revoked = portable_registry_status(PackInstallStateV1::RetainedOnly, false);
+        assert!(!revoked.selectable_for_new_rooms);
+        assert!(revoked.runnable_for_retained_rooms);
+        assert!(!revoked.approved_for_activity_start);
+    }
 
     #[test]
     fn empty_inventory_assembles_the_complete_embedded_registry_once() {

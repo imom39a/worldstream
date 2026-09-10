@@ -7,6 +7,13 @@ export const ACTIVITY_PACK_OPERATION_CODEC_ID =
 export const CANONICAL_JSON_CODEC_ID = "worldstream/canonical-json/v1" as const;
 export const COMPONENT_EXECUTION_PROFILE_ID =
   "worldstream/component-deterministic/v1" as const;
+/**
+ * The sole v1 hosted-start declaration.  The Host supplies the source ID;
+ * Pack authors can only bind one exact pre-start transition.
+ */
+export const ACTIVITY_START_CONTRACT_ID = "worldstream/activity-start/v1" as const;
+/** Fixed Host-owned source for every v1 Activity Start Contract. */
+export const ACTIVITY_START_SOURCE_ID = "01ARZ3NDEKTSV4RRFFQ69G5FH1" as const;
 
 export type CanonicalJson =
   | null
@@ -49,12 +56,85 @@ export interface ActivityPackDescriptorDraft {
   readonly packId: string;
   readonly name: string;
   readonly version: string;
-  readonly roles: readonly string[];
-  readonly actions: readonly string[];
+  /**
+   * Version suffix for every generated schema ID in this Pack revision.
+   * Defaults to 1. Increment it when a client-visible schema changes incompatibly.
+   */
+  readonly schemaVersion?: number;
+  /**
+   * A string preserves the first authoring form and means exactly one enabled
+   * participant. The object form declares a bounded cardinality explicitly.
+   */
+  readonly roles: readonly ActivityPackRoleDraft[];
+  /** A string preserves the first authoring form and uses an object payload schema. */
+  readonly actions: readonly ActivityPackActionDraft[];
   readonly rejectionCodes: readonly string[];
-  readonly events: readonly string[];
+  readonly events: readonly ActivityPackEventDraft[];
   readonly attentionReasons: readonly string[];
+  /** Defaults to the legacy object schema when omitted. */
+  readonly configurationSchema?: ActivityPackSchema;
+  /** Defaults to the legacy object schema when omitted. */
+  readonly stateSchema?: ActivityPackSchema;
+  /**
+   * Audience-specific schemas for Pack views. Omitted audience entries use
+   * the legacy public or participant object schema as appropriate.
+   */
+  readonly projectionSchemas?: Readonly<Partial<Record<ActivityPackViewerClass, ActivityPackSchema>>>;
+  /** Audience-specific schemas for Pack observations. */
+  readonly observationSchemas?: Readonly<Partial<Record<ActivityPackViewerClass, ActivityPackSchema>>>;
+  /** Exact schemas for predefined ExternalInput kinds. */
+  readonly externalInputSchemas?: Readonly<Record<string, ActivityPackSchema>>;
+  /**
+   * Optional bounded Host start transition. Omission preserves the legacy
+   * descriptor form and grants no start compatibility.
+   */
+  readonly activityStartContract?: ActivityPackStartContractDraft;
 }
+
+/** One exact metadata-derived ExternalInput that may leave a pre-start phase. */
+export interface ActivityPackStartContractDraft {
+  readonly contract: typeof ACTIVITY_START_CONTRACT_ID;
+  /** The root `Activity State.phase` value required before the transition. */
+  readonly preStartPhase: string;
+  /** A key declared in `externalInputSchemas`. */
+  readonly inputType: string;
+  /** Canonical immutable payload matched against that input type's schema. */
+  readonly canonicalPayload: CanonicalJson;
+}
+
+/** The supported canonical JSON Schema document shape. */
+export type ActivityPackSchema = CanonicalObject;
+
+export type ActivityPackViewerClass =
+  | "public"
+  | "participant"
+  | "operator"
+  | "historical_public"
+  | "historical_participant"
+  | "historical_operator"
+  | "final_reveal";
+
+export type ActivityPackRoleDraft =
+  | string
+  | Readonly<{
+      readonly role: string;
+      readonly minimum: number;
+      readonly maximum: number;
+    }>;
+
+export type ActivityPackActionDraft =
+  | string
+  | Readonly<{
+      readonly actionType: string;
+      readonly payloadSchema: ActivityPackSchema;
+    }>;
+
+export type ActivityPackEventDraft =
+  | string
+  | Readonly<{
+      readonly eventType: string;
+      readonly payloadSchema: ActivityPackSchema;
+    }>;
 
 export interface ActivityPackDefinition {
   readonly descriptor: ActivityPackDescriptorDraft;
@@ -84,15 +164,29 @@ export type PackReduceOutput =
     });
 
 export type PackViewOutput = CanonicalObject & {
-  readonly projection_schema: "public" | "participant";
+  readonly projection_schema: ActivityPackViewerClass;
   readonly projection: CanonicalObject;
-  readonly action_offers: readonly string[];
+  readonly action_offers: readonly PackActionOffer[];
 };
+
+/**
+ * A string remains the legacy shorthand. An object can bind the offer to one
+ * recorded semantic-time window; the Host owns admission against that window.
+ */
+export type PackActionOffer =
+  | string
+  | Readonly<{
+      readonly actionType: string;
+      readonly eligibilityWindow: null | Readonly<{
+        readonly opensAt: string;
+        readonly deadline: string;
+      }>;
+    }>;
 
 export type PackObserveOutput =
   | null
   | (CanonicalObject & {
-      readonly observation_schema: "public" | "participant";
+      readonly observation_schema: ActivityPackViewerClass;
       readonly observation: CanonicalObject;
       readonly action_offers: "unchanged" | "reuse_after_view";
     });

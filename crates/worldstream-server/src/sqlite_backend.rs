@@ -26,20 +26,19 @@ use worldstream_core::{
     CapabilityBearerV1, CapabilityExpiresAt, CapabilityId, CapabilityProfileV1,
     CapabilityScopeSetV1, CoreAdministrationIngressV1, CoreAdministrationRequestV1,
     CoreChangeSetV1, CoreProposedKindV1, CoreRecordedAt, CreationRecordedAt, DiagnosticOperationV1,
-    DiagnosticTargetV1, ExternalInputRecordedAt, ExternalInputV1, HistoricalReplayErrorV1,
-    HostClockErrorV1, HostClockSampleV1, HostClockV1, InitialMembershipProposalV1, InputId,
-    MemberReadOperationV1, MembershipStandingV1, MembershipV1, MonotonicHostClockV1,
-    NewCapabilityV1, PackDigestV1, PackGenesisRequestV1, PackRegistryV1, PackViewerV1,
-    ParticipantActionIngressErrorV1, ParticipantActionIngressV1, ParticipantActionRequestV1,
-    PreparedRoomCreationV1, PreparedRoomWriteV1, PresentedCapabilityV1, PrincipalAuthorityStatusV1,
-    PrincipalKindV1, ReceiptSemanticInputV1, ReceiptSemanticTimeV1, ReplayProjectionKindV1,
-    RoomAdmissionLanesV1, RoomCommitResolutionV1, RoomCommitStorageV1, RoomCreationIngressV1,
-    RoomCreationRequestV1, RoomId, RoomMembershipKeyV1, RoomSeedV1, RoomSequenceV1,
-    RunnerControlOperationV1, RunnerId, RunnerMembershipSetV1, SemanticResultV1, SessionErrorV1,
-    SessionFrameV1, SessionSyncTokenV1, SessionV1, SourceId, StoredSemanticResultV1,
-    TimerFiredRequestV1, TimerGenerationV1, TimerId, TransitionId,
-    authorize_core_administration_operation, authorize_participant_action_operation,
-    authorize_room_creation_operation, commit_room_creation, external_input_request_hash,
+    DiagnosticTargetV1, ExternalInputRecordedAt, HistoricalReplayErrorV1, HostClockErrorV1,
+    HostClockSampleV1, HostClockV1, InitialMembershipProposalV1, MemberReadOperationV1,
+    MembershipStandingV1, MembershipV1, MonotonicHostClockV1, NewCapabilityV1, PackDigestV1,
+    PackGenesisRequestV1, PackRegistryV1, PackViewerV1, ParticipantActionIngressErrorV1,
+    ParticipantActionIngressV1, ParticipantActionRequestV1, PreparedRoomCreationV1,
+    PreparedRoomWriteV1, PresentedCapabilityV1, PrincipalAuthorityStatusV1, PrincipalKindV1,
+    ReceiptSemanticInputV1, ReceiptSemanticTimeV1, ReplayProjectionKindV1, RoomAdmissionLanesV1,
+    RoomCommitResolutionV1, RoomCommitStorageV1, RoomCreationIngressV1, RoomCreationRequestV1,
+    RoomId, RoomMembershipKeyV1, RoomSeedV1, RoomSequenceV1, RunnerControlOperationV1, RunnerId,
+    RunnerMembershipSetV1, SemanticResultV1, SessionErrorV1, SessionFrameV1, SessionSyncTokenV1,
+    SessionV1, StoredSemanticResultV1, TimerFiredRequestV1, TimerGenerationV1, TimerId,
+    TransitionId, authorize_core_administration_operation, authorize_participant_action_operation,
+    authorize_room_creation_operation, commit_room_creation,
 };
 use worldstream_protocol::{
     AccessMode, ActionAccepted, ActionOffer, ActionRejected, ActionSubmit, ActivationClaim,
@@ -76,7 +75,11 @@ use worldstream_sqlite::{
 use crate::{
     ActionReply, AttachReply, BackendError, GatewayBackend, GatewaySession,
     MemberCapabilityIssueRequest, MemberCapabilityIssueResponse, RunnerCapabilityIssueRequest,
-    RunnerCapabilityIssueResponse, RunnerMembershipTarget, fill_random_bytes,
+    RunnerCapabilityIssueResponse, RunnerMembershipTarget,
+    activity_start::{
+        lobby_response_from_resolution, lobby_response_from_result, prepare_activity_start_request,
+    },
+    fill_random_bytes,
 };
 
 struct ActivationRequestParts {
@@ -2271,47 +2274,6 @@ fn timer_response_from_resolution(
     }
 }
 
-fn lobby_response_from_result(
-    input_id: &str,
-    result: &StoredSemanticResultV1,
-    duplicate: bool,
-) -> Result<LobbyLaunchResponse, BackendError> {
-    let SemanticResultV1::TransitionCommitted {
-        room_id,
-        transition_id,
-        complete_head,
-        ..
-    } = result.result()
-    else {
-        return Err(BackendError::InvalidResult);
-    };
-    Ok(LobbyLaunchResponse {
-        room_id: room_id.to_string(),
-        input_id: input_id.to_owned(),
-        transition_id: transition_id.to_string(),
-        room_head: room_head(complete_head),
-        duplicate,
-    })
-}
-
-fn lobby_response_from_resolution(
-    input_id: &str,
-    resolution: &RoomCommitResolutionV1,
-) -> Result<LobbyLaunchResponse, BackendError> {
-    if let Some(result) = resolution.stored_result() {
-        return lobby_response_from_result(input_id, result, resolution.duplicate());
-    }
-    match resolution {
-        RoomCommitResolutionV1::Conflict { .. } => Err(BackendError::Conflict),
-        RoomCommitResolutionV1::Fenced
-        | RoomCommitResolutionV1::Reprepare
-        | RoomCommitResolutionV1::RetryableKnownAbsent
-        | RoomCommitResolutionV1::NotApplicable => Err(BackendError::Busy),
-        RoomCommitResolutionV1::Indeterminate => Err(BackendError::Indeterminate),
-        _ => Err(BackendError::InvalidResult),
-    }
-}
-
 fn archive_response_from_result(
     request: &CoreAdministrationRequestV1,
     result: &StoredSemanticResultV1,
@@ -3110,44 +3072,43 @@ impl GatewayBackend for SqliteGatewayBackend {
         room_id: &str,
         request: LobbyLaunchRequest,
     ) -> Result<LobbyLaunchResponse, BackendError> {
-        let room_id = RoomId::from_str(room_id).map_err(|_| BackendError::Rejected)?;
-        let input_id = InputId::from_str(&request.input_id).map_err(|_| BackendError::Rejected)?;
-        let based_on_room_seq =
-            RoomSequenceV1::new(request.based_on_room_seq).map_err(|_| BackendError::Rejected)?;
-        let checked_at = Self::checked_at()?;
-        let mut input = ExternalInputV1 {
-            source_id: SourceId::from_str(worldstream_core::HOST_LOBBY_LAUNCH_SOURCE)
-                .map_err(|_| BackendError::InvalidResult)?,
-            input_id,
-            input_type: worldstream_core::HOST_LAUNCH_INPUT_TYPE.to_owned(),
-            recorded_at: ExternalInputRecordedAt::from_str(checked_at.as_str())
-                .map_err(|_| BackendError::StorageUnavailable)?,
-            canonical_payload: CanonicalJsonV1::parse(br"{}")
-                .map_err(|_| BackendError::InvalidResult)?,
-            immutable_resource_references: Vec::new(),
-        };
-        let identity = worldstream_core::OperationIdentityV1::ExternalInput(Box::new(
-            worldstream_core::ExternalInputOperationIdentityV1 {
-                room_id: room_id.clone(),
-                source_id: input.source_id.clone(),
-                input_id: input.input_id.clone(),
-            },
-        ));
-        let request_hash = external_input_request_hash(&room_id, based_on_room_seq, &input)
-            .map_err(|_| BackendError::Rejected)?;
         let authenticated = self.authenticate(session)?;
-        let authority = self
-            .authority()
-            .authorize_external_input(
-                &authenticated.into_presented(),
-                room_id.clone(),
-                request_hash.clone(),
-                checked_at,
+        let checked_at = Self::checked_at()?;
+        let presented = authenticated.into_presented();
+        let room_id = RoomId::from_str(room_id).map_err(|_| BackendError::Rejected)?;
+        self.authority()
+            .authorize_diagnostic(
+                &presented,
+                DiagnosticTargetV1::Room(room_id.clone()),
+                DiagnosticOperationV1::SafeRoomSummary,
+                checked_at.clone(),
             )
             .map_err(map_authority_error)?;
-        match RoomCommitStorageV1::resolve(&self.store, &identity, &request_hash) {
+        let mut plan =
+            prepare_activity_start_request(&self.registry, room_id, &request, &checked_at)?;
+        let receipt_grant = self
+            .authority()
+            .authorize_receipt_read(
+                &presented,
+                plan.identity.clone(),
+                plan.request_hash.clone(),
+                Some(plan.room_id.clone()),
+                checked_at.clone(),
+            )
+            .map_err(map_authority_error)?;
+        match self
+            .store
+            .resolve_authorized(receipt_grant)
+            .map_err(map_authority_error)?
+        {
             worldstream_core::ResolveOutcomeV1::StoredResolution(result) => {
-                return lobby_response_from_result(&request.input_id, &result, true);
+                return lobby_response_from_result(
+                    &plan,
+                    &self.registry,
+                    &request.input_id,
+                    &result,
+                    true,
+                );
             }
             worldstream_core::ResolveOutcomeV1::Conflict { .. } => {
                 return Err(BackendError::Conflict);
@@ -3157,15 +3118,44 @@ impl GatewayBackend for SqliteGatewayBackend {
             }
             worldstream_core::ResolveOutcomeV1::KnownAbsent => {}
         }
-        self.ensure_verified_active(&room_id)?;
-        let operation = self.acquire_room_operation(&room_id)?;
+        let authority = self
+            .authority()
+            .authorize_external_input(
+                &presented,
+                plan.room_id.clone(),
+                plan.request_hash.clone(),
+                checked_at,
+            )
+            .map_err(map_authority_error)?;
+        let contract_snapshot = self
+            .store
+            .gateway_room_snapshot(&self.registry, &plan.room_id)
+            .map_err(|_| BackendError::StorageUnavailable)?
+            .ok_or(BackendError::NotFound)?;
+        let revision_digest = contract_snapshot.trace().head().pack_digest().clone();
+        plan.validate_room_pack(&self.registry, &revision_digest)?;
+        if !self
+            .registry
+            .activity_start_is_approved(&revision_digest)
+            .map_err(|_| BackendError::InvalidResult)?
+        {
+            return Err(BackendError::WrongPhase);
+        }
+        self.ensure_verified_active(&plan.room_id)?;
+        let operation = self.acquire_room_operation(&plan.room_id)?;
         let _admission = self
             .admission_lanes
-            .reserve_host_stimulus(&room_id)
+            .reserve_host_stimulus(&plan.room_id)
             .map_err(|error| map_admission_lane_error(&error))?;
-        match RoomCommitStorageV1::resolve(&self.store, &identity, &request_hash) {
+        match RoomCommitStorageV1::resolve(&self.store, &plan.identity, &plan.request_hash) {
             worldstream_core::ResolveOutcomeV1::StoredResolution(result) => {
-                return lobby_response_from_result(&request.input_id, &result, true);
+                return lobby_response_from_result(
+                    &plan,
+                    &self.registry,
+                    &request.input_id,
+                    &result,
+                    true,
+                );
             }
             worldstream_core::ResolveOutcomeV1::Conflict { .. } => {
                 return Err(BackendError::Conflict);
@@ -3177,27 +3167,44 @@ impl GatewayBackend for SqliteGatewayBackend {
         }
         let snapshot = self
             .store
-            .gateway_room_snapshot(&self.registry, &room_id)
+            .gateway_room_snapshot(&self.registry, &plan.room_id)
             .map_err(|_| BackendError::StorageUnavailable)?
             .ok_or(BackendError::NotFound)?;
-        if !worldstream_core::agent_heist_lobby_contract_declared(
-            &self.registry,
-            snapshot.trace().head().pack_digest(),
-        ) || !worldstream_core::agent_heist_lobby_launch_applicable(
+        plan.validate_room_pack(&self.registry, snapshot.trace().head().pack_digest())?;
+        let contract = match self
+            .registry
+            .activity_start_compatibility(snapshot.trace().head().pack_digest())
+            .map_err(|_| BackendError::InvalidResult)?
+        {
+            worldstream_core::ActivityStartCompatibilityV1::Supported(contract) => contract,
+            _ => return Err(BackendError::WrongPhase),
+        };
+        if !worldstream_core::activity_start_is_applicable(
+            &contract,
             snapshot.trace().activity_state(),
         ) {
             return Err(BackendError::WrongPhase);
         }
         let proposed_recorded_at = Self::checked_at()?;
-        input.recorded_at = ExternalInputRecordedAt::from_str(proposed_recorded_at.as_str())
+        plan.input.recorded_at = ExternalInputRecordedAt::from_str(proposed_recorded_at.as_str())
             .map_err(|_| BackendError::StorageUnavailable)?;
-        input.recorded_at = self
+        plan.input.recorded_at = self
             .store
-            .reserve_external_input_recorded_at(&identity, &request_hash, &input.recorded_at)
+            .reserve_external_input_recorded_at(
+                &plan.identity,
+                &plan.request_hash,
+                &plan.input.recorded_at,
+            )
             .map_err(map_external_input_preparation_error)?;
-        match RoomCommitStorageV1::resolve(&self.store, &identity, &request_hash) {
+        match RoomCommitStorageV1::resolve(&self.store, &plan.identity, &plan.request_hash) {
             worldstream_core::ResolveOutcomeV1::StoredResolution(result) => {
-                return lobby_response_from_result(&request.input_id, &result, true);
+                return lobby_response_from_result(
+                    &plan,
+                    &self.registry,
+                    &request.input_id,
+                    &result,
+                    true,
+                );
             }
             worldstream_core::ResolveOutcomeV1::Conflict { .. } => {
                 return Err(BackendError::Conflict);
@@ -3209,13 +3216,12 @@ impl GatewayBackend for SqliteGatewayBackend {
         }
         let snapshot = self
             .store
-            .gateway_room_snapshot(&self.registry, &room_id)
+            .gateway_room_snapshot(&self.registry, &plan.room_id)
             .map_err(|_| BackendError::StorageUnavailable)?
             .ok_or(BackendError::NotFound)?;
-        if !worldstream_core::agent_heist_lobby_contract_declared(
-            &self.registry,
-            snapshot.trace().head().pack_digest(),
-        ) || !worldstream_core::agent_heist_lobby_launch_applicable(
+        plan.validate_room_pack(&self.registry, snapshot.trace().head().pack_digest())?;
+        if !worldstream_core::activity_start_is_applicable(
+            &contract,
             snapshot.trace().activity_state(),
         ) {
             return Err(BackendError::WrongPhase);
@@ -3223,9 +3229,9 @@ impl GatewayBackend for SqliteGatewayBackend {
         let resolution = match self.store.commit_authorized_external_input(
             &self.registry,
             authority,
-            &room_id,
-            based_on_room_seq,
-            &input,
+            &plan.room_id,
+            plan.based_on_room_seq,
+            &plan.input,
             next_core_id::<TransitionId>()?,
         ) {
             Ok(resolution) => resolution,
@@ -3235,7 +3241,61 @@ impl GatewayBackend for SqliteGatewayBackend {
             Err(error) => return Err(map_timer_commit_error(&error)),
         };
         operation.publish().map_err(Self::map_supervisor_error)?;
-        lobby_response_from_resolution(&request.input_id, &resolution)
+        lobby_response_from_resolution(&plan, &self.registry, &request.input_id, &resolution)
+    }
+
+    fn resolve_lobby_launch(
+        &self,
+        session: &GatewaySession,
+        room_id: &str,
+        request: LobbyLaunchRequest,
+    ) -> Result<Option<LobbyLaunchResponse>, BackendError> {
+        let authenticated = self.authenticate(session)?;
+        let checked_at = Self::checked_at()?;
+        let presented = authenticated.into_presented();
+        let room_id = RoomId::from_str(room_id).map_err(|_| BackendError::Rejected)?;
+        self.authority()
+            .authorize_diagnostic(
+                &presented,
+                DiagnosticTargetV1::Room(room_id.clone()),
+                DiagnosticOperationV1::SafeRoomSummary,
+                checked_at.clone(),
+            )
+            .map_err(map_authority_error)?;
+        let plan = prepare_activity_start_request(&self.registry, room_id, &request, &checked_at)?;
+        let grant = self
+            .authority()
+            .authorize_receipt_read(
+                &presented,
+                plan.identity.clone(),
+                plan.request_hash.clone(),
+                Some(plan.room_id.clone()),
+                checked_at,
+            )
+            .map_err(map_authority_error)?;
+        let outcome = self
+            .store
+            .resolve_authorized(grant)
+            .map_err(map_authority_error)?;
+        match outcome {
+            worldstream_core::ResolveOutcomeV1::StoredResolution(result) => {
+                lobby_response_from_result(&plan, &self.registry, &request.input_id, &result, true)
+                    .map(Some)
+            }
+            worldstream_core::ResolveOutcomeV1::Conflict { .. } => Err(BackendError::Conflict),
+            worldstream_core::ResolveOutcomeV1::ResolutionUnavailable => {
+                Err(BackendError::Indeterminate)
+            }
+            worldstream_core::ResolveOutcomeV1::KnownAbsent => {
+                let snapshot = self
+                    .store
+                    .gateway_room_snapshot(&self.registry, &plan.room_id)
+                    .map_err(|_| BackendError::StorageUnavailable)?
+                    .ok_or(BackendError::NotFound)?;
+                plan.validate_room_pack(&self.registry, snapshot.trace().head().pack_digest())?;
+                Ok(None)
+            }
+        }
     }
 
     fn archive_room(
@@ -4369,15 +4429,22 @@ fn map_replay_error(error: SqliteAuthorizedReplayErrorV1) -> BackendError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::{
+        env, fs,
+        sync::atomic::{AtomicUsize, Ordering},
+        thread,
+    };
     use tempfile::{NamedTempFile, TempDir, tempdir};
+    use worldstream_component_host::ComponentPackHostV1;
     use worldstream_core::{
         AuthorityBootstrapV1, AuthorityChangeV1, AuthorityCheckedAt, AuthorityV1,
         CapabilityBearerV1, CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1,
-        CapabilityScopeV1, NewCapabilityV1, PresentedCapabilityV1, PrincipalKindV1,
-        agent_heist_lobby_digest, agent_heist_schema_safe_digest, builtin_agent_heist_registry,
-        builtin_counter_registry, counter_v2_digest, counter_v3_digest, counter_v4_digest,
+        CapabilityScopeV1, ExternalInputV1, NewCapabilityV1, PresentedCapabilityV1,
+        PrincipalKindV1, SourceId, agent_heist_lobby_digest, agent_heist_schema_safe_digest,
+        builtin_agent_heist_registry, builtin_counter_registry, counter_v2_digest,
+        counter_v3_digest, counter_v4_digest, external_input_request_hash,
     };
+    use worldstream_pack_bundle::PackBundleVerifierV1;
     use worldstream_protocol::{
         AccessMode, BearerWireV1, CreateMember, HostedSpectatorCredentialInputV2,
         MemberCapabilityProvisionRequestV1, PackReference, PrincipalKind,
@@ -4391,6 +4458,46 @@ mod tests {
         let directory = tempdir().unwrap_or_else(|_| panic!("temp db directory"));
         let file = NamedTempFile::new_in(directory.path()).unwrap_or_else(|_| panic!("temp db"));
         (directory, file)
+    }
+
+    fn archive_registry(
+        selectable_for_new_rooms: bool,
+        approved_for_activity_start: bool,
+    ) -> (
+        Arc<PackRegistryV1>,
+        PackReference,
+        worldstream_core::PackGoldenCorpusV1,
+    ) {
+        let path = env::var("WORLDSTREAM_ARCHIVE_CONTRACT_BUNDLE")
+            .unwrap_or_else(|error| panic!("archive bundle path: {error}"));
+        let bundle = PackBundleVerifierV1
+            .inspect(Arc::<[u8]>::from(
+                fs::read(&path).unwrap_or_else(|error| panic!("archive bundle: {error}")),
+            ))
+            .unwrap_or_else(|error| panic!("verify archive bundle: {error}"));
+        let corpus = bundle.golden_corpus().clone();
+        let pack = PackReference {
+            id: bundle.descriptor().pack_id.clone(),
+            version: bundle.descriptor().explanatory_version.clone(),
+            digest: bundle.revision_digest().to_string(),
+        };
+        let admission = ComponentPackHostV1::new()
+            .and_then(|host| {
+                host.admit(
+                    bundle,
+                    worldstream_core::PackRegistryStatusV1 {
+                        selectable_for_new_rooms,
+                        runnable_for_retained_rooms: true,
+                        approved_for_activity_start,
+                    },
+                )
+            })
+            .unwrap_or_else(|error| panic!("admit archive bundle: {error}"));
+        let registry = builtin_counter_registry()
+            .unwrap_or_else(|error| panic!("counter registry: {error}"))
+            .admit_portable([admission])
+            .unwrap_or_else(|error| panic!("archive registry: {error}"));
+        (Arc::new(registry), pack, corpus)
     }
 
     fn session(value: u8, id: &str) -> GatewaySession {
@@ -4473,6 +4580,7 @@ mod tests {
             LobbyLaunchRequest {
                 input_id: "01ARZ3NDEKTSV4RRFFQ69G5FD6".to_owned(),
                 based_on_room_seq: 0,
+                pack_digest: None,
             },
         )?;
         backend.scheduler_tick()?;
@@ -5390,6 +5498,7 @@ mod tests {
         let request = LobbyLaunchRequest {
             input_id: "01ARZ3NDEKTSV4RRFFQ69G5FD6".to_owned(),
             based_on_room_seq: 0,
+            pack_digest: None,
         };
         backend
             .ensure_verified_active(
@@ -5399,11 +5508,34 @@ mod tests {
                     .unwrap_or_else(|_| panic!("created Room ID")),
             )
             .unwrap_or_else(|error| panic!("activate Lobby: {error:?}"));
+        assert_eq!(
+            backend
+                .resolve_lobby_launch(&host, &room.room_id, request.clone())
+                .unwrap_or_else(|error| panic!("resolve absent Lobby: {error:?}")),
+            None
+        );
         let first = backend
             .launch_lobby(&host, &room.room_id, request.clone())
             .unwrap_or_else(|error| panic!("launch Lobby: {error:?}"));
         assert_eq!(first.room_head.room_seq, 1);
         assert!(!first.duplicate);
+        let resolved = backend
+            .resolve_lobby_launch(&host, &room.room_id, request.clone())
+            .unwrap_or_else(|error| panic!("resolve committed Lobby: {error:?}"))
+            .unwrap_or_else(|| panic!("committed Lobby receipt absent"));
+        assert!(resolved.duplicate);
+        assert_eq!(resolved.transition_id, first.transition_id);
+        assert_eq!(resolved.room_head, first.room_head);
+        let exact_request = LobbyLaunchRequest {
+            pack_digest: Some(agent_heist_schema_safe_digest().to_string()),
+            ..request.clone()
+        };
+        let exact_resolved = backend
+            .resolve_lobby_launch(&host, &room.room_id, exact_request.clone())
+            .unwrap_or_else(|error| panic!("resolve exact-Pack Lobby: {error:?}"))
+            .unwrap_or_else(|| panic!("exact-Pack Lobby receipt absent"));
+        assert!(exact_resolved.duplicate);
+        assert_eq!(exact_resolved.transition_id, first.transition_id);
         let duplicate = backend
             .launch_lobby(&host, &room.room_id, request.clone())
             .unwrap_or_else(|error| panic!("duplicate launch: {error:?}"));
@@ -5427,6 +5559,7 @@ mod tests {
                 LobbyLaunchRequest {
                     input_id: "01ARZ3NDEKTSV4RRFFQ69G5FD7".to_owned(),
                     based_on_room_seq: 1,
+                    pack_digest: None,
                 },
             ),
             Err(BackendError::WrongPhase)
@@ -5435,7 +5568,7 @@ mod tests {
             backend.launch_lobby(
                 &session(0xab, "01ARZ3NDEKTSV4RRFFQ69G5FD8"),
                 &room.room_id,
-                request,
+                request.clone(),
             ),
             Err(BackendError::Forbidden)
         ));
@@ -5446,10 +5579,80 @@ mod tests {
                 LobbyLaunchRequest {
                     input_id: "01ARZ3NDEKTSV4RRFFQ69G5FD9".to_owned(),
                     based_on_room_seq: 0,
+                    pack_digest: None,
                 },
             ),
             Err(BackendError::NotFound)
         ));
+
+        // A different retained Heist digest declares the same fixed input, so
+        // Core's external-input hash is intentionally identical. The receipt's
+        // immutable Pack head is the final exactness check, without a live
+        // Room read or a second mutation.
+        let same_identity_wrong_digest = LobbyLaunchRequest {
+            pack_digest: Some(agent_heist_lobby_digest().to_string()),
+            ..request.clone()
+        };
+        assert!(matches!(
+            backend.resolve_lobby_launch(&host, &room.room_id, same_identity_wrong_digest.clone(),),
+            Err(BackendError::Conflict)
+        ));
+        assert!(matches!(
+            backend.launch_lobby(&host, &room.room_id, same_identity_wrong_digest),
+            Err(BackendError::Conflict)
+        ));
+        let head_before_wrong_digest = backend
+            .operator_room_detail(&host, &room.room_id)
+            .unwrap_or_else(|error| panic!("Room before wrong digest: {error}"))
+            .room_head;
+        let absent_wrong_digest = LobbyLaunchRequest {
+            input_id: "01ARZ3NDEKTSV4RRFFQ69G5FDA".to_owned(),
+            based_on_room_seq: 1,
+            pack_digest: Some(agent_heist_lobby_digest().to_string()),
+        };
+        assert!(matches!(
+            backend.launch_lobby(&host, &room.room_id, absent_wrong_digest),
+            Err(BackendError::Conflict)
+        ));
+        assert_eq!(
+            backend
+                .operator_room_detail(&host, &room.room_id)
+                .unwrap_or_else(|error| panic!("Room after wrong digest: {error}"))
+                .room_head,
+            head_before_wrong_digest,
+        );
+
+        let connection = rusqlite::Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open Room integrity fixture: {error}"));
+        assert_eq!(
+            connection
+                .execute(
+                    "UPDATE room_integrity SET status = 'faulted', generation = generation + 1 WHERE room_id = ?1",
+                    [&room.room_id],
+                )
+                .unwrap_or_else(|error| panic!("fault Room integrity: {error}")),
+            1,
+        );
+        let parsed_room_id = room
+            .room_id
+            .parse::<RoomId>()
+            .unwrap_or_else(|_| panic!("created Room ID"));
+        assert!(matches!(
+            backend.ensure_verified_active(&parsed_room_id),
+            Err(BackendError::RoomFaulted)
+        ));
+        let recovered = backend
+            .resolve_lobby_launch(&host, &room.room_id, exact_request)
+            .unwrap_or_else(|error| panic!("resolve receipt through Room fault: {error}"))
+            .unwrap_or_else(|| panic!("committed receipt absent through Room fault"));
+        assert!(recovered.duplicate);
+        assert_eq!(recovered.transition_id, first.transition_id);
+        let replayed = backend
+            .launch_lobby(&host, &room.room_id, request.clone())
+            .unwrap_or_else(|error| panic!("launch replay through Room fault: {error}"));
+        assert!(replayed.duplicate);
+        assert_eq!(replayed.transition_id, first.transition_id);
+
         let assert_unreserved = |room: &str, input_id: &str, based_on_room_seq: u64| {
             let room_id = room
                 .parse::<RoomId>()
@@ -5497,6 +5700,356 @@ mod tests {
             "01ARZ3NDEKTSV4RRFFQ69G5FD9",
             0,
         );
+    }
+
+    #[test]
+    #[ignore = "requires WORLDSTREAM_ARCHIVE_CONTRACT_BUNDLE from the TypeScript fixture build"]
+    fn sqlite_archive_activity_start_is_real_metadata_derived_and_idempotent() {
+        if env::var_os("WORLDSTREAM_ARCHIVE_CONTRACT_BUNDLE").is_none() {
+            return;
+        }
+        let (_database_directory, file) = database_fixture();
+        let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
+        let host_bearer = CapabilityBearerV1::from_bytes([0xc1; 32]);
+        let host_principal = "01ARZ3NDEKTSV4RRFFQ69G5G01"
+            .parse::<worldstream_core::PrincipalId>()
+            .unwrap_or_else(|_| panic!("host principal"));
+        AuthorityV1::new(Arc::new(store.clone()))
+            .bootstrap(
+                AuthorityBootstrapV1::new(
+                    "01ARZ3NDEKTSV4RRFFQ69G5G02"
+                        .parse()
+                        .unwrap_or_else(|_| panic!("bootstrap change")),
+                    host_principal,
+                    PrincipalKindV1::Human,
+                    "01ARZ3NDEKTSV4RRFFQ69G5G03"
+                        .parse()
+                        .unwrap_or_else(|_| panic!("host capability")),
+                    host_bearer.token_hash(),
+                    None,
+                )
+                .unwrap_or_else(|_| panic!("bootstrap request")),
+                "2026-08-15T12:00:00Z"
+                    .parse::<AuthorityCheckedAt>()
+                    .unwrap_or_else(|_| panic!("bootstrap time")),
+            )
+            .unwrap_or_else(|error| panic!("bootstrap authority: {error}"));
+
+        let (registry, pack, corpus) = archive_registry(true, true);
+        let descriptor = registry
+            .load_retained(
+                &pack
+                    .digest
+                    .parse()
+                    .unwrap_or_else(|_| panic!("pack digest")),
+            )
+            .unwrap_or_else(|error| panic!("archive retained pack: {error}"))
+            .descriptor()
+            .clone();
+        let host = session(0xc1, "01ARZ3NDEKTSV4RRFFQ69G5G04");
+        let request = CreateRoomRequest {
+            pack: pack.clone(),
+            configuration: serde_json::to_value(&corpus.genesis.configuration)
+                .unwrap_or_else(|_| panic!("archive configuration")),
+            members: [
+                ("01ARZ3NDEKTSV4RRFFQ69G5FC0", "lead"),
+                ("01ARZ3NDEKTSV4RRFFQ69G5FC1", "mira"),
+                ("01ARZ3NDEKTSV4RRFFQ69G5FC2", "jonah"),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (principal_id, role))| CreateMember {
+                principal_id: principal_id.to_owned(),
+                principal_kind: if index == 0 {
+                    PrincipalKind::Human
+                } else {
+                    PrincipalKind::Agent
+                },
+                role: Some(role.to_owned()),
+                access_mode: AccessMode::Participant,
+            })
+            .collect(),
+            idempotency_key: "archive-activity-start-room".to_owned(),
+        };
+        let creating_backend = SqliteGatewayBackend::new(store.clone(), registry.clone());
+        let room = creating_backend
+            .create_room(&host, request.clone())
+            .unwrap_or_else(|error| panic!("create archive Room: {error}"));
+        let mut revoked_request = request;
+        revoked_request.idempotency_key = "archive-revoked-start-room".to_owned();
+        let revoked_room = creating_backend
+            .create_room(&host, revoked_request)
+            .unwrap_or_else(|error| panic!("create Archive Room for revocation: {error}"));
+        let room_id = room
+            .room_id
+            .parse::<RoomId>()
+            .unwrap_or_else(|_| panic!("room id"));
+        creating_backend
+            .ensure_verified_active(&room_id)
+            .unwrap_or_else(|error| panic!("activate archive Room: {error}"));
+        let revoked_room_id = revoked_room
+            .room_id
+            .parse::<RoomId>()
+            .unwrap_or_else(|_| panic!("revoked room id"));
+        creating_backend
+            .ensure_verified_active(&revoked_room_id)
+            .unwrap_or_else(|error| panic!("activate Archive Room for revocation: {error}"));
+        assert_eq!(
+            registry
+                .activity_start_compatibility(&pack.digest.parse().unwrap())
+                .unwrap_or_else(|error| panic!("activity start compatibility: {error}")),
+            worldstream_core::ActivityStartCompatibilityV1::Supported(
+                descriptor
+                    .activity_start_contract
+                    .clone()
+                    .unwrap_or_else(|| {
+                        panic!("archive descriptor has no Activity Start contract")
+                    }),
+            )
+        );
+
+        // Reopen the backend with the same exact revision retained for old
+        // Rooms but withdrawn from new-room selection. The already-created
+        // Room must still be able to resolve and commit its declared start.
+        let (retained_registry, retained_pack, _) = archive_registry(false, true);
+        assert_eq!(retained_pack, pack);
+        assert!(
+            retained_registry
+                .select_for_new_room(&pack.digest.parse().unwrap())
+                .is_err()
+        );
+        assert!(
+            retained_registry
+                .load_retained(&pack.digest.parse().unwrap())
+                .is_ok()
+        );
+        let backend = Arc::new(SqliteGatewayBackend::new(store.clone(), retained_registry));
+        backend
+            .ensure_verified_active(&room_id)
+            .unwrap_or_else(|error| panic!("reopen archive Room: {error}"));
+
+        let input_id = "01ARZ3NDEKTSV4RRFFQ69G5G05";
+        let launch = LobbyLaunchRequest {
+            input_id: input_id.to_owned(),
+            based_on_room_seq: 0,
+            pack_digest: Some(pack.digest.clone()),
+        };
+        assert_eq!(
+            backend
+                .resolve_lobby_launch(&host, &room.room_id, launch.clone())
+                .unwrap_or_else(|error| panic!("resolve absent start: {error}")),
+            None
+        );
+        let before_unauthorized = backend
+            .store
+            .gateway_room_snapshot(&backend.registry, &room_id)
+            .unwrap_or_else(|_| panic!("read archive Room before unauthorized request"))
+            .unwrap_or_else(|| panic!("archive Room absent before unauthorized request"))
+            .trace()
+            .head()
+            .clone();
+        let non_operator = session(0xc2, "01ARZ3NDEKTSV4RRFFQ69G5G0A");
+        assert!(matches!(
+            backend.launch_lobby(&non_operator, &room.room_id, launch.clone()),
+            Err(BackendError::Forbidden)
+        ));
+        assert!(matches!(
+            backend.resolve_lobby_launch(&non_operator, &room.room_id, launch.clone()),
+            Err(BackendError::Forbidden)
+        ));
+        let after_unauthorized = backend
+            .store
+            .gateway_room_snapshot(&backend.registry, &room_id)
+            .unwrap_or_else(|_| panic!("read archive Room after unauthorized request"))
+            .unwrap_or_else(|| panic!("archive Room absent after unauthorized request"))
+            .trace()
+            .head()
+            .clone();
+        assert_eq!(after_unauthorized, before_unauthorized);
+
+        let concurrent = (0..4)
+            .map(|index| {
+                let backend = Arc::clone(&backend);
+                let room_id = room.room_id.clone();
+                let launch = launch.clone();
+                thread::spawn(move || {
+                    backend.launch_lobby(
+                        &session(0xc1, &format!("01ARZ3NDEKTSV4RRFFQ69G5G0{index}")),
+                        &room_id,
+                        launch,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut successful = Vec::new();
+        for result in concurrent {
+            match result
+                .join()
+                .unwrap_or_else(|_| panic!("concurrent start panicked"))
+            {
+                Ok(response) => successful.push(response),
+                Err(BackendError::Busy | BackendError::WrongPhase) => {}
+                Err(error) => panic!("concurrent start failed unexpectedly: {error}"),
+            }
+        }
+        assert!(!successful.is_empty(), "one concurrent start must commit");
+        let first = successful
+            .iter()
+            .find(|response| !response.duplicate)
+            .unwrap_or_else(|| panic!("one concurrent start must be the commit"));
+        assert_eq!(first.room_head.room_seq, 1);
+        assert_eq!(
+            successful
+                .iter()
+                .filter(|response| !response.duplicate)
+                .count(),
+            1
+        );
+        let resolved = backend
+            .resolve_lobby_launch(&host, &room.room_id, launch.clone())
+            .unwrap_or_else(|error| panic!("resolve committed start: {error}"))
+            .unwrap_or_else(|| panic!("committed start absent"));
+        assert!(resolved.duplicate);
+        assert_eq!(resolved.transition_id, first.transition_id);
+        assert_eq!(resolved.room_head, first.room_head);
+
+        let before = backend
+            .store
+            .gateway_room_snapshot(&backend.registry, &room_id)
+            .unwrap_or_else(|_| panic!("read archive Room"))
+            .unwrap_or_else(|| panic!("archive Room absent"))
+            .trace()
+            .head()
+            .clone();
+        let wrong_phase = backend.launch_lobby(
+            &host,
+            &room.room_id,
+            LobbyLaunchRequest {
+                input_id: "01ARZ3NDEKTSV4RRFFQ69G5G06".to_owned(),
+                based_on_room_seq: 1,
+                pack_digest: Some(pack.digest.clone()),
+            },
+        );
+        assert!(matches!(wrong_phase, Err(BackendError::WrongPhase)));
+        let after = backend
+            .store
+            .gateway_room_snapshot(&backend.registry, &room_id)
+            .unwrap_or_else(|_| panic!("read archive Room after rejection"))
+            .unwrap_or_else(|| panic!("archive Room absent after rejection"))
+            .trace()
+            .head()
+            .clone();
+        assert_eq!(after, before);
+
+        // Revocation is a separate immutable startup fact. It blocks an
+        // absent start without erasing the Pack's declaration or preventing
+        // recovery of a start that already committed under approval.
+        let (revoked_registry, revoked_pack, _) = archive_registry(false, false);
+        assert_eq!(revoked_pack, pack);
+        let pack_digest = pack
+            .digest
+            .parse()
+            .unwrap_or_else(|_| panic!("pack digest"));
+        assert!(
+            !revoked_registry
+                .activity_start_is_approved(&pack_digest)
+                .unwrap_or_else(|error| panic!("read revoked approval: {error}"))
+        );
+        assert!(matches!(
+            revoked_registry.activity_start_compatibility(&pack_digest),
+            Ok(worldstream_core::ActivityStartCompatibilityV1::Supported(_))
+        ));
+        let revoked_backend = SqliteGatewayBackend::new(store.clone(), revoked_registry);
+        let recovered = revoked_backend
+            .resolve_lobby_launch(&host, &room.room_id, launch.clone())
+            .unwrap_or_else(|error| panic!("recover committed start after revocation: {error}"))
+            .unwrap_or_else(|| panic!("committed start missing after revocation"));
+        assert_eq!(recovered.transition_id, first.transition_id);
+        assert!(recovered.duplicate);
+
+        let revoked_launch = LobbyLaunchRequest {
+            input_id: "01ARZ3NDEKTSV4RRFFQ69G5G07".to_owned(),
+            based_on_room_seq: 0,
+            pack_digest: Some(pack.digest.clone()),
+        };
+        assert_eq!(
+            revoked_backend
+                .resolve_lobby_launch(&host, &revoked_room.room_id, revoked_launch.clone())
+                .unwrap_or_else(|error| panic!("resolve absent revoked start: {error}")),
+            None
+        );
+        let before_revoked = revoked_backend
+            .store
+            .gateway_room_snapshot(&revoked_backend.registry, &revoked_room_id)
+            .unwrap_or_else(|_| panic!("read revoked Archive Room"))
+            .unwrap_or_else(|| panic!("revoked Archive Room absent"))
+            .trace()
+            .head()
+            .clone();
+        assert!(matches!(
+            revoked_backend.launch_lobby(&host, &revoked_room.room_id, revoked_launch),
+            Err(BackendError::WrongPhase)
+        ));
+        let after_revoked = revoked_backend
+            .store
+            .gateway_room_snapshot(&revoked_backend.registry, &revoked_room_id)
+            .unwrap_or_else(|_| panic!("read revoked Archive Room after rejection"))
+            .unwrap_or_else(|| panic!("revoked Archive Room absent after rejection"))
+            .trace()
+            .head()
+            .clone();
+        assert_eq!(after_revoked, before_revoked);
+
+        let (_unapproved_directory, unapproved_file) = database_fixture();
+        let unapproved_store =
+            SqliteRoomStore::open(unapproved_file.path()).unwrap_or_else(|_| panic!("open db"));
+        let (unapproved_registry, unapproved_pack, unapproved_corpus) =
+            archive_registry(false, true);
+        AuthorityV1::new(Arc::new(unapproved_store.clone()))
+            .bootstrap(
+                AuthorityBootstrapV1::new(
+                    "01ARZ3NDEKTSV4RRFFQ69G5G12".parse().unwrap(),
+                    "01ARZ3NDEKTSV4RRFFQ69G5G01".parse().unwrap(),
+                    PrincipalKindV1::Human,
+                    "01ARZ3NDEKTSV4RRFFQ69G5G13".parse().unwrap(),
+                    host_bearer.token_hash(),
+                    None,
+                )
+                .unwrap(),
+                "2026-08-15T12:00:00Z".parse().unwrap(),
+            )
+            .unwrap();
+        let unapproved = SqliteGatewayBackend::new(unapproved_store, unapproved_registry);
+        assert!(matches!(
+            unapproved.create_room(
+                &host,
+                CreateRoomRequest {
+                    pack: unapproved_pack,
+                    configuration: serde_json::to_value(&unapproved_corpus.genesis.configuration)
+                        .unwrap_or_else(|_| panic!("unapproved archive configuration")),
+                    members: [
+                        ("01ARZ3NDEKTSV4RRFFQ69G5FZ0", "lead"),
+                        ("01ARZ3NDEKTSV4RRFFQ69G5FZ1", "mira"),
+                        ("01ARZ3NDEKTSV4RRFFQ69G5FZ2", "jonah"),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (principal_id, role))| CreateMember {
+                        principal_id: principal_id.to_owned(),
+                        principal_kind: if index == 0 {
+                            PrincipalKind::Human
+                        } else {
+                            PrincipalKind::Agent
+                        },
+                        role: Some(role.to_owned()),
+                        access_mode: AccessMode::Participant,
+                    })
+                    .collect(),
+                    idempotency_key: "archive-unapproved-room".to_owned(),
+                },
+            ),
+            Err(BackendError::Rejected)
+        ));
     }
 
     #[test]

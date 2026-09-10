@@ -32,8 +32,11 @@ import {
   reviewedActivityByDigest,
   reviewedPublicViewerClientPath,
   reviewedActivityBySlug,
+  reviewedInternalActivities,
   reviewedSeatId,
   reviewedSeatKey,
+  publicRosterOptions,
+  type ReviewedHostedActivity,
 } from "./hosted-catalog.js";
 import {
   presentPublicRun,
@@ -41,6 +44,7 @@ import {
   publicProjectionStreamBaseUrl,
   type PublicRunData,
 } from "./public-runs.js";
+import { resolveRosterOption } from "@worldstream/hosted-contract";
 import { encodeCanonical } from "@worldstream/pack-sdk";
 
 const OAUTH_COOKIE = "__Host-worldstream-oauth";
@@ -91,6 +95,7 @@ export interface MyGamesIndex {
       | "activity_closed"
       | "live"
       | "publication_pending"
+      | "terminal_private"
       | "terminal_without_outcome"
       | "result_suppressed"
       | "dependency_failure"
@@ -186,6 +191,8 @@ export interface PlatformDataClient {
 }
 
 export interface BffDependencies {
+  /** Explicit server-owned catalog injection for local qualification; never request data. */
+  readonly reviewedActivities?: readonly ReviewedHostedActivity[];
   /** A fresh publishable-key Auth client for each request. */
   readonly authClient: () => PlatformAuthClient;
   /** A standalone server-secret data client with no user session installed. */
@@ -202,6 +209,10 @@ export interface BffDependencies {
   readonly hostedFormationGateway?: HostedFormationGateway;
   /** Exact reviewed Host installation selected by deployment configuration. */
   readonly hostedFormationHostInstallationId?: string;
+  /** Exact nonpublic Listing revisions enabled for this internal deployment. */
+  readonly internalCandidateListingDigests?: readonly string[];
+  /** Checks the exact approved Pack, client release, surface and Client Binding. */
+  readonly hostedActivityAvailable?: (listingRevisionDigest: string, launchInputs?: Readonly<Record<string, string>>) => Promise<boolean>;
 }
 
 export interface PlatformBffConfig {
@@ -303,6 +314,26 @@ export function createPlatformBff(
       if (url.origin !== origin) return safeJson(404, "route_not_found");
       if (request.method === "GET" && url.pathname === "/api/catalog") {
         return publicCatalog(formation !== null && dependencies.hostedBrowserSessions !== undefined);
+      }
+      if (request.method === "GET" && url.pathname === "/api/catalog/internal") {
+        const admitted = await verifiedRead(request, origin, sessionKey, dependencies);
+        if (admitted instanceof Response) return admitted;
+        const ready = formation !== null && dependencies.hostedBrowserSessions !== undefined;
+        const candidates = await Promise.all([...reviewedInternalActivities(dependencies.internalCandidateListingDigests ?? []),
+          ...(dependencies.reviewedActivities ?? []).filter((activity) =>
+            activity.listing.value.catalog.visibility !== "public"
+            && dependencies.internalCandidateListingDigests?.includes(activity.listing.digest))].map(async (activity) => ({
+          ...activity.public,
+          ...publicRosterOptions(activity),
+          ...(!(ready && await exactActivityAvailable(dependencies, activity.listing.digest)) ? {
+            availability: "dependency_unavailable" as const,
+            availabilityMessage: "The exact approved activity and client are unavailable.",
+          } : {}),
+        })));
+        return privateJson(200, {
+          version: "hosted_activity_catalog.v1",
+          activities: [...listPublicHostedActivities(ready), ...candidates],
+        });
       }
       const publicRunId = publicRunRoute(url.pathname);
       if (request.method === "GET" && publicRunId !== null) {
@@ -470,6 +501,7 @@ function formationCoordinator(dependencies: BffDependencies): HostedFormationCoo
     dependencies.hostedFormationData!,
     dependencies.hostedFormationGateway!,
     dependencies.hostedFormationHostInstallationId!,
+    (digest) => resolveReviewedActivity(dependencies, digest),
   );
 }
 
@@ -480,6 +512,18 @@ function publicCatalog(dependenciesAvailable: boolean): Response {
   });
   response.headers.set("cache-control", "public, max-age=30, stale-while-revalidate=60");
   return response;
+}
+
+function resolveReviewedActivity(dependencies: Pick<BffDependencies, "reviewedActivities">, digest: string) {
+  return reviewedActivityByDigest(digest, dependencies.reviewedActivities);
+}
+
+async function exactActivityAvailable(dependencies: BffDependencies, digest: string, inputs?: Readonly<Record<string, string>>): Promise<boolean> {
+  try {
+    return await dependencies.hostedActivityAvailable?.(digest, inputs) === true;
+  } catch {
+    return false;
+  }
 }
 
 function hostedLaunchRoute(pathname: string): HostedLaunchRoute | null {
@@ -521,6 +565,8 @@ async function createHostedLaunch(
   if (admitted instanceof Response) return admitted;
   const data = dependencies.hostedFormationData;
   if (formation === null || data === undefined) return temporarilyUnavailable();
+  const hasRosterOption = admitted.body !== null && typeof admitted.body === "object"
+    && Object.hasOwn(admitted.body, "roster_option");
   if (
     !isExactObject(admitted.body, [
       "listing_slug",
@@ -528,6 +574,7 @@ async function createHostedLaunch(
       "creator_seat",
       "fill_mode",
       "idempotency_key",
+      ...(hasRosterOption ? ["roster_option"] : []),
     ]) ||
     typeof admitted.body.listing_slug !== "string" ||
     typeof admitted.body.creator_access !== "string" ||
@@ -538,8 +585,14 @@ async function createHostedLaunch(
   ) {
     return privateError(400, "invalid_request");
   }
-  const reviewed = reviewedActivityBySlug(admitted.body.listing_slug);
+  const reviewed = dependencies.reviewedActivities?.find(({ slug }) => slug === admitted.body.listing_slug)
+    ?? reviewedActivityBySlug(admitted.body.listing_slug);
   if (reviewed === null) return privateError(409, "activity_unavailable");
+  if (reviewed.listing.value.catalog.visibility !== "public" && (
+    !dependencies.internalCandidateListingDigests?.includes(reviewed.listing.digest)
+    || (reviewed.listing.value.launch_input_schema.accepts === "none"
+      && !await exactActivityAvailable(dependencies, reviewed.listing.digest))
+  )) return privateError(409, "activity_unavailable");
   const creatorAccess = admitted.body.creator_access;
   if (creatorAccess !== "seat" && creatorAccess !== "spectator") {
     return privateError(400, "invalid_request");
@@ -560,7 +613,27 @@ async function createHostedLaunch(
       ? "disabled"
       : null;
   if (houseFillChoice === null) return privateError(400, "invalid_request");
-  const launchInput = encodeCanonical({});
+  if (houseFillChoice === "fill_unclaimed" && !reviewed.public.houseFillAvailable) {
+    return privateError(400, "invalid_request");
+  }
+  let launchInput: Uint8Array;
+  try {
+    const inputs: Record<string, string> = hasRosterOption
+      ? { roster_option: admitted.body.roster_option as string } : {};
+    const option = resolveRosterOption(reviewed.listing, inputs);
+    if (option !== null && (
+      (seatId !== null && (!option.seat_ids.includes(seatId)
+        || option.house_agent_assignments.some((assignment) => assignment.seat_id === seatId)))
+      || (option.house_agent_assignments.length > 0) !== (houseFillChoice === "fill_unclaimed")
+    )) return privateError(400, "invalid_request");
+    if (option !== null && reviewed.listing.value.catalog.visibility !== "public"
+      && !await exactActivityAvailable(dependencies, reviewed.listing.digest, inputs)) {
+      return privateError(409, "activity_unavailable");
+    }
+    launchInput = encodeCanonical(inputs);
+  } catch {
+    return privateError(400, "invalid_request");
+  }
   try {
     const created = await data.createLaunchRequest({
       accountId: admitted.account.accountId,
@@ -573,7 +646,7 @@ async function createHostedLaunch(
       creatorAccessChoice: creatorAccess,
       creatorSeatId: seatId,
     });
-    const snapshot = await launchSnapshot(data, admitted.account.accountId, created.launchRequestId);
+    const snapshot = await launchSnapshot(data, admitted.account.accountId, created.launchRequestId, undefined, dependencies);
     if (snapshot === null) return temporarilyUnavailable();
     return privateJson(created.wasCreated ? 201 : 200, snapshot);
   } catch (error) {
@@ -616,6 +689,7 @@ async function readHostedLaunch(
       admitted.account.accountId,
       launchId,
       formation,
+      dependencies,
     );
     return snapshot === null
       ? privateError(404, "launch_unavailable")
@@ -707,7 +781,7 @@ async function claimHostedInvitation(
       participation,
     );
     if (claimed === null) return privateError(409, "invitation_unavailable");
-    const snapshot = await launchSnapshot(data, admitted.account.accountId, claimed.launchRequestId);
+    const snapshot = await launchSnapshot(data, admitted.account.accountId, claimed.launchRequestId, undefined, dependencies);
     return snapshot === null
       ? temporarilyUnavailable()
       : privateJson(201, snapshot);
@@ -739,11 +813,11 @@ async function mutateHostedLaunch(
       if (launch === null || launch.state === "abandoned_prestart") {
         return privateError(409, "launch_unavailable");
       }
-      if (launch !== null && reviewedActivityByDigest(launch.listingRevisionDigest)?.public.clientPath === null) {
+      if (launch !== null && resolveReviewedActivity(dependencies, launch.listingRevisionDigest)?.public.clientPath === null) {
         return privateError(409, "launch_client_unavailable");
       }
       const advanced = await formation.advance(admitted.account.accountId, route.launchId);
-      const snapshot = await launchSnapshot(data, admitted.account.accountId, route.launchId, formation);
+      const snapshot = await launchSnapshot(data, admitted.account.accountId, route.launchId, formation, dependencies);
       if (snapshot === null) return temporarilyUnavailable();
       return privateJson(advanced.state === "run_created" ? 200 : 202, {
         ...snapshot,
@@ -767,7 +841,7 @@ async function mutateHostedLaunch(
     );
     const reviewed = launch === null
       ? null
-      : reviewedActivityByDigest(launch.listingRevisionDigest);
+      : resolveReviewedActivity(dependencies, launch.listingRevisionDigest);
     const seatId = reviewed === null ? null : reviewedSeatId(reviewed, route.seatId);
     if (seatId === null) return privateError(409, "seat_unavailable");
     if (route.action === "invite") {
@@ -788,7 +862,7 @@ async function mutateHostedLaunch(
       ? await data.releaseSeatClaim(admitted.account.accountId, route.launchId, seatId)
       : await data.resetSeatClaim(admitted.account.accountId, route.launchId, seatId);
     if (!changed) return privateError(409, "seat_unavailable");
-    const snapshot = await launchSnapshot(data, admitted.account.accountId, route.launchId);
+    const snapshot = await launchSnapshot(data, admitted.account.accountId, route.launchId, undefined, dependencies);
     return snapshot === null ? temporarilyUnavailable() : privateJson(200, snapshot);
   } catch (error) {
     return formationError(error);
@@ -799,7 +873,8 @@ async function launchSnapshot(
   data: HostedFormationData,
   accountId: string,
   launchId: string,
-  formation?: HostedFormationCoordinator,
+  formation: HostedFormationCoordinator | undefined,
+  dependencies: Pick<BffDependencies, "reviewedActivities">,
 ): Promise<Record<string, unknown> | null> {
   const [launch, house] = await Promise.all([
     data.readLaunchRequest(accountId, launchId),
@@ -817,7 +892,7 @@ async function launchSnapshot(
   if (run !== null && !entryReady) {
     run = { ...run, canEnter: false, memberships: [] };
   }
-  return safeLaunchProjection(launch, house, reconciliation?.needsGenesisPull === true, run, entryReady);
+  return safeLaunchProjection(launch, house, reconciliation?.needsGenesisPull === true, run, entryReady, dependencies);
 }
 
 function safeLaunchProjection(
@@ -826,8 +901,9 @@ function safeLaunchProjection(
   reconciling: boolean,
   run: OwnedRunRecord | null,
   entryReady: boolean,
+  dependencies: Pick<BffDependencies, "reviewedActivities">,
 ): Record<string, unknown> {
-  const reviewed = reviewedActivityByDigest(launch.listingRevisionDigest);
+  const reviewed = resolveReviewedActivity(dependencies, launch.listingRevisionDigest);
   const state = launch.state === "collecting_roster"
     ? "collecting"
     : launch.state === "closing" || launch.state === "closed_by_creator"
@@ -993,11 +1069,13 @@ export function createDevelopmentPlatformBff(
     readonly hostInstallationId: string;
   },
   hostedPublicStreamBaseUrl?: string,
+  internalCandidates: Pick<BffDependencies, "internalCandidateListingDigests" | "hostedActivityAvailable" | "reviewedActivities"> = {},
 ): PlatformBff {
   const origin = validateDevelopmentConfiguration(config);
   const user = developmentUser(config.identity);
   const auth = new DevelopmentPlatformAuthClient(user);
   const inner = createPlatformBff(config, {
+    ...internalCandidates,
     authClient: () => auth,
     dataClient,
     ...(supportsPublicRuns(dataClient) ? { publicRunData: dataClient } : {}),
@@ -1510,7 +1588,7 @@ async function enterRun(
       entrySelector: admitted.body.entry_selector,
     });
     if (binding === null) return privateError(404, "run_entry_unavailable");
-    if (reviewedActivityByDigest(binding.listingRevisionDigest)?.public.clientPath === null) {
+    if (resolveReviewedActivity(dependencies, binding.listingRevisionDigest)?.public.clientPath === null) {
       return privateError(409, "run_client_unavailable");
     }
     const handoff = await hosted.issueHandoff(admitted.account.accountId, binding);

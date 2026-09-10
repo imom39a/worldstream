@@ -9,6 +9,8 @@ import {
   hostedGatewayConfiguration,
   hostedRuntimeLayout,
   hostedStatusReady,
+  renderArchiveHouseAgentProfiles,
+  renderArchiveHouseRunnerTemplate,
   renderHostedRuntimeConfig,
   renderHouseRunnerTemplate,
   renderHouseAgentProfiles,
@@ -157,6 +159,31 @@ test("House Runner import is exact and has no secret environment", () => {
   assert.equal(manifest.capacity.maximum_concurrent_invocations, 4);
 });
 
+test("Archive companions use one separate exact dormant Pack-compatible Runner reference", () => {
+  const manifest = renderArchiveHouseRunnerTemplate(
+    "/var/lib/worldstream/retained-runner-executables/blake3-a/worldstream-managed-agent-host",
+    "a".repeat(64),
+  );
+  assert.equal(manifest.template_id, "openrouter-house-archive");
+  assert.equal(manifest.revision, "1");
+  assert.deepEqual(manifest.instances, [{
+    instance_id: "hosted-archive-house-01", health_address: "127.0.0.1:9608",
+  }]);
+  assert.deepEqual(manifest.compatibility, [{
+    activity_pack_id: "worldstream.midnight-archive",
+    exact_revisions: ["0.1.0"],
+  }]);
+  assert.deepEqual(manifest.secret_environment, []);
+  assert.deepEqual(manifest.non_secret_environment, { WORLDSTREAM_RUNNER_MODE: "hosted-house" });
+  // This is the per-instance schema ceiling. Hosted House admission has one
+  // independent deployment-wide four-unit gate across every template.
+  assert.equal(manifest.capacity.maximum_concurrent_invocations, 4);
+  assert.throws(
+    () => renderArchiveHouseRunnerTemplate("/tmp/runner", `blake3:${"a".repeat(64)}`),
+    /invalid_runner_digest/u,
+  );
+});
+
 test("successor House Runner instances do not collide with retained installations", () => {
   for (const retained of [
     { instance_id: "hosted-house-01", health_address: "127.0.0.1:9591" },
@@ -192,6 +219,34 @@ test("fresh local and Fly imports bind the two Granite strategies to distinct ex
     assert.deepEqual(profile.host_contract, {
       kind: "managed_house_openrouter", host_contract_revision: "1",
       runner_template: { template_id: "openrouter-house", revision: "16" },
+    });
+  }
+});
+
+test("fresh local and Fly imports bind Mira and Jonah to their exact Archive profile sources", async () => {
+  const profiles = renderArchiveHouseAgentProfiles();
+  const checkedIn = Object.fromEntries(await Promise.all(
+    ["mira", "jonah"].map(async (name) => [
+      name,
+      JSON.parse(await readFile(
+        new URL(`../config/hosted/house-agent-profiles/${name}-1.json`, import.meta.url),
+        "utf8",
+      )),
+    ]),
+  ));
+  assert.deepEqual(profiles, checkedIn);
+  assert.deepEqual(Object.values(profiles).map(({ profile_id, revision }) => ({ profile_id, revision })), [
+    { profile_id: "house-midnight-archive-mira", revision: "1" },
+    { profile_id: "house-midnight-archive-jonah", revision: "1" },
+  ]);
+  for (const profile of Object.values(profiles)) {
+    assert.equal(profile.schema, "worldstream/studio-agent-profile-publish/v2");
+    assert.equal(profile.managed_provider_credential_id, "hosted-openrouter");
+    assert.deepEqual(profile.non_secret_configuration, {});
+    assert.deepEqual(profile.host_contract, {
+      kind: "managed_house_openrouter",
+      host_contract_revision: "1",
+      runner_template: { template_id: "openrouter-house-archive", revision: "1" },
     });
   }
 });

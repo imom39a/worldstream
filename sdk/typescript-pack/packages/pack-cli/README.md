@@ -51,3 +51,20 @@ bodies, request transcripts, endpoint, model, and API key are never written to
 the project, bundle, receipts, daemon, evidence, or normal diagnostic output.
 The fixed prompt blueprint may only select the supported starter and supply its
 display name and description; authors review and edit the code after promotion.
+
+## Archive contract qualification fixture
+
+The repository includes a non-Heist fixture that exercises optional Roles,
+declared ExternalInput, audience schemas, and timed offers. Build and finalize
+it with the production prover before running the ignored Host admission test:
+
+```sh
+WORLDSTREAM_PACK_HOST="$PWD/target/debug/worldstreamctl" \
+  node sdk/typescript-pack/packages/pack-cli/dist/main.js prove \
+  sdk/typescript-pack/packages/pack-cli/fixtures/archive-contract
+
+WORLDSTREAM_ARCHIVE_CONTRACT_BUNDLE="$PWD/sdk/typescript-pack/packages/pack-cli/fixtures/archive-contract/releases/archive-contract.wspack" \
+  cargo test -p worldstream-component-host \
+  host::tests::archive_contract_bundle_rejects_invalid_payload_and_offer_boundaries_before_callbacks \
+  -- --ignored --exact
+```

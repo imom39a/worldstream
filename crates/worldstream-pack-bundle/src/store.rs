@@ -70,6 +70,7 @@ pub struct PackBundleInventoryCountsV1 {
 pub struct PackBundleStartupEntryV1 {
     installed: InstalledPackBundleV1,
     bundle: VerifiedPackBundleV1,
+    approved_for_activity_start: bool,
 }
 
 impl PackBundleStartupEntryV1 {
@@ -81,6 +82,13 @@ impl PackBundleStartupEntryV1 {
     #[must_use]
     pub fn bundle(&self) -> &VerifiedPackBundleV1 {
         &self.bundle
+    }
+
+    /// Reports whether this exact Bundle still has a current matching Host
+    /// approval in the immutable startup snapshot.
+    #[must_use]
+    pub const fn approved_for_activity_start(&self) -> bool {
+        self.approved_for_activity_start
     }
 
     #[must_use]
@@ -175,6 +183,13 @@ struct ApprovalRecordV1 {
     decision: ApprovalDecisionV1,
     manifest_digest: worldstream_core::Blake3DigestV1,
     operator_id: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CurrentApprovalV1 {
+    Missing,
+    Approved,
+    Revoked,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -324,13 +339,26 @@ impl PackBundleStoreV1 {
             if !revisions.insert(bundle.revision_digest().clone()) {
                 return Err(PackBundleErrorV1::SemanticRevisionAlreadyInstalled);
             }
+            let approval = self.current_approval(&bundle)?;
             if installed.install_state == PackInstallStateV1::Selectable {
-                self.require_approval(&bundle)?;
+                match approval {
+                    CurrentApprovalV1::Approved => {}
+                    CurrentApprovalV1::Missing => {
+                        return Err(PackBundleErrorV1::ApprovalMissing);
+                    }
+                    CurrentApprovalV1::Revoked => {
+                        return Err(PackBundleErrorV1::ApprovalDigestMismatch);
+                    }
+                }
                 selectable = selectable
                     .checked_add(1)
                     .ok_or(PackBundleErrorV1::LimitExceeded)?;
             }
-            entries.push(PackBundleStartupEntryV1 { installed, bundle });
+            entries.push(PackBundleStartupEntryV1 {
+                installed,
+                bundle,
+                approved_for_activity_start: approval == CurrentApprovalV1::Approved,
+            });
         }
         let installed = entries.len();
         let retained_only = installed
@@ -373,9 +401,7 @@ impl PackBundleStoreV1 {
         approval: OperatorApprovalV1,
     ) -> Result<(), PackBundleErrorV1> {
         validate_operator_fields(&approval.operator_id, &approval.decided_at)?;
-        if approval.decision == ApprovalDecisionV1::Revoked {
-            self.clear_startup_readiness()?;
-        }
+        self.clear_startup_readiness()?;
         let record = ApprovalRecordV1 {
             approval_record_id: APPROVAL_RECORD_ID.to_owned(),
             bundle_digest: bundle.bundle_digest().clone(),
@@ -664,19 +690,39 @@ impl PackBundleStoreV1 {
     }
 
     fn require_approval(&self, bundle: &VerifiedPackBundleV1) -> Result<(), PackBundleErrorV1> {
+        match self.current_approval(bundle)? {
+            CurrentApprovalV1::Approved => Ok(()),
+            CurrentApprovalV1::Missing => Err(PackBundleErrorV1::ApprovalMissing),
+            CurrentApprovalV1::Revoked => Err(PackBundleErrorV1::ApprovalDigestMismatch),
+        }
+    }
+
+    fn current_approval(
+        &self,
+        bundle: &VerifiedPackBundleV1,
+    ) -> Result<CurrentApprovalV1, PackBundleErrorV1> {
         let path = self.approval_path(bundle.bundle_digest());
-        if !path.is_file() {
-            return Err(PackBundleErrorV1::ApprovalMissing);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(CurrentApprovalV1::Missing);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(PackBundleErrorV1::ApprovalDigestMismatch);
         }
         let approval: ApprovalRecordV1 = read_canonical(&path)?;
         if approval.approval_record_id != APPROVAL_RECORD_ID
             || approval.bundle_digest != *bundle.bundle_digest()
             || approval.manifest_digest != *bundle.manifest_digest()
-            || approval.decision != ApprovalDecisionV1::Approved
         {
             return Err(PackBundleErrorV1::ApprovalDigestMismatch);
         }
-        Ok(())
+        Ok(match approval.decision {
+            ApprovalDecisionV1::Approved => CurrentApprovalV1::Approved,
+            ApprovalDecisionV1::Revoked => CurrentApprovalV1::Revoked,
+        })
     }
 
     fn reject_semantic_substitution(

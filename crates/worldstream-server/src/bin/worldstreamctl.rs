@@ -917,6 +917,7 @@ fn prove_pack_bundle(bundle_path: &Path) -> Result<PackProofDocumentV1> {
             PackRegistryStatusV1 {
                 selectable_for_new_rooms: true,
                 runnable_for_retained_rooms: true,
+                approved_for_activity_start: true,
             },
         )
         .context("Component Pack Host admission failed closed")?;

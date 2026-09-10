@@ -34,7 +34,7 @@ import type {
   HostedFormationGateway,
   HostedLaunchMaterial,
 } from "./hosted-formation.js";
-import { AGENT_HEIST_LISTING_DIGEST } from "./hosted-catalog.js";
+import { AGENT_HEIST_LISTING_DIGEST, MIDNIGHT_ARCHIVE_LISTING_DIGEST } from "./hosted-catalog.js";
 import { withPlatformDiagnostics } from "./diagnostics.js";
 
 const ORIGIN = "https://arena.example";
@@ -325,6 +325,7 @@ function harness(
   hostedBrowserSessions?: HostedBrowserSessionClient,
   publicRunData?: PublicRunData,
   hostedPublicStreamBaseUrl?: string,
+  overrides: Partial<BffDependencies> = {},
 ) {
   const auth = new FakeAuth();
   const data = new FakeData();
@@ -334,6 +335,7 @@ function harness(
     ...(hostedBrowserSessions === undefined ? {} : { hostedBrowserSessions }),
     ...(publicRunData === undefined ? {} : { publicRunData }),
     ...(hostedPublicStreamBaseUrl === undefined ? {} : { hostedPublicStreamBaseUrl }),
+    ...overrides,
   };
   const bff = createPlatformBff(
     {
@@ -421,6 +423,44 @@ async function csrf(
   const body = (await response.json()) as { csrf: string };
   return body.csrf;
 }
+
+test("internal catalog requires sign-in and exact deployment opt-in; missing artifacts block launch", async () => {
+  const { bff } = harness(undefined, undefined, undefined, {
+    internalCandidateListingDigests: [MIDNIGHT_ARCHIVE_LISTING_DIGEST],
+    hostedFormationData: {} as HostedFormationData,
+    hostedFormationGateway: {} as HostedFormationGateway,
+    hostedFormationHostInstallationId: "internal-test",
+    hostedBrowserSessions: {} as HostedBrowserSessionClient,
+    hostedActivityAvailable: async () => false,
+  });
+  assert.equal((await bff.fetch(new Request(`${ORIGIN}/api/catalog/internal`))).status, 401);
+  const publicResponse = await bff.fetch(new Request(`${ORIGIN}/api/catalog`));
+  assert.equal((await publicResponse.text()).includes("midnight-archive"), false);
+  const signedIn = await signIn(bff);
+  const response = await bff.fetch(new Request(`${ORIGIN}/api/catalog/internal`, {
+    headers: { cookie: `__Host-worldstream-session=${signedIn.sessionCookie}` },
+  }));
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+  const body = await response.json() as { activities: Array<{ slug: string; availability: string }> };
+  assert.equal(body.activities.find(({ slug }) => slug === "midnight-archive")?.availability, "dependency_unavailable");
+  const denied = await bff.fetch(mutation("/api/launches", signedIn.sessionCookie, await csrf(bff, signedIn.sessionCookie), JSON.stringify({
+    listing_slug: "midnight-archive", creator_access: "seat", creator_seat: "seat-1",
+    fill_mode: "people_only", roster_option: "solo", idempotency_key: "a".repeat(32),
+  })));
+  assert.equal(denied.status, 409);
+  assert.equal((await denied.text()).includes("activity_unavailable"), true);
+});
+
+test("signed-in catalog keeps internal candidates hidden without exact opt-in", async () => {
+  const { bff } = harness();
+  const signedIn = await signIn(bff);
+  const response = await bff.fetch(new Request(`${ORIGIN}/api/catalog/internal`, {
+    headers: { cookie: `__Host-worldstream-session=${signedIn.sessionCookie}` },
+  }));
+  assert.equal(response.status, 200);
+  assert.equal((await response.text()).includes("midnight-archive"), false);
+});
 
 test("My games is account-scoped, preserves the reviewed result route, and rejects erased accounts", async () => {
   const { bff, data } = harness();
@@ -1976,5 +2016,60 @@ test("development identity substitute fails closed outside loopback development"
   } finally {
     if (priorNodeEnvironment === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = priorNodeEnvironment;
+  }
+});
+
+test("reviewed roster choices expose labels and freeze only exact option input through authenticated API", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { encodeCanonical } = await import("@worldstream/pack-sdk");
+  const { readListingRevision, resolveRosterOption } = await import("@worldstream/hosted-contract");
+  const { reviewedActivityByDigest } = await import("./hosted-catalog.js");
+  const listing = readListingRevision(encodeCanonical(JSON.parse(readFileSync(
+    new URL("../../../fixtures/hosted-contract/valid/roster-options-listing.json", import.meta.url), "utf8"))));
+  const base = reviewedActivityByDigest(MIDNIGHT_ARCHIVE_LISTING_DIGEST)!;
+  const reviewed = { ...base, slug: "roster-test", listing, public: { ...base.public,
+    slug: "roster-test", houseFillAvailable: true,
+    seats: listing.value.seats.map((seat, index) => ({ key: `seat-${index + 1}`, label: seat.display_name, required: seat.required })),
+  } };
+  const accepted: Array<Parameters<HostedFormationData["createLaunchRequest"]>[0]> = [];
+  const launchId = "d8000000-0000-4000-8000-000000000001";
+  const data = {
+    createLaunchRequest: async (input: Parameters<HostedFormationData["createLaunchRequest"]>[0]) => {
+      accepted.push(input);
+      return { launchRequestId: launchId, state: "collecting_roster", expiresAt: "2099-01-01T00:00:00Z", wasCreated: true };
+    },
+    readLaunchRequest: async () => {
+      const input = accepted.at(-1)!;
+      const option = resolveRosterOption(listing, JSON.parse(new TextDecoder().decode(input.canonicalLaunchInput)))!;
+      return { launchRequestId: launchId, listingRevisionDigest: listing.digest, state: "collecting_roster", expiresAt: "2099-01-01T00:00:00Z",
+        creatorAccessChoice: "seat", creatorSeatId: "lead", houseFillChoice: input.houseFillChoice, rosterFrozen: false, canManage: true,
+        seats: option.seat_ids.map((id) => ({ seatId: id, displayName: id, required: true, participationKind: id === "lead" ? "account_human" : null,
+          claimedByRequester: id === "lead", claimed: id === "lead" })) };
+    },
+    readHouseFill: async () => null,
+  } as unknown as HostedFormationData;
+  const { bff } = harness(undefined, undefined, undefined, {
+    reviewedActivities: [reviewed], internalCandidateListingDigests: [listing.digest], hostedActivityAvailable: async () => true,
+    hostedFormationData: data, hostedFormationGateway: {} as HostedFormationGateway,
+    hostedFormationHostInstallationId: "roster-test", hostedBrowserSessions: {} as HostedBrowserSessionClient,
+  });
+  const signedIn = await signIn(bff);
+  const token = await csrf(bff, signedIn.sessionCookie);
+  const catalog = await bff.fetch(new Request(`${ORIGIN}/api/catalog/internal`, { headers: { cookie: `__Host-worldstream-session=${signedIn.sessionCookie}` } }));
+  const summary = (await catalog.json()).activities.find((activity: { slug: string }) => activity.slug === "roster-test");
+  assert.deepEqual(summary.rosterOptions.map((option: { label: string }) => option.label), ["Solo", "One supplied agent", "Other supplied agent", "Two supplied agents"]);
+  assert.equal(JSON.stringify(summary).includes("house_agent_revision_digest"), false);
+  assert.equal(JSON.stringify(summary).includes("configuration"), false);
+  const body = { listing_slug: "roster-test", creator_access: "seat", creator_seat: "seat-1", fill_mode: "people_only", idempotency_key: "r".repeat(32), roster_option: "solo" };
+  for (const invalid of [null, { ...body, roster_option: "unreviewed" }, { ...body, roster_option: "first" },
+    { ...body, creator_seat: "seat-2" }, { ...body, provider: "arbitrary" }, { ...body, listing_slug: "agent-heist" }]) {
+    assert.equal((await bff.fetch(mutation("/api/launches", signedIn.sessionCookie, token, JSON.stringify(invalid)))).status, 400);
+  }
+  assert.equal(accepted.length, 0);
+  for (const [option, fill] of [["solo", "people_only"], ["first", "house_agents"]]) {
+    const response = await bff.fetch(mutation("/api/launches", signedIn.sessionCookie, token, JSON.stringify({ ...body, roster_option: option, fill_mode: fill })));
+    assert.equal(response.status, 201);
+    assert.deepEqual(JSON.parse(new TextDecoder().decode(accepted.at(-1)!.canonicalLaunchInput)), { roster_option: option });
+    assert.equal(accepted.at(-1)!.listingRevisionDigest, listing.digest);
   }
 });

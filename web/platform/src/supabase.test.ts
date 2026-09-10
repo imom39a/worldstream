@@ -572,3 +572,44 @@ test("Supabase refresh preserves a canonical identity rejection from its returne
     globalThis.fetch = originalFetch;
   }
 });
+
+test("terminal House fill reads preserve released reservation identity and reject unknown states", async () => {
+  const originalFetch = globalThis.fetch;
+  const reservation = {
+    reservation_operation_id: "20000000-0000-4000-8000-000000000001",
+    seat_id: "navigator",
+    house_agent_revision_digest: `blake3:${"1".repeat(64)}`,
+    state: "released",
+  };
+  try {
+    globalThis.fetch = async () => Response.json({
+      version: "platform_house_fill_operation.v1",
+      state: "assignments_complete",
+      claim_window_closes_at: "2026-09-10T00:00:00Z",
+      failure_code: null,
+      reservations: [reservation],
+      assignments: [{ seat_id: "navigator", display_name: "Supplied navigator" }],
+    });
+    const data = createSupabaseBffDependencies({
+      url: URL, publishableKey: PUBLISHABLE, dataSecretKey: SECRET,
+    }).hostedFormationData;
+    assert.ok(data);
+    const read = () => data.readHouseFill(
+      "10000000-0000-4000-8000-000000000001",
+      "30000000-0000-4000-8000-000000000001",
+    );
+    const retired = await read();
+    assert.equal(retired?.state, "assignments_complete");
+    assert.deepEqual(retired?.reservations, [{
+      reservationOperationId: reservation.reservation_operation_id,
+      seatId: reservation.seat_id,
+      houseAgentRevisionDigest: reservation.house_agent_revision_digest,
+      state: "released",
+    }]);
+    assert.deepEqual(retired.assignments, [{ seatId: "navigator", displayName: "Supplied navigator" }]);
+    reservation.state = "revived";
+    await assert.rejects(read(), PlatformDependencyUnavailableError);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

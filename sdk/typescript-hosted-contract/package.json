@@ -21,7 +21,7 @@
     "build": "tsc -p tsconfig.build.json",
     "prelint": "pnpm --filter @worldstream/pack-sdk build",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "pnpm run build && node --test dist/index.test.js"
+    "test": "pnpm run build && node --test dist/*.test.js"
   },
   "dependencies": {
     "@worldstream/pack-sdk": "workspace:*"

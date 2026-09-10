@@ -1,0 +1,42 @@
+{
+  "schema": "worldstream/activity-client-release/v1",
+  "client_id": "worldstream.midnight-archive.web",
+  "release_digest": "sha256:240ac1b94e9e89c0eb5a059ba85d116b807258cfd5917bc0dd879139de1b35bb",
+  "client_contract": "worldstream/activity-client-protocol/v1",
+  "artifacts": [
+    {
+      "artifact_id": "browser-dist",
+      "media_type": "application/vnd.worldstream.activity-client.web.v1+directory",
+      "digest": "sha256:6d7fcea16b1305034af5a4f46214fb22b686d6aa831d53513ebe7d33ee342c4e"
+    }
+  ],
+  "surfaces": [
+    {
+      "surface_id": "midnight-archive-web",
+      "kind": "browser",
+      "artifact_digest": "sha256:6d7fcea16b1305034af5a4f46214fb22b686d6aa831d53513ebe7d33ee342c4e",
+      "entrypoint": "/midnight-archive-v13/",
+      "capabilities": [
+        "observe",
+        "act",
+        "replay"
+      ]
+    },
+    {
+      "surface_id": "midnight-archive-hosted-web",
+      "kind": "browser",
+      "artifact_digest": "sha256:6d7fcea16b1305034af5a4f46214fb22b686d6aa831d53513ebe7d33ee342c4e",
+      "entrypoint": "/midnight-archive-v13/hosted/",
+      "capabilities": [
+        "observe",
+        "act"
+      ]
+    }
+  ],
+  "conformance": [
+    {
+      "contract": "worldstream/activity-client-protocol/v1",
+      "evidence_digest": "sha256:2b80f66672e03ce5f9386088a826b282345282637a310eb63ad16ee964dbf0f0"
+    }
+  ]
+}

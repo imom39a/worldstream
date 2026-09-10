@@ -1161,3 +1161,166 @@ fn semantic_contract_changes_change_identity_and_break_listing_pin() -> Result<(
     );
     Ok(())
 }
+
+#[test]
+fn roster_options_derive_only_exact_selected_seats_and_assignments() -> Result<(), Box<dyn Error>> {
+    let source =
+        include_bytes!("../../../fixtures/hosted-contract/valid/roster-options-listing.json");
+    let listing = ListingRevision::from_canonical_bytes(&canonical(source)?)?;
+    let agents = [
+        HouseAgentRevision::from_canonical_bytes(&canonical(COOPERATIVE_HOUSE_AGENT)?)?,
+        HouseAgentRevision::from_canonical_bytes(&canonical(SKEPTICAL_HOUSE_AGENT)?)?,
+    ];
+    let document = source_value(source)?;
+    for option in document["launch_input_schema"]["roster_options"]
+        .as_array()
+        .ok_or("options")?
+    {
+        let mut launch = json!({"schema":"worldstream/launch-request/v2", "listing_revision_digest":listing.digest(),
+            "inputs":{"roster_option":option["option_id"]}, "creator":{"participation":"seat","principal_reference":"seat:lead"}});
+        let mut members = vec![
+            json!({"seat_id":"lead","participation":"account_human","principal_reference":"seat:lead","display_name":"Lead"}),
+        ];
+        for assignment in option["house_agent_assignments"]
+            .as_array()
+            .ok_or("assignments")?
+        {
+            let agent = agents
+                .iter()
+                .find(|agent| assignment["house_agent_revision_digest"] == agent.digest())
+                .ok_or("agent")?;
+            let value: Value = serde_json::from_slice(agent.canonical_bytes())?;
+            members.push(json!({"seat_id":assignment["seat_id"],"participation":"house_agent_fill",
+                "principal_reference":format!("seat:{}", assignment["seat_id"].as_str().ok_or("seat")?),
+                "display_name":value["display_name"],"house_agent_revision_digest":agent.digest(),
+                "agent_profile":value["agent_profile"],"runner_template":value["runner_template"]}));
+        }
+        let mut roster = json!({"schema":"worldstream/frozen-roster/v1","listing_revision_digest":listing.digest(),"members":members});
+        let setup = derive_room_setup_with_house_agents(
+            &listing,
+            &canonical_value(&launch)?,
+            &canonical_value(&roster)?,
+            &agents,
+        )?;
+        let setup: Value = serde_json::from_slice(&setup.canonical_bytes()?)?;
+        assert_eq!(setup["configuration"], option["configuration"]);
+        assert_eq!(
+            setup["seats"]
+                .as_array()
+                .ok_or("seats")?
+                .iter()
+                .map(|seat| seat["label"].clone())
+                .collect::<Vec<_>>(),
+            *option["seat_ids"].as_array().ok_or("seat_ids")?
+        );
+        if members.len() > 1 {
+            launch["inputs"]["roster_option"] = json!("solo");
+            assert!(
+                derive_room_setup_with_house_agents(
+                    &listing,
+                    &canonical_value(&launch)?,
+                    &canonical_value(&roster)?,
+                    &agents
+                )
+                .is_err()
+            );
+            launch["inputs"]["roster_option"] = option["option_id"].clone();
+            roster["members"].as_array_mut().ok_or("members")?.pop();
+            assert!(
+                derive_room_setup_with_house_agents(
+                    &listing,
+                    &canonical_value(&launch)?,
+                    &canonical_value(&roster)?,
+                    &agents
+                )
+                .is_err()
+            );
+        }
+        for field in [
+            "role",
+            "principal_id",
+            "prompt",
+            "provider",
+            "model",
+            "code",
+            "configuration",
+            "setup",
+        ] {
+            let mut injected = launch.clone();
+            injected["inputs"][field] = json!("arbitrary");
+            assert!(
+                derive_room_setup_with_house_agents(
+                    &listing,
+                    &canonical_value(&injected)?,
+                    &canonical_value(&roster)?,
+                    &agents
+                )
+                .is_err()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn roster_options_reject_missing_required_seats_and_unknown_defaults() -> Result<(), Box<dyn Error>>
+{
+    let document = source_value(include_bytes!(
+        "../../../fixtures/hosted-contract/valid/roster-options-listing.json"
+    ))?;
+    let mut invalid = document.clone();
+    invalid["launch_input_schema"]["roster_options"][0]["seat_ids"] = json!(["mira"]);
+    assert!(ListingRevision::from_canonical_bytes(&canonical_value(&invalid)?).is_err());
+    let mut invalid = document;
+    invalid["launch_input_schema"]["defaults"]["roster_option"] = json!("unknown");
+    assert!(ListingRevision::from_canonical_bytes(&canonical_value(&invalid)?).is_err());
+    Ok(())
+}
+
+#[test]
+fn roster_v3_requires_bounded_descriptions_and_retained_v2_stays_closed()
+-> Result<(), Box<dyn Error>> {
+    let document = source_value(include_bytes!(
+        "../../../fixtures/hosted-contract/valid/roster-options-listing.json"
+    ))?;
+    ListingRevision::from_canonical_bytes(&canonical_value(&document)?)?;
+
+    let mut described = document.clone();
+    described["launch_input_schema"]["schema"] = json!("worldstream/launch-input-schema/v3");
+    for option in described["launch_input_schema"]["roster_options"]
+        .as_array_mut()
+        .ok_or("options")?
+    {
+        option["description"] = json!(format!(
+            "Reviewed formation description for {}.",
+            option["label"].as_str().ok_or("label")?
+        ));
+    }
+    ListingRevision::from_canonical_bytes(&canonical_value(&described)?)?;
+
+    let mut invalid_v2 = document.clone();
+    invalid_v2["launch_input_schema"]["roster_options"][1]["description"] = json!("v2 is closed");
+    assert!(ListingRevision::from_canonical_bytes(&canonical_value(&invalid_v2)?).is_err());
+
+    let mut null_v2 = document.clone();
+    null_v2["launch_input_schema"]["roster_options"][1]["description"] = Value::Null;
+    assert!(ListingRevision::from_canonical_bytes(&canonical_value(&null_v2)?).is_err());
+
+    let mut missing = described.clone();
+    missing["launch_input_schema"]["roster_options"][0]
+        .as_object_mut()
+        .ok_or("option")?
+        .remove("description");
+    assert!(ListingRevision::from_canonical_bytes(&canonical_value(&missing)?).is_err());
+
+    let mut null_v3 = described.clone();
+    null_v3["launch_input_schema"]["roster_options"][1]["description"] = Value::Null;
+    assert!(ListingRevision::from_canonical_bytes(&canonical_value(&null_v3)?).is_err());
+
+    for description in [String::new(), "x".repeat(257)] {
+        let mut invalid = described.clone();
+        invalid["launch_input_schema"]["roster_options"][1]["description"] = json!(description);
+        assert!(ListingRevision::from_canonical_bytes(&canonical_value(&invalid)?).is_err());
+    }
+    Ok(())
+}
