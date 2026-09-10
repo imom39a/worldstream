@@ -154,18 +154,48 @@ async def wait_for_matching_offer(
 
 
 async def answer_once(
-    room: Any, runner: Any, client: Any, pack: dict[str, str], *, wait_seconds: int = 0,
+    room: Any,
+    runner: Any,
+    client: Any,
+    pack: dict[str, str],
+    *,
+    wait_seconds: int = 0,
+    provider: companion_runner.ProviderAdapter | None = None,
+    provider_attempt: companion_runner.ProviderInvocationAttempt | None = None,
+    provider_timeout_seconds: float = 10,
 ) -> dict:
     return await companion_runner.answer_once(
-        room, runner, client, pack, POLICY, wait_seconds=wait_seconds
+        room,
+        runner,
+        client,
+        pack,
+        POLICY,
+        wait_seconds=wait_seconds,
+        provider=provider,
+        provider_attempt=provider_attempt,
+        provider_timeout_seconds=provider_timeout_seconds,
     )
 
 
 async def run(
-    membership_file: Path, runner_file: Path, revision: str, *, wait_seconds: int = 45,
+    membership_file: Path,
+    runner_file: Path,
+    revision: str,
+    *,
+    wait_seconds: int = 45,
+    provider: companion_runner.ProviderAdapter | None = None,
+    provider_attempt: companion_runner.ProviderInvocationAttempt | None = None,
+    provider_timeout_seconds: float = 10,
 ) -> dict:
     return await companion_runner.run_for_role(
-        POLICY, membership_file, runner_file, revision, wait_seconds=wait_seconds
+        POLICY,
+        membership_file,
+        runner_file,
+        revision,
+        wait_seconds=wait_seconds,
+        provider=provider,
+        provider_attempt=provider_attempt,
+        provider_timeout_seconds=provider_timeout_seconds,
     )
 
 

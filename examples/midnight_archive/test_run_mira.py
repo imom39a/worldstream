@@ -209,7 +209,14 @@ def transport(projection: dict):
         "integrity_generation": 1, "policy_revision": 1, "authority_generation": 1,
         "membership_generation": 1, "frame_head": 8, "retained_floor": 0, "cursor": None,
         "projection_schema": companion_runner.PROJECTION_SCHEMA,
-        "runner_budget": {}, "runner_limits": {}, "artifact_references": [],
+        "runner_budget": {
+            "schema": "worldstream/runner-budget/v1", "max_action_submissions": 1,
+        },
+        "runner_limits": {
+            "schema": "worldstream/runner-limits/v1", "max_runtime_ms": 30_000,
+            "max_result_bytes": 65_536,
+        },
+        "artifact_references": [],
         "delivery": {"kind": "projection_reset", "baseline_frame_head": 8, "reason": "initial"},
     }
     runner = SimpleNamespace(
@@ -273,9 +280,13 @@ def test_stale_action_receipt_is_not_retried_or_completed():
     room, runner, client = transport(projection())
     room.act.return_value = {"code": "stale_head", "current_room_seq": 9}
     result = asyncio.run(mira.answer_once(room, runner, client, PACK))
-    assert result == {"status": "action_rejected", "submitted_actions": 1}
+    assert result == {
+        "status": "stale_head",
+        "submitted_actions": 1,
+        "provider_attempts_consumed": 1,
+    }
     room.act.assert_awaited_once()
-    runner.complete.assert_not_called()
+    runner.complete.assert_awaited_once_with("activation", "claim", 1, "failed")
 
 
 def test_lost_action_reply_is_not_retried_or_completed():
@@ -324,24 +335,32 @@ def test_bounded_wait_without_matching_opportunity_never_claims_or_submits():
     ("reason_code", "other"), ("cause_room_seq", 7), ("claim_id", "other"),
     ("activation_id", "other"), ("lease_generation", True),
 ])
-def test_malformed_claim_context_never_submits(field, value):
+def test_malformed_claim_context_records_failure_without_submitting(field, value):
     room, runner, client = transport({"action_offers": []})
     runner.claim.return_value["context"][field] = value
-    with pytest.raises(mira.MiraContractError, match="^mira_contract_mismatch$"):
-        asyncio.run(mira.answer_once(room, runner, client, PACK))
+    result = asyncio.run(mira.answer_once(room, runner, client, PACK))
+    assert result == {
+        "status": "malformed",
+        "submitted_actions": 0,
+        "provider_attempts_consumed": 0,
+    }
     room.act.assert_not_called()
-    runner.complete.assert_not_called()
+    runner.complete.assert_awaited_once_with("activation", "claim", 1, "failed")
 
 
 def test_newer_head_never_rebases_or_retries():
     room, runner, client = transport({"action_offers": []})
     client.projection.return_value["room_head"]["room_seq"] = 9
-    with pytest.raises(mira.MiraContractError):
-        asyncio.run(mira.answer_once(room, runner, client, PACK))
+    result = asyncio.run(mira.answer_once(room, runner, client, PACK))
+    assert result == {
+        "status": "stale_head",
+        "submitted_actions": 0,
+        "provider_attempts_consumed": 0,
+    }
     room.act.assert_not_called()
     runner.claim.assert_awaited_once()
     client.projection.assert_awaited_once()
-    runner.complete.assert_not_called()
+    runner.complete.assert_awaited_once_with("activation", "claim", 1, "failed")
 
 
 def test_cli_error_output_never_retains_private_inputs(monkeypatch, capsys, tmp_path):
@@ -359,6 +378,33 @@ def test_cli_error_output_never_retains_private_inputs(monkeypatch, capsys, tmp_
     assert secret not in captured.out
     assert private not in captured.out
     assert list(tmp_path.iterdir()) == []
+
+
+def test_cli_exposes_explicit_scripted_provider_configuration(monkeypatch, capsys, tmp_path):
+    terminal = {
+        "status": "provider_rejected",
+        "submitted_actions": 0,
+        "provider_attempts_consumed": 1,
+    }
+    run = AsyncMock(return_value=terminal)
+    monkeypatch.setattr(mira, "run", run)
+    monkeypatch.setattr("sys.argv", [
+        "run_mira",
+        "--membership-file", str(tmp_path / "membership"),
+        "--runner-file", str(tmp_path / "runner"),
+        "--pack-revision", PACK["digest"],
+        "--provider-mode", "rejected",
+        "--provider-timeout-seconds", "2",
+    ])
+
+    assert mira.main() == 2
+    assert json.loads(capsys.readouterr().out) == terminal
+    kwargs = run.await_args.kwargs
+    assert kwargs["provider"].mode == "rejected"
+    assert kwargs["provider_timeout_seconds"] == 2
+    assert isinstance(
+        kwargs["provider_attempt"], companion_runner.ProviderInvocationAttempt
+    )
 
 
 def credentials():
