@@ -3199,7 +3199,7 @@ impl ActivityPackHostV1 {
             complete_head: input.head_after,
             viewer: input.viewer,
         })?;
-        let raw = invoke_pack(ActivityPackOperationV1::Observe, || {
+        let raw = match invoke_pack(ActivityPackOperationV1::Observe, || {
             self.retained.0.executor.observe(&ObserveInputV1 {
                 core_before: input.core_before,
                 activity_before: input.activity_before,
@@ -3210,7 +3210,20 @@ impl ActivityPackHostV1 {
                 viewer: input.viewer,
                 after_view: &after,
             })
-        })?;
+        }) {
+            Ok(raw) => raw,
+            Err(_) if archive_observation_can_fall_back_to_reset(input) => {
+                // Archive is a host-owned, irreversible Core boundary. When
+                // the Activity has no state or Domain Event delta, a Pack's
+                // broken incremental observer cannot be allowed to veto that
+                // boundary: the already validated after-view is the complete
+                // and privacy-safe delivery replacement.
+                return Ok(ActivityObservationOutcomeV1::ProjectionReset(Box::new(
+                    after,
+                )));
+            }
+            Err(error) => return Err(error),
+        };
         (|| {
             let view_changed = before.canonical_bytes != after.canonical_bytes;
             let Some(raw) = raw else {
@@ -3804,6 +3817,18 @@ impl ActivityPackHostV1 {
         let bytes = value.to_bytes().map_err(canonical_pack_fault)?;
         enforce_byte_bound(bytes.len(), maximum_bytes, label)
     }
+}
+
+fn archive_observation_can_fall_back_to_reset(input: &ObserveTransitionInputV1<'_>) -> bool {
+    input.activity_before == input.activity_after
+        && input.ordered_domain_events.is_empty()
+        && input.core_before.room_status() == crate::RoomStatusV1::Active
+        && input.core_after.room_status() == crate::RoomStatusV1::Archived
+        && matches!(
+            input.recorded_stimulus,
+            RecordedStimulusV1::CoreProposed(proposal)
+                if proposal.kind() == crate::CoreProposedKindV1::Archive
+        )
 }
 
 fn invoke_pack<T>(
@@ -7246,6 +7271,137 @@ mod tests {
             ))
         ));
         assert_eq!(observe_counts.observe.load(AtomicOrdering::Relaxed), 1);
+    }
+
+    fn archive_observation_transition(
+        next_activity: CanonicalJsonV1,
+        events: Vec<CanonicalJsonV1>,
+        archive: bool,
+    ) -> ActivityTransitionFixture {
+        let request = genesis_request();
+        let mut trace = CoreTraceV1::create_for_conformance(
+            GenesisInputV1::new(
+                request.room_id,
+                request.pack_digest,
+                request.configuration,
+                request.room_seed,
+                request.created_at,
+                request.initial_core_state,
+                json("{}"),
+            ),
+            |_| Ok(()),
+            move |_| {
+                Ok(ActivityDispositionV1::Apply(ActivityApplyV1 {
+                    next_activity_state: next_activity.clone(),
+                    ordered_domain_events: events.clone(),
+                    timer_requests: Vec::new(),
+                    ordered_attention_signals: Vec::new(),
+                }))
+            },
+        )
+        .unwrap_or_else(|error| unreachable!("valid observation fixture: {error}"));
+        let core_before = trace.core_state().clone();
+        let activity_before = trace.activity_state().clone();
+        let head_before = trace.head().clone();
+        let stimulus = if archive {
+            administration_stimulus(
+                &trace,
+                CoreProposedKindV1::Archive,
+                CoreChangeSetV1::archive(RoomStatusV1::Active),
+                "archive-observation",
+            )
+        } else {
+            RecordedStimulusV1::ParticipantAction(participant_action(trace.head()))
+        };
+        trace
+            .advance(stimulus.clone())
+            .unwrap_or_else(|error| unreachable!("valid observation transition: {error}"));
+        ActivityTransitionFixture {
+            core_before,
+            activity_before,
+            head_before,
+            after: trace,
+            stimulus,
+        }
+    }
+
+    #[test]
+    fn archive_observation_panic_falls_back_to_exact_validated_after_view() {
+        let counts = Arc::new(CallbackCounts::default());
+        let mut pack = ControlledPack::good(Arc::clone(&counts));
+        pack.panic_on = Some(ActivityPackOperationV1::Observe);
+        let host = checked_host(pack);
+        let transition = archive_observation_transition(json("{}"), Vec::new(), true);
+        assert_eq!(transition.core_before.room_status(), RoomStatusV1::Active);
+        assert_eq!(
+            transition.after.core_state().room_status(),
+            RoomStatusV1::Archived
+        );
+        let result = observe_with_stimulus(
+            &host,
+            &transition.core_before,
+            &transition.activity_before,
+            &transition.head_before,
+            transition.after.core_state(),
+            transition.after.activity_state(),
+            transition.after.head(),
+            &transition.stimulus,
+        )
+        .unwrap_or_else(|error| unreachable!("archive reset must survive Observe panic: {error}"));
+        let ActivityObservationOutcomeV1::ProjectionReset(reset) = result else {
+            unreachable!("archive Observe panic requires a Projection Reset")
+        };
+        assert_eq!(counts.observe.load(AtomicOrdering::Relaxed), 1);
+        assert_eq!(counts.view.load(AtomicOrdering::Relaxed), 2);
+        let expected = current_view(&host, &transition.after)
+            .unwrap_or_else(|error| unreachable!("valid archived view: {error}"));
+        assert_eq!(reset.canonical_bytes(), expected.canonical_bytes());
+    }
+
+    #[test]
+    fn archive_observation_panic_does_not_hide_activity_events_or_other_transitions() {
+        for (label, next_activity, events, archive) in [
+            (
+                "changed Activity State",
+                json(r#"{"changed":true}"#),
+                Vec::new(),
+                true,
+            ),
+            (
+                "Domain Events",
+                json("{}"),
+                vec![json(r#"{"event_type":"incremented"}"#)],
+                true,
+            ),
+            ("non-Archive transition", json("{}"), Vec::new(), false),
+        ] {
+            let counts = Arc::new(CallbackCounts::default());
+            let mut pack = ControlledPack::good(Arc::clone(&counts));
+            pack.panic_on = Some(ActivityPackOperationV1::Observe);
+            let host = checked_host(pack);
+            let transition = archive_observation_transition(next_activity, events.clone(), archive);
+            let result = host.observe(&ObserveTransitionInputV1 {
+                core_before: &transition.core_before,
+                activity_before: &transition.activity_before,
+                head_before: &transition.head_before,
+                core_after: transition.after.core_state(),
+                activity_after: transition.after.activity_state(),
+                head_after: transition.after.head(),
+                recorded_stimulus: &transition.stimulus,
+                ordered_domain_events: &events,
+                viewer: &PackViewerV1::Participant(parsed(MEMBER)),
+            });
+            assert!(
+                matches!(
+                    result,
+                    Err(PackFaultV1::OperationPanicked(
+                        ActivityPackOperationV1::Observe
+                    ))
+                ),
+                "{label}: {result:?}"
+            );
+            assert_eq!(counts.observe.load(AtomicOrdering::Relaxed), 1, "{label}");
+        }
     }
 
     #[test]
