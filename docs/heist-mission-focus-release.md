@@ -190,6 +190,9 @@ The prior launch `3143` was cancelled successfully after applying SQL migration
 `/my-games` reload path also returned 404 during earlier verification; that is
 recorded separately as a hosting/router limitation and is not evidence of a
 client or game-rule failure.
+The follow-up [Room-service reliability patch](room-service-reliability.md)
+adds the missing route and makes personal history resilient to maintenance
+failure. Its release status is separate from the original v9 acceptance above.
 
 ### Local deployment lessons
 

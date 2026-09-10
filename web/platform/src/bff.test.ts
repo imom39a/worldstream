@@ -35,6 +35,7 @@ import type {
   HostedLaunchMaterial,
 } from "./hosted-formation.js";
 import { AGENT_HEIST_LISTING_DIGEST } from "./hosted-catalog.js";
+import { withPlatformDiagnostics } from "./diagnostics.js";
 
 const ORIGIN = "https://arena.example";
 
@@ -1565,6 +1566,43 @@ test("hosted Run entry resolves only the signed-in account and returns one clien
   assert.equal(malformed.status, 400);
   assert.equal(hosted.issued.length, 1);
   assert.equal(data.membershipResolutions.length, 1);
+});
+
+test("an entry timeout keeps sign-in and only an explicit retry issues a handoff for the same Room", async () => {
+  const hosted = new FakeHostedBrowserSessions();
+  const issue = hosted.issueHandoff.bind(hosted);
+  let attempts = 0;
+  hosted.issueHandoff = async (account, binding) => {
+    attempts += 1;
+    if (attempts === 1) throw new HostedBrowserSessionUnavailableError(undefined, {
+      cause: new DOMException("private upstream URL", "TimeoutError"),
+    });
+    return issue(account, binding);
+  };
+  const harnessValue = harness(hosted);
+  harnessValue.data.membership = membership();
+  const logs: string[] = [];
+  const bff = withPlatformDiagnostics(harnessValue.bff, (line) => logs.push(line));
+  const signedIn = await signIn(bff);
+  const csrfValue = await csrf(bff, signedIn.sessionCookie);
+  const enter = () => bff.fetch(mutation("/api/runs/enter", signedIn.sessionCookie, csrfValue,
+    JSON.stringify({ run_id: membership().runId, entry_selector: "e".repeat(32) })));
+  const failed = await enter();
+  assert.equal(failed.status, 503);
+  assert.equal(failed.headers.get("set-cookie"), null);
+  assert.equal(attempts, 1);
+  assert.equal(hosted.issued.length, 0);
+  const requestId = failed.headers.get("x-worldstream-request-id");
+  assert.ok(logs.some((line) => {
+    const value = JSON.parse(line);
+    return value.request_id === requestId && value.operation === "run_entry" && value.error_kind === "timeout";
+  }));
+  const recovered = await enter();
+  assert.equal(recovered.status, 201);
+  assert.equal(attempts, 2);
+  assert.equal(hosted.issued.length, 1);
+  assert.deepEqual(hosted.issued[0]?.binding, membership());
+  assert.equal(harnessValue.data.membershipResolutions.length, 2);
 });
 
 test("hosted redemption installs and rotates only the strict path-scoped opaque cookie", async () => {

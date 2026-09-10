@@ -49,7 +49,7 @@ test("formation deep links load the launch page without a blanket SPA fallback",
   assert.equal(launch?.destination, "/index.html");
   assert.deepEqual(configuration.rewrites
     .filter(({ destination }) => destination === "/index.html")
-    .map(({ source }) => source).sort(), ["/join", "/launches/:launch_id", "/runs/:public_id"]);
+    .map(({ source }) => source).sort(), ["/join", "/launches/:launch_id", "/my-games", "/runs/:public_id"]);
   assert.equal(configuration.rewrites.find(({ source }) => source === "/api/(.*)")?.destination,
     "/api/platform");
 });

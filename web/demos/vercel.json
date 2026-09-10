@@ -50,6 +50,10 @@
       "destination": "/index.html"
     },
     {
+      "source": "/my-games",
+      "destination": "/index.html"
+    },
+    {
       "source": "/runs/:public_id",
       "destination": "/index.html"
     },
