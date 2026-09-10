@@ -42,7 +42,8 @@ use worldstream_hosted_contract::{
     HostedBrowserStreamTicketRequestV1, HostedBrowserStreamTicketResponseV1,
     HostedGenesisEvidenceV1, HostedHouseRunnerReservationReceiptV1,
     HostedHouseRunnerReservationRequestV1, HostedHouseRunnerRetirementReceiptV1,
-    HostedHouseRunnerRetirementRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
+    HostedHouseRunnerRetirementRequestV1, HostedLaunchClosureEvidenceV1,
+    HostedLaunchClosureRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
     HostedLaunchStatusV1, HostedPrestartAbandonmentEvidenceV1,
     HostedProvisioningAbandonmentEvidenceV1, HostedPublicRelayBindReceiptV1,
     HostedPublicRelayBindRequestV1, HostedPublicStreamTicketRequestV1,
@@ -54,7 +55,8 @@ use worldstream_hosted_contract::{
     validate_hosted_browser_stream_ticket_request, validate_hosted_browser_stream_ticket_response,
     validate_hosted_genesis_evidence, validate_hosted_house_runner_reservation_receipt,
     validate_hosted_house_runner_retirement_receipt,
-    validate_hosted_house_runner_retirement_request, validate_hosted_launch_evidence_request,
+    validate_hosted_house_runner_retirement_request, validate_hosted_launch_closure_evidence,
+    validate_hosted_launch_closure_request, validate_hosted_launch_evidence_request,
     validate_hosted_prestart_abandonment_evidence,
     validate_hosted_provisioning_abandonment_evidence, validate_hosted_public_relay_bind_receipt,
     validate_hosted_public_relay_bind_request, validate_hosted_public_stream_ticket_request,
@@ -261,6 +263,15 @@ pub trait HostedGatewayBackend: Send + Sync + 'static {
         &self,
         request: &HostedLaunchEvidenceRequestV1,
     ) -> Result<HostedLaunchStatusV1, HostedGatewayError>;
+
+    /// Durably closes one exact launch lineage. Before Genesis this installs a
+    /// Host fence; after Genesis it archives the canonical Room.
+    fn close_launch(
+        &self,
+        _request: &HostedLaunchClosureRequestV1,
+    ) -> Result<HostedLaunchClosureEvidenceV1, HostedGatewayError> {
+        Err(HostedGatewayError::Rejected)
+    }
 
     /// Fences one exact Genesis-created Room only when the Host proves its
     /// Lobby task has not launched. This is not a generic Room-control API.
@@ -521,6 +532,20 @@ impl HostedGatewayBackend for FixedHostAdapterBackend {
             &request.launch_request_digest,
             &request.room_setup_operation_id,
         )?;
+        Ok(response)
+    }
+
+    fn close_launch(
+        &self,
+        request: &HostedLaunchClosureRequestV1,
+    ) -> Result<HostedLaunchClosureEvidenceV1, HostedGatewayError> {
+        let (status, body) = self.call("/api/v1/hosted-launches:close", request)?;
+        if status != 200 {
+            return Err(classify_upstream_status(status));
+        }
+        let response = serde_json::from_slice::<HostedLaunchClosureEvidenceV1>(&body)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        validate_closure_response(&response, request)?;
         Ok(response)
     }
 
@@ -866,6 +891,7 @@ pub fn hosted_gateway_router(
         .route("/version", get(version))
         .route("/v1/hosted/launch", post(launch))
         .route("/v1/hosted/evidence", post(evidence))
+        .route("/v1/hosted/close", post(close_launch))
         .route("/v1/hosted/abandon-prestart", post(abandon_prestart))
         .route(
             "/v1/hosted/abandon-provisioning",
@@ -961,6 +987,17 @@ async fn evidence(
         return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
     };
     evidence_operation(&state, &headers, &body).await
+}
+
+async fn close_launch(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Ok(body) = body else {
+        return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
+    };
+    close_launch_operation(&state, &headers, &body).await
 }
 
 async fn abandon_prestart(
@@ -1159,6 +1196,35 @@ async fn evidence_operation(state: &GatewayState, headers: &HeaderMap, body: &[u
         .map_err(|_| HostedGatewayError::Unavailable)
         .and_then(|result| result);
     read_service_result("evidence", &listing_revision_digest, result)
+}
+
+async fn close_launch_operation(
+    state: &GatewayState,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    if let Some(response) = reject_service_envelope(state, headers) {
+        return response;
+    }
+    let Ok(request) = serde_json::from_slice::<HostedLaunchClosureRequestV1>(body) else {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if validate_hosted_launch_closure_request(&request).is_err() {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if !listing_allowed(state, &request.listing_revision_digest) {
+        return safe_error(StatusCode::FORBIDDEN, "listing_not_allowed");
+    }
+    if !admit_rate(state) {
+        return safe_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
+    let backend = Arc::clone(&state.backend);
+    let listing_revision_digest = request.listing_revision_digest.clone();
+    let result = tokio::task::spawn_blocking(move || backend.close_launch(&request))
+        .await
+        .map_err(|_| HostedGatewayError::Unavailable)
+        .and_then(|result| result);
+    closure_result(&listing_revision_digest, result)
 }
 
 async fn genesis_evidence_operation(
@@ -1705,6 +1771,32 @@ fn genesis_result(
     }
 }
 
+fn closure_result(
+    listing_revision_digest: &str,
+    result: Result<HostedLaunchClosureEvidenceV1, HostedGatewayError>,
+) -> Response {
+    match result {
+        Ok(evidence) => {
+            tracing::info!(
+                target: "worldstream.hosted_gateway",
+                operation = "close_launch",
+                listing_revision_digest,
+                outcome = "accepted",
+                "hosted gateway operation"
+            );
+            no_store((StatusCode::OK, Json(evidence)).into_response())
+        }
+        Err(
+            HostedGatewayError::Rejected
+            | HostedGatewayError::Missing
+            | HostedGatewayError::InvalidConfiguration,
+        ) => safe_error(StatusCode::CONFLICT, "operation_rejected"),
+        Err(HostedGatewayError::Unavailable) => {
+            safe_error(StatusCode::SERVICE_UNAVAILABLE, "operation_unavailable")
+        }
+    }
+}
+
 fn prestart_abandonment_result(
     listing_revision_digest: &str,
     result: Result<HostedPrestartAbandonmentEvidenceV1, HostedGatewayError>,
@@ -1799,6 +1891,7 @@ fn fixed_http_request(
                     "POST",
                     "/api/v1/hosted-launches:submit"
                         | "/api/v1/hosted-launches:read"
+                        | "/api/v1/hosted-launches:close"
                         | "/api/v1/hosted-launches:abandon-prestart"
                         | "/api/v1/hosted-launches:abandon-provisioning"
                         | "/api/v1/hosted-launches:read-genesis"
@@ -2018,6 +2111,22 @@ fn validate_genesis_response(
 ) -> Result<(), HostedGatewayError> {
     validate_hosted_genesis_evidence(response).map_err(|_| HostedGatewayError::Unavailable)?;
     if response.listing_revision_digest != request.listing_revision_digest
+        || response.launch_request_digest != request.launch_request_digest
+        || response.room_setup_operation_id != request.room_setup_operation_id
+    {
+        return Err(HostedGatewayError::Unavailable);
+    }
+    Ok(())
+}
+
+fn validate_closure_response(
+    response: &HostedLaunchClosureEvidenceV1,
+    request: &HostedLaunchClosureRequestV1,
+) -> Result<(), HostedGatewayError> {
+    validate_hosted_launch_closure_evidence(response)
+        .map_err(|_| HostedGatewayError::Unavailable)?;
+    if response.launch_request_id != request.launch_request_id
+        || response.listing_revision_digest != request.listing_revision_digest
         || response.launch_request_digest != request.launch_request_digest
         || response.room_setup_operation_id != request.room_setup_operation_id
     {

@@ -70,13 +70,14 @@ use worldstream_core::{
     AuthorityChangeStatePartsV1, AuthorityChangeStateV1, AuthorityChangeTargetV1,
     AuthorityChangeV1, AuthorityCheckedAt, AuthorityErrorV1, AuthorityGenerationV1,
     AuthorityReasonCodeV1, AuthoritySnapshotQueryV1, AuthoritySnapshotV1, AuthorityStoreErrorV1,
-    AuthorityStoreV1, AuthorizedDiagnosticV1, AuthorizedExternalInputV1, AuthorizedReceiptReadV1,
-    AuthorizedReceiptResolverV1, AuthorizedReplayV1, AuthorizedRunnerControlV1,
-    AuthorizedTimerFiredV1, AuthorizedViewerV1, Blake3DigestV1, CanonicalJsonV1,
-    CanonicalRequestHashV1, CapabilityAuthoritySnapshotPartsV1, CapabilityAuthoritySnapshotV1,
-    CapabilityBearerV1, CapabilityExpiresAt, CapabilityId, CapabilityProfileV1,
-    CapabilityRevokedAt, CapabilityScopeSetV1, CapabilityScopeV1, CapabilityTokenHashV1,
-    CompleteHeadV1, CoreRoomStateV1, CoreTraceV1, DiagnosticAdapterInputV1, DiagnosticOperationV1,
+    AuthorityStoreV1, AuthorizedCoreAdministrationV1, AuthorizedDiagnosticV1,
+    AuthorizedExternalInputV1, AuthorizedReceiptReadV1, AuthorizedReceiptResolverV1,
+    AuthorizedReplayV1, AuthorizedRunnerControlV1, AuthorizedTimerFiredV1, AuthorizedViewerV1,
+    Blake3DigestV1, CanonicalJsonV1, CanonicalRequestHashV1, CapabilityAuthoritySnapshotPartsV1,
+    CapabilityAuthoritySnapshotV1, CapabilityBearerV1, CapabilityExpiresAt, CapabilityId,
+    CapabilityProfileV1, CapabilityRevokedAt, CapabilityScopeSetV1, CapabilityScopeV1,
+    CapabilityTokenHashV1, CompleteHeadV1, CoreAdministrationRequestV1, CoreRecordedAt,
+    CoreRoomStateV1, CoreTraceV1, DiagnosticAdapterInputV1, DiagnosticOperationV1,
     DiagnosticTargetV1, ExternalInputRecordedAt, ExternalInputV1, GenesisV1,
     HistoricalReplayAccumulatorV1, HistoricalReplayErrorV1, HistoricalReplayProjectionRequestV1,
     HistoricalReplayProjectionV1, HostClockErrorV1, HostClockSampleV1, HostClockV1,
@@ -5109,6 +5110,51 @@ impl SqliteRoomStore {
             prepared_transition,
             transition_id,
             integrity_generation,
+            authority,
+            &frame_heads,
+        )
+        .map_err(map_timer_commit_preparation_error)?;
+        Ok(commit_existing_room(self, &mut trace, prepared)
+            .into_parts()
+            .0)
+    }
+
+    /// Commits one exact Core-authorized existing-Room administration request
+    /// through the same verified recovery and atomic commit coordinator used
+    /// by other production Host mutations.
+    ///
+    /// # Errors
+    /// Returns a closed recovery, integrity, preparation, concurrency, or
+    /// storage error without partially applying the administration request.
+    pub fn commit_authorized_core_administration(
+        &self,
+        registry: &PackRegistryV1,
+        authority: AuthorizedCoreAdministrationV1,
+        request: &CoreAdministrationRequestV1,
+        recorded_at: CoreRecordedAt,
+        transition_id: TransitionId,
+    ) -> Result<RoomCommitResolutionV1, SqliteTimerCommitErrorV1> {
+        let snapshot = self
+            .gateway_room_snapshot(registry, request.room_id())
+            .map_err(|error| map_timer_commit_gateway_error(&error))?
+            .ok_or(SqliteTimerCommitErrorV1::RoomUnavailable)?;
+        let SqliteGatewayRoomSnapshotV1 {
+            mut trace,
+            integrity,
+            frame_heads,
+        } = snapshot;
+        if integrity.status() == RoomIntegrityStatusV1::Faulted {
+            return Err(SqliteTimerCommitErrorV1::RoomFaulted);
+        }
+        if integrity.status() == RoomIntegrityStatusV1::Quarantined {
+            return Err(SqliteTimerCommitErrorV1::IntegrityUnavailable);
+        }
+        let prepared = PreparedRoomCommitV1::for_authorized_core_administration(
+            &trace,
+            request,
+            recorded_at,
+            transition_id,
+            integrity.generation(),
             authority,
             &frame_heads,
         )

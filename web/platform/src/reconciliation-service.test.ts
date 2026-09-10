@@ -238,6 +238,8 @@ test("daily recovery requires exact authority and resumes Genesis candidates ind
   const bff = withHostedResultReconciliation(platform(), deps, {
     canonicalOrigin: "https://arena.example", cronSecret: "c".repeat(40),
     recover: async (id) => { recovered.push(id); if (id === "first") throw new Error("private failure details"); },
+    listPendingClosures: async () => [],
+    recoverClosure: async () => {},
     abandonPrestart: async () => {},
   });
   for (const [url, authorization, method] of [
@@ -279,6 +281,8 @@ test("stale provisioning candidates with no live Host authority remain recoverab
       recovered.push(launchRequestId);
       return null;
     },
+    listPendingClosures: async () => [],
+    recoverClosure: async () => {},
     abandonPrestart: async () => {},
   });
   const response = await bff.fetch(new Request("https://arena.example/api/internal/reconcile", {
@@ -297,6 +301,8 @@ test("the cron invokes exact Host abandonment only for the DB-selected pre-start
     canonicalOrigin: "https://arena.example",
     cronSecret: "d".repeat(40),
     recover: async () => { throw new Error("not a Genesis repair"); },
+    listPendingClosures: async () => [],
+    recoverClosure: async () => {},
     abandonPrestart: async (launchRequestId) => { abandoned.push(launchRequestId); },
   });
   const response = await bff.fetch(new Request("https://arena.example/api/internal/reconcile", {

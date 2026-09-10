@@ -83,9 +83,11 @@ export interface MyGamesIndex {
     /** A private, derived status from launch and verified result-index evidence. */
     readonly state:
       | "setup_pending"
+      | "activity_closing"
       | "setup_cancelled"
       | "setup_abandoned"
       | "setup_failed"
+      | "activity_closed"
       | "live"
       | "publication_pending"
       | "terminal_without_outcome"
@@ -94,7 +96,7 @@ export interface MyGamesIndex {
       | "verified_result";
     readonly updatedAt: string;
     readonly participation: "human" | "external_agent";
-    readonly action: "continue_setup" | "return_to_game" | "view_result" | "none";
+    readonly action: "continue_setup" | "finish_closing" | "return_to_game" | "view_result" | "none";
     readonly resultPublicId: string | null;
   }[];
   readonly next: { readonly beforeAt: string; readonly beforeLaunchId: string } | null;
@@ -452,7 +454,7 @@ async function readRecentAgentHeistResults(
 type HostedLaunchRoute =
   | { readonly launchId: string; readonly action: "read" }
   | { readonly launchId: string; readonly action: "start" }
-  | { readonly launchId: string; readonly action: "cancel" }
+  | { readonly launchId: string; readonly action: "close" }
   | { readonly launchId: string; readonly action: "invite" | "release" | "reset"; readonly seatId: string };
 
 function formationCoordinator(dependencies: BffDependencies): HostedFormationCoordinator | null {
@@ -484,9 +486,9 @@ function hostedLaunchRoute(pathname: string): HostedLaunchRoute | null {
   if (read?.[1] !== undefined && validLaunchIdentifier(read[1])) {
     return { launchId: read[1], action: "read" };
   }
-  const direct = pathname.match(/^\/api\/launches\/([0-9a-f-]+)\/(start|cancel)$/u);
+  const direct = pathname.match(/^\/api\/launches\/([0-9a-f-]+)\/(start|close)$/u);
   if (direct?.[1] !== undefined && direct[2] !== undefined && validLaunchIdentifier(direct[1])) {
-    return { launchId: direct[1], action: direct[2] as "start" | "cancel" };
+    return { launchId: direct[1], action: direct[2] as "start" | "close" };
   }
   const seat = pathname.match(
     /^\/api\/launches\/([0-9a-f-]+)\/seats\/([A-Za-z0-9._-]+)\/(invitation|release|reset)$/u,
@@ -596,11 +598,15 @@ async function readHostedLaunch(
     if (launch === null) return privateError(404, "launch_unavailable");
     if (launch.canManage) {
       try {
-        await formation.recover(launchId);
+        if (launch.state === "closing") {
+          await formation.recoverClosure(launchId);
+        } else {
+          await formation.recover(launchId);
+        }
       } catch (error) {
-        // A read retains the exact Launch Request when the Host is temporarily
-        // unavailable. The snapshot below presents reconciliation and keeps
-        // entry disabled; it never authorizes a replacement Room.
+        // A read retains the exact launch or closure request when the Host is
+        // temporarily unavailable. The snapshot below presents reconciliation
+        // and keeps entry disabled; it never authorizes a replacement Room.
         if (!(error instanceof HostedFormationUnavailableError)) throw error;
       }
     }
@@ -742,40 +748,14 @@ async function mutateHostedLaunch(
         retry_after_seconds: advanced.retryAfterSeconds,
       });
     }
-    if (route.action === "cancel") {
+    if (route.action === "close") {
       const launch = await data.readLaunchRequest(admitted.account.accountId, route.launchId);
       if (launch === null || !launch.canManage) return privateError(409, "launch_unavailable");
-      // Before the Host receives a frozen operation, cancellation is a normal
-      // creator-owned platform mutation. Once Genesis exists, the same UI
-      // action becomes a distinct, evidence-bound Host abandonment operation.
-      if (launch.state === "collecting_roster") {
-        return (await data.cancelLaunchRequest(admitted.account.accountId, route.launchId))
-          ? privateJson(200, { version: "hosted_launch_cancelled.v1", cancelled: true })
-          : privateError(409, "launch_unavailable");
-      }
-      if (launch.state === "provisioning") {
-        // The ordinary platform cancellation RPC is valid during provisioning
-        // only while the Host has not started its exact retained mutation.
-        // Once that boundary is crossed, keep the launch closed and require
-        // the Host-authorized abandonment lane instead of racing the RPC.
-        const material = await data.readHostedLaunchMaterial(
-          admitted.account.accountId,
-          route.launchId,
-        );
-        if (material === null || material.hostMutationStarted) {
-          return privateError(409, "launch_unavailable");
-        }
-        return (await data.cancelLaunchRequest(admitted.account.accountId, route.launchId))
-          ? privateJson(200, { version: "hosted_launch_cancelled.v1", cancelled: true })
-          : privateError(409, "launch_unavailable");
-      }
-      if (launch.state !== "run_created" || formation === null) {
-        return privateError(409, "launch_unavailable");
-      }
-      await formation.abandonPrestart(route.launchId);
+      if (formation === null) return temporarilyUnavailable();
+      await formation.close(admitted.account.accountId, route.launchId);
       return privateJson(200, {
-        version: "hosted_launch_abandoned_prestart.v1",
-        abandoned: true,
+        version: "hosted_launch_closed.v1",
+        closed: true,
       });
     }
     if (formation === null) return temporarilyUnavailable();
@@ -830,7 +810,8 @@ async function launchSnapshot(
   let run = reconciliation?.runId === null || reconciliation?.runId === undefined
     ? null
     : await data.readOwnedRun(accountId, reconciliation.runId);
-  const entryReady = run !== null && formation !== undefined && await formation.entryReady(launchId);
+  const entryReady = !["closing", "closed_by_creator"].includes(launch.state) &&
+    run !== null && formation !== undefined && await formation.entryReady(launchId);
   if (run !== null && !entryReady) {
     run = { ...run, canEnter: false, memberships: [] };
   }
@@ -847,6 +828,8 @@ function safeLaunchProjection(
   const reviewed = reviewedActivityByDigest(launch.listingRevisionDigest);
   const state = launch.state === "collecting_roster"
     ? "collecting"
+    : launch.state === "closing" || launch.state === "closed_by_creator"
+      ? launch.state
     : launch.state === "run_created"
       ? run?.canEnter ? "run_created" : "reconciling"
       : ["cancelled", "expired", "failed_pre_genesis", "abandoned_prestart"].includes(launch.state)
@@ -870,7 +853,25 @@ function safeLaunchProjection(
           claim_window_closes_at: house.claimWindowClosesAt,
           failure_code: house.failureCode,
         },
-    recovery_state: ["collecting_roster", "cancelled", "expired", "failed_pre_genesis", "abandoned_prestart"].includes(launch.state)
+    available_actions: launch.canManage
+      ? launch.state === "closing"
+        ? ["finish_closing"]
+        : ["collecting_roster", "provisioning", "reconciling", "run_created"].includes(launch.state)
+          ? [
+              ...(["collecting_roster", "provisioning", "reconciling"].includes(launch.state)
+                ? ["start"]
+                : []),
+              launch.state === "collecting_roster"
+                ? "cancel_setup"
+                : launch.state === "run_created"
+                  ? "end_activity"
+                  : "stop_setup",
+            ]
+          : []
+      : [],
+    recovery_state: launch.state === "closing"
+      ? "closing"
+      : ["collecting_roster", "cancelled", "expired", "failed_pre_genesis", "abandoned_prestart", "closed_by_creator"].includes(launch.state)
       ? "not_started"
       : run === null
         ? "genesis_not_proven"
@@ -949,6 +950,12 @@ async function verifiedRead(
 }
 
 function formationError(error: unknown, rejectedCode = "formation_unavailable"): Response {
+  if (
+    error instanceof HostedFormationRejectedError &&
+    error.message.startsWith("launch_close")
+  ) {
+    return privateError(409, "launch_close_unavailable");
+  }
   if (
     error instanceof HostedFormationRejectedError ||
     error instanceof PlatformCredentialRejectedError

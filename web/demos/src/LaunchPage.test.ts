@@ -7,7 +7,7 @@ const terminalLaunch: HostedLaunch = {
   version: "hosted_launch.v1", launch_id: "10000000-0000-4000-8000-000000000001",
   activity_slug: "agent-heist", activity_title: "Agent Heist", state: "cancelled",
   expires_at: "2026-09-08T00:00:00.000Z", can_manage: true, fill_mode: "people_only",
-  recovery_state: "not_started", house_fill: null, seats: [], run: null,
+  recovery_state: "not_started", available_actions: [], house_fill: null, seats: [], run: null,
 };
 
 it("does not describe terminal no-Genesis history as setup recovery", () => {

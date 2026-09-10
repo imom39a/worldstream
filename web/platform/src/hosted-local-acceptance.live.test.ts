@@ -581,19 +581,19 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     }, [201, 200]);
     assert.equal(fresh.state, "collecting");
     const freshCancellation = await creator.mutate(
-      `/api/launches/${stringField(fresh, "launch_id")}/cancel`,
+      `/api/launches/${stringField(fresh, "launch_id")}/close`,
       {},
       [200],
     );
-    assert.equal(freshCancellation.version, "hosted_launch_cancelled.v1");
-    assert.equal(freshCancellation.cancelled, true);
+    assert.equal(freshCancellation.version, "hosted_launch_closed.v1");
+    assert.equal(freshCancellation.closed, true);
     assert.equal(
       (await creator.read(`/api/launches/${stringField(fresh, "launch_id")}`)).state,
-      "cancelled",
+      "closed_by_creator",
     );
     // This is an extra repeat-admission check. Each Match's capacity evidence
     // below comes from its own exact retirement lane, not this later probe.
-    const finalHouseCapacityProbe = await formAndAbandonHouseCapacityProbe({
+    const finalHouseCapacityProbe = await formAndCloseHouseCapacityProbe({
       creator,
       browserAgent,
       matchNumber: 4,
@@ -1281,9 +1281,9 @@ async function synchronizePeopleOnlyRun(options: {
 
 /**
  * Proves that a fresh House-backed formation can reserve the released slot,
- * then removes only that unstarted probe through the evidence-bound cancel path.
+ * then closes only that probe through the evidence-bound lineage closure path.
  */
-async function formAndAbandonHouseCapacityProbe(options: {
+async function formAndCloseHouseCapacityProbe(options: {
   creator: CookieBrowser;
   browserAgent: CookieBrowser;
   matchNumber: number;
@@ -1309,16 +1309,16 @@ async function formAndAbandonHouseCapacityProbe(options: {
   const formed = await startLaunch(creator, launchId);
   assert.equal(formed.state, "run_created");
   const runId = stringField(recordField(formed, "run"), "run_id");
-  const abandonment = await creator.mutate(`/api/launches/${launchId}/cancel`, {}, [200]);
-  assert.equal(abandonment.version, "hosted_launch_abandoned_prestart.v1");
-  assert.equal(abandonment.abandoned, true);
-  const terminalLaunch = await waitForLaunchState(creator, launchId, "abandoned_prestart");
-  const formedAndAbandoned = formed.state === "run_created" &&
-    abandonment.version === "hosted_launch_abandoned_prestart.v1" &&
-    abandonment.abandoned === true &&
-    terminalLaunch.state === "abandoned_prestart";
-  assert.equal(formedAndAbandoned, true);
-  return Object.freeze({ runId, formed: formedAndAbandoned });
+  const closure = await creator.mutate(`/api/launches/${launchId}/close`, {}, [200]);
+  assert.equal(closure.version, "hosted_launch_closed.v1");
+  assert.equal(closure.closed, true);
+  const terminalLaunch = await waitForLaunchState(creator, launchId, "closed_by_creator");
+  const formedAndClosed = formed.state === "run_created" &&
+    closure.version === "hosted_launch_closed.v1" &&
+    closure.closed === true &&
+    terminalLaunch.state === "closed_by_creator";
+  assert.equal(formedAndClosed, true);
+  return Object.freeze({ runId, formed: formedAndClosed });
 }
 
 type HouseRetirementLane = "terminal" | "prestart";
@@ -1468,6 +1468,15 @@ test("retained setup preflight selects one setup and rejects ambiguity", () => {
       title: "Agent Heist",
       state: "setup_pending",
       action: "continue_setup",
+    }],
+  }), launchId);
+  assert.equal(retainedHostedSetupLaunchId({
+    version: "platform_my_games.v1",
+    items: [{
+      launch_id: launchId,
+      title: "Agent Heist",
+      state: "activity_closing",
+      action: "finish_closing",
     }],
   }), launchId);
   assert.equal(retainedHostedSetupLaunchId({
@@ -2098,10 +2107,10 @@ function myGamesItems(value: unknown): JsonRecord[] {
 }
 
 /**
- * Select at most one retained pre-start setup from the qualification account.
- * This is intentionally state-based rather than tied to a launch ID. A
- * second setup is ambiguous and must stop the acceptance run before any
- * mutation is attempted.
+ * Select at most one retained setup or unfinished closure from the
+ * qualification account. This is intentionally state-based rather than tied
+ * to a launch ID. A second candidate is ambiguous and must stop the acceptance
+ * run before any mutation is attempted.
  */
 export function retainedHostedSetupLaunchId(value: unknown): string | null {
   if (!isRecord(value) || value.version !== "platform_my_games.v1" || !Array.isArray(value.items)) {
@@ -2109,8 +2118,10 @@ export function retainedHostedSetupLaunchId(value: unknown): string | null {
   }
   const candidates = value.items.filter((item): item is JsonRecord =>
     isRecord(item) &&
-    item.state === "setup_pending" &&
-    item.action === "continue_setup" &&
+    (
+      (item.state === "setup_pending" && item.action === "continue_setup") ||
+      (item.state === "activity_closing" && item.action === "finish_closing")
+    ) &&
     item.result_public_id === undefined &&
     typeof item.launch_id === "string" &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(item.launch_id),
@@ -2128,11 +2139,17 @@ async function preflightRetainedHostedSetup(
   const launch = await creator.read(`/api/launches/${launchId}`);
   const state = stringField(launch, "state");
   if (state === "collecting") {
-    const cancelled = await creator.mutate(`/api/launches/${launchId}/cancel`, {}, [200]);
-    assert.equal(cancelled.version, "hosted_launch_cancelled.v1");
-    assert.equal(cancelled.cancelled, true);
-    assert.equal((await creator.read(`/api/launches/${launchId}`)).state, "cancelled");
-    console.info("Hosted acceptance: cancelled the one retained collecting setup through the normal API.");
+    const closed = await creator.mutate(`/api/launches/${launchId}/close`, {}, [200]);
+    assert.equal(closed.version, "hosted_launch_closed.v1");
+    assert.equal(closed.closed, true);
+    assert.equal((await creator.read(`/api/launches/${launchId}`)).state, "closed_by_creator");
+    console.info("Hosted acceptance: closed the one retained collecting setup through the durable API.");
+    return;
+  }
+  if (state === "closing") {
+    const closed = await creator.mutate(`/api/launches/${launchId}/close`, {}, [200]);
+    assert.equal(closed.version, "hosted_launch_closed.v1");
+    assert.equal(closed.closed, true);
     return;
   }
   if (state !== "provisioning" && state !== "reconciling" && state !== "run_created") {

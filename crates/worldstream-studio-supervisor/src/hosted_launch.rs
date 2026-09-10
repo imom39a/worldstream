@@ -28,13 +28,16 @@ use worldstream_core::CanonicalJsonV1;
 use worldstream_hosted_contract::{
     HostedGenesisEvidenceV1, HostedGenesisHeadV1, HostedHouseRunnerReservationReceiptV1,
     HostedHouseRunnerReservationRequestV1, HostedHouseRunnerRetirementReceiptV1,
-    HostedHouseRunnerRetirementRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
-    HostedLaunchStageV1, HostedLaunchStatusV1, HostedPrestartAbandonmentEvidenceV1,
-    HostedProvisioningAbandonmentEvidenceV1, HostedPublicRelayBindRequestV1,
-    HostedResultSourceEvidenceV1, HostedResultSourceRequestV1, HouseAgentRevision, ListingRevision,
-    MAX_REVIEWED_HOSTED_CATALOG_REVISIONS, PackReference as HostedPackReference,
-    validate_hosted_genesis_evidence, validate_hosted_launch_evidence_request,
-    validate_hosted_launch_request, validate_hosted_prestart_abandonment_evidence,
+    HostedHouseRunnerRetirementRequestV1, HostedLaunchClosureDispositionV1,
+    HostedLaunchClosureEvidenceV1, HostedLaunchClosureRequestV1, HostedLaunchEvidenceRequestV1,
+    HostedLaunchRequestV1, HostedLaunchStageV1, HostedLaunchStatusV1,
+    HostedPrestartAbandonmentEvidenceV1, HostedProvisioningAbandonmentEvidenceV1,
+    HostedPublicRelayBindRequestV1, HostedResultSourceEvidenceV1, HostedResultSourceRequestV1,
+    HouseAgentRevision, ListingRevision, MAX_REVIEWED_HOSTED_CATALOG_REVISIONS,
+    PackReference as HostedPackReference, validate_hosted_genesis_evidence,
+    validate_hosted_launch_closure_evidence, validate_hosted_launch_closure_request,
+    validate_hosted_launch_evidence_request, validate_hosted_launch_request,
+    validate_hosted_prestart_abandonment_evidence,
     validate_hosted_provisioning_abandonment_evidence, validate_hosted_public_relay_bind_request,
     validate_hosted_result_source_evidence, validate_hosted_result_source_request,
 };
@@ -61,6 +64,7 @@ use crate::{
 const BINDING_SCHEMA_V1: &str = "worldstream/hosted-launch-binding/v1";
 const PRESTART_ABANDONMENT_SCHEMA_V1: &str = "worldstream/hosted-prestart-abandonment/v1";
 const PROVISIONING_ABANDONMENT_SCHEMA_V1: &str = "worldstream/hosted-provisioning-abandonment/v1";
+const CLOSURE_INTENT_SCHEMA_V1: &str = "worldstream/hosted-launch-closure-intent/v1";
 const ACCESS_TAG_KEY: &[u8] = b"worldstream/hosted-controller-authority/v1";
 const MAX_BINDING_BYTES: usize = 16 * 1024;
 const MAX_BINDINGS: usize = 256;
@@ -125,6 +129,22 @@ struct RetainedProvisioningAbandonmentV1 {
     authentication_tag: String,
 }
 
+/// Monotonic durable intent installed before closure inspects or reconciles a
+/// setup operation. A first launch submission with the same identity is
+/// rejected after this marker exists, including across process restart.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RetainedHostedLaunchClosureIntentV1 {
+    schema: String,
+    host_installation_id: String,
+    launch_request_id: String,
+    listing_revision_digest: String,
+    launch_request_digest: String,
+    room_setup_operation_id: String,
+    closure_intent_digest: String,
+    authentication_tag: String,
+}
+
 trait HostedRoomOperationBackendV1: Send + Sync + 'static {
     fn advance(
         &self,
@@ -150,6 +170,14 @@ trait HostedRoomOperationBackendV1: Send + Sync + 'static {
         &self,
         operation: &str,
     ) -> Result<RoomSetupPublicRelayBindingV1, HostedLaunchErrorV1>;
+
+    fn close(
+        &self,
+        _operation: &str,
+        _idempotency_key: &str,
+    ) -> Result<Option<HostedGenesisHeadV1>, HostedLaunchErrorV1> {
+        Err(HostedLaunchErrorV1::Unavailable)
+    }
 }
 
 trait HostedResultSourceBackendV1: Send + Sync + 'static {
@@ -194,6 +222,14 @@ trait HostedHouseRunnerBackendV1: Send + Sync + 'static {
         request: &HostedLaunchRequestV1,
         room_id: &str,
     ) -> HostedHouseRunnerGateV1;
+
+    fn close_launch(
+        &self,
+        _launch_request_id: &str,
+        _closure_intent_digest: &str,
+    ) -> Result<(), HostedHouseRunnerErrorV1> {
+        Err(HostedHouseRunnerErrorV1::Unavailable)
+    }
 }
 
 impl HostedHouseRunnerBackendV1 for HostedHouseRunnerOperationsV1 {
@@ -228,6 +264,14 @@ impl HostedHouseRunnerBackendV1 for HostedHouseRunnerOperationsV1 {
         room_id: &str,
     ) -> HostedHouseRunnerGateV1 {
         HostedHouseRunnerOperationsV1::start_launch(self, request, room_id)
+    }
+
+    fn close_launch(
+        &self,
+        launch_request_id: &str,
+        closure_intent_digest: &str,
+    ) -> Result<(), HostedHouseRunnerErrorV1> {
+        HostedHouseRunnerOperationsV1::close_launch(self, launch_request_id, closure_intent_digest)
     }
 }
 
@@ -301,6 +345,28 @@ impl HostedRoomOperationBackendV1 for LiveHostedRoomOperationBackendV1 {
     ) -> Result<RoomSetupPublicRelayBindingV1, HostedLaunchErrorV1> {
         self.rooms
             .public_relay_binding(operation)
+            .map_err(|error| map_room_error(&error))
+    }
+
+    fn close(
+        &self,
+        operation: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<HostedGenesisHeadV1>, HostedLaunchErrorV1> {
+        self.rooms
+            .close_hosted_launch(operation, idempotency_key)
+            .map(|response| {
+                response.map(|response| HostedGenesisHeadV1 {
+                    room_id: response.room_head.room_id,
+                    room_seq: response.room_head.room_seq,
+                    genesis_or_transition_hash: response.room_head.genesis_or_transition_hash,
+                    core_schema_version: response.room_head.core_schema_version,
+                    pack_digest: response.room_head.pack_digest,
+                    core_state_hash: response.room_head.core_state_hash,
+                    activity_state_hash: response.room_head.activity_state_hash,
+                    authoritative_state_hash: response.room_head.authoritative_state_hash,
+                })
+            })
             .map_err(|error| map_room_error(&error))
     }
 }
@@ -468,6 +534,12 @@ impl HostedLaunchOperationsV1 {
         // therefore wins before any future spawn/launch attempt can pass the
         // retained binding boundary.
         let _guard = self.lock();
+        if let Some(intent) = self.load_closure_intent_unlocked(&binding.room_setup_operation_id)? {
+            if !closure_intent_matches_binding(&intent, &binding) {
+                return Err(HostedLaunchErrorV1::Unavailable);
+            }
+            return Err(HostedLaunchErrorV1::Conflict);
+        }
         if self
             .load_provisioning_abandonment_unlocked(&binding.room_setup_operation_id)?
             .is_some()
@@ -539,6 +611,73 @@ impl HostedLaunchOperationsV1 {
         // the narrow pre-Genesis recovery proof from a provisioning status.
         let room = self.backend.inspect(&binding.room_setup_operation_id)?;
         Ok(public_status(&binding, Some(room), None))
+    }
+
+    /// Durably closes one exact hosted launch lineage at every setup stage.
+    ///
+    /// The closure marker is installed before inspecting retained setup. With
+    /// no retained creation operation it prevents Genesis permanently. An
+    /// ambiguous retained operation is reconciled under its original identity;
+    /// if that proves or completes Genesis, the ordinary Core administration
+    /// path archives that exact Room before evidence is returned. Same-identity
+    /// retries return the retained evidence and never create a second close
+    /// operation.
+    pub fn close(
+        &self,
+        request: &HostedLaunchClosureRequestV1,
+    ) -> Result<HostedLaunchClosureEvidenceV1, HostedLaunchErrorV1> {
+        validate_hosted_launch_closure_request(request)
+            .map_err(|_| HostedLaunchErrorV1::Invalid)?;
+        let _guard = self.lock();
+        if let Some(evidence) =
+            self.load_closure_evidence_unlocked(&request.room_setup_operation_id)?
+        {
+            require_closure_evidence_identity(&evidence, request, &self.host_installation_id)?;
+            return Ok(evidence);
+        }
+
+        let binding = match self.load_unlocked(&request.room_setup_operation_id) {
+            Ok(binding) => {
+                if binding.host_installation_id != self.host_installation_id.as_ref()
+                    || binding.capacity_reservation_reference != request.launch_request_id
+                    || binding.listing_revision_digest != request.listing_revision_digest
+                    || binding.launch_request_digest != request.launch_request_digest
+                {
+                    return Err(HostedLaunchErrorV1::Conflict);
+                }
+                Some(binding)
+            }
+            Err(HostedLaunchErrorV1::NotFound) => None,
+            Err(error) => return Err(error),
+        };
+
+        let intent = match self.load_closure_intent_unlocked(&request.room_setup_operation_id)? {
+            Some(intent) => {
+                require_closure_intent_identity(&intent, request, &self.host_installation_id)?;
+                intent
+            }
+            None => {
+                let intent = self.new_closure_intent(request)?;
+                self.persist_closure_intent_unlocked(&intent)?;
+                intent
+            }
+        };
+
+        let room_head = match binding {
+            None => None,
+            Some(_) => self.backend.close(
+                &request.room_setup_operation_id,
+                &format!("hosted-close-{}", request.launch_request_id),
+            )?,
+        };
+        if let Some(house_runners) = &self.house_runners {
+            house_runners
+                .close_launch(&request.launch_request_id, &intent.closure_intent_digest)
+                .map_err(map_house_error)?;
+        }
+        let evidence = self.new_closure_evidence(request, &intent, room_head)?;
+        self.persist_closure_evidence_unlocked(&evidence)?;
+        Ok(evidence)
     }
 
     /// Durably fences one Genesis-created Room before its Lobby task commits.
@@ -951,7 +1090,11 @@ impl HostedLaunchOperationsV1 {
             {
                 continue;
             }
-            if name.ends_with(".abandoned.json") || name.ends_with(".provisioning-abandoned.json") {
+            if name.ends_with(".abandoned.json")
+                || name.ends_with(".provisioning-abandoned.json")
+                || name.ends_with(".closing.json")
+                || name.ends_with(".closed.json")
+            {
                 continue;
             }
             let operation = name
@@ -1015,6 +1158,222 @@ impl HostedLaunchOperationsV1 {
             return Err(HostedLaunchErrorV1::Unavailable);
         }
         Ok(Some(retained))
+    }
+
+    fn load_closure_intent_unlocked(
+        &self,
+        operation: &str,
+    ) -> Result<Option<RetainedHostedLaunchClosureIntentV1>, HostedLaunchErrorV1> {
+        let path = self.closure_intent_path(operation);
+        let Some(bytes) = self.load_optional_marker_bytes(operation, &path)? else {
+            return Ok(None);
+        };
+        let intent = serde_json::from_slice::<RetainedHostedLaunchClosureIntentV1>(&bytes)
+            .map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        if !valid_closure_intent(&intent, operation, &self.host_installation_id) {
+            return Err(HostedLaunchErrorV1::Unavailable);
+        }
+        Ok(Some(intent))
+    }
+
+    fn load_closure_evidence_unlocked(
+        &self,
+        operation: &str,
+    ) -> Result<Option<HostedLaunchClosureEvidenceV1>, HostedLaunchErrorV1> {
+        let path = self.closure_evidence_path(operation);
+        let Some(bytes) = self.load_optional_marker_bytes(operation, &path)? else {
+            return Ok(None);
+        };
+        let evidence = serde_json::from_slice::<HostedLaunchClosureEvidenceV1>(&bytes)
+            .map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        if evidence.host_installation_id != self.host_installation_id.as_ref()
+            || evidence.room_setup_operation_id != operation
+            || validate_hosted_launch_closure_evidence(&evidence).is_err()
+        {
+            return Err(HostedLaunchErrorV1::Unavailable);
+        }
+        Ok(Some(evidence))
+    }
+
+    fn load_optional_marker_bytes(
+        &self,
+        operation: &str,
+        path: &Path,
+    ) -> Result<Option<Vec<u8>>, HostedLaunchErrorV1> {
+        if !safe_operation(operation) {
+            return Err(HostedLaunchErrorV1::Invalid);
+        }
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(HostedLaunchErrorV1::Unavailable),
+            Ok(_) => {}
+        }
+        validate_owner_only_file(path).map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        let bytes = fs::read(path).map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        if bytes.len() > MAX_BINDING_BYTES {
+            return Err(HostedLaunchErrorV1::Unavailable);
+        }
+        Ok(Some(bytes))
+    }
+
+    fn new_closure_intent(
+        &self,
+        request: &HostedLaunchClosureRequestV1,
+    ) -> Result<RetainedHostedLaunchClosureIntentV1, HostedLaunchErrorV1> {
+        let fingerprint = serde_json::json!({
+            "domain": "worldstream/hosted-launch-closure-intent/v1",
+            "host_installation_id": self.host_installation_id.as_ref(),
+            "launch_request_id": request.launch_request_id,
+            "listing_revision_digest": request.listing_revision_digest,
+            "launch_request_digest": request.launch_request_digest,
+            "room_setup_operation_id": request.room_setup_operation_id,
+        });
+        let bytes =
+            serde_json::to_vec(&fingerprint).map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        let closure_intent_digest = format!("blake3:{}", blake3::hash(&bytes).to_hex());
+        let authentication_tag = blake3::hash(
+            format!("worldstream/hosted-launch-closure-intent-tag/v1:{closure_intent_digest}")
+                .as_bytes(),
+        )
+        .to_hex()
+        .to_string();
+        Ok(RetainedHostedLaunchClosureIntentV1 {
+            schema: CLOSURE_INTENT_SCHEMA_V1.to_owned(),
+            host_installation_id: self.host_installation_id.to_string(),
+            launch_request_id: request.launch_request_id.clone(),
+            listing_revision_digest: request.listing_revision_digest.clone(),
+            launch_request_digest: request.launch_request_digest.clone(),
+            room_setup_operation_id: request.room_setup_operation_id.clone(),
+            closure_intent_digest,
+            authentication_tag,
+        })
+    }
+
+    fn new_closure_evidence(
+        &self,
+        request: &HostedLaunchClosureRequestV1,
+        intent: &RetainedHostedLaunchClosureIntentV1,
+        room_head: Option<HostedGenesisHeadV1>,
+    ) -> Result<HostedLaunchClosureEvidenceV1, HostedLaunchErrorV1> {
+        let disposition = if room_head.is_some() {
+            HostedLaunchClosureDispositionV1::RoomArchived
+        } else {
+            HostedLaunchClosureDispositionV1::CancelledBeforeGenesis
+        };
+        let room_id = room_head.as_ref().map(|head| head.room_id.clone());
+        let fingerprint = serde_json::json!({
+            "domain": "worldstream/hosted-launch-closure-fence/v1",
+            "closure_intent_digest": intent.closure_intent_digest,
+            "host_installation_id": self.host_installation_id.as_ref(),
+            "launch_request_id": request.launch_request_id,
+            "listing_revision_digest": request.listing_revision_digest,
+            "launch_request_digest": request.launch_request_digest,
+            "room_setup_operation_id": request.room_setup_operation_id,
+            "disposition": disposition,
+            "room_id": room_id,
+            "room_head": room_head,
+        });
+        let bytes =
+            serde_json::to_vec(&fingerprint).map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        let closure_fence_digest = format!("blake3:{}", blake3::hash(&bytes).to_hex());
+        let authentication_tag = blake3::hash(
+            format!("worldstream/hosted-launch-closure-tag/v1:{closure_fence_digest}").as_bytes(),
+        )
+        .to_hex()
+        .to_string();
+        let evidence = HostedLaunchClosureEvidenceV1 {
+            schema: "worldstream/hosted-launch-closure-evidence/v1".to_owned(),
+            host_installation_id: self.host_installation_id.to_string(),
+            launch_request_id: request.launch_request_id.clone(),
+            listing_revision_digest: request.listing_revision_digest.clone(),
+            launch_request_digest: request.launch_request_digest.clone(),
+            room_setup_operation_id: request.room_setup_operation_id.clone(),
+            disposition,
+            room_id,
+            room_head,
+            closure_fence_digest,
+            authentication_tag,
+        };
+        validate_hosted_launch_closure_evidence(&evidence)
+            .map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        Ok(evidence)
+    }
+
+    fn persist_closure_intent_unlocked(
+        &self,
+        intent: &RetainedHostedLaunchClosureIntentV1,
+    ) -> Result<(), HostedLaunchErrorV1> {
+        if !valid_closure_intent(
+            intent,
+            &intent.room_setup_operation_id,
+            &self.host_installation_id,
+        ) {
+            return Err(HostedLaunchErrorV1::Invalid);
+        }
+        self.persist_closure_marker_unlocked(
+            &intent.room_setup_operation_id,
+            "closing",
+            &intent.closure_intent_digest,
+            intent,
+        )
+    }
+
+    fn persist_closure_evidence_unlocked(
+        &self,
+        evidence: &HostedLaunchClosureEvidenceV1,
+    ) -> Result<(), HostedLaunchErrorV1> {
+        validate_hosted_launch_closure_evidence(evidence)
+            .map_err(|_| HostedLaunchErrorV1::Invalid)?;
+        self.persist_closure_marker_unlocked(
+            &evidence.room_setup_operation_id,
+            "closed",
+            &evidence.closure_fence_digest,
+            evidence,
+        )
+    }
+
+    fn persist_closure_marker_unlocked<T: Serialize>(
+        &self,
+        operation: &str,
+        suffix: &str,
+        digest: &str,
+        value: &T,
+    ) -> Result<(), HostedLaunchErrorV1> {
+        if !safe_operation(operation) || !matches!(suffix, "closing" | "closed") {
+            return Err(HostedLaunchErrorV1::Invalid);
+        }
+        let bytes =
+            serde_json::to_vec_pretty(value).map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        if bytes.len() > MAX_BINDING_BYTES {
+            return Err(HostedLaunchErrorV1::Unavailable);
+        }
+        let temporary = self.root.join(format!(
+            ".{operation}.{suffix}.{}.tmp",
+            blake3::hash(digest.as_bytes()).to_hex()
+        ));
+        let target = self.root.join(format!("{operation}.{suffix}.json"));
+        let mut file =
+            create_owner_only_file(&temporary).map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        if file
+            .write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .is_err()
+        {
+            let _ = fs::remove_file(&temporary);
+            return Err(HostedLaunchErrorV1::Unavailable);
+        }
+        drop(file);
+        let published = fs::hard_link(&temporary, &target)
+            .and_then(|()| sync_directory(self.root.as_ref()))
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    HostedLaunchErrorV1::Conflict
+                } else {
+                    HostedLaunchErrorV1::Unavailable
+                }
+            });
+        let _ = fs::remove_file(temporary);
+        published
     }
 
     fn new_prestart_abandonment(
@@ -1248,6 +1607,14 @@ impl HostedLaunchOperationsV1 {
             .join(format!("{operation}.provisioning-abandoned.json"))
     }
 
+    fn closure_intent_path(&self, operation: &str) -> PathBuf {
+        self.root.join(format!("{operation}.closing.json"))
+    }
+
+    fn closure_evidence_path(&self, operation: &str) -> PathBuf {
+        self.root.join(format!("{operation}.closed.json"))
+    }
+
     fn load_unlocked(
         &self,
         operation: &str,
@@ -1474,6 +1841,67 @@ fn valid_provisioning_abandonment(
         && valid_hex(&retained.authentication_tag, 64)
 }
 
+fn valid_closure_intent(
+    intent: &RetainedHostedLaunchClosureIntentV1,
+    operation: &str,
+    host_installation_id: &str,
+) -> bool {
+    intent.schema == CLOSURE_INTENT_SCHEMA_V1
+        && intent.host_installation_id == host_installation_id
+        && intent.room_setup_operation_id == operation
+        && safe_operation(operation)
+        && uuid_reference(&intent.launch_request_id)
+        && tagged_digest(&intent.listing_revision_digest, "blake3")
+        && tagged_digest(&intent.launch_request_digest, "blake3")
+        && tagged_digest(&intent.closure_intent_digest, "blake3")
+        && valid_hex(&intent.authentication_tag, 64)
+}
+
+fn closure_intent_matches_binding(
+    intent: &RetainedHostedLaunchClosureIntentV1,
+    binding: &RetainedHostedLaunchBindingV1,
+) -> bool {
+    intent.host_installation_id == binding.host_installation_id
+        && intent.launch_request_id == binding.capacity_reservation_reference
+        && intent.listing_revision_digest == binding.listing_revision_digest
+        && intent.launch_request_digest == binding.launch_request_digest
+        && intent.room_setup_operation_id == binding.room_setup_operation_id
+}
+
+fn require_closure_intent_identity(
+    intent: &RetainedHostedLaunchClosureIntentV1,
+    request: &HostedLaunchClosureRequestV1,
+    host_installation_id: &str,
+) -> Result<(), HostedLaunchErrorV1> {
+    if intent.host_installation_id == host_installation_id
+        && intent.launch_request_id == request.launch_request_id
+        && intent.listing_revision_digest == request.listing_revision_digest
+        && intent.launch_request_digest == request.launch_request_digest
+        && intent.room_setup_operation_id == request.room_setup_operation_id
+    {
+        Ok(())
+    } else {
+        Err(HostedLaunchErrorV1::Conflict)
+    }
+}
+
+fn require_closure_evidence_identity(
+    evidence: &HostedLaunchClosureEvidenceV1,
+    request: &HostedLaunchClosureRequestV1,
+    host_installation_id: &str,
+) -> Result<(), HostedLaunchErrorV1> {
+    if evidence.host_installation_id == host_installation_id
+        && evidence.launch_request_id == request.launch_request_id
+        && evidence.listing_revision_digest == request.listing_revision_digest
+        && evidence.launch_request_digest == request.launch_request_digest
+        && evidence.room_setup_operation_id == request.room_setup_operation_id
+    {
+        Ok(())
+    } else {
+        Err(HostedLaunchErrorV1::Conflict)
+    }
+}
+
 fn valid_ulid(value: &str) -> bool {
     value.len() == 26 && value.bytes().all(|byte| {
         byte.is_ascii_digit()
@@ -1586,6 +2014,7 @@ pub fn is_hosted_launch_route(method: &Method, path: &str) -> bool {
                 "POST",
                 "/api/v1/hosted-launches:submit"
                     | "/api/v1/hosted-launches:read"
+                    | "/api/v1/hosted-launches:close"
                     | "/api/v1/hosted-launches:abandon-prestart"
                     | "/api/v1/hosted-launches:abandon-provisioning"
                     | "/api/v1/hosted-launches:read-genesis"
@@ -1613,6 +2042,7 @@ pub fn hosted_launch_router(
         .route("/api/v1/hosted-launches/ready", get(hosted_ready))
         .route("/api/v1/hosted-launches:submit", post(hosted_submit))
         .route("/api/v1/hosted-launches:read", post(hosted_read))
+        .route("/api/v1/hosted-launches:close", post(hosted_close))
         .route(
             "/api/v1/hosted-launches:abandon-prestart",
             post(hosted_abandon_prestart),
@@ -1672,6 +2102,17 @@ async fn hosted_read(
 ) -> Result<Json<HostedLaunchStatusV1>, HostedLaunchErrorV1> {
     let request = decode_request::<HostedLaunchEvidenceRequestV1>(&body)?;
     tokio::task::spawn_blocking(move || operations.read(&request))
+        .await
+        .map_err(|_| HostedLaunchErrorV1::Unavailable)?
+        .map(Json)
+}
+
+async fn hosted_close(
+    State(operations): State<HostedLaunchOperationsV1>,
+    body: Bytes,
+) -> Result<Json<HostedLaunchClosureEvidenceV1>, HostedLaunchErrorV1> {
+    let request = decode_request::<HostedLaunchClosureRequestV1>(&body)?;
+    tokio::task::spawn_blocking(move || operations.close(&request))
         .await
         .map_err(|_| HostedLaunchErrorV1::Unavailable)?
         .map(Json)
@@ -1847,6 +2288,7 @@ mod tests {
         inspections: Arc<Mutex<Vec<String>>>,
         complete_on_advance: Arc<Mutex<bool>>,
         genesis: Arc<Mutex<Option<RoomSetupGenesisEvidenceV1>>>,
+        closes: Arc<Mutex<Vec<String>>>,
     }
 
     impl FakeBackend {
@@ -1961,6 +2403,34 @@ mod tests {
                 secret_reference: crate::secrets::SecretReferenceV1::parse("b".repeat(64))
                     .unwrap_or_else(|error| unreachable!("valid secret reference: {error:?}")),
             })
+        }
+
+        fn close(
+            &self,
+            operation: &str,
+            _idempotency_key: &str,
+        ) -> Result<Option<HostedGenesisHeadV1>, HostedLaunchErrorV1> {
+            self.closes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(operation.to_owned());
+            let status = self
+                .statuses
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(operation)
+                .cloned()
+                .ok_or(HostedLaunchErrorV1::NotFound)?;
+            Ok(status.room_id.map(|room_id| HostedGenesisHeadV1 {
+                room_id,
+                room_seq: 1,
+                genesis_or_transition_hash: format!("blake3:{}", "1".repeat(64)),
+                core_schema_version: "worldstream.core-room-state.v1".to_owned(),
+                pack_digest: listing().pack().digest.clone(),
+                core_state_hash: format!("blake3:{}", "2".repeat(64)),
+                activity_state_hash: format!("blake3:{}", "3".repeat(64)),
+                authoritative_state_hash: format!("blake3:{}", "4".repeat(64)),
+            }))
         }
     }
 
@@ -2095,6 +2565,16 @@ mod tests {
             frozen_launch_request: value(&launch),
             frozen_roster: value(&roster),
             frozen_room_setup_specification: value(&setup),
+        }
+    }
+
+    fn closure_request(launch: &HostedLaunchRequestV1) -> HostedLaunchClosureRequestV1 {
+        HostedLaunchClosureRequestV1 {
+            schema: "worldstream/hosted-launch-closure-request/v1".to_owned(),
+            launch_request_id: launch.capacity_authorization.reservation_reference.clone(),
+            listing_revision_digest: launch.listing_revision_digest.clone(),
+            launch_request_digest: launch.launch_request_digest.clone(),
+            room_setup_operation_id: launch.room_setup_operation_id.clone(),
         }
     }
 
@@ -2647,6 +3127,103 @@ mod tests {
         assert_eq!(
             operations.abandon_prestart(&evidence_request),
             Err(HostedLaunchErrorV1::Conflict)
+        );
+    }
+
+    #[test]
+    fn creator_close_before_submission_is_a_durable_launch_fence() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+        let root = directory.path().join("hosted");
+        let backend = FakeBackend::default();
+        let launch = request("hosted-creator-close-01");
+        let close = closure_request(&launch);
+        let operations = HostedLaunchOperationsV1::open_with_backend(
+            &root,
+            "hosted-test",
+            vec![listing()],
+            Vec::new(),
+            backend.clone(),
+        )
+        .unwrap_or_else(|error| unreachable!("valid operations: {error:?}"));
+
+        let evidence = operations
+            .close(&close)
+            .unwrap_or_else(|error| unreachable!("close launch: {error:?}"));
+        assert_eq!(
+            evidence.disposition,
+            HostedLaunchClosureDispositionV1::CancelledBeforeGenesis
+        );
+        assert!(evidence.room_id.is_none());
+        assert!(
+            backend
+                .closes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty()
+        );
+        assert_eq!(
+            operations.submit(&launch),
+            Err(HostedLaunchErrorV1::Conflict)
+        );
+
+        let reopened = HostedLaunchOperationsV1::open_with_backend(
+            &root,
+            "hosted-test",
+            vec![listing()],
+            Vec::new(),
+            backend,
+        )
+        .unwrap_or_else(|error| unreachable!("reopen operations: {error:?}"));
+        assert_eq!(reopened.close(&close), Ok(evidence));
+        assert_eq!(reopened.submit(&launch), Err(HostedLaunchErrorV1::Conflict));
+    }
+
+    #[test]
+    fn creator_close_archives_the_existing_room_once() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+        let backend = FakeBackend::default();
+        backend.complete_on_advance();
+        let operations = HostedLaunchOperationsV1::open_with_backend(
+            &directory.path().join("hosted"),
+            "hosted-test",
+            vec![listing()],
+            Vec::new(),
+            backend.clone(),
+        )
+        .unwrap_or_else(|error| unreachable!("valid operations: {error:?}"));
+        let launch = request("hosted-creator-close-02");
+        operations
+            .submit(&launch)
+            .unwrap_or_else(|error| unreachable!("submit launch: {error:?}"));
+        let close = closure_request(&launch);
+
+        let evidence = operations
+            .close(&close)
+            .unwrap_or_else(|error| unreachable!("close launch: {error:?}"));
+        assert_eq!(
+            evidence.disposition,
+            HostedLaunchClosureDispositionV1::RoomArchived
+        );
+        assert_eq!(
+            evidence.room_id.as_deref(),
+            Some("01JY0000000000000000000000")
+        );
+        assert_eq!(
+            backend
+                .closes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_slice(),
+            ["hosted-creator-close-02"]
+        );
+        assert_eq!(operations.close(&close), Ok(evidence));
+        assert_eq!(
+            backend
+                .closes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len(),
+            1
         );
     }
 

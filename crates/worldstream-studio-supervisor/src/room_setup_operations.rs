@@ -19,7 +19,10 @@ use worldstream_hosted_contract::{
     HostedGenesisAccessModeV1, HostedGenesisMembershipPurposeV1, HostedGenesisMembershipV1,
     HostedGenesisPrincipalKindV1,
 };
-use worldstream_protocol::{AccessMode, PackReference, PrincipalKind, RoomHead};
+use worldstream_protocol::{
+    AccessMode, PackReference, PrincipalKind, ROOM_ARCHIVE_RESPONSE_SCHEMA_V1,
+    RoomArchiveResponseV1, RoomHead,
+};
 
 use crate::{
     activity_packs::DaemonActivityPackSource,
@@ -366,6 +369,72 @@ impl RoomSetupOperationsV1 {
             Err(_) => return Err(RoomSetupOperationErrorV1::Unavailable),
         }
         Ok(status)
+    }
+
+    /// Resolves only enough of the retained creation operation to close one
+    /// hosted launch. It never starts task provisioning or launches a Lobby.
+    /// A definitive pre-Genesis rejection returns `None`; ambiguous creation
+    /// remains unavailable so the exact operation can be retried safely.
+    pub(crate) fn close_hosted_launch(
+        &self,
+        operation: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<RoomArchiveResponseV1>, RoomSetupOperationErrorV1> {
+        validate_operation_reference(operation)?;
+        let mut creation = match self.creation.status(operation) {
+            Ok(creation) => creation,
+            Err(crate::room_creation::RoomCreationErrorV1::NotFound) => return Ok(None),
+            Err(crate::room_creation::RoomCreationErrorV1::InvalidDraft) => {
+                return Err(RoomSetupOperationErrorV1::Invalid);
+            }
+            Err(crate::room_creation::RoomCreationErrorV1::Unavailable) => {
+                return Err(RoomSetupOperationErrorV1::Unavailable);
+            }
+        };
+        if creation.state != RoomCreationStateV1::Succeeded
+            && !(creation.state == RoomCreationStateV1::NeedsAttention
+                && creation
+                    .attention
+                    .as_ref()
+                    .is_some_and(|attention| !attention.retryable))
+        {
+            creation = self.creation.reconcile(operation)?;
+        }
+        if creation.state != RoomCreationStateV1::Succeeded {
+            return if creation.state == RoomCreationStateV1::NeedsAttention
+                && creation
+                    .attention
+                    .as_ref()
+                    .is_some_and(|attention| !attention.retryable)
+            {
+                Ok(None)
+            } else {
+                Err(RoomSetupOperationErrorV1::Unavailable)
+            };
+        }
+        let room_id = creation
+            .room_id
+            .as_deref()
+            .ok_or(RoomSetupOperationErrorV1::Unavailable)?;
+        let response = self
+            .creation
+            .archive_room(room_id, idempotency_key)
+            .map_err(|error| match error {
+                crate::room_creation::RoomCreationAttemptErrorV1::Rejected => {
+                    RoomSetupOperationErrorV1::Invalid
+                }
+                crate::room_creation::RoomCreationAttemptErrorV1::Ambiguous
+                | crate::room_creation::RoomCreationAttemptErrorV1::OperatorFixRequired => {
+                    RoomSetupOperationErrorV1::Unavailable
+                }
+            })?;
+        if response.schema != ROOM_ARCHIVE_RESPONSE_SCHEMA_V1
+            || response.room_id != room_id
+            || response.room_head.room_id != room_id
+        {
+            return Err(RoomSetupOperationErrorV1::Unavailable);
+        }
+        Ok(Some(response))
     }
 
     /// Reads exact secret-free Genesis correspondence without issuing effects.

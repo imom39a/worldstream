@@ -661,6 +661,55 @@ pub struct LobbyLaunchResponse {
     pub duplicate: bool,
 }
 
+pub const ROOM_ARCHIVE_REQUEST_SCHEMA_V1: &str = "worldstream/room-archive-request/v1";
+pub const ROOM_ARCHIVE_RESPONSE_SCHEMA_V1: &str = "worldstream/room-archive-response/v1";
+
+/// Bounded Host request to irreversibly archive one exact Room.
+///
+/// The Room identity is supplied by the route. The caller-controlled key is
+/// retained by Core's administration receipt, so a lost HTTP response can be
+/// retried without creating a second semantic operation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoomArchiveRequestV1 {
+    pub schema: String,
+    pub idempotency_key: String,
+}
+
+impl RoomArchiveRequestV1 {
+    /// Validates the closed transport shape before authority or Room state is
+    /// consulted.
+    ///
+    /// # Errors
+    /// Returns an error for an unsupported schema or unsafe operation key.
+    pub fn validate_bounds(&self) -> Result<(), &'static str> {
+        if self.schema != ROOM_ARCHIVE_REQUEST_SCHEMA_V1 {
+            return Err("unsupported archive request schema");
+        }
+        if self.idempotency_key.is_empty()
+            || self.idempotency_key.len() > 128
+            || !self.idempotency_key.as_bytes()[0].is_ascii_alphanumeric()
+            || !self
+                .idempotency_key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
+            return Err("invalid archive idempotency key");
+        }
+        Ok(())
+    }
+}
+
+/// Safe result of one Core-authorized Room archive operation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoomArchiveResponseV1 {
+    pub schema: String,
+    pub room_id: String,
+    pub room_head: RoomHead,
+    pub duplicate: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateRoomResponse {

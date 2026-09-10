@@ -129,8 +129,10 @@ export function hasRetainedHostedDevelopmentSetup(value) {
   if (body.version !== "platform_my_games.v1" || !Array.isArray(body.items)) return false;
   return body.items.some((item) =>
     typeof item === "object" && item !== null && !Array.isArray(item) &&
-    item.state === "setup_pending" &&
-    item.action === "continue_setup" &&
+    (
+      (item.state === "setup_pending" && item.action === "continue_setup") ||
+      (item.state === "activity_closing" && item.action === "finish_closing")
+    ) &&
     typeof item.launch_id === "string" &&
     item.result_public_id === undefined
   );
@@ -1235,11 +1237,11 @@ async function verifyDevelopmentFlow(ports) {
       ) {
         throw new Error("hosted seat invitation check failed");
       }
-      const cancellation = await fetch(
-        `${productOrigin}/api/launches/${repeatedLaunch.launch_id}/cancel`,
+      const closure = await fetch(
+        `${productOrigin}/api/launches/${repeatedLaunch.launch_id}/close`,
         { method: "POST", headers: launchMutationHeaders, body: "{}" },
       );
-      if (cancellation.status !== 200) throw new Error("hosted launch cancellation check failed");
+      if (closure.status !== 200) throw new Error("hosted launch closure check failed");
     }
   }
 

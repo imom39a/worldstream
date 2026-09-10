@@ -34,12 +34,14 @@ use worldstream_hosted_contract::{
     HostedGenesisMembershipV1, HostedGenesisPrincipalKindV1, HostedHouseRunnerReservationOutcomeV1,
     HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerReservationRequestV1,
     HostedHouseRunnerRetirementDispositionV1, HostedHouseRunnerRetirementReceiptV1,
-    HostedHouseRunnerRetirementRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
-    HostedLaunchStageV1, HostedLaunchStatusV1, HostedPrestartAbandonmentEvidenceV1,
-    HostedProvisioningAbandonmentEvidenceV1, HostedPublicRelayBindReceiptV1,
-    HostedPublicRelayBindRequestV1, HostedPublicStreamTicketRequestV1,
-    HostedResultIntegrityStatusV1, HostedResultReplayEvidenceV1, HostedResultSourceEvidenceV1,
-    HostedResultSourceHeadV1, HostedResultSourceRequestV1, PackReference,
+    HostedHouseRunnerRetirementRequestV1, HostedLaunchClosureDispositionV1,
+    HostedLaunchClosureEvidenceV1, HostedLaunchClosureRequestV1, HostedLaunchEvidenceRequestV1,
+    HostedLaunchRequestV1, HostedLaunchStageV1, HostedLaunchStatusV1,
+    HostedPrestartAbandonmentEvidenceV1, HostedProvisioningAbandonmentEvidenceV1,
+    HostedPublicRelayBindReceiptV1, HostedPublicRelayBindRequestV1,
+    HostedPublicStreamTicketRequestV1, HostedResultIntegrityStatusV1, HostedResultReplayEvidenceV1,
+    HostedResultSourceEvidenceV1, HostedResultSourceHeadV1, HostedResultSourceRequestV1,
+    PackReference,
 };
 use worldstream_hosted_gateway::{
     FixedHostAdapterBackend, HostedGatewayBackend, HostedGatewayConfig, HostedGatewayError,
@@ -150,6 +152,7 @@ fn native_handoff_trace_probe() {
 struct Backend {
     launches: Arc<Mutex<Vec<HostedLaunchRequestV1>>>,
     evidence_reads: Arc<Mutex<Vec<HostedLaunchEvidenceRequestV1>>>,
+    launch_closures: Arc<Mutex<Vec<HostedLaunchClosureRequestV1>>>,
     prestart_abandonments: Arc<Mutex<Vec<HostedLaunchEvidenceRequestV1>>>,
     provisioning_abandonments: Arc<Mutex<Vec<HostedLaunchEvidenceRequestV1>>>,
     genesis_reads: Arc<Mutex<Vec<HostedLaunchEvidenceRequestV1>>>,
@@ -206,6 +209,17 @@ impl HostedGatewayBackend for Backend {
             &request.launch_request_digest,
             &request.room_setup_operation_id,
         ))
+    }
+
+    fn close_launch(
+        &self,
+        request: &HostedLaunchClosureRequestV1,
+    ) -> Result<HostedLaunchClosureEvidenceV1, HostedGatewayError> {
+        self.launch_closures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request.clone());
+        Ok(launch_closure(request))
     }
 
     fn abandon_prestart(
@@ -601,6 +615,33 @@ fn evidence_request(listing: &str) -> HostedLaunchEvidenceRequestV1 {
         listing_revision_digest: launch.listing_revision_digest,
         launch_request_digest: launch.launch_request_digest,
         room_setup_operation_id: launch.room_setup_operation_id,
+    }
+}
+
+fn launch_closure_request(listing: &str) -> HostedLaunchClosureRequestV1 {
+    let launch = launch_request(listing);
+    HostedLaunchClosureRequestV1 {
+        schema: "worldstream/hosted-launch-closure-request/v1".to_owned(),
+        launch_request_id: launch.capacity_authorization.reservation_reference,
+        listing_revision_digest: launch.listing_revision_digest,
+        launch_request_digest: launch.launch_request_digest,
+        room_setup_operation_id: launch.room_setup_operation_id,
+    }
+}
+
+fn launch_closure(request: &HostedLaunchClosureRequestV1) -> HostedLaunchClosureEvidenceV1 {
+    HostedLaunchClosureEvidenceV1 {
+        schema: "worldstream/hosted-launch-closure-evidence/v1".to_owned(),
+        host_installation_id: "hosted-test".to_owned(),
+        launch_request_id: request.launch_request_id.clone(),
+        listing_revision_digest: request.listing_revision_digest.clone(),
+        launch_request_digest: request.launch_request_digest.clone(),
+        room_setup_operation_id: request.room_setup_operation_id.clone(),
+        disposition: HostedLaunchClosureDispositionV1::CancelledBeforeGenesis,
+        room_id: None,
+        room_head: None,
+        closure_fence_digest: format!("blake3:{}", "a".repeat(64)),
+        authentication_tag: "b".repeat(64),
     }
 }
 
@@ -1905,6 +1946,51 @@ async fn missing_house_retirement_is_retryable_not_operation_rejected() {
             .to_bytes(),
         br#"{"error":{"code":"operation_missing","retryable":false}}"#.as_slice()
     );
+}
+
+#[tokio::test]
+async fn creator_closure_route_is_service_only_and_returns_exact_host_evidence() {
+    let backend = Backend::default();
+    let app = hosted_gateway_router(config(8), backend.clone());
+    let request = launch_closure_request(LISTING);
+    let response = app
+        .clone()
+        .oneshot(service_request("/v1/hosted/close", TOKEN, &request))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), 200);
+    let evidence: HostedLaunchClosureEvidenceV1 = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("typed exact Host closure evidence");
+    assert_eq!(evidence.launch_request_id, request.launch_request_id);
+    assert_eq!(
+        evidence.disposition,
+        HostedLaunchClosureDispositionV1::CancelledBeforeGenesis
+    );
+    assert_eq!(
+        backend
+            .launch_closures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_slice(),
+        &[request.clone()]
+    );
+
+    let unauthorized = app
+        .oneshot(service_request(
+            "/v1/hosted/close",
+            "wrong-authority-value-long-enough",
+            &request,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(unauthorized.status(), 401);
 }
 
 #[tokio::test]

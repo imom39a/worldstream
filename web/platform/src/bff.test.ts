@@ -28,7 +28,12 @@ import {
 import type { PublicRunData } from "./public-runs.js";
 import { createSupabaseBffDependencies } from "./supabase.js";
 import { HttpHostedFormationGateway } from "./hosted-formation.js";
-import type { HostedFormationData, HostedFormationGateway } from "./hosted-formation.js";
+import type {
+  FormationLaunchRecord,
+  HostedFormationData,
+  HostedFormationGateway,
+  HostedLaunchMaterial,
+} from "./hosted-formation.js";
 import { AGENT_HEIST_LISTING_DIGEST } from "./hosted-catalog.js";
 
 const ORIGIN = "https://arena.example";
@@ -435,9 +440,9 @@ test("My games is account-scoped, preserves the reviewed result route, and rejec
   assert.equal(erased.status, 401);
 });
 
-test("provisioning cancellation uses the ordinary lane only before Host mutation", async () => {
+test("creator close uses the same evidence-backed lane before and after Host mutation", async () => {
   const launchId = "20000000-0000-4000-8000-000000000002";
-  const launch = {
+  const launchTemplate = {
     launchRequestId: launchId,
     listingRevisionDigest: AGENT_HEIST_LISTING_DIGEST,
     state: "provisioning",
@@ -448,18 +453,75 @@ test("provisioning cancellation uses the ordinary lane only before Host mutation
     rosterFrozen: true,
     canManage: true,
     seats: [],
-  } as const;
-  const material = (hostMutationStarted: boolean) => ({
-    launchRequestId: launchId,
-    hostMutationStarted,
-  }) as never;
-  const makeBff = (hostMutationStarted: boolean) => {
-    const counters = { cancellations: 0 };
+  } as FormationLaunchRecord;
+  const makeBff = (hostMutationStarted: boolean, initialState = "provisioning") => {
+    const counters = { requests: 0, records: 0, gateway: 0 };
+    let launch = { ...launchTemplate, state: initialState };
+    let material = {
+      launchRequestId: launchId,
+      listingRevisionDigest: AGENT_HEIST_LISTING_DIGEST,
+      state: initialState,
+      expiresAt: "2026-09-09T00:00:00.000Z",
+      launchInputs: {},
+      houseFillChoice: "disabled",
+      creatorAccessChoice: "seat",
+      creatorSeatId: "seat-1",
+      hostInstallationId: hostMutationStarted ? "fly-primary" : null,
+      roomSetupOperationId: hostMutationStarted
+        ? `launch-${launchId.replaceAll("-", "")}`
+        : null,
+      rosterFrozen: hostMutationStarted,
+      hostMutationStarted,
+      claims: [{
+        seatId: "seat-1",
+        displayName: "Creator",
+        participationKind: "account_human",
+        principalReference: "seat:seat-1",
+      }],
+      houseAssignments: [],
+    } as HostedLaunchMaterial;
     const hostedData = {
       readLaunchRequest: async () => launch,
-      readHostedLaunchMaterial: async () => material(hostMutationStarted),
-      cancelLaunchRequest: async () => { counters.cancellations += 1; return true; },
+      readHostedLaunchMaterial: async () => material,
+      readHostedRecoveryMaterial: async () => material.state === "closing" ? material : null,
+      readHouseFill: async () => null,
+      readGenesisReconciliation: async () => ({
+        launchState: material.state,
+        runId: null,
+        reconciliationState: "ready",
+        needsGenesisPull: false,
+      }),
+      requestLaunchClosure: async () => {
+        counters.requests += 1;
+        material = { ...material, state: "closing" };
+        launch = { ...launch, state: "closing" };
+        return true;
+      },
+      recordLaunchClosure: async () => {
+        counters.records += 1;
+        material = { ...material, state: "closed_by_creator" };
+        launch = { ...launch, state: "closed_by_creator" };
+        return true;
+      },
     } as unknown as HostedFormationData;
+    const hostedGateway = {
+      closeLaunch: async (request: Record<string, unknown>) => {
+        counters.gateway += 1;
+        return {
+          schema: "worldstream/hosted-launch-closure-evidence/v1",
+          host_installation_id: "fly-primary",
+          launch_request_id: request.launch_request_id,
+          listing_revision_digest: request.listing_revision_digest,
+          launch_request_digest: request.launch_request_digest,
+          room_setup_operation_id: request.room_setup_operation_id,
+          disposition: "cancelled_before_genesis",
+          room_id: null,
+          room_head: null,
+          closure_fence_digest: `blake3:${"a".repeat(64)}`,
+          authentication_tag: "b".repeat(64),
+        };
+      },
+    } as unknown as HostedFormationGateway;
     const bff = createPlatformBff({
       canonicalOrigin: ORIGIN,
       allowedReturnTargets: ["/", "/activities/heist"],
@@ -469,7 +531,7 @@ test("provisioning cancellation uses the ordinary lane only before Host mutation
       authClient: () => new FakeAuth(),
       dataClient: new FakeData(),
       hostedFormationData: hostedData,
-      hostedFormationGateway: {} as HostedFormationGateway,
+      hostedFormationGateway: hostedGateway,
       hostedFormationHostInstallationId: "fly-primary",
     });
     return { bff, counters };
@@ -479,29 +541,43 @@ test("provisioning cancellation uses the ordinary lane only before Host mutation
     const { bff, counters } = makeBff(false);
     const signedIn = await signIn(bff);
     const response = await bff.fetch(mutation(
-      `/api/launches/${launchId}/cancel`,
+      `/api/launches/${launchId}/close`,
       signedIn.sessionCookie,
       await csrf(bff, signedIn.sessionCookie),
     ));
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
-      version: "hosted_launch_cancelled.v1",
-      cancelled: true,
+      version: "hosted_launch_closed.v1",
+      closed: true,
     });
-    assert.equal(counters.cancellations, 1);
+    assert.deepEqual(counters, { requests: 1, records: 1, gateway: 1 });
   }
 
   {
     const { bff, counters } = makeBff(true);
     const signedIn = await signIn(bff);
     const response = await bff.fetch(mutation(
-      `/api/launches/${launchId}/cancel`,
+      `/api/launches/${launchId}/close`,
       signedIn.sessionCookie,
       await csrf(bff, signedIn.sessionCookie),
     ));
-    assert.equal(response.status, 409);
-    assert.deepEqual(await response.json(), { error: { code: "launch_unavailable" } });
-    assert.equal(counters.cancellations, 0);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      version: "hosted_launch_closed.v1",
+      closed: true,
+    });
+    assert.deepEqual(counters, { requests: 1, records: 1, gateway: 1 });
+  }
+
+  {
+    const { bff, counters } = makeBff(true, "closing");
+    const signedIn = await signIn(bff);
+    const response = await bff.fetch(new Request(`${ORIGIN}/api/launches/${launchId}`, {
+      headers: { cookie: `__Host-worldstream-session=${signedIn.sessionCookie}` },
+    }));
+    assert.equal(response.status, 200);
+    assert.equal((await response.json() as { state: string }).state, "closed_by_creator");
+    assert.deepEqual(counters, { requests: 0, records: 1, gateway: 1 });
   }
 });
 

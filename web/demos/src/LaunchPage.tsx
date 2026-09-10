@@ -123,6 +123,9 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
 
   const terminal = isTerminalLaunchState(launch.state);
   const setupLocked = startRequested || busy !== null;
+  const actions = launch.available_actions ?? [];
+  const mayStart = actions.includes("start");
+  const closeAction = actions.find((action) => action !== "start") ?? null;
   const claimSecondsRemaining = claimWindowClosesAt === null
     ? null
     : secondsUntil(claimWindowClosesAt, countdownNow);
@@ -195,25 +198,32 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
                 }}>{busy === "enter" ? "Opening activity…" : `Enter ${entry.label}`}</button>
               ))}
             </div>
-          ) : launch.can_manage && !terminal ? (
-            <>
-              <button className="start-room" type="button" disabled={setupLocked} onClick={start}>
-                {startRequested ? "Starting safely…" : "Start activity"}
-              </button>
-              <button className="text-button" type="button" disabled={setupLocked} onClick={() => {
-                if (session.state !== "authenticated") return;
-                setBusy("cancel");
-                void launchMutation(session.csrf, launchId, "cancel")
-                  .then(() => onNavigate("/"))
-                  .catch((cause) => {
-                    setError(friendlyError(cause));
-                    setBusy(null);
-                  });
-              }}>Abandon room</button>
-            </>
-          ) : (
-            <p>{terminal ? "This room ended before the activity started." : "The creator will start the activity."}</p>
+          ) : null}
+          {mayStart ? (
+            <button className="start-room" type="button" disabled={setupLocked} onClick={start}>
+              {startRequested ? "Starting safely…" : "Start activity"}
+            </button>
+          ) : null}
+          {closeAction === null ? null : (
+            <button className="text-button" type="button" disabled={setupLocked} onClick={() => {
+              if (session.state !== "authenticated") return;
+              if (closeAction === "end_activity" && !window.confirm(
+                "End this activity? Its Room will be archived and cannot be resumed.",
+              )) return;
+              setBusy("close");
+              setError(null);
+              void launchMutation(session.csrf, launchId, "close")
+                .then(() => onNavigate("/"))
+                .catch((cause) => {
+                  setError(friendlyError(cause));
+                  setBusy(null);
+                  void refresh();
+                });
+            }}>{busy === "close" ? "Closing safely…" : closeActionLabel(closeAction)}</button>
           )}
+          {launch.run?.can_enter !== true && !mayStart && closeAction === null ? (
+            <p>{terminal ? "This activity is closed." : "The creator will start the activity."}</p>
+          ) : null}
           {error !== null ? <p className="form-error" role="alert">{error}</p> : null}
         </section>
       </main>
@@ -233,11 +243,13 @@ function MessagePage({ onNavigate, title, detail, actionLabel, onAction }: {
 }
 
 export function isTerminalLaunchState(state: HostedLaunch["state"]): boolean {
-  return ["cancelled", "expired", "failed_pre_genesis", "abandoned_prestart"].includes(state);
+  return ["cancelled", "expired", "failed_pre_genesis", "abandoned_prestart", "closed_by_creator"].includes(state);
 }
 
 export function stateTitle(state: HostedLaunch["state"]): string {
   if (state === "run_created") return "Your activity is ready";
+  if (state === "closing") return "Closing this activity";
+  if (state === "closed_by_creator") return "This activity is closed";
   if (state === "provisioning" || state === "reconciling") return "Building the live room";
   if (isTerminalLaunchState(state)) return "This room did not start";
   return "Gather your crew";
@@ -249,6 +261,12 @@ function stateLabel(state: HostedLaunch["state"]): string {
 
 export function stateDetail(launch: HostedLaunch): string {
   if (launch.state === "run_created") return "WorldStream recorded Genesis. Enter the activity's standalone client.";
+  if (launch.state === "closing") {
+    return "WorldStream is fencing this setup and archiving its Room if one exists. Retrying Finish closing is safe.";
+  }
+  if (launch.state === "closed_by_creator") {
+    return "The launch cannot resume. If a Room was created, WorldStream archived it before releasing capacity.";
+  }
   if (isTerminalLaunchState(launch.state)) {
     return "This setup ended before Genesis. It is retained in your activity history, but no Room was created.";
   }
@@ -262,6 +280,13 @@ export function stateDetail(launch: HostedLaunch): string {
   if (launch.state === "reconciling") return "The Host is ready. The platform is confirming the exact Run.";
   if (launch.house_fill?.state === "claim_window_open") return "People can claim open seats until the claim window ends. Reviewed House Agents then fill them.";
   return "Share seat invitations. A person can join directly or control an external agent.";
+}
+
+function closeActionLabel(action: Exclude<HostedLaunch["available_actions"][number], "start">): string {
+  if (action === "cancel_setup") return "Cancel setup";
+  if (action === "stop_setup") return "Stop setup";
+  if (action === "end_activity") return "End activity";
+  return "Finish closing";
 }
 
 function secondsUntil(deadline: string, now: number): number {

@@ -121,6 +121,11 @@ export interface PrestartAbandonmentCandidate {
   readonly roomSetupOperationId: string;
 }
 
+/** Server-selected creator closures that still need Host evidence. */
+export interface LaunchClosureCandidate {
+  readonly launchRequestId: string;
+}
+
 export interface OwnedRunRecord {
   readonly runId: string;
   readonly publicId: string | null;
@@ -158,6 +163,13 @@ export interface HostedFormationData {
   releaseSeatClaim(accountId: string, launchRequestId: string, seatId: string): Promise<boolean>;
   resetSeatClaim(accountId: string, launchRequestId: string, seatId: string): Promise<boolean>;
   cancelLaunchRequest(accountId: string, launchRequestId: string): Promise<boolean>;
+  requestLaunchClosure(input: {
+    accountId: string;
+    launchRequestId: string;
+    hostInstallationId: string;
+    canonicalRequest: Uint8Array;
+    requestDigest: Uint8Array;
+  }): Promise<boolean>;
   startHouseFill(accountId: string, launchRequestId: string): Promise<HouseFillRecord | null>;
   readHouseFill(accountId: string, launchRequestId: string): Promise<HouseFillRecord | null>;
   retainHouseFillSelection(launchRequestId: string, hostInstallationId: string): Promise<HouseFillRecord | null>;
@@ -199,6 +211,12 @@ export interface HostedFormationData {
     canonicalEvidence: Uint8Array,
     evidenceDigest: Uint8Array,
   ): Promise<boolean>;
+  recordLaunchClosure(
+    launchRequestId: string,
+    canonicalEvidence: Uint8Array,
+    evidenceDigest: Uint8Array,
+  ): Promise<boolean>;
+  listPendingLaunchClosures(limit: number): Promise<readonly LaunchClosureCandidate[]>;
   listPrestartAbandonmentCandidates(limit: number): Promise<readonly PrestartAbandonmentCandidate[]>;
   readPublicRelayBindingCandidate(runId: string): Promise<CanonicalObject | null>;
   recordPublicRelayBinding(input: {
@@ -220,6 +238,8 @@ export interface HostedFormationGateway {
   reserveHouseRunner(request: CanonicalObject): Promise<CanonicalObject>;
   launch(request: CanonicalObject): Promise<HostedLaunchStatus>;
   readStatus(request: CanonicalObject): Promise<HostedLaunchStatus>;
+  /** Service-only: fences this launch before Genesis or archives its Room. */
+  closeLaunch(request: CanonicalObject): Promise<CanonicalObject>;
   /** Service-only: Host proves its retained Lobby task has not launched. */
   abandonPrestart(request: CanonicalObject): Promise<CanonicalObject>;
   /** Service-only: Host fences one exact setup operation before Genesis. */
@@ -278,7 +298,7 @@ export class HostedFormationCoordinator {
     // not let the generic retry path treat its retained host mutation as an
     // invitation to resume or relaunch the Lobby.  The other terminal
     // states retain their existing failed-pre-Genesis response semantics.
-    if (material.state === "abandoned_prestart") {
+    if (["closing", "closed_by_creator", "abandoned_prestart"].includes(material.state)) {
       throw new HostedFormationRejectedError("launch_unavailable");
     }
     if (["cancelled", "expired", "failed_pre_genesis"].includes(material.state)) {
@@ -324,7 +344,56 @@ export class HostedFormationCoordinator {
   /** Repairs prior consent only. It cannot freeze a roster or authorize a launch. */
   async recover(launchRequestId: string): Promise<FormationAdvanceResult | null> {
     const material = await this.data.readHostedRecoveryMaterial(launchRequestId);
-    return material === null ? null : this.resume(material);
+    return material === null || material.state === "closing" ? null : this.resume(material);
+  }
+
+  /**
+   * Requests and completes the creator's one-way close for this launch lineage.
+   * Capacity is released only after the Host returns a durable fence or an
+   * archived canonical Room head.
+   */
+  async close(accountId: string, launchRequestId: string): Promise<boolean> {
+    const material = await this.requiredMaterial(accountId, launchRequestId);
+    if (material.state === "closed_by_creator") return true;
+    const closureRequest = deriveClosureRequest(material);
+    const requestBytes = encodeCanonical(closureRequest);
+    if (!(await this.data.requestLaunchClosure({
+      accountId,
+      launchRequestId,
+      hostInstallationId: this.hostInstallationId,
+      canonicalRequest: requestBytes,
+      requestDigest: sha256(requestBytes),
+    }))) {
+      throw new HostedFormationRejectedError("launch_close_rejected");
+    }
+    return this.completeClosure(launchRequestId);
+  }
+
+  /** Retries an already-authorized closure without browser authority. */
+  async recoverClosure(launchRequestId: string): Promise<boolean> {
+    return this.completeClosure(launchRequestId);
+  }
+
+  private async completeClosure(launchRequestId: string): Promise<boolean> {
+    const material = await this.data.readHostedRecoveryMaterial(launchRequestId);
+    // The request RPC is idempotent and a completed launch is intentionally no
+    // longer exposed as recovery material.
+    if (material === null) return true;
+    if (material.state !== "closing") {
+      throw new HostedFormationRejectedError("launch_close_not_authorized");
+    }
+    const closureRequest = deriveClosureRequest(material);
+    const evidence = await this.gateway.closeLaunch(closureRequest);
+    validateLaunchClosureEvidence(evidence, closureRequest, this.hostInstallationId);
+    const evidenceBytes = encodeCanonical(evidence);
+    if (!(await this.data.recordLaunchClosure(
+      launchRequestId,
+      evidenceBytes,
+      sha256(evidenceBytes),
+    ))) {
+      throw new HostedFormationRejectedError("launch_close_rejected");
+    }
+    return true;
   }
 
   /**
@@ -655,6 +724,10 @@ export class HttpHostedFormationGateway implements HostedFormationGateway {
     return this.statusCall("/v1/hosted/evidence", request);
   }
 
+  async closeLaunch(request: CanonicalObject): Promise<CanonicalObject> {
+    return this.call("/v1/hosted/close", request, false);
+  }
+
   async abandonPrestart(request: CanonicalObject): Promise<CanonicalObject> {
     return this.call("/v1/hosted/abandon-prestart", request, false);
   }
@@ -779,7 +852,8 @@ function deriveFrozenDocuments(
     rosterBytes,
     [...reviewed.houseAgents.values()],
   );
-  const roomSetupOperationId = `launch-${material.launchRequestId.replaceAll("-", "")}`;
+  const roomSetupOperationId = material.roomSetupOperationId ??
+    `launch-${material.launchRequestId.replaceAll("-", "")}`;
   if (!SAFE_OPERATION_PATTERN.test(roomSetupOperationId)) throw new HostedFormationRejectedError();
   const launchRequestDigest = taggedBlake3(launchBytes);
   const evidenceRequest = {
@@ -815,6 +889,36 @@ function deriveFrozenDocuments(
     roomSetupOperationId,
     rosterBytes,
     setupBytes,
+  };
+}
+
+function deriveClosureRequest(material: HostedLaunchMaterial): CanonicalObject {
+  const creatorReference = material.creatorAccessChoice === "spectator"
+    ? "worldstream:creator-spectator"
+    : material.creatorSeatId === null ? undefined : `seat:${material.creatorSeatId}`;
+  if (creatorReference === undefined) {
+    throw new HostedFormationRejectedError("creator_seat_unfilled");
+  }
+  const launch = {
+    schema: "worldstream/launch-request/v2",
+    listing_revision_digest: material.listingRevisionDigest,
+    inputs: material.launchInputs,
+    creator: {
+      participation: material.creatorAccessChoice,
+      principal_reference: creatorReference,
+    },
+  } as const;
+  const roomSetupOperationId = material.roomSetupOperationId ??
+    `launch-${material.launchRequestId.replaceAll("-", "")}`;
+  if (!SAFE_OPERATION_PATTERN.test(roomSetupOperationId)) {
+    throw new HostedFormationRejectedError("invalid_launch_identity");
+  }
+  return {
+    schema: "worldstream/hosted-launch-closure-request/v1",
+    launch_request_id: material.launchRequestId,
+    listing_revision_digest: material.listingRevisionDigest,
+    launch_request_digest: taggedBlake3(encodeCanonical(launch)),
+    room_setup_operation_id: roomSetupOperationId,
   };
 }
 
@@ -902,6 +1006,52 @@ function validateProvisioningAbandonmentEvidence(
   ) {
     throw new HostedFormationUnavailableError("invalid_gateway_response");
   }
+}
+
+function validateLaunchClosureEvidence(
+  evidence: CanonicalObject,
+  request: CanonicalObject,
+  hostInstallationId: string,
+): void {
+  const disposition = evidence.disposition;
+  const roomId = evidence.room_id;
+  const roomHead = evidence.room_head;
+  const commonValid =
+    evidence.schema === "worldstream/hosted-launch-closure-evidence/v1" &&
+    evidence.host_installation_id === hostInstallationId &&
+    evidence.launch_request_id === request.launch_request_id &&
+    evidence.listing_revision_digest === request.listing_revision_digest &&
+    evidence.launch_request_digest === request.launch_request_digest &&
+    evidence.room_setup_operation_id === request.room_setup_operation_id &&
+    BLAKE3_PATTERN.test(requiredString(evidence.closure_fence_digest)) &&
+    /^[0-9a-f]{64}$/u.test(requiredString(evidence.authentication_tag)) &&
+    Object.keys(evidence).sort().join(",") ===
+      "authentication_tag,closure_fence_digest,disposition,host_installation_id,launch_request_digest,launch_request_id,listing_revision_digest,room_head,room_id,room_setup_operation_id,schema";
+  const cancelled = disposition === "cancelled_before_genesis" && roomId === null && roomHead === null;
+  const archived = disposition === "room_archived" &&
+    typeof roomId === "string" &&
+    /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/u.test(roomId) &&
+    isArchivedRoomHead(roomHead, roomId);
+  if (!commonValid || (!cancelled && !archived)) {
+    throw new HostedFormationUnavailableError("invalid_gateway_response");
+  }
+}
+
+function isArchivedRoomHead(value: unknown, roomId: string): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const head = value as CanonicalObject;
+  return head.room_id === roomId &&
+    Number.isSafeInteger(head.room_seq) && Number(head.room_seq) > 0 &&
+    head.core_schema_version === "worldstream.core-room-state.v1" &&
+    [
+      head.genesis_or_transition_hash,
+      head.pack_digest,
+      head.core_state_hash,
+      head.activity_state_hash,
+      head.authoritative_state_hash,
+    ].every((digest) => typeof digest === "string" && BLAKE3_PATTERN.test(digest)) &&
+    Object.keys(head).sort().join(",") ===
+      "activity_state_hash,authoritative_state_hash,core_schema_version,core_state_hash,genesis_or_transition_hash,pack_digest,room_id,room_seq";
 }
 
 function validatePublicRelayReceipt(

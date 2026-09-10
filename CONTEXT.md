@@ -178,6 +178,10 @@ _Avoid_: Activity Pack operation, Activity Client result, generic score extracto
 A Hosted Activity Platform's idempotent pre-Genesis request to start one exact Activity Listing Revision with schema-allowed inputs. It gathers permitted Seat Claims and House Agent Assignments for fixed seats, freezes one roster and Room Setup Specification, and maps to at most one Host-local Room Setup Operation; only a terminal failure proven to precede Genesis has no Activity Run, while ambiguous state reconciles the same operation and any observed Genesis creates exactly one Run.
 _Avoid_: Room Setup Operation, Activity Run, Room, generic remote administration
 
+**Hosted Launch Closure**:
+An idempotent, creator-authorized request to terminally fence one Launch Request's retained Host setup lineage. It either proves the lineage closed before Genesis or archives its one canonical Room, retires its House Runners, and returns exact Host evidence before platform capacity is released. It deletes neither the Room nor its history and grants no general Room administration authority.
+_Avoid_: Room deletion, rollback, generic Host administration, replacement launch
+
 **Seat Claim**:
 A pre-Genesis correspondence between one authenticated Platform Account and one exact seat plus a server-derived reference for a new run-scoped Principal. It cannot change the seat's Role or policy and grants no Membership or Room authority.
 _Avoid_: Membership, Role selection, participant session, seat reservation after Genesis

@@ -167,6 +167,14 @@ test("retained setup detection accepts only an owned resumable setup", () => {
       action: "continue_setup",
     }],
   }), true);
+  assert.equal(hasRetainedHostedDevelopmentSetup({
+    version: "platform_my_games.v1",
+    items: [{
+      launch_id: "71923a05-7fcd-4bea-a53b-0c15676e484d",
+      state: "activity_closing",
+      action: "finish_closing",
+    }],
+  }), true);
   for (const value of [
     null,
     { version: "platform_my_games.v1", items: [] },

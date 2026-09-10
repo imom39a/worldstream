@@ -102,6 +102,11 @@ export function createProductionPlatformBff(
       recover: (launchId) => new HostedFormationCoordinator(
         hostedFormationData, hostedFormationGateway, hostInstallationId,
       ).recover(launchId),
+      listPendingClosures: async (limit) => (await hostedFormationData
+        .listPendingLaunchClosures(limit)).map(({ launchRequestId }) => launchRequestId),
+      recoverClosure: (launchId) => new HostedFormationCoordinator(
+        hostedFormationData, hostedFormationGateway, hostInstallationId,
+      ).recoverClosure(launchId),
       abandonPrestart: (launchId) => new HostedFormationCoordinator(
         hostedFormationData, hostedFormationGateway, hostInstallationId,
       ).abandonPrestart(launchId),

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   createLaunch,
@@ -181,23 +181,35 @@ function LaunchPanel({
       opener?.focus();
     };
   }, []);
-  const idempotencyKey = useMemo(
-    () => retainedLaunchKey(activity.slug, seat, fillMode),
-    [activity.slug, seat, fillMode],
-  );
-
   const beginLaunch = async () => {
     if (session.state !== "authenticated" || seat.length === 0) return;
     setBusy(true);
     setError(null);
     try {
-      const launch = await createLaunch(session.csrf, {
+      let idempotencyKey = retainedLaunchKey(activity.slug, seat, fillMode);
+      let launch = await createLaunch(session.csrf, {
         listingSlug: activity.slug,
         creatorAccess: "seat",
         creatorSeat: seat,
         fillMode,
         idempotencyKey,
       });
+      // A create response can have been lost while the server retained its
+      // Launch Request. If that lineage was later closed from My games, the
+      // browser may still hold its original retry key. Rotate only after the
+      // server proves that old request terminal, then make one fresh attempt
+      // in the same user action.
+      if (allowsFreshLaunchRetry(launch.state)) {
+        clearRetainedLaunchKey(activity.slug, seat, fillMode, idempotencyKey);
+        idempotencyKey = retainedLaunchKey(activity.slug, seat, fillMode);
+        launch = await createLaunch(session.csrf, {
+          listingSlug: activity.slug,
+          creatorAccess: "seat",
+          creatorSeat: seat,
+          fillMode,
+          idempotencyKey,
+        });
+      }
       clearRetainedLaunchKey(activity.slug, seat, fillMode, idempotencyKey);
       onNavigate(`/launches/${launch.launch_id}`);
     } catch (cause) {
@@ -276,6 +288,16 @@ function LaunchPanel({
   );
 }
 
+export function allowsFreshLaunchRetry(state: string): boolean {
+  return [
+    "cancelled",
+    "expired",
+    "failed_pre_genesis",
+    "abandoned_prestart",
+    "closed_by_creator",
+  ].includes(state);
+}
+
 function retainedLaunchKey(slug: string, seat: string, fillMode: string): string {
   const storageKey = `worldstream.launch.v1:${slug}:${seat}:${fillMode}`;
   const retained = window.localStorage.getItem(storageKey);
@@ -300,8 +322,9 @@ function clearRetainedLaunchKey(
 export function friendlyError(cause: unknown): string {
   const code = cause instanceof Error ? cause.message : "request_unavailable";
   if (code === "activity_unavailable") return "This activity is not available on the live host.";
-  if (code === "formation_unavailable") return "The room could not be created.";
-  if (code === "activity_capacity_unavailable") return "Active activity capacity is currently in use. Try again after an activity finishes.";
+  if (code === "formation_unavailable") return "This setup could not continue. Retry it, or close it from My games and start again.";
+  if (code === "launch_close_unavailable") return "This activity is still closing. Retry Finish closing; the operation is safe to repeat.";
+  if (code === "activity_capacity_unavailable") return "Active activity capacity is in use. Open My games to continue or close the existing activity.";
   if (code === "temporarily_unavailable") return "The live room service is temporarily unavailable.";
-  return "The request did not complete. Your retained setup key makes retry safe.";
+  return "The request did not complete. Retry this setup, or close it from My games and start again.";
 }

@@ -76,6 +76,7 @@ it("renders authenticated My games actions and navigates only to reviewed platfo
     version: "platform_my_games.v1",
     items: [
       { launch_id: "10000000-0000-4000-8000-000000000001", title: "Setup", state: "setup_pending", updated_at: "2026-09-08T00:00:00Z", participation: "human", action: "continue_setup" },
+      { launch_id: "10000000-0000-4000-8000-000000000004", title: "Closing", state: "activity_closing", updated_at: "2026-09-08T00:00:00Z", participation: "human", action: "finish_closing" },
       { launch_id: "10000000-0000-4000-8000-000000000002", title: "Live", state: "live", updated_at: "2026-09-08T00:00:00Z", participation: "external_agent", action: "return_to_game" },
       { launch_id: "10000000-0000-4000-8000-000000000003", title: "Result", state: "verified_result", updated_at: "2026-09-08T00:00:00Z", participation: "human", action: "view_result", result_public_id: "a".repeat(32) },
     ],
@@ -92,15 +93,18 @@ it("renders authenticated My games actions and navigates only to reviewed platfo
   const button = (label: string) => Array.from(container.querySelectorAll("button"))
     .find((element) => element.textContent === label) as HTMLButtonElement;
   expect(button("Continue setup")).toBeTruthy();
+  expect(button("Finish closing")).toBeTruthy();
   expect(button("Return to game")).toBeTruthy();
   expect(button("View result")).toBeTruthy();
   await act(async () => {
     button("Continue setup").click();
+    button("Finish closing").click();
     button("Return to game").click();
     button("View result").click();
   });
   expect(navigate.mock.calls).toEqual([
     ["/launches/10000000-0000-4000-8000-000000000001"],
+    ["/launches/10000000-0000-4000-8000-000000000004"],
     ["/launches/10000000-0000-4000-8000-000000000002"],
     [`/runs/${"a".repeat(32)}`],
   ]);
