@@ -1,4 +1,5 @@
 import { createClient, type User } from "@supabase/supabase-js";
+import { reportPlatformFailure } from "./diagnostics.js";
 
 import {
   PlatformActivityCapacityUnavailableError,
@@ -1204,11 +1205,13 @@ async function requiredRpc(
   let result: RpcResult;
   try {
     result = await rpc.rpc(name, args);
-  } catch {
+  } catch (error) {
+    reportPlatformFailure("supabase_rpc", error, { rpc: name });
     throw new PlatformDependencyUnavailableError();
   }
   const { data, error } = result;
   if (error !== null) {
+    reportPlatformFailure("supabase_rpc", undefined, { rpc: name, ...(error.code === undefined ? {} : { code: error.code }) });
     if (
       name === "create_launch_request_v1" &&
       error.code === "55000" &&

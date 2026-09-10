@@ -1,6 +1,6 @@
 # First-party client design release
 
-Current source builds are Agent Heist v8, Negotiate v3, Midnight Archive v13,
+Current source builds are Agent Heist v9, Negotiate v3, Midnight Archive v13,
 and Inspector v2. Each release has an exact build-tree digest and linked
 evidence under `releases/` and `conformance/`. The shared CSS in `web/design/`
 is bundled independently; it does not create a runtime dependency between
@@ -8,7 +8,7 @@ clients.
 
 | Current path | Source |
 | --- | --- |
-| `/agent-heist-v8/` and `/agent-heist-v8/hosted/` | `clients/agent-heist-web` |
+| `/agent-heist-v9/`, `/agent-heist-v9/hosted/`, and `/agent-heist-v9/practice/` | `clients/agent-heist-web` |
 | `/negotiate-v3/` | `clients/negotiate-web` |
 | `/midnight-archive-v13/` and `/midnight-archive-v13/hosted/` | `clients/midnight-archive-web` |
 | `/inspector-v2/` | `web/console` |
@@ -32,11 +32,11 @@ selection is scoped to the Room's exact Pack revision digest. The repository
 binding-store test proves the ten Pack digests resolve v1 through v10 even
 though all revisions retain the same publisher version label.
 
-The hosted platform installs the current Heist v8 build and retained v7/v6/v5/v4/v3/v2
+The hosted platform installs the current Heist v9 build and retained v8/v7/v6/v5/v4/v3/v2
 artifacts. Midnight Archive v1 through v12 remain retained, with v13 bound only
-to the four-roster Pack Revision. Listing 0.25.0 and its database migration pin
-v8, while retained Listing 0.24.0 resolves v7. Publish through the coordinated
-hosted release process; changing
+to the four-roster Pack Revision. Listing 0.26.0 and its database migration pin
+v9, while retained Listing 0.25.0 resolves v8 and Listing 0.24.0 resolves v7.
+Publish through the coordinated hosted release process; changing
 frontend files alone does not activate a Runtime or database migration.
 
 Run `pnpm activity-clients:build`, `node scripts/verify-activity-clients.mjs`, and

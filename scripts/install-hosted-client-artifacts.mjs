@@ -8,7 +8,8 @@ const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Current and retained clients remain separate immutable builds. Old Rooms
 // must never fetch changed bytes at their retained entrypoint.
 for (const [path, sourcePath, releaseFile] of [
-  ["agent-heist-v8", "clients/agent-heist-web/dist", "agent-heist-web-v8.json"],
+  ["agent-heist-v9", "clients/agent-heist-web/dist", "agent-heist-web-v9.json"],
+  ["agent-heist-v8", "config/activity-clients/artifacts/agent-heist-web-v8", "agent-heist-web-v8.json"],
   ["agent-heist-v7", "config/activity-clients/artifacts/agent-heist-web-v7", "agent-heist-web-v7.json"],
   ["agent-heist-v6", "config/activity-clients/artifacts/agent-heist-web-v6", "agent-heist-web-v6.json"],
   ["agent-heist-v5", "config/activity-clients/artifacts/agent-heist-web-v5", "agent-heist-web-v5.json"],

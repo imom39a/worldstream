@@ -97,6 +97,7 @@ function attached(
   sync: Record<string, unknown>,
   cursor: number | null = null,
   accessMode: "participant" | "spectator" = "participant",
+  roomSequence = 7,
 ): ProtocolMessage {
   const through =
     sync.kind === "projection_reset"
@@ -112,7 +113,7 @@ function attached(
     room_status: "active",
     room_health: "healthy",
     integrity_generation: 1,
-    room_head: roomHead(7),
+    room_head: roomHead(roomSequence),
     cursor,
     frame_head: through,
     retained_floor: 0,
@@ -126,11 +127,11 @@ function attached(
   });
 }
 
-function reset(frame = 9): ProtocolMessage {
+function reset(frame = 9, roomSequence = 7): ProtocolMessage {
   return envelope("projection.reset", {
     room_id: id("01"),
     member_id: id("02"),
-    room_head: roomHead(7),
+    room_head: roomHead(roomSequence),
     room_health: "healthy",
     integrity_generation: 1,
     baseline_frame_head: frame,
@@ -457,6 +458,102 @@ describe("HostedLiveSessionController", () => {
     expect(setup.controller.state.canAct).toBe(false);
     socket.receive(observation(10, 8));
     expect(setup.controller.state.canAct).toBe(true);
+  });
+
+  it("requires a fresh authorized Reset after a stale Room basis without replaying the Action", async () => {
+    const setup = fixture();
+    const socket = await openResetSession(setup);
+    const receipt = setup.controller.submitAction({
+      actionId: id("32"),
+      basedOnRoomSeq: 7,
+      actionType: "publish_clue",
+      payload: { clue_id: "route", claim_code: "route_service" },
+    });
+    const action = sentMessages(socket).find(
+      (message) => message.type === "action.submit",
+    );
+    expect(action?.body).toMatchObject({
+      action_id: id("32"),
+      based_on_room_seq: 7,
+      action_type: "publish_clue",
+    });
+
+    socket.receive(
+      envelope(
+        "action.rejected",
+        {
+          room_id: id("01"),
+          member_id: id("02"),
+          action_id: id("32"),
+          admitted_at: "2026-09-10T12:00:00Z",
+          code: "stale_room_state",
+          message: "the action was based on stale room state",
+          current_room_seq: 8,
+          action_offers: [],
+          retryable_with_same_action_id: false,
+          may_submit_revised_action: true,
+          duplicate: false,
+          details: {},
+        },
+        String(action?.message_id),
+      ),
+    );
+
+    await expect(receipt).resolves.toMatchObject({
+      state: "rejected",
+      actionId: id("32"),
+      code: "stale_room_state",
+      currentRoomSeq: 8,
+      retryableWithSameActionId: false,
+      maySubmitRevisedAction: true,
+    });
+    expect(sentMessages(socket).filter(
+      (message) => message.type === "action.submit",
+    )).toHaveLength(1);
+    expect(setup.controller.state).toMatchObject({
+      status: "disconnected",
+      synchronized: false,
+      canAct: false,
+      message: "The Room advanced. Reconnect to synchronize before acting.",
+    });
+    await expect(
+      setup.controller.submitAction({
+        actionId: id("33"),
+        basedOnRoomSeq: 8,
+        actionType: "publish_clue",
+        payload: { clue_id: "route", claim_code: "route_service" },
+      }),
+    ).rejects.toThrow(/not ready/u);
+
+    const reconnecting = setup.controller.reconnect();
+    await vi.waitFor(() => expect(setup.sockets).toHaveLength(2));
+    const fresh = setup.sockets[1] as FakeSocket;
+    fresh.open();
+    fresh.receive(welcome());
+    fresh.receive(attached({
+      kind: "projection_reset", baseline_frame_head: 10, reason: "client_cursor_behind",
+    }, null, "participant", 8));
+    fresh.receive(reset(10, 8));
+    const sync = sentMessages(fresh).find(
+      (message) => message.type === "room.sync_ack",
+    );
+    fresh.receive(
+      envelope(
+        "room.sync_acked",
+        { through_frame_head: 10 },
+        String(sync?.message_id),
+      ),
+    );
+    await reconnecting;
+    expect(sentMessages(fresh).filter(
+      (message) => message.type === "action.submit",
+    )).toHaveLength(0);
+    expect(setup.controller.state).toMatchObject({
+      status: "live",
+      synchronized: true,
+      canAct: true,
+    });
+    expect(setup.controller.state.deliveryBatch?.room_head.room_seq).toBe(8);
   });
 
   it("never resubmits an uncertain Action after reconnect", async () => {

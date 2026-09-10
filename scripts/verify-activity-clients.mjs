@@ -16,13 +16,13 @@ const buildRoots = new Map([
   ["worldstream.inspector.web", "web/console/dist"],
 ]);
 const currentReleaseFiles = new Map([
-  ["worldstream.agent-heist.web", "agent-heist-web-v8.json"],
+  ["worldstream.agent-heist.web", "agent-heist-web-v9.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
   ["worldstream.midnight-archive.web", "midnight-archive-web-v13.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const currentEvidenceFiles = new Map([
-  ["worldstream.agent-heist.web", "agent-heist-web-v8.json"],
+  ["worldstream.agent-heist.web", "agent-heist-web-v9.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
   ["worldstream.midnight-archive.web", "midnight-archive-web-v13.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
@@ -122,7 +122,7 @@ for (const { name, value: evidence } of evidenceDocuments) {
           "solo-eleven-and-fifteen-turn-component-host-browser-and-replay-witnesses",
         ] : ["solo-ten-turn-component-host-browser-and-replay-witness"]
       ) : []),
-      ...(["agent-heist-web-v2.json", "agent-heist-web-v3.json", "agent-heist-web-v4.json", "agent-heist-web-v5.json", "agent-heist-web-v6.json", "agent-heist-web-v7.json", "agent-heist-web-v8.json"].includes(name) ? [
+      ...(["agent-heist-web-v2.json", "agent-heist-web-v3.json", "agent-heist-web-v4.json", "agent-heist-web-v5.json", "agent-heist-web-v6.json", "agent-heist-web-v7.json", "agent-heist-web-v8.json", "agent-heist-web-v9.json"].includes(name) ? [
         "deployment-owned-stream-bootstrap-and-recovery",
         "separate-local-kernel-and-hosted-entrypoints-without-auth-fallback",
       ] : []),
@@ -359,7 +359,8 @@ async function verifySourceBoundaries() {
     "Agent Heist WebMCP surface is missing its bounded reviewed tools",
   );
   for (const [prefix, root] of [
-    ["/agent-heist-v8/", "clients/agent-heist-web/dist"],
+    ["/agent-heist-v9/", "clients/agent-heist-web/dist"],
+    ["/agent-heist-v8/", "config/activity-clients/artifacts/agent-heist-web-v8"],
     ["/agent-heist-v7/", "config/activity-clients/artifacts/agent-heist-web-v7"],
     ["/agent-heist-v6/", "config/activity-clients/artifacts/agent-heist-web-v6"],
     ["/agent-heist-v5/", "config/activity-clients/artifacts/agent-heist-web-v5"],

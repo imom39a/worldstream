@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { encodeCanonical } from "@worldstream/pack-sdk";
@@ -21,12 +21,12 @@ test("current and retained Listings resolve their exact result projector without
     hostedGatewayUrl: "https://gateway.example.invalid",
     serviceAuthority: "synthetic-test-authority-".repeat(3),
   });
-  for (const version of ["0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.0", "0.10.0", "0.11.0", "0.12.0", "0.13.0", "0.14.0", "0.15.0", "0.16.0", "0.17.0", "0.18.0", "0.19.0", "0.20.0", "0.21.0", "0.22.0", "0.23.0", "0.24.0", "0.25.0"]) {
+  for (const version of ["0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.0", "0.10.0", "0.11.0", "0.12.0", "0.13.0", "0.14.0", "0.15.0", "0.16.0", "0.17.0", "0.18.0", "0.19.0", "0.20.0", "0.21.0", "0.22.0", "0.23.0", "0.24.0", "0.25.0", "0.26.0"]) {
     const source = JSON.parse(await readFile(resolve("../..", `config/hosted/listings/agent-heist-${version}.json`), "utf8"));
     const listing = readListingRevision(encodeCanonical(source));
     const pinned = reconciler.projectors.resolve(listing.digest);
     assert.equal(pinned.listing.digest, listing.digest);
-    assert.equal(pinned.listing.value.result.projector.version, ["0.24.0", "0.25.0"].includes(version) ? "0.5.0" : version === "0.12.0" ? "0.4.0" : ["0.7.0", "0.8.0", "0.9.0", "0.10.0", "0.11.0", "0.13.0", "0.14.0", "0.15.0", "0.16.0", "0.17.0", "0.18.0", "0.19.0", "0.20.0", "0.21.0", "0.22.0", "0.23.0"].includes(version) ? "0.3.0" : "0.2.0");
+    assert.equal(pinned.listing.value.result.projector.version, ["0.24.0", "0.25.0", "0.26.0"].includes(version) ? "0.5.0" : version === "0.12.0" ? "0.4.0" : ["0.7.0", "0.8.0", "0.9.0", "0.10.0", "0.11.0", "0.13.0", "0.14.0", "0.15.0", "0.16.0", "0.17.0", "0.18.0", "0.19.0", "0.20.0", "0.21.0", "0.22.0", "0.23.0"].includes(version) ? "0.3.0" : "0.2.0");
   }
   const archive = reconciler.projectors.resolve(MIDNIGHT_ARCHIVE_LISTING_DIGEST);
   assert.equal(archive.listing.value.result.publication.policy, "disabled");
@@ -342,13 +342,60 @@ test("public result reads serve durable state when opportunistic reconciliation 
   assert.deepEqual(delegated, paths);
 });
 
-test("a My Games reconciliation outage fails closed with private cache policy", async () => {
+test("My Games survives maintenance failure with a fresh private scoped read and a bounded cooldown", async () => {
+  let reads = 0;
+  let repairs = 0;
   const bff = withHostedResultReconciliation(
-    platform(),
-    dependencies(async () => { throw new Error("fixture outage"); }),
+    { fetch: async (request) => {
+      reads += 1;
+      return Response.json({ account: request.headers.get("x-account"), reads }, {
+        headers: { "cache-control": "private, no-store, max-age=0" },
+      });
+    } },
+    dependencies(async () => { repairs += 1; throw new Error("fixture outage"); }),
   );
-  const response = await bff.fetch(new Request("https://arena.example/api/my-games"));
-  assert.equal(response.status, 503);
-  assert.equal(response.headers.get("cache-control"), "private, no-store, max-age=0");
-  assert.deepEqual(await response.json(), { error: { code: "temporarily_unavailable" } });
+  for (const account of ["first", "second"]) {
+    const response = await bff.fetch(new Request("https://arena.example/api/my-games", {
+      headers: { "x-account": account },
+    }));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-worldstream-refresh"), "delayed");
+    assert.equal(response.headers.get("cache-control"), "private, no-store, max-age=0");
+    assert.deepEqual(await response.json(), { account, reads });
+  }
+  assert.equal(reads, 4);
+  assert.equal(repairs, 1);
+});
+
+test("maintenance failure cannot reuse a snapshot after access revocation or a private read outage", async () => {
+  for (const status of [401, 503]) {
+    let reads = 0;
+    const bff = withHostedResultReconciliation({ fetch: async () => {
+      reads += 1;
+      return reads === 1 ? Response.json({ private: "old snapshot" })
+        : Response.json({ error: { code: "unavailable" } }, { status });
+    } }, dependencies(async () => { throw new Error("outage"); }));
+    const response = await bff.fetch(new Request("https://arena.example/api/my-games"));
+    assert.equal(response.status, status);
+    assert.equal(reads, 2);
+    assert.equal(response.headers.get("x-worldstream-refresh"), null);
+    assert.deepEqual(await response.json(), { error: { code: "unavailable" } });
+  }
+});
+
+test("a recovered maintenance pass clears the delayed flag after the failure cooldown", async () => {
+  vi.useFakeTimers();
+  try {
+    let repairs = 0;
+    const bff = withHostedResultReconciliation(platform(), dependencies(async () => {
+      repairs += 1;
+      if (repairs === 1) throw new Error("temporary outage");
+      return [];
+    }));
+    const request = () => new Request("https://arena.example/api/my-games");
+    assert.equal((await bff.fetch(request())).headers.get("x-worldstream-refresh"), "delayed");
+    vi.advanceTimersByTime(5_001);
+    assert.equal((await bff.fetch(request())).headers.get("x-worldstream-refresh"), null);
+    assert.equal(repairs, 2);
+  } finally { vi.useRealTimers(); }
 });

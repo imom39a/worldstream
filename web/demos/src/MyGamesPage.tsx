@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { githubSignIn, readMyGames, usePlatformSession, type MyGamesIndex } from "./hostedApi";
 import { SiteFooter, SiteHeader, type Navigate } from "./siteChrome";
@@ -9,27 +9,37 @@ export function MyGamesPage({ onNavigate }: { onNavigate: Navigate }) {
   const [older, setOlder] = useState<MyGamesIndex["items"]>([]);
   const [state, setState] = useState<"idle" | "loading" | "unavailable">("idle");
 
-  const refresh = useCallback(async (initial: boolean) => {
-    if (session.state !== "authenticated") return;
-    if (initial) setState("loading");
-    try {
-      const value = await readMyGames();
-      setIndex(value);
-      if (initial) setOlder([]);
-      setState("idle");
-    } catch {
-      setState("unavailable");
-    }
-  }, [session.state]);
-
   useEffect(() => {
-    if (session.state !== "authenticated") return;
+    if (session.state !== "authenticated") {
+      setIndex(null);
+      setOlder([]);
+      return;
+    }
+    const controller = new AbortController();
+    let timer: number | undefined;
+    const refresh = async (initial: boolean) => {
+      if (initial) setState("loading");
+      try {
+        const value = await readMyGames(undefined, controller.signal);
+        if (controller.signal.aborted) return;
+        setIndex(value);
+        if (initial) setOlder([]);
+        setState("idle");
+      } catch {
+        if (!controller.signal.aborted) setState("unavailable");
+      } finally {
+        // Schedule after completion: a slow dependency must not fan out more
+        // overlapping requests every five seconds or install stale responses.
+        if (!controller.signal.aborted) timer = window.setTimeout(() => void refresh(false), 5_000);
+      }
+    };
     void refresh(true);
     // A bounded private index read is enough to move an open history page from
     // publication pending to a verified result. It does not poll Room state.
-    const timer = window.setInterval(() => void refresh(false), 5_000);
-    return () => window.clearInterval(timer);
-  }, [refresh, session.state]);
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [session.state]);
+
+  const visibleIndex = session.state === "authenticated" ? index : null;
 
   return <div className="site-shell hosted-shell">
     <a className="skip-link" href="#main-content">Skip to content</a>
@@ -40,10 +50,11 @@ export function MyGamesPage({ onNavigate }: { onNavigate: Navigate }) {
       {session.state === "loading" ? <p role="status">Checking sign-in…</p> : null}
       {session.state === "guest" ? <section className="catalog-notice"><p>Sign in to find activities you started or joined.</p><button type="button" onClick={() => githubSignIn("/my-games")}>Sign in with GitHub</button></section> : null}
       {session.state === "unavailable" || state === "unavailable" ? <p role="status">My games is temporarily unavailable.</p> : null}
+      {visibleIndex !== null && (visibleIndex.refresh_delayed || state === "unavailable") ? <p role="status">Latest status is delayed. Your saved history is shown. Entry will check access again.</p> : null}
       {state === "loading" ? <p role="status">Finding your activities…</p> : null}
-      {index !== null && index.items.length === 0 ? <p>No activities yet. Choose one from Discover when you are ready.</p> : null}
-      {index !== null ? <ul className="my-games-list">
-        {[...index.items, ...older].map((item) => <li key={item.launch_id}>
+      {visibleIndex !== null && visibleIndex.items.length === 0 ? <p>No activities yet. Choose one from Discover when you are ready.</p> : null}
+      {visibleIndex !== null ? <ul className="my-games-list">
+        {[...visibleIndex.items, ...older].map((item) => <li key={item.launch_id}>
           <article
             data-launch-id={item.launch_id}
             data-result-public-id={item.result_public_id}
@@ -63,8 +74,8 @@ export function MyGamesPage({ onNavigate }: { onNavigate: Navigate }) {
           </article>
         </li>)}
       </ul> : null}
-      {index?.next !== null && index?.next !== undefined ? <button type="button" onClick={() => {
-        void readMyGames(index.next).then((value) => {
+      {visibleIndex?.next !== null && visibleIndex?.next !== undefined ? <button type="button" onClick={() => {
+        void readMyGames(visibleIndex.next).then((value) => {
           setOlder((items) => [...items, ...value.items]);
           setIndex((current) => current === null ? current : { ...current, next: value.next });
         }).catch(() => setState("unavailable"));

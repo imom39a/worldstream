@@ -104,6 +104,8 @@ test("runtime configuration fixes internal listeners and persistent children", (
   }));
   assert.equal(layout.runtimeData, "/var/lib/worldstream/runtime");
   assert.equal(layout.controllerState, "/var/lib/worldstream/studio");
+  assert.equal(layout.retainedClientReleaseV8, "/opt/worldstream/hosted/agent-heist-web-v8.json");
+  assert.equal(layout.retainedClientRelease, "/opt/worldstream/hosted/agent-heist-web-v7.json");
   assert.equal(layout.maintenanceMarker, "/var/lib/worldstream/maintenance/closed");
   const config = renderHostedRuntimeConfig({
     dataDirectory: layout.runtimeData,
@@ -123,6 +125,8 @@ test("the hosted image packages the same current client as hosted bindings", asy
   const bindings = JSON.parse(await readFile(new URL("../config/activity-clients/hosted-local-bindings.json", import.meta.url), "utf8"));
   const deployment = bindings.deployments.find(value => value.client_id === release.client_id && value.release_digest === release.release_digest);
   assert.equal(deployment.release_digest, release.release_digest);
+  assert.match(dockerfile, /COPY config\/activity-clients\/releases\/agent-heist-web-v8\.json \/opt\/worldstream\/hosted\/agent-heist-web-v8\.json/u);
+  assert.match(dockerfile, /COPY config\/activity-clients\/releases\/agent-heist-web-v7\.json \/opt\/worldstream\/hosted\/agent-heist-web-v7\.json/u);
 });
 
 test("the packaged managed Host digest is raw hex and mismatches fail closed", async () => {

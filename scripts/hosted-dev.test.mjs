@@ -145,8 +145,9 @@ test("the local launch probe accepts both committed and pending Gateway response
 });
 
 test("the readiness probe identity is stable and scoped to its Listing", () => {
-  const first = hostedDevelopmentReadinessProbeIdentity();
-  const second = hostedDevelopmentReadinessProbeIdentity();
+  const retained = "blake3:8be1c66c9c69a4a67800dadf8e60d66bdf8a8b9118fb3baa96b5e8cdaf272b7d";
+  const first = hostedDevelopmentReadinessProbeIdentity(retained);
+  const second = hostedDevelopmentReadinessProbeIdentity(retained);
   const earlierListing = hostedDevelopmentReadinessProbeIdentity(
     "blake3:04edc964d5cbc1bc5efa422ac856305d55cec609a6ae5c5c1814c8389b776f80",
   );
@@ -302,7 +303,7 @@ test("local and Fly gateways retain all retained Listings as well as current dis
   const deployed = JSON.parse(value.slice(value.indexOf("=") + 1).trim());
   assert.equal(deployed, hostedDevelopmentListingAllowlist());
   const admitted = new Set(deployed.split(","));
-  assert.equal(admitted.size, 24);
+  assert.equal(admitted.size, 25);
   assert.ok(admitted.has("blake3:8be1c66c9c69a4a67800dadf8e60d66bdf8a8b9118fb3baa96b5e8cdaf272b7d"));
   assert.ok(admitted.has("blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397"));
   assert.ok(admitted.has("blake3:945664f9fea18ace9991c44d43febc142a58244d69352d98514a69b4f7b22030"));

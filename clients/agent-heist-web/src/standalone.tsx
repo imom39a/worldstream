@@ -9,6 +9,10 @@ import {
 import { StandaloneAgentHeistClient } from "./StandaloneAgentHeistClient";
 import "./styles.css";
 
+if (import.meta.env.DEV && new URLSearchParams(window.location.search).has("variant")) {
+  // THROWAWAY UX study: isolated sample state, never a live session or mutation.
+  void import("./prototype-player/PlayerPrototype").then(({ mountPrototype }) => mountPrototype());
+} else {
 const root = document.getElementById("root");
 if (root === null) throw new Error("missing #root mount point");
 // Strip the one-use handoff before any request, including on a wrong surface.
@@ -28,4 +32,5 @@ if (location.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includ
       <StandaloneAgentHeistClient startup={resolvedStartup} client={client} />
     </StrictMode>);
   });
+}
 }

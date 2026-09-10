@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { withPlatformDiagnostics } from "./diagnostics.js";
 
 import {
   createVercelPlatformBff,
@@ -82,7 +83,7 @@ export function createProductionPlatformBff(
       hostedPublicStreamBaseUrl: hostedGatewayUrl,
     },
   );
-  return withHostedResultReconciliation(
+  return withPlatformDiagnostics(withHostedResultReconciliation(
     withDeploymentIdentity(platform, {
       canonicalOrigin,
       commit: environment.VERCEL_GIT_COMMIT_SHA,
@@ -111,7 +112,7 @@ export function createProductionPlatformBff(
         hostedFormationData, hostedFormationGateway, hostInstallationId,
       ).abandonPrestart(launchId),
     },
-  );
+  ));
 }
 
 function assertProductionEnvironment(environment: NodeJS.ProcessEnv): void {

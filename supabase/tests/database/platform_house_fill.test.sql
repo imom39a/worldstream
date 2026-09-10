@@ -978,5 +978,149 @@ select is(
   'reading terminal launch material does not revive either retired capacity unit'
 );
 
+-- An expired House claim window still permits the creator's existing, pre-Host
+-- cancellation path.  It releases only the live claim and the Launch Request
+-- capacity, while preserving the cancelled Launch Request as history.
+set local role service_role;
+
+create temporary table expired_cancel_launch as
+select * from platform_api.create_launch_request_v1(
+  '20000000-0000-4000-8000-000000000002',
+  'blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956',
+  'expired-house-cancel',
+  decode(repeat('72', 32), 'hex'),
+  convert_to('{}', 'utf8'),
+  extensions.digest(convert_to('{}', 'utf8'), 'sha256'),
+  'worldstream/canonical-json/v1',
+  'fill_unclaimed',
+  'seat',
+  'navigator',
+  'account_human'
+);
+
+select platform_api.start_house_fill_v1(
+  '20000000-0000-4000-8000-000000000002',
+  (select launch_request_id from expired_cancel_launch)
+);
+
+reset role;
+alter table platform_store.house_fill_operations
+  disable trigger protect_house_fill_operation_v1;
+update platform_store.house_fill_operations operations
+set claim_window_opened_at = operations.claim_window_opened_at - interval '31 seconds',
+    claim_window_closes_at = operations.claim_window_closes_at - interval '31 seconds'
+where operations.launch_request_id = (select launch_request_id from expired_cancel_launch);
+alter table platform_store.house_fill_operations
+  enable trigger protect_house_fill_operation_v1;
+set local role service_role;
+
+select ok(
+  platform_api.cancel_launch_request_v1(
+    '20000000-0000-4000-8000-000000000002',
+    (select launch_request_id from expired_cancel_launch)
+  ),
+  'the creator can cancel an expired, pre-Host House-fill launch'
+);
+select ok(
+  (
+    select launches.state = 'cancelled'
+      and exists (
+        select 1
+        from platform_store.seat_claims claims
+        where claims.launch_request_id = launches.launch_request_id
+          and claims.released_at is not null
+          and claims.release_reason = 'launch_cancelled'
+      )
+      and exists (
+        select 1
+        from platform_store.capacity_reservations reservations
+        where reservations.launch_request_id = launches.launch_request_id
+          and reservations.released_at is not null
+          and reservations.release_reason = 'cancelled'
+      )
+    from platform_store.launch_requests launches
+    where launches.launch_request_id = (select launch_request_id from expired_cancel_launch)
+  ),
+  'expired cancellation preserves Launch Request history and releases its claim and capacity'
+);
+reset role;
+select throws_ok(
+  format(
+    $query$update platform_store.seat_claims
+      set controlling_account_id = %L
+      where launch_request_id = %L and seat_id = 'navigator'$query$,
+    '20000000-0000-4000-8000-000000000003',
+    (select launch_request_id from expired_cancel_launch)
+  ),
+  '23000',
+  'immutable_seat_claim',
+  'expired cancellation never permits an identity mutation'
+);
+set local role service_role;
+select throws_ok(
+  format(
+    $query$update platform_store.seat_claims
+      set released_at = null, release_reason = null
+      where launch_request_id = %L and seat_id = 'navigator'$query$,
+    (select launch_request_id from expired_cancel_launch)
+  ),
+  '23000',
+  'immutable_seat_claim',
+  'expired cancellation never permits a released claim to reactivate'
+);
+
+-- The existing frozen-roster guard remains ahead of the narrow exception.
+create temporary table expired_guarded_launch as
+select * from platform_api.create_launch_request_v1(
+  '20000000-0000-4000-8000-000000000003',
+  'blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956',
+  'expired-house-guarded',
+  decode(repeat('73', 32), 'hex'),
+  convert_to('{}', 'utf8'),
+  extensions.digest(convert_to('{}', 'utf8'), 'sha256'),
+  'worldstream/canonical-json/v1',
+  'fill_unclaimed',
+  'seat',
+  'navigator',
+  'account_human'
+);
+
+select platform_api.start_house_fill_v1(
+  '20000000-0000-4000-8000-000000000003',
+  (select launch_request_id from expired_guarded_launch)
+);
+
+reset role;
+alter table platform_store.house_fill_operations
+  disable trigger protect_house_fill_operation_v1;
+update platform_store.house_fill_operations operations
+set claim_window_opened_at = operations.claim_window_opened_at - interval '31 seconds',
+    claim_window_closes_at = operations.claim_window_closes_at - interval '31 seconds'
+where operations.launch_request_id = (select launch_request_id from expired_guarded_launch);
+alter table platform_store.house_fill_operations
+  enable trigger protect_house_fill_operation_v1;
+update platform_store.launch_requests launches
+set roster_frozen_at = clock_timestamp(),
+    frozen_roster = convert_to('{}', 'utf8'),
+    frozen_roster_digest = extensions.digest(convert_to('{}', 'utf8'), 'sha256'),
+    frozen_room_setup_specification = convert_to('{}', 'utf8'),
+    frozen_room_setup_specification_digest = 'blake3:' || repeat('f', 64),
+    host_installation_id = 'house-test-host',
+    room_setup_operation_id = 'expired-house-guarded'
+where launches.launch_request_id = (select launch_request_id from expired_guarded_launch);
+set local role service_role;
+
+select throws_ok(
+  format(
+    $query$update platform_store.seat_claims
+      set released_at = clock_timestamp(), release_reason = 'launch_cancelled'
+      where launch_request_id = %L and seat_id = 'navigator'$query$,
+    (select launch_request_id from expired_guarded_launch)
+  ),
+  '23000',
+  'launch_roster_frozen',
+  'a frozen roster cannot release a claim after the House window closes'
+);
+
 select finish();
 rollback;
