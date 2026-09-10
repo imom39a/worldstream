@@ -45,7 +45,12 @@ boundary:
    failed.
 3. When a canonical Room exists, archive it through the normal authenticated
    Core administration path. Archival preserves Canonical History and is
-   idempotent; there is no hosted hard-delete authority.
+   idempotent; there is no hosted hard-delete authority. If an immutable Pack's
+   incremental observer faults while delivering an otherwise state-neutral
+   Archive, the Host records a validated full-projection reset instead. This
+   narrow delivery fallback requires unchanged Activity state, no Domain
+   Events, and the exact active-to-archived Core transition, so a retained Pack
+   defect cannot veto creator closure or conceal an Activity-owned change.
 4. Stop or terminally fence every House Runner reserved for the lineage. An
    already retired Runner is stronger terminal evidence and need not be
    restarted merely to stop it again.

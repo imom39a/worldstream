@@ -3122,7 +3122,7 @@ impl ActivityPackHostV1 {
             complete_head: input.head_after,
             viewer: input.viewer,
         })?;
-        let raw = invoke_pack(ActivityPackOperationV1::Observe, || {
+        let raw = match invoke_pack(ActivityPackOperationV1::Observe, || {
             self.retained.0.executor.observe(&ObserveInputV1 {
                 core_before: input.core_before,
                 activity_before: input.activity_before,
@@ -3133,7 +3133,20 @@ impl ActivityPackHostV1 {
                 viewer: input.viewer,
                 after_view: &after,
             })
-        })?;
+        }) {
+            Ok(raw) => raw,
+            Err(_) if archive_observation_can_fall_back_to_reset(input) => {
+                // Archive is a host-owned, irreversible Core boundary. When
+                // the Activity has no state or Domain Event delta, a Pack's
+                // broken incremental observer cannot be allowed to veto that
+                // boundary: the already validated after-view is the complete
+                // and privacy-safe delivery replacement.
+                return Ok(ActivityObservationOutcomeV1::ProjectionReset(Box::new(
+                    after,
+                )));
+            }
+            Err(error) => return Err(error),
+        };
         (|| {
             let view_changed = before.canonical_bytes != after.canonical_bytes;
             let Some(raw) = raw else {
@@ -3719,6 +3732,18 @@ impl ActivityPackHostV1 {
         let bytes = value.to_bytes().map_err(canonical_pack_fault)?;
         enforce_byte_bound(bytes.len(), maximum_bytes, label)
     }
+}
+
+fn archive_observation_can_fall_back_to_reset(input: &ObserveTransitionInputV1<'_>) -> bool {
+    input.activity_before == input.activity_after
+        && input.ordered_domain_events.is_empty()
+        && input.core_before.room_status() == crate::RoomStatusV1::Active
+        && input.core_after.room_status() == crate::RoomStatusV1::Archived
+        && matches!(
+            input.recorded_stimulus,
+            RecordedStimulusV1::CoreProposed(proposal)
+                if proposal.kind() == crate::CoreProposedKindV1::Archive
+        )
 }
 
 fn invoke_pack<T>(

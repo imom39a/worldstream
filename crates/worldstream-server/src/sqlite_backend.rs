@@ -4375,7 +4375,7 @@ mod tests {
         AuthorityBootstrapV1, AuthorityChangeV1, AuthorityCheckedAt, AuthorityV1,
         CapabilityBearerV1, CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1,
         CapabilityScopeV1, NewCapabilityV1, PresentedCapabilityV1, PrincipalKindV1,
-        agent_heist_clock_safe_digest, agent_heist_lobby_digest, builtin_agent_heist_registry,
+        agent_heist_lobby_digest, agent_heist_schema_safe_digest, builtin_agent_heist_registry,
         builtin_counter_registry, counter_v2_digest, counter_v3_digest, counter_v4_digest,
     };
     use worldstream_protocol::{
@@ -5281,7 +5281,7 @@ mod tests {
 
     #[allow(clippy::too_many_lines)]
     #[test]
-    fn sqlite_lobby_launch_is_authorized_idempotent_phase_safe_and_recorded() {
+    fn sqlite_lobby_archive_and_launch_are_authorized_idempotent_and_phase_safe() {
         let (_database_directory, file) = database_fixture();
         let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
         let authority = AuthorityV1::new(Arc::new(store.clone()));
@@ -5312,11 +5312,11 @@ mod tests {
         let registry =
             Arc::new(builtin_agent_heist_registry().unwrap_or_else(|_| panic!("Heist registry")));
         let descriptor = registry
-            .load_retained(&agent_heist_clock_safe_digest())
+            .load_retained(&agent_heist_schema_safe_digest())
             .unwrap_or_else(|_| panic!("Lobby revision"))
             .descriptor()
             .clone();
-        let members = [
+        let members: Vec<CreateMember> = [
             (principal.to_string(), "navigator"),
             ("01ARZ3NDEKTSV4RRFFQ69G5FD3".to_owned(), "insider"),
             ("01ARZ3NDEKTSV4RRFFQ69G5FD4".to_owned(), "broker"),
@@ -5331,14 +5331,14 @@ mod tests {
         .collect();
         let backend = SqliteGatewayBackend::new(store, registry);
         let host = session(0xaa, "01ARZ3NDEKTSV4RRFFQ69G5FD5");
-        let room = backend
-            .create_room(
+        let create_lobby = |idempotency_key: &str| {
+            backend.create_room(
                 &host,
                 CreateRoomRequest {
                     pack: PackReference {
-                        id: descriptor.pack_id,
-                        version: descriptor.explanatory_version,
-                        digest: agent_heist_clock_safe_digest().to_string(),
+                        id: descriptor.pack_id.clone(),
+                        version: descriptor.explanatory_version.clone(),
+                        digest: agent_heist_schema_safe_digest().to_string(),
                     },
                     configuration: json!({
                         "pack_id":"worldstream.agent-heist","pack_schema":1,
@@ -5349,11 +5349,44 @@ mod tests {
                         "result_duration_seconds":20,"maximum_plans":12,
                         "maximum_open_offers_per_role":4
                     }),
-                    members,
-                    idempotency_key: "lobby-room".to_owned(),
+                    members: members.clone(),
+                    idempotency_key: idempotency_key.to_owned(),
                 },
             )
-            .unwrap_or_else(|error| panic!("create Lobby: {error:?}"));
+        };
+        let room_to_archive = create_lobby("lobby-room-to-archive")
+            .unwrap_or_else(|error| panic!("create Lobby to archive: {error:?}"));
+        let archive_request = RoomArchiveRequestV1 {
+            schema: worldstream_protocol::ROOM_ARCHIVE_REQUEST_SCHEMA_V1.to_owned(),
+            idempotency_key: "archive-lobby-room".to_owned(),
+        };
+        let archived = backend
+            .archive_room(&host, &room_to_archive.room_id, archive_request.clone())
+            .unwrap_or_else(|error| panic!("archive Lobby: {error:?}"));
+        assert_eq!(archived.room_head.room_seq, 1);
+        assert!(!archived.duplicate);
+        let duplicate_archive = backend
+            .archive_room(&host, &room_to_archive.room_id, archive_request)
+            .unwrap_or_else(|error| panic!("duplicate archive Lobby: {error:?}"));
+        assert_eq!(duplicate_archive.room_head, archived.room_head);
+        assert!(duplicate_archive.duplicate);
+        let inspection = rusqlite::Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("inspect archived Lobby: {error}"));
+        let archived_rows: (String, i64, i64) = inspection
+            .query_row(
+                "SELECT r.room_status, \
+                 (SELECT count(*) FROM transitions WHERE room_id = r.room_id), \
+                 (SELECT count(*) FROM observation_consequences \
+                  WHERE room_id = r.room_id AND consequence_kind = 'reset_required') \
+                 FROM rooms AS r WHERE r.room_id = ?1",
+                [&room_to_archive.room_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap_or_else(|error| panic!("inspect archived Lobby rows: {error}"));
+        assert_eq!(archived_rows, ("archived".to_owned(), 1, 3));
+
+        let room =
+            create_lobby("lobby-room").unwrap_or_else(|error| panic!("create Lobby: {error:?}"));
         let request = LobbyLaunchRequest {
             input_id: "01ARZ3NDEKTSV4RRFFQ69G5FD6".to_owned(),
             based_on_room_seq: 0,
