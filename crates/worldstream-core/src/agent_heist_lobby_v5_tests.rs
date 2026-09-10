@@ -86,7 +86,7 @@ fn action(
     trace: &CoreTraceV1,
     member: &str,
     action_type: &str,
-    payload: Value,
+    payload: &Value,
 ) -> Result<RecordedStimulusV1> {
     let definition = AgentHeistLobbyV5
         .descriptor()
@@ -103,13 +103,13 @@ fn action(
         action_id: parsed(&format!("{:026}", trace.head().room_seq().get() + 100)),
         action_type: action_type.into(),
         payload_schema_digest: definition.payload_schema.schema_digest.clone(),
-        canonical_payload: CanonicalJsonV1::from_serialize(&payload)?,
+        canonical_payload: CanonicalJsonV1::from_serialize(payload)?,
         exact_basis_head: trace.head().clone(),
         admitted_at: parsed(&admitted_at),
     }))
 }
 
-fn act(trace: &mut CoreTraceV1, member: &str, action_type: &str, payload: Value) -> Result<()> {
+fn act(trace: &mut CoreTraceV1, member: &str, action_type: &str, payload: &Value) -> Result<()> {
     let stimulus = action(trace, member, action_type, payload)?;
     assert!(matches!(
         trace.advance(stimulus)?,
@@ -140,7 +140,7 @@ fn schema_safe_action_contract_rejects_empty_publish_payload_before_reduce() -> 
     while view(&trace, MEMBERS[0])?["phase"] == "briefing" {
         fire_next(&mut trace)?;
     }
-    let result = trace.advance(action(&trace, MEMBERS[0], PUBLISH_CLUE, json!({}))?);
+    let result = trace.advance(action(&trace, MEMBERS[0], PUBLISH_CLUE, &json!({}))?);
     assert!(matches!(
         result,
         Err(TraceErrorV1::ActionAdmission(
@@ -157,7 +157,7 @@ fn schema_safe_action_contract_accepts_exact_publish_and_commit_payloads() -> Re
         &mut trace,
         MEMBERS[0],
         INSPECT_CLUE,
-        json!({"clue_id":"route"}),
+        &json!({"clue_id":"route"}),
     )?;
     while view(&trace, MEMBERS[0])?["phase"] == "briefing" {
         fire_next(&mut trace)?;
@@ -167,13 +167,13 @@ fn schema_safe_action_contract_accepts_exact_publish_and_commit_payloads() -> Re
         &mut trace,
         MEMBERS[0],
         PUBLISH_CLUE,
-        json!({"clue_id":clue["clue_id"],"claim_code":clue["claim_code"]}),
+        &json!({"clue_id":clue["clue_id"],"claim_code":clue["claim_code"]}),
     )?;
     act(
         &mut trace,
         MEMBERS[0],
         PROPOSE_PLAN,
-        json!({"route":"canal","entry_window":"late","required_tool":"disguise","extraction":"van"}),
+        &json!({"route":"canal","entry_window":"late","required_tool":"disguise","extraction":"van"}),
     )?;
     while view(&trace, MEMBERS[0])?["phase"] == "negotiation" {
         fire_next(&mut trace)?;
@@ -183,7 +183,7 @@ fn schema_safe_action_contract_accepts_exact_publish_and_commit_payloads() -> Re
         &mut trace,
         MEMBERS[0],
         COMMIT_MOVE,
-        json!({"selected_plan_id":plan_id,"contribute_required_resource":true}),
+        &json!({"selected_plan_id":plan_id,"contribute_required_resource":true}),
     )?;
     Ok(())
 }

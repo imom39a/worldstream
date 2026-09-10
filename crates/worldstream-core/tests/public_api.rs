@@ -3,8 +3,9 @@ use std::mem::size_of;
 use worldstream_core::{
     CoreReducerV1, PackRegistryErrorV1, PreparedCoreStateV1, PreparedRoomTransitionV1,
     RoomTransitionPreparerV1, RoomTransitionStateV1, TimerRequestV1, VerifiedCoreStateV1,
-    agent_heist_clock_safe_digest, agent_heist_lobby_digest, builtin_worldstream_registry,
-    counter_v1_digest, counter_v2_digest, counter_v3_digest, counter_v4_digest,
+    agent_heist_clock_safe_digest, agent_heist_lobby_digest, agent_heist_schema_safe_digest,
+    builtin_worldstream_registry, counter_v1_digest, counter_v2_digest, counter_v3_digest,
+    counter_v4_digest,
 };
 
 #[test]
@@ -24,7 +25,13 @@ fn activity_pack_catalog_preserves_exact_revision_identity_and_schema_bytes() {
         .unwrap_or_else(|error| unreachable!("built-in registry: {error}"));
 
     let revisions = registry.catalog_revisions().collect::<Vec<_>>();
-    assert_eq!(revisions.len(), 8);
+    assert_eq!(revisions.len(), 9);
+    let schema_safe = registry
+        .catalog_revision(&agent_heist_schema_safe_digest())
+        .unwrap_or_else(|error| unreachable!("schema-safe revision: {error}"));
+    assert!(schema_safe.selectable_for_new_rooms);
+    assert!(schema_safe.runnable_for_retained_rooms);
+    assert_eq!(schema_safe.descriptor.explanatory_version, "0.5.0");
     let clock_safe = registry
         .catalog_revision(&agent_heist_clock_safe_digest())
         .unwrap_or_else(|error| unreachable!("clock-safe revision: {error}"));
