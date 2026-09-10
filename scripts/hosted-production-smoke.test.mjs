@@ -5,10 +5,28 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import {
+  hostedSmokeClientAssets,
   hostedSmokeBinaryRoot,
   runHostedSmokeCommand,
   runRoomCreateWithRetainedSetupRetry,
 } from "./hosted-production-smoke.mjs";
+
+test("the production smoke installs current V9 and every retained runtime client", () => {
+  assert.deepEqual(hostedSmokeClientAssets("/repo", "/assets"), [
+    {
+      source: "/repo/config/activity-clients/releases/agent-heist-web-v9.json",
+      destination: "/assets/agent-heist-web.json",
+    },
+    {
+      source: "/repo/config/activity-clients/releases/agent-heist-web-v8.json",
+      destination: "/assets/agent-heist-web-v8.json",
+    },
+    {
+      source: "/repo/config/activity-clients/releases/agent-heist-web-v7.json",
+      destination: "/assets/agent-heist-web-v7.json",
+    },
+  ]);
+});
 
 const setupFailure = {
   schema: "worldstream/operator-command/v1",
