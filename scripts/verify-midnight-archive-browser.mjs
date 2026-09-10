@@ -69,6 +69,10 @@ const bothObjectivesRoute = [
 ];
 const proofMode = process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_PROOF_MODE ?? "agreement";
 const liveMiraProof = proofMode === "mira-live";
+const crewLiveProof = proofMode === "crew-live";
+const liveSpecialistRoles = crewLiveProof ? ["mira", "jonah"] : liveMiraProof ? ["mira"] : [];
+const liveCompanionProof = liveSpecialistRoles.length > 0;
+const clientReleaseGeneration = "v6";
 const archiveClientRelease = process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_CLIENT_RELEASE;
 const witness = proofMode === "technical"
   ? { route: technicalRoute, turns: 10, turnsRemaining: 6, powerRemaining: 0, candidate: "Violet Ledger", checks: ["ten_turn_phone_witness", "verifier_selected_candidate"] }
@@ -80,6 +84,8 @@ const witness = proofMode === "technical"
         ? { route: bothObjectivesRoute, turns: 15, turnsRemaining: 1, powerRemaining: 0, candidate: "Violet Ledger", checks: ["fifteen_turn_both_objectives_witness", "authored_agreement_honored", "collection_preserved", "source_record_protected"] }
         : liveMiraProof
           ? { route: [], turns: 5, turnsRemaining: 11, powerRemaining: 3, candidate: "Violet Ledger", checks: ["separate_human_and_mira_memberships", "external_mira_runner_once", "one_recorded_mira_step_per_human_turn", "terminal_partial_outcome"] }
+          : crewLiveProof
+            ? { route: [], turns: 11, turnsRemaining: 5, powerRemaining: 2, candidate: "Violet Ledger", checks: ["separate_full_party_memberships", "external_specialist_runners_once_each", "one_recorded_specialist_step_per_human_turn", "field_assay_verified_candidate", "full_crew_extraction"] }
         : (() => { throw new Error(`unknown Midnight Archive proof mode: ${proofMode}`); })();
 const acceptanceStartedAt = Date.now();
 
@@ -96,19 +102,19 @@ let started = false;
 let failure;
 let receipt;
 let submittedRecoveryPayload;
-let miraMembershipFile;
-let miraRunnerFile;
-let miraRunnerInvocations = 0;
+const specialistRuntime = new Map([
+  ["mira", { name: "Mira", module: "examples.midnight_archive.run_mira", membershipFile: undefined, runnerFile: undefined, invocations: 0, process: undefined }],
+  ["jonah", { name: "Jonah", module: "examples.midnight_archive.run_jonah", membershipFile: undefined, runnerFile: undefined, invocations: 0, process: undefined }],
+]);
 let replayRequests = 0;
 let browserActionRequests = 0;
 let browserActionResponses = 0;
 let latestBrowserActionResponse;
-let miraRunnerProcess;
 
 try {
-  if (liveMiraProof) {
-    assert.ok(process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE, "mira-live proof requires WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE for the exact approved Companion Pack");
-    assert.ok(archiveClientRelease, "mira-live proof requires WORLDSTREAM_MIDNIGHT_ARCHIVE_CLIENT_RELEASE for the exact approved Companion Client release");
+  if (liveCompanionProof) {
+    assert.ok(process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE, `${proofMode} proof requires WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE for the exact approved Companion Pack`);
+    assert.ok(archiveClientRelease, `${proofMode} proof requires WORLDSTREAM_MIDNIGHT_ARCHIVE_CLIENT_RELEASE for the exact approved Companion Client release`);
   }
   const bundle = await archiveBundle();
   if (process.env.WORLDSTREAM_ACCEPTANCE_REUSE_BINARIES !== "1") await buildExecutables();
@@ -120,7 +126,7 @@ try {
   debug("binary preflight and bundle inspection complete");
 
   const releasePath = archiveClientRelease === undefined
-    ? join(workspace, "config/activity-clients/releases/midnight-archive-web-v4.json")
+    ? join(workspace, "config/activity-clients/releases/midnight-archive-web-v6.json")
     : resolve(workspace, archiveClientRelease);
   const release = JSON.parse(await readFile(releasePath, "utf8"));
   const standaloneSurface = release.surfaces.find((surface) => surface.surface_id === "midnight-archive-web");
@@ -139,7 +145,7 @@ try {
   for (const deployment of bootstrap.deployments) for (const surface of deployment.surfaces) surface.launch_url = `${host.origin}${new URL(surface.launch_url).pathname}`;
   const archiveDeployment = {
     schema: "worldstream/client-deployment/v1",
-    deployment_id: "first-party-midnight-archive-web-v4",
+    deployment_id: `first-party-midnight-archive-web-${clientReleaseGeneration}`,
     client_id: release.client_id,
     release_digest: release.release_digest,
     trust_level: "externally_trusted",
@@ -149,7 +155,7 @@ try {
   bootstrap.bindings = bootstrap.bindings.filter((binding) => binding.deployment_id === "first-party-inspector-web-v2");
   bootstrap.bindings.push({
     schema: "worldstream/client-binding/v1",
-    binding_id: "midnight-archive-0-1-lead-web-v4",
+    binding_id: `midnight-archive-0-1-lead-web-${clientReleaseGeneration}`,
     pack: { id: "worldstream.midnight-archive", version: "0.1.0", digest: bundleIdentity.revision_digest },
     client_contract: "worldstream/activity-client-protocol/v1",
     access_mode: "participant",
@@ -198,14 +204,14 @@ try {
         display_name: "Lead",
         principal: { reference: "lead", kind: "human" },
       },
-      ...(liveMiraProof ? [{
-        label: "mira",
-        role: "mira",
+      ...liveSpecialistRoles.map((role) => ({
+        label: role,
+        role,
         required: true,
-        display_name: "Mira",
-        principal: { reference: "mira", kind: "agent" },
+        display_name: specialist(role).name,
+        principal: { reference: role, kind: "agent" },
         assignment: { mode: "external" },
-      }] : []),
+      })),
     ],
     operator_view: false,
   }), { mode: 0o600 });
@@ -214,20 +220,25 @@ try {
   const operation = created.room_operation.operation;
   const room = created.room_operation.room_id;
   const credential = await readFile(join(state, "control-access.v1"));
-  if (liveMiraProof) {
-    assertSeparateMiraIdentity(await readTaskSetupStatus(operation, credential));
+  if (liveCompanionProof) {
+    assertSeparateSpecialistIdentities(await readTaskSetupStatus(operation, credential), liveSpecialistRoles);
     const credentials = join(root, "credentials");
     await mkdir(credentials, { mode: 0o700 });
-    miraMembershipFile = join(credentials, "mira-membership.json");
-    miraRunnerFile = join(credentials, "mira-runner.json");
-    await cli("client", "export-credentials", "--operation", operation, "--seat", "mira", "--output", miraMembershipFile);
-    await cli("runner", "export-credentials", "--operation", operation, "--seat", "mira", "--output", miraRunnerFile);
-    await assertMiraCredentialPair(miraMembershipFile, miraRunnerFile, operation, room, bundleIdentity.revision_digest);
-    debug("separate Mira membership and Runner credentials exported");
+    const identities = [];
+    for (const role of liveSpecialistRoles) {
+      const runtime = specialist(role);
+      runtime.membershipFile = join(credentials, `${role}-membership.json`);
+      runtime.runnerFile = join(credentials, `${role}-runner.json`);
+      await cli("client", "export-credentials", "--operation", operation, "--seat", role, "--output", runtime.membershipFile);
+      await cli("runner", "export-credentials", "--operation", operation, "--seat", role, "--output", runtime.runnerFile);
+      identities.push(await assertSpecialistCredentialPair(role, operation, room, bundleIdentity.revision_digest));
+    }
+    assertIndependentSpecialistCredentials(identities);
+    debug(`separate ${liveSpecialistRoles.join(" and ")} Membership and Runner credentials exported`);
   }
   const handoff = await issueClientHandoff(operation, credential);
   assert.equal(new URL(handoff.client_url).pathname, standaloneSurface.entrypoint);
-  debug("solo Room and client handoff ready");
+  debug(`${liveCompanionProof ? "companion" : "solo"} Room and client handoff ready`);
 
   page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   page.on("console", (message) => {
@@ -280,14 +291,19 @@ try {
   debug("briefing Projection synchronized");
   await assertActionControlsDisabled(page);
   await assertViewportFits(page, "desktop briefing");
-  if (liveMiraProof) {
-    miraRunnerProcess = startMiraRunner(bundleIdentity.revision_digest);
-    await waitForMiraRunnerReadiness(room);
+  if (liveCompanionProof) {
+    for (const role of liveSpecialistRoles) startSpecialistRunner(role, bundleIdentity.revision_digest);
+    await waitForSpecialistRunnerReadiness(room, liveSpecialistRoles);
   }
   await startActivity(room);
   await page.getByText("Projection current", { exact: true }).waitFor({ timeout: authorizedProjectionTimeoutMs });
   debug("Activity Start committed");
-  if (liveMiraProof) {
+  if (crewLiveProof) {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await assertViewportFits(page, "phone full-party mission");
+    await assertPhoneControls(page);
+    await runLiveCrewWitness(page, { room, revision: bundleIdentity.revision_digest });
+  } else if (liveMiraProof) {
     await page.setViewportSize({ width: 390, height: 844 });
     await assertViewportFits(page, "phone Mira mission");
     await assertPhoneControls(page);
@@ -313,12 +329,12 @@ try {
   await page.getByRole("button", { name: "Replay verified", exact: true }).waitFor({ timeout: authorizedProjectionTimeoutMs });
   }
   if (bridgeFailure) throw bridgeFailure;
-  receipt = { status: "passed", pack: "worldstream.midnight-archive@0.1.0", bundle_digest: bundleIdentity.bundle_digest, revision_digest: bundleIdentity.revision_digest, room, turns: witness.turns, turns_remaining: witness.turnsRemaining, power_remaining: witness.powerRemaining, provider_calls: 0, runner_invocations: miraRunnerInvocations, checks: ["briefing_projection_before_activity_start", "actions_disabled_until_sync", "desktop_and_phone_layouts", ...witness.checks, ...(liveMiraProof ? ["authorized_replay_without_runner_or_policy_rerun"] : ["canonical_recovery_payload", "beginning_of_turn_gate_boundary", "terminal_success", "authorized_replay"]), "private_authenticity_non_leakage"] };
+  receipt = { status: "passed", pack: "worldstream.midnight-archive@0.1.0", bundle_digest: bundleIdentity.bundle_digest, revision_digest: bundleIdentity.revision_digest, room, turns: witness.turns, turns_remaining: witness.turnsRemaining, power_remaining: witness.powerRemaining, provider_calls: 0, runner_invocations: runnerInvocationReceipt(), checks: ["briefing_projection_before_activity_start", "actions_disabled_until_sync", "desktop_and_phone_layouts", ...witness.checks, ...(liveCompanionProof ? ["authorized_replay_without_runner_or_policy_rerun"] : ["canonical_recovery_payload", "beginning_of_turn_gate_boundary", "terminal_success", "authorized_replay"]), "private_authenticity_non_leakage"] };
 } catch (error) {
   failure = error;
 } finally {
   const cleanupFailures = [];
-  for (const cleanup of [async () => { if (page) await page.unrouteAll({ behavior: "ignoreErrors" }); if (browser) await browser.close(); }, stopMiraRunnerIfActive, async () => { if (started) await stopIfAvailable("stop"); }, async () => { if (started) await stopIfAvailable("controller-stop"); }, async () => { if (host) await host.close(); }]) {
+  for (const cleanup of [async () => { if (page) await page.unrouteAll({ behavior: "ignoreErrors" }); if (browser) await browser.close(); }, stopSpecialistRunnersIfActive, async () => { if (started) await stopIfAvailable("stop"); }, async () => { if (started) await stopIfAvailable("controller-stop"); }, async () => { if (host) await host.close(); }]) {
     try { await cleanup(); } catch (error) { cleanupFailures.push(error); }
   }
   if (cleanupFailures.length) throw new AggregateError([...(failure ? [failure] : []), ...cleanupFailures], "Midnight Archive proof cleanup incomplete");
@@ -335,7 +351,7 @@ async function archiveBundle() {
   if (process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE) return process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE;
   const proof = JSON.parse(await readFile(join(
     workspace,
-    "packs/midnight-archive/evidence/production-proof-0.1.0-mira.json",
+    "packs/midnight-archive/evidence/production-proof-0.1.0-specialist-crew-consecutive.json",
   ), "utf8"));
   assert.equal(proof.status, "passed");
   assert.match(proof.bundleDigest, /^blake3:[0-9a-f]{64}$/u);
@@ -424,7 +440,7 @@ async function readTaskSetupStatus(operation, credential) {
   const response = await fetch(`http://${controllerAddress}/api/v1/task-setups/${operation}`, {
     headers: { authorization: `Bearer ${credential.subarray(16).toString("hex")}` },
   });
-  assert.equal(response.ok, true, "Mira live proof could not read the persisted Task Setup status");
+  assert.equal(response.ok, true, "companion proof could not read the persisted Task Setup status");
   const status = await response.json();
   assert.equal(status?.draft_id, operation, "Task Setup status did not match the created operation");
   return status;
@@ -479,7 +495,7 @@ function safeFailureCode(value) {
 }
 
 async function assertActionControlsDisabled(page) {
-  const controls = page.locator("#archive-actions button, .archive-map button, .candidate-card button, .context-actions button, .mira-controls button");
+  const controls = page.locator("#archive-actions button, .archive-map button, .candidate-card button, .context-actions button, [data-testid$='-crew-card'] button");
   assert.ok(await controls.count() > 0, "Authorized briefing Projection rendered no game controls to gate");
   for (let index = 0; index < await controls.count(); index += 1) assert.equal(await controls.nth(index).isDisabled(), true, "Action enabled before active authorized Projection");
 }
@@ -507,7 +523,7 @@ async function assertViewportFits(page, description) {
 }
 
 async function assertPhoneControls(page) {
-  const controls = page.locator("#archive-actions button:visible, .archive-map button:visible, .candidate-card button:visible, .mira-controls button:visible");
+  const controls = page.locator("#archive-actions button:visible, .archive-map button:visible, .candidate-card button:visible, [data-testid$='-crew-card'] button:visible");
   assert.ok(await controls.count() > 0, "phone layout exposes no visible game controls");
   for (let index = 0; index < await controls.count(); index += 1) {
     const box = await controls.nth(index).boundingBox();
@@ -567,6 +583,7 @@ async function runRoute(page) {
         else if (await action.count()) await action.click();
         else throw new Error(`Action control missing for ${actionType}`);
       }
+      if (actionType === "stage_extract") await prepareAndAcknowledgeExtraction(page, [], false);
       await waitForEnabled(page, page.getByRole("button", { name: /commit turn/i }).first(), `${actionType} staged Action`);
       const afterStage = readMetric(await page.locator("body").innerText(), "Turns remaining");
       assert.equal(afterStage, turns, `${actionType} consumed a turn before Commit`);
@@ -584,59 +601,82 @@ async function runRoute(page) {
   }
 }
 
-function assertSeparateMiraIdentity(operation) {
+function assertSeparateSpecialistIdentities(operation, roles) {
   const seats = operation?.seats;
-  assert.ok(Array.isArray(seats), "Mira live proof requires the persisted setup seats");
+  assert.ok(Array.isArray(seats), "companion proof requires the persisted setup seats");
   const lead = seats.find((seat) => seat?.seat_id === "lead");
-  const mira = seats.find((seat) => seat?.seat_id === "mira");
-  assert.ok(lead && mira, "Mira live proof requires both Lead and Mira setup seats");
+  const specialists = roles.map((role) => seats.find((seat) => seat?.seat_id === role));
+  assert.ok(lead && specialists.every(Boolean), `companion proof requires Lead and ${roles.join(" and ")} setup seats`);
   assert.equal(lead.principal_kind, "human", "Lead must be a human Principal");
-  assert.equal(mira.principal_kind, "agent", "Mira must be an agent Principal");
   assert.match(lead.principal_id ?? "", /^[0-9A-HJKMNP-TV-Z]{26}$/u, "Lead Principal was not provisioned");
-  assert.match(mira.principal_id ?? "", /^[0-9A-HJKMNP-TV-Z]{26}$/u, "Mira Principal was not provisioned");
   assert.match(lead.member_id ?? "", /^[0-9A-HJKMNP-TV-Z]{26}$/u, "Lead Membership was not provisioned");
-  assert.match(mira.member_id ?? "", /^[0-9A-HJKMNP-TV-Z]{26}$/u, "Mira Membership was not provisioned");
-  assert.notEqual(lead.principal_id, mira.principal_id, "Lead and Mira must use separate Principals");
-  assert.notEqual(lead.member_id, mira.member_id, "Lead and Mira must use separate Memberships");
+  for (const [index, role] of roles.entries()) {
+    const seat = specialists[index];
+    const name = specialist(role).name;
+    assert.equal(seat.seat_id, role, `${name} must occupy the exact ${role} seat`);
+    assert.equal(seat.role, role, `${name} must have the exact ${role} Role`);
+    assert.equal(seat.principal_kind, "agent", `${name} must be an agent Principal`);
+    assert.match(seat.principal_id ?? "", /^[0-9A-HJKMNP-TV-Z]{26}$/u, `${name} Principal was not provisioned`);
+    assert.match(seat.member_id ?? "", /^[0-9A-HJKMNP-TV-Z]{26}$/u, `${name} Membership was not provisioned`);
+  }
+  assert.equal(new Set([lead.principal_id, ...specialists.map((seat) => seat.principal_id)]).size, roles.length + 1, "every crew seat must use a separate Principal");
+  assert.equal(new Set([lead.member_id, ...specialists.map((seat) => seat.member_id)]).size, roles.length + 1, "every crew seat must use a separate Membership");
 }
 
-async function assertMiraCredentialPair(membershipFile, runnerFile, operation, room, revision) {
-  assert.notEqual(membershipFile, runnerFile, "Mira Membership and Runner credentials need separate files");
+async function assertSpecialistCredentialPair(role, operation, room, revision) {
+  const runtime = specialist(role);
+  const { name, membershipFile, runnerFile } = runtime;
+  assert.ok(membershipFile && runnerFile, `${name} credential paths are unavailable`);
+  assert.notEqual(membershipFile, runnerFile, `${name} Membership and Runner credentials need separate files`);
   const [membershipStat, runnerStat, membershipBytes, runnerBytes] = await Promise.all([
     stat(membershipFile), stat(runnerFile), readFile(membershipFile), readFile(runnerFile),
   ]);
-  assert.equal(membershipStat.isFile(), true, "Mira Membership credential export is not a file");
-  assert.equal(runnerStat.isFile(), true, "Mira Runner credential export is not a file");
-  assert.equal(membershipStat.mode & 0o077, 0, "Mira Membership credential is not owner-only");
-  assert.equal(runnerStat.mode & 0o077, 0, "Mira Runner credential is not owner-only");
+  assert.equal(membershipStat.isFile(), true, `${name} Membership credential export is not a file`);
+  assert.equal(runnerStat.isFile(), true, `${name} Runner credential export is not a file`);
+  assert.equal(membershipStat.mode & 0o077, 0, `${name} Membership credential is not owner-only`);
+  assert.equal(runnerStat.mode & 0o077, 0, `${name} Runner credential is not owner-only`);
   const membership = JSON.parse(membershipBytes.toString("utf8"));
   const runner = JSON.parse(runnerBytes.toString("utf8"));
   const pack = { id: "worldstream.midnight-archive", version: "0.1.0", digest: revision };
   assert.deepEqual(
     {
       schema: membership.schema, operation: membership.operation, seat: membership.seat,
-      room_id: membership.room_id, role: membership.role, pack: membership.pack,
+      room_id: membership.room_id, role: membership.role, pack: membership.pack, scopes: membership.scopes,
     },
-    { schema: "worldstream/membership-credentials/v1", operation, seat: "mira", room_id: room, role: "mira", pack },
-    "Mira Membership credential has the wrong scope",
+    {
+      schema: "worldstream/membership-credentials/v1", operation, seat: role, room_id: room, role, pack,
+      scopes: ["room:attach", "room:act", "room:observe_member"],
+    },
+    `${name} Membership credential has the wrong scope`,
   );
   assert.deepEqual(
     {
       schema: runner.schema, operation: runner.operation, seat: runner.seat,
-      pack: runner.pack, permitted_memberships: runner.permitted_memberships,
+      pack: runner.pack, permitted_memberships: runner.permitted_memberships, scopes: runner.scopes,
     },
     {
-      schema: "worldstream/runner-credentials/v1", operation, seat: "mira", pack,
+      schema: "worldstream/runner-credentials/v1", operation, seat: role, pack,
       permitted_memberships: [{ room_id: membership.room_id, member_id: membership.member_id }],
+      scopes: ["activation:offer_receive", "activation:claim", "activation:complete"],
     },
-    "Mira Runner credential has the wrong scope",
+    `${name} Runner credential has the wrong singleton scope`,
   );
-  assert.equal(runner.owner_principal_id, membership.principal_id, "Runner must belong to Mira's Agent Principal");
-  assert.notEqual(membership.bearer, runner.bearer, "Mira Membership and Runner authorities must be distinct");
+  assert.equal(runner.owner_principal_id, membership.principal_id, `Runner must belong to ${name}'s Agent Principal`);
+  assert.match(runner.runner_id ?? "", /^[0-9A-HJKMNP-TV-Z]{26}$/u, `${name} Runner identity was not provisioned`);
+  assert.notEqual(membership.bearer, runner.bearer, `${name} Membership and Runner authorities must be distinct`);
+  return { role, principal: membership.principal_id, member: membership.member_id, runner: runner.runner_id, membershipBearer: membership.bearer, runnerBearer: runner.bearer };
+}
+
+function assertIndependentSpecialistCredentials(identities) {
+  for (const key of ["principal", "member", "runner", "membershipBearer", "runnerBearer"]) {
+    assert.equal(new Set(identities.map((identity) => identity[key])).size, identities.length, `specialist ${key} authority must be unique per seat`);
+  }
+  assert.equal(new Set(identities.flatMap((identity) => [identity.membershipBearer, identity.runnerBearer])).size, identities.length * 2, "every specialist authority bearer must be distinct");
 }
 
 async function runLiveMiraWitness(page, { room, revision }) {
-  assert.ok(miraMembershipFile && miraRunnerFile, "Mira credential exports are unavailable");
+  const runtime = specialist("mira");
+  assert.ok(runtime.membershipFile && runtime.runnerFile, "Mira credential exports are unavailable");
   const mira = page.getByTestId("mira-crew-card");
   await mira.waitFor({ timeout: authorizedProjectionTimeoutMs });
   await clickLiveAction(
@@ -660,7 +700,7 @@ async function runLiveMiraWitness(page, { room, revision }) {
   await mira.getByText(/preparing a bounded plan|ready\s*·\s*revision/i).first()
     .waitFor({ timeout: authorizedProjectionTimeoutMs });
 
-  const runnerResult = await waitForMiraRunnerResult(revision);
+  const runnerResult = await waitForSpecialistRunnerResult("mira", revision);
   assert.deepEqual(runnerResult, { status: "handled", submitted_actions: 1 }, "Mira Runner did not handle exactly one planning Activation");
   await mira.getByText(/ready\s*·\s*revision/i).waitFor({ timeout: authorizedProjectionTimeoutMs });
   await assertMiraProgress(mira, 0, 3, "Mira plan acceptance must not advance an Activity Turn");
@@ -691,7 +731,7 @@ async function runLiveMiraWitness(page, { room, revision }) {
     }
   }
   assert.equal(turns, 13, "three committed human turns must consume exactly three turns");
-  assert.equal(miraRunnerInvocations, 1, "Mira Runner must stop after its one Activation");
+  assert.equal(runtime.invocations, 1, "Mira Runner must stop after its one Activation");
 
   await clickLiveAction(
     page,
@@ -715,6 +755,7 @@ async function runLiveMiraWitness(page, { room, revision }) {
     page.getByRole("button", { name: /Stage Extract from the archive/i }),
     "stage_extract",
   );
+  await prepareAndAcknowledgeExtraction(page, [], false);
   await clickLiveAction(
     page,
     page.getByRole("button", { name: /commit turn/i }).first(),
@@ -726,15 +767,156 @@ async function runLiveMiraWitness(page, { room, revision }) {
 
   const actionsBeforeReplay = browserActionRequests;
   const replaysBefore = replayRequests;
-  const runnersBeforeReplay = miraRunnerInvocations;
+  const runnersBeforeReplay = runtime.invocations;
   const replayButton = page.getByRole("button", { name: /replay/i });
   assert.equal(await replayButton.count(), 1, "Replay acceptance blocked: the Archive client exposes no Replay control or authorized replay endpoint seam");
   await replayButton.click();
   await page.getByRole("button", { name: "Replay verified", exact: true }).waitFor({ timeout: authorizedProjectionTimeoutMs });
   assert.equal(replayRequests, replaysBefore + 1, "the browser did not issue one authorized Replay request");
   assert.equal(browserActionRequests, actionsBeforeReplay, "Replay must not submit a new participant Action");
-  assert.equal(miraRunnerInvocations, runnersBeforeReplay, "Replay must not rerun Mira's external Runner or policy");
+  assert.equal(runtime.invocations, runnersBeforeReplay, "Replay must not rerun Mira's external Runner or policy");
   assert.equal(room.length > 0, true, "Mira witness lost its Room identity");
+}
+
+async function runLiveCrewWitness(page, { room, revision }) {
+  const mira = specialistCard(page, "mira");
+  const jonah = specialistCard(page, "jonah");
+  await Promise.all([
+    mira.waitFor({ timeout: authorizedProjectionTimeoutMs }),
+    jonah.waitFor({ timeout: authorizedProjectionTimeoutMs }),
+  ]);
+
+  await clickSpecialistAction(page, "mira", "set_mira_follow", "Follow lead");
+  await clickSpecialistAction(page, "jonah", "assign_jonah_task", "Assign Open service hatch with 1 power allowance");
+  await clickLiveAction(page, page.getByRole("button", { name: /Move to Records/i }), "stage_move");
+  await clickSpecialistAction(page, "jonah", "request_jonah_plan", "Request a plan");
+  await waitForSpecialistText(jonah, /preparing a bounded plan|ready\s*·\s*revision/i, "Jonah planning status");
+  const jonahResult = await waitForSpecialistRunnerResult("jonah", revision);
+  assert.deepEqual(jonahResult, { status: "handled", submitted_actions: 1 }, "Jonah Runner did not handle exactly one planning Activation");
+  await waitForSpecialistText(jonah, /ready\s*·\s*revision/i, "Jonah accepted plan");
+  await assertSpecialistProgress(jonah, "Jonah", 0, 3, "Jonah plan acceptance must not advance an Activity Turn");
+
+  let turns = readMetric(await page.locator("body").innerText(), "Turns remaining");
+  for (const expectedStep of [1, 2, 3]) {
+    await clickSpecialistAction(page, "jonah", "prepare_jonah_contribution", "Prepare next eligible step");
+    await waitForSpecialistText(jonah, /Fenced to turn/i, `Jonah step ${expectedStep} preparation`);
+    turns = await commitLiveTurn(page, turns, `Jonah companion turn ${expectedStep}`);
+    await assertSpecialistProgress(jonah, "Jonah", expectedStep, 3, `Jonah may advance one recorded step on turn ${expectedStep}`);
+    if (expectedStep === 1) {
+      await waitForSpecialistText(jonah, /Location\s*Records/i, "Jonah moved to Records");
+      await waitForSpecialistText(mira, /Location\s*Records/i, "Mira followed the lead to Records");
+      await clickLiveAction(page, page.getByRole("button", { name: /Move to Plant/i }), "stage_move");
+    } else if (expectedStep === 2) {
+      await waitForSpecialistText(jonah, /Location\s*Plant/i, "Jonah moved to Plant");
+      await waitForSpecialistText(mira, /Location\s*Plant/i, "Mira followed the lead to Plant");
+      await clickLiveAction(page, page.getByRole("button", { name: /Stage Wait for one turn/i }), "stage_wait");
+    }
+  }
+  assert.equal(turns, 13, "Jonah's three-step plan must share exactly three human turns");
+  await waitForSpecialistText(jonah, /opened the Plant service hatch/i, "Jonah hatch contribution");
+  assert.equal(readMetric(await page.locator("body").innerText(), "Power reserve"), 2, "Jonah's hatch method must spend exactly one power");
+  assert.equal(specialist("jonah").invocations, 1, "Jonah Runner must stop after its one Activation");
+
+  await clickLiveAction(page, page.getByRole("button", { name: /Move to Vault/i }), "stage_move");
+  turns = await commitLiveTurn(page, turns, "lead and Mira enter the Vault");
+  await waitForSpecialistText(mira, /Location\s*Vault/i, "Mira followed the lead into the Vault");
+  await waitForSpecialistText(jonah, /Location\s*Plant/i, "Jonah held at the Plant after hatch work");
+
+  await clickSpecialistAction(page, "mira", "assign_mira_task", "Assign Field assay with 0 power allowance");
+  await clickSpecialistAction(page, "mira", "request_mira_plan", "Request a plan");
+  await waitForSpecialistText(mira, /preparing a bounded plan|ready\s*·\s*revision/i, "Mira planning status");
+  const miraResult = await waitForSpecialistRunnerResult("mira", revision);
+  assert.deepEqual(miraResult, { status: "handled", submitted_actions: 1 }, "Mira Runner did not handle exactly one planning Activation");
+  await waitForSpecialistText(mira, /ready\s*·\s*revision/i, "Mira accepted plan");
+  await assertSpecialistProgress(mira, "Mira", 0, 2, "Mira assay plan acceptance must not advance an Activity Turn");
+
+  for (const expectedStep of [1, 2]) {
+    await clickLiveAction(page, page.getByRole("button", { name: /Stage Wait for one turn/i }), "stage_wait");
+    await clickSpecialistAction(page, "mira", "prepare_mira_contribution", "Prepare next eligible step");
+    await waitForSpecialistText(mira, /Fenced to turn/i, `Mira assay step ${expectedStep} preparation`);
+    turns = await commitLiveTurn(page, turns, `Mira assay turn ${expectedStep}`);
+    await assertSpecialistProgress(mira, "Mira", expectedStep, 2, `Mira may advance one assay step on turn ${expectedStep}`);
+  }
+  assert.equal(turns, 10, "Vault entry and two assay commits must leave ten turns");
+  await waitForSpecialistText(mira, /Field assay disclosed:\s*Violet Ledger\s*·\s*verified/i, "Mira verified the Violet Ledger");
+  assert.equal(specialist("mira").invocations, 1, "Mira Runner must stop after its one Activation");
+
+  const violet = page.locator(".candidate-card").filter({ hasText: /Violet Ledger/i });
+  assert.equal(await violet.count(), 1, "the assay-supported Violet Ledger card is missing");
+  await clickLiveAction(page, violet.getByRole("button", { name: /^Stage recovery of Violet Ledger; costs 1 turn and 0 power$/i }), "stage_recover_candidate");
+  turns = await commitLiveTurn(page, turns, "recover the assay-verified Violet Ledger");
+  assert.deepEqual(submittedRecoveryPayload, { candidate_id: recoveryCandidateId }, "Recovery must submit the canonical assay-supported candidate payload");
+
+  await clickSpecialistAction(page, "mira", "set_mira_follow", "Follow lead");
+  await clickSpecialistAction(page, "jonah", "set_jonah_regroup", "Regroup at Atrium");
+  for (const [destination, expectedTurns] of [["Plant", 8], ["Records", 7], ["Atrium", 6]]) {
+    await clickLiveAction(page, page.getByRole("button", { name: new RegExp(`Move to ${destination}`, "i") }), "stage_move");
+    turns = await commitLiveTurn(page, turns, `full party return through ${destination}`);
+    assert.equal(turns, expectedTurns, `return through ${destination} consumed an unexpected turn`);
+  }
+  await waitForSpecialistText(mira, /Location\s*Atrium/i, "Mira followed the lead back to Atrium");
+  await waitForSpecialistText(jonah, /Location\s*Atrium/i, "Jonah regrouped at Atrium");
+
+  await clickLiveAction(page, page.getByRole("button", { name: /Stage Extract from the archive/i }), "stage_extract");
+  await prepareAndAcknowledgeExtraction(page, [], true);
+  turns = await commitLiveTurn(page, turns, "full-party terminal extraction");
+  assert.equal(turns, 5, "the full-party witness must finish after exactly eleven committed turns");
+  assert.equal(readMetric(await page.locator("body").innerText(), "Power reserve"), 2, "the full-party witness must finish with two power");
+  await page.getByRole("heading", { name: "The authentic ledger is out", exact: true }).waitFor({ timeout: authorizedProjectionTimeoutMs });
+  const body = await page.locator("body").innerText();
+  assert.match(body, /Turns used\s*11 of 16/i);
+  assert.match(body, /Crew extracted\s*Lead, Mira, Jonah/i);
+  assert.match(body, /Crew left behind\s*No one/i);
+  assert.match(body, /Completed specialist work/i);
+  assert.match(body, /Jonah\s*·\s*open service hatch\s*·\s*turn 3/i);
+  assert.match(body, /Mira\s*·\s*collect assay sample\s*·\s*turn 5/i);
+  assert.match(body, /Mira\s*·\s*complete field assay\s*·\s*turn 6/i);
+
+  const actionsBeforeReplay = browserActionRequests;
+  const replaysBefore = replayRequests;
+  const invocationsBeforeReplay = liveSpecialistRoles.map((role) => specialist(role).invocations);
+  const replayButton = page.getByRole("button", { name: /replay/i });
+  assert.equal(await replayButton.count(), 1, "Replay acceptance blocked: the Archive client exposes no Replay control or authorized replay endpoint seam");
+  await replayButton.click();
+  await page.getByRole("button", { name: "Replay verified", exact: true }).waitFor({ timeout: authorizedProjectionTimeoutMs });
+  assert.equal(replayRequests, replaysBefore + 1, "the browser did not issue one authorized Replay request");
+  assert.equal(browserActionRequests, actionsBeforeReplay, "Replay must not submit a new participant Action");
+  assert.deepEqual(liveSpecialistRoles.map((role) => specialist(role).invocations), invocationsBeforeReplay, "Replay must not rerun an external specialist Runner or policy");
+  assert.equal(room.length > 0, true, "crew witness lost its Room identity");
+}
+
+function specialistCard(page, role) {
+  return page.getByTestId(`${role}-crew-card`);
+}
+
+async function clickSpecialistAction(page, role, actionType, name) {
+  const locator = specialistCard(page, role).locator(`[data-action-type="${actionType}"][aria-label="${name}"]`);
+  const exact = specialistCard(page, role).getByRole("button", { name, exact: true });
+  await clickLiveAction(page, await locator.count() === 1 ? locator : exact, actionType);
+}
+
+async function commitLiveTurn(page, turns, description) {
+  await clickLiveAction(page, page.getByRole("button", { name: /commit turn/i }).first(), "commit_turn");
+  return waitForMetric(page, "Turns remaining", (value) => value === turns - 1, description);
+}
+
+async function prepareAndAcknowledgeExtraction(page, leftBehindRoles, required) {
+  const prepare = page.locator('[data-action-type="prepare_extraction"]');
+  const commit = page.getByRole("button", { name: /commit turn/i }).first();
+  for (let attempt = 0; attempt < authorizedProjectionTimeoutMs / 100; attempt += 1) {
+    if (bridgeFailure) throw bridgeFailure;
+    if (await prepare.count() === 1 && await prepare.isEnabled()) break;
+    if (!required && await commit.isEnabled()) return false;
+    await page.waitForTimeout(100);
+  }
+  assert.equal(await prepare.count(), 1, "staged extraction did not expose one prepare-extraction control");
+  await clickLiveAction(page, prepare, "prepare_extraction");
+  const preview = page.locator(".extraction-preview");
+  await preview.getByText(leftBehindRoles.length === 0 ? "No one" : new RegExp(leftBehindRoles.join(".*"), "i"), { exact: leftBehindRoles.length === 0 }).waitFor({ timeout: authorizedProjectionTimeoutMs });
+  const acknowledgement = preview.locator('[data-action-type="acknowledge_extraction"]');
+  await clickLiveAction(page, acknowledgement, "acknowledge_extraction");
+  await preview.getByText("Exact crew result acknowledged.", { exact: true }).waitFor({ timeout: authorizedProjectionTimeoutMs });
+  return true;
 }
 
 async function clickLiveAction(page, locator, actionType) {
@@ -780,32 +962,49 @@ function responseErrorCode(body) {
 }
 
 async function assertMiraProgress(mira, completed, total, description) {
-  await waitForMiraText(mira, new RegExp(`Progress\\s*${completed} of ${total} complete`, "i"), description);
-  const text = await mira.innerText();
+  await assertSpecialistProgress(mira, "Mira", completed, total, description);
+}
+
+async function assertSpecialistProgress(card, name, completed, total, description) {
+  await waitForSpecialistText(card, new RegExp(`Progress\\s*${completed} of ${total} complete`, "i"), description);
+  const text = await card.innerText();
   const match = text.match(/Progress\s*(\d+) of (\d+) complete/i);
-  assert.ok(match, `${description}: Mira progress was not rendered`);
+  assert.ok(match, `${description}: ${name} progress was not rendered`);
   assert.equal(Number(match[1]), completed, description);
-  assert.equal(Number(match[2]), total, `${description}: Mira plan length changed`);
+  assert.equal(Number(match[2]), total, `${description}: ${name} plan length changed`);
 }
 
 async function waitForMiraText(mira, pattern, description) {
+  return waitForSpecialistText(mira, pattern, description);
+}
+
+async function waitForSpecialistText(card, pattern, description) {
   for (let attempt = 0; attempt < authorizedProjectionTimeoutMs / 100; attempt += 1) {
     if (bridgeFailure) throw bridgeFailure;
-    if (pattern.test(await mira.innerText())) return;
-    await mira.page().waitForTimeout(100);
+    if (pattern.test(await card.innerText())) return;
+    await card.page().waitForTimeout(100);
   }
   throw new Error(`${description} did not render`);
 }
 
-function startMiraRunner(revision) {
+function specialist(role) {
+  const runtime = specialistRuntime.get(role);
+  assert.ok(runtime, `unknown specialist role: ${role}`);
+  return runtime;
+}
+
+function startSpecialistRunner(role, revision) {
+  const runtime = specialist(role);
+  assert.ok(runtime.membershipFile && runtime.runnerFile, `${runtime.name} credentials are unavailable`);
+  assert.equal(runtime.process, undefined, `${runtime.name} Runner was already started`);
   const python = join(workspace, "sdk/python/.venv/bin/python");
-  miraRunnerInvocations += 1;
+  runtime.invocations += 1;
   const child = spawn(python, [
-    "-m", "examples.midnight_archive.run_mira",
-    "--membership-file", miraMembershipFile,
-    "--runner-file", miraRunnerFile,
+    "-m", runtime.module,
+    "--membership-file", runtime.membershipFile,
+    "--runner-file", runtime.runnerFile,
     "--pack-revision", revision,
-    "--wait-seconds", "90",
+    "--wait-seconds", crewLiveProof ? "180" : "90",
   ], { cwd: workspace, stdio: ["ignore", "pipe", "ignore"] });
   let stdout = "";
   child.stdout.on("data", (chunk) => {
@@ -813,47 +1012,60 @@ function startMiraRunner(revision) {
     if (stdout.length > 64 * 1024) child.kill("SIGTERM");
   });
   const completed = new Promise((resolveResult, rejectResult) => {
-    child.once("error", () => rejectResult(new Error("Mira Runner process could not start")));
+    child.once("error", () => rejectResult(new Error(`${runtime.name} Runner process could not start`)));
     child.once("exit", (code, signal) => {
       if (code === 0) resolveResult(stdout);
-      else rejectResult(new Error(`Mira Runner ended before handling its bounded opportunity (${signal ?? code ?? "unknown"})`));
+      else rejectResult(new Error(`${runtime.name} Runner ended before handling its bounded opportunity (${signal ?? code ?? "unknown"})`));
     });
   });
   void completed.catch(() => undefined);
-  return { child, completed };
+  runtime.process = { child, completed };
 }
 
-async function waitForMiraRunnerReadiness(room) {
-  assert.ok(miraRunnerProcess, "Mira Runner process was not started");
+async function waitForSpecialistRunnerReadiness(room, roles) {
+  for (const role of roles) assert.ok(specialist(role).process, `${specialist(role).name} Runner process was not started`);
   for (let attempt = 0; attempt < authorizedProjectionTimeoutMs / 250; attempt += 1) {
-    if (miraRunnerProcess.child.exitCode !== null) await miraRunnerProcess.completed;
+    for (const role of roles) {
+      const process = specialist(role).process;
+      if (process.child.exitCode !== null) await process.completed;
+    }
     const inspection = await cli("room", "inspect", room);
     const readiness = inspection.launch_assessment?.readiness;
     const seats = readiness?.seats;
-    const mira = Array.isArray(seats) ? seats.find((seat) => seat?.seat_id === "mira") : undefined;
-    if (mira?.ready === true && readiness?.ready_to_launch === true) return;
+    const ready = Array.isArray(seats) && ["lead", ...roles].every((role) => seats.find((seat) => seat?.seat_id === role)?.ready === true);
+    if (ready && readiness?.ready_to_launch === true) return;
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
   }
-  throw new Error("The human and Mira participants did not both become ready before Activity Start");
+  throw new Error(`Lead and ${roles.join(" and ")} did not all become ready before Activity Start`);
 }
 
-async function waitForMiraRunnerResult(revision) {
-  assert.ok(miraRunnerProcess, "Mira Runner process was not started before Activity Start");
-  const output = await miraRunnerProcess.completed;
+async function waitForSpecialistRunnerResult(role, revision) {
+  const runtime = specialist(role);
+  assert.ok(runtime.process, `${runtime.name} Runner process was not started before Activity Start`);
+  const output = await runtime.process.completed;
+  assertPrivatePayload(String(output), `${runtime.name} Runner output`);
   const lines = String(output).trim().split("\n").filter(Boolean);
-  assert.equal(lines.length, 1, "Mira Runner emitted more than one bounded result");
+  assert.equal(lines.length, 1, `${runtime.name} Runner emitted more than one bounded result`);
   const result = JSON.parse(lines[0]);
-  assert.equal(miraRunnerInvocations, 1, "Mira Runner must run only once");
+  assert.equal(runtime.invocations, 1, `${runtime.name} Runner must run only once`);
+  assert.equal(typeof revision, "string", `${runtime.name} Runner lost the Pack revision fence`);
   return result;
 }
 
-async function stopMiraRunnerIfActive() {
-  if (!miraRunnerProcess || miraRunnerProcess.child.exitCode !== null) return;
-  miraRunnerProcess.child.kill("SIGTERM");
-  await Promise.race([
-    miraRunnerProcess.completed.catch(() => undefined),
-    new Promise((resolveDelay) => setTimeout(resolveDelay, 5_000)),
-  ]);
+async function stopSpecialistRunnersIfActive() {
+  await Promise.all([...specialistRuntime.values()].map(async (runtime) => {
+    if (!runtime.process || runtime.process.child.exitCode !== null) return;
+    runtime.process.child.kill("SIGTERM");
+    await Promise.race([
+      runtime.process.completed.catch(() => undefined),
+      new Promise((resolveDelay) => setTimeout(resolveDelay, 5_000)),
+    ]);
+  }));
+}
+
+function runnerInvocationReceipt() {
+  if (crewLiveProof) return Object.fromEntries(liveSpecialistRoles.map((role) => [role, specialist(role).invocations]));
+  return specialist("mira").invocations;
 }
 
 function debug(message) {
