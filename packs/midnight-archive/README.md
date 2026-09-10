@@ -168,7 +168,19 @@ prepared step per committed turn, private inspection and explicit sharing,
 allowance and shared-power checks, replacement/suspension invalidation,
 terminal timer cancellation, following and one-edge regrouping.
 
-The current specialist-crew 0.1.0 bundle is
+The current consecutive-assay specialist-crew 0.1.0 bundle is
+[`worldstream-midnight-archive-b82e0d5df065af1b31252a06e06a3bbd685a5ba63c3d2bfeb71a0d6dd06ebbab.wspack`](releases/0.1.0/worldstream-midnight-archive-b82e0d5df065af1b31252a06e06a3bbd685a5ba63c3d2bfeb71a0d6dd06ebbab.wspack).
+Its physical bundle digest is
+`blake3:b82e0d5df065af1b31252a06e06a3bbd685a5ba63c3d2bfeb71a0d6dd06ebbab`,
+its semantic revision is
+`blake3:59bb814b920b0eb6f8b8886f2d368052189c0f9263d6c36c91894f639c8e19f5`,
+its Component digest is
+`blake3:1c127958464352e324ddb450e0df398cbcc9867bbcb1834cb972df4595f3a87b`,
+and its production proof is retained in
+[`evidence/production-proof-0.1.0-specialist-crew-consecutive.json`](evidence/production-proof-0.1.0-specialist-crew-consecutive.json).
+
+The superseded pre-live specialist-crew 0.1.0 bundle remains retained for
+exact reproducibility and must not be selected for new Rooms:
 [`worldstream-midnight-archive-309721db5290e9f2daf8c092ed97528d8cf7dc2bdcf577edef737f26e14157ea.wspack`](releases/0.1.0/worldstream-midnight-archive-309721db5290e9f2daf8c092ed97528d8cf7dc2bdcf577edef737f26e14157ea.wspack).
 Its physical bundle digest is
 `blake3:309721db5290e9f2daf8c092ed97528d8cf7dc2bdcf577edef737f26e14157ea`,
