@@ -7,7 +7,6 @@ discovery, or plan is written to disk or included in the bounded result report.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
@@ -87,10 +86,7 @@ def select_plan(projection: dict) -> dict:
         and integer(planning["steps_total"], 0, 3)
         and integer(planning["steps_completed"], 0, 3)
         and planning["steps_total"] == planning["steps_completed"]
-        and isinstance(planning["deadline"], str)
-        and re.fullmatch(
-            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", planning["deadline"]
-        ) is not None
+        and companion_runner.canonical_utc_timestamp(planning["deadline"])
     )
     knowledge = exact(companion["knowledge"], {"records", "conservation", "verifier_result"})
     require(all(knowledge[source] in ("unknown", "private", "shared")

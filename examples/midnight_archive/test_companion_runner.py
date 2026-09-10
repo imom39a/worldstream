@@ -74,7 +74,7 @@ def transport() -> tuple[SimpleNamespace, SimpleNamespace, SimpleNamespace, dict
         "member_id": "mira-member",
         "reason_code": companion_runner.REASON,
         "cause_room_seq": 8,
-        "deadline": "2026-09-09T12:00:15.000Z",
+        "deadline": "2026-09-09T12:00:15Z",
     }
     context = {
         "activation_id": "activation",
@@ -82,7 +82,7 @@ def transport() -> tuple[SimpleNamespace, SimpleNamespace, SimpleNamespace, dict
         "lease_generation": 1,
         "reason_code": companion_runner.REASON,
         "cause_room_seq": 8,
-        "deadline": "2026-09-09T12:00:15.000Z",
+        "deadline": "2026-09-09T12:00:15Z",
         "projection_schema": companion_runner.PROJECTION_SCHEMA,
         "room_head": copy.deepcopy(head),
         "projection": copy.deepcopy(projection),

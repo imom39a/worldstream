@@ -39,7 +39,7 @@ def projection():
                          "power_allowance": 0, "power_spent": 0},
                 "planning": {"status": "waiting", "opportunity_revision": 3, "plan_revision": 0,
                              "steps_total": 0, "steps_completed": 0,
-                             "deadline": "2026-09-09T12:00:15.000Z"},
+                             "deadline": "2026-09-09T12:00:15Z"},
                 "knowledge": {"records": "unknown", "conservation": "unknown",
                               "verifier_result": None},
                 "field_assay": {"steps_completed": 0, "result": None},
@@ -152,6 +152,33 @@ def test_invalid_task_and_opportunity_fail_closed(section, field, value):
         mira.select_plan(view)
 
 
+@pytest.mark.parametrize("deadline", [
+    "2026-09-09T12:00:15Z",
+    "2026-09-09T12:00:15.1Z",
+    "2026-09-09T12:00:15.12Z",
+    "2026-09-09T12:00:15.123456789Z",
+])
+def test_mira_accepts_every_canonical_core_fraction_width(deadline):
+    view = projection()
+    view["activity"]["mira"]["planning"]["deadline"] = deadline
+    assert mira.select_plan(view)["opportunity_revision"] == 3
+
+
+@pytest.mark.parametrize("deadline", [
+    "2026-09-09T12:00:15.0Z",
+    "2026-09-09T12:00:15.120Z",
+    "2026-09-09T12:00:15.1234567890Z",
+    "2026-02-29T12:00:15Z",
+    "2026-09-09T12:00:60Z",
+    "2026-09-09T12:00:15+00:00",
+])
+def test_mira_rejects_noncanonical_core_timestamps(deadline):
+    view = projection()
+    view["activity"]["mira"]["planning"]["deadline"] = deadline
+    with pytest.raises(mira.MiraContractError, match="^mira_contract_mismatch$"):
+        mira.select_plan(view)
+
+
 @pytest.mark.parametrize("field,value", [("presence", "suspended"), ("mode", "following"),
                                         ("location", "outside")])
 def test_ineligible_mira_cannot_plan(field, value):
@@ -199,13 +226,13 @@ def transport(projection: dict):
     offer = {
         "activation_id": "activation", "room_id": "room", "member_id": "mira",
         "reason_code": mira.REASON, "cause_room_seq": 8,
-        "deadline": "2026-09-09T12:00:15.000Z",
+        "deadline": "2026-09-09T12:00:15Z",
     }
     context = {
         "activation_id": "activation", "claim_id": "claim", "lease_generation": 1,
         "reason_code": mira.REASON, "cause_room_seq": 8, "room_head": head,
         "projection": projection, "action_offers": projection["action_offers"],
-        "lease_until": "2026-09-09T12:00:30.000Z", "deadline": "2026-09-09T12:00:15.000Z",
+        "lease_until": "2026-09-09T12:00:30Z", "deadline": "2026-09-09T12:00:15Z",
         "integrity_generation": 1, "policy_revision": 1, "authority_generation": 1,
         "membership_generation": 1, "frame_head": 8, "retained_floor": 0, "cursor": None,
         "projection_schema": companion_runner.PROJECTION_SCHEMA,

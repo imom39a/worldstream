@@ -49,7 +49,7 @@ def projection() -> dict:
                     "plan_revision": 0,
                     "steps_total": 0,
                     "steps_completed": 0,
-                    "deadline": "2026-09-09T12:00:15.000Z",
+                    "deadline": "2026-09-09T12:00:15Z",
                 },
                 "knowledge": {
                     "records": "unknown",
@@ -139,3 +139,30 @@ def test_other_companion_private_fields_are_never_read():
     view["activity"]["mira"] = {"private_discovery": "private-canary"}
     payload = jonah.select_plan(view)
     assert "private-canary" not in repr(payload)
+
+
+@pytest.mark.parametrize("deadline", [
+    "2026-09-09T12:00:15Z",
+    "2026-09-09T12:00:15.1Z",
+    "2026-09-09T12:00:15.12Z",
+    "2026-09-09T12:00:15.123456789Z",
+])
+def test_jonah_accepts_every_canonical_core_fraction_width(deadline):
+    view = projection()
+    view["activity"]["jonah"]["planning"]["deadline"] = deadline
+    assert jonah.select_plan(view)["opportunity_revision"] == 5
+
+
+@pytest.mark.parametrize("deadline", [
+    "2026-09-09T12:00:15.0Z",
+    "2026-09-09T12:00:15.120Z",
+    "2026-09-09T12:00:15.1234567890Z",
+    "2026-02-29T12:00:15Z",
+    "2026-09-09T12:00:60Z",
+    "2026-09-09T12:00:15+00:00",
+])
+def test_jonah_rejects_noncanonical_core_timestamps(deadline):
+    view = projection()
+    view["activity"]["jonah"]["planning"]["deadline"] = deadline
+    with pytest.raises(jonah.JonahContractError, match="^jonah_contract_mismatch$"):
+        jonah.select_plan(view)

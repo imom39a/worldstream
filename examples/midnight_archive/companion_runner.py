@@ -19,6 +19,7 @@ import re
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -37,6 +38,11 @@ ACTION_OFFER_DOMAIN = "worldstream/action-offer/v1"
 REASON = "companion_plan_requested"
 PROJECTION_SCHEMA = "worldstream.midnight-archive/participant-projection/v2"
 DIGEST = re.compile(r"blake3:[0-9a-f]{64}\Z")
+UTC_TIMESTAMP = re.compile(
+    r"(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})"
+    r"T(?P<hour>[0-9]{2}):(?P<minute>[0-9]{2}):(?P<second>[0-9]{2})"
+    r"(?:\.(?P<fraction>[0-9]{1,9}))?Z\Z"
+)
 RUNTIME_COMPLETION_MARGIN_MS = 5_000
 PLAN_STEP_TYPES = {
     "move",
@@ -168,6 +174,31 @@ def require(policy: CompanionRunnerPolicy, condition: bool) -> None:
 
 def integer(value: Any, minimum: int, maximum: int) -> bool:
     return type(value) is int and minimum <= value <= maximum
+
+
+def canonical_utc_timestamp(value: Any) -> bool:
+    """Match Core's canonical UTC RFC 3339 second timestamp contract."""
+    if not isinstance(value, str):
+        return False
+    match = UTC_TIMESTAMP.fullmatch(value)
+    if match is None:
+        return False
+    fraction = match.group("fraction")
+    if fraction is not None and fraction.endswith("0"):
+        return False
+    try:
+        datetime(
+            int(match.group("year")),
+            int(match.group("month")),
+            int(match.group("day")),
+            int(match.group("hour")),
+            int(match.group("minute")),
+            int(match.group("second")),
+            tzinfo=UTC,
+        )
+    except ValueError:
+        return False
+    return True
 
 
 def shortest_route(
