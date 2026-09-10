@@ -38,6 +38,20 @@ import {
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEVELOPMENT_MODE = "visible-local-only";
+export const HOSTED_LOCAL_ACTIVITY_CLIENT_BUILDS = Object.freeze([
+  Object.freeze({
+    packageName: "@worldstream/agent-heist-client",
+    artifactRoot: join(REPOSITORY_ROOT, "clients/agent-heist-web/dist"),
+  }),
+  Object.freeze({
+    packageName: "@worldstream/midnight-archive-client",
+    artifactRoot: join(REPOSITORY_ROOT, "clients/midnight-archive-web/dist"),
+  }),
+  Object.freeze({
+    packageName: "@worldstream/console",
+    artifactRoot: join(REPOSITORY_ROOT, "web/console/dist"),
+  }),
+]);
 const HOSTED_NATIVE_BINARY_NAMES = [
   "worldstreamctl",
   "worldstreamd",
@@ -452,8 +466,8 @@ async function main() {
       run("pnpm", ["--filter", "@worldstream/pack-sdk", "build"], {
         environment: buildEnvironment,
       }),
-      run("pnpm", ["--filter", "@worldstream/agent-heist-client", "build"], { environment: buildEnvironment }),
-      run("pnpm", ["--filter", "@worldstream/console", "build"], { environment: buildEnvironment }),
+      ...HOSTED_LOCAL_ACTIVITY_CLIENT_BUILDS.map(({ packageName }) =>
+        run("pnpm", ["--filter", packageName, "build"], { environment: buildEnvironment })),
     ]);
     const internalCandidates = await readInternalCandidates();
 

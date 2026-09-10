@@ -10,6 +10,7 @@ import {
   assertHostedDevelopmentBrowserAddressUnused,
   assertHostedDevelopmentPortsAvailable,
   hostedDevelopmentBuildEnvironment,
+  HOSTED_LOCAL_ACTIVITY_CLIENT_BUILDS,
   hostedDevelopmentGatewayConfiguration,
   hostedDevelopmentPorts,
   hostedDevelopmentListingAllowlist,
@@ -27,6 +28,9 @@ import {
   installHostedNativeBinaries,
   renderHostedDevelopmentConfig,
 } from "./hosted-dev.mjs";
+import { activityClientMounts } from "./serve-activity-clients.mjs";
+
+const repository = new URL("../", import.meta.url);
 
 test("hosted development builds immutable browser artifacts in production mode", () => {
   assert.deepEqual(hostedDevelopmentBuildEnvironment({
@@ -36,6 +40,32 @@ test("hosted development builds immutable browser artifacts in production mode",
     NODE_ENV: "production",
     WORLDSTREAM_DEPLOYMENT_ENVIRONMENT: "development",
   });
+});
+
+test("hosted development builds every source Activity Client selected by its local bindings", async () => {
+  const bindings = JSON.parse(await readFile(
+    new URL("config/activity-clients/hosted-local-bindings.json", repository),
+    "utf8",
+  ));
+  const selectedPrefixes = new Set(bindings.deployments.flatMap((deployment) =>
+    deployment.surfaces.map((surface) => `/${new URL(surface.launch_url).pathname.split("/")[1]}/`)));
+  const sourceRoots = activityClientMounts
+    .filter(({ prefix, root }) => selectedPrefixes.has(prefix) && !root.includes("/config/activity-clients/artifacts/"))
+    .map(({ root }) => root)
+    .sort();
+
+  assert.deepEqual(
+    HOSTED_LOCAL_ACTIVITY_CLIENT_BUILDS.map(({ artifactRoot }) => artifactRoot).sort(),
+    sourceRoots,
+  );
+  assert.deepEqual(
+    HOSTED_LOCAL_ACTIVITY_CLIENT_BUILDS.map(({ packageName }) => packageName).sort(),
+    [
+      "@worldstream/agent-heist-client",
+      "@worldstream/console",
+      "@worldstream/midnight-archive-client",
+    ],
+  );
 });
 
 test("hosted server start retries the bounded Runtime-restart startup sequence", async () => {
