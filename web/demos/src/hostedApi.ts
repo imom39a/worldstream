@@ -4,6 +4,7 @@ export interface HostedActivitySummary {
   readonly rosterOptions?: readonly {
     readonly key: string;
     readonly label: string;
+    readonly description: string;
     readonly seatKeys: readonly string[];
     readonly creatorSeatKeys: readonly string[];
     readonly suppliedAgents: number;
@@ -25,6 +26,7 @@ export interface HostedActivitySummary {
   readonly clientPath: string | null;
   readonly houseTerms: {
     readonly exhibition: true;
+    readonly includedAtNoCharge: true;
     readonly maximumAgents: number;
     readonly maximumCallsPerAgent: number;
     readonly maximumInputTokensPerAgent: number;

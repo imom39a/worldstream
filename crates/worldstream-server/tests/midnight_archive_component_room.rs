@@ -96,6 +96,29 @@ fn client_binding_identity() -> TestResult<(String, String)> {
     Ok((release_digest, surface_id))
 }
 
+fn current_listing_binding_identity() -> TestResult<(String, String, String)> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../config/hosted/listings/midnight-archive-0.3.0.json");
+    let listing: Value = serde_json::from_slice(&fs::read(path)?)?;
+    let pack_revision_digest = listing["pack"]["digest"]
+        .as_str()
+        .ok_or("current Archive Listing Pack digest missing")?
+        .to_owned();
+    let client_release_digest = listing["client"]["release_digest"]
+        .as_str()
+        .ok_or("current Archive Listing Client Release digest missing")?
+        .to_owned();
+    let client_surface_id = listing["client"]["surface_id"]
+        .as_str()
+        .ok_or("current Archive Listing Client Surface missing")?
+        .to_owned();
+    Ok((
+        pack_revision_digest,
+        client_release_digest,
+        client_surface_id,
+    ))
+}
+
 fn release_bundle_path(bundle_digest: &str) -> PathBuf {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let file_digest = bundle_digest
@@ -262,6 +285,26 @@ async fn jonah_specialist_hatch_completes_with_the_starting_crew() -> TestResult
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn full_crew_resolves_reservations_assay_and_extraction_before_replay() -> TestResult {
     run_archive_witness(&["mira", "jonah"], Scenario::Complete).await
+}
+
+/// The hosted four-roster qualification must follow the exact Pack Bundle
+/// pinned by the current Archive Listing rather than the earlier retained
+/// companion-development Releases exercised above.  Run this explicitly from
+/// `verify-midnight-archive-rosters.mjs` after resolving that immutable
+/// Listing identity.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE for the current hosted Listing"]
+async fn current_bundle_completes_all_four_rosters_and_replays_exactly() -> TestResult {
+    let bundle = PathBuf::from(env::var("WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE")?);
+    for roles in [
+        &[][..],
+        &["mira"][..],
+        &["jonah"][..],
+        &["mira", "jonah"][..],
+    ] {
+        run_archive_witness_with_bundle(roles, Scenario::Complete, Some(bundle.clone())).await?;
+    }
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1117,13 +1160,26 @@ async fn run_archive_witness_with_bundle(
     scenario: Scenario,
     candidate_bundle: Option<PathBuf>,
 ) -> TestResult {
-    let (client_release_digest, client_surface_id) = client_binding_identity()?;
     let candidate = candidate_bundle.is_some();
+    let (expected_listing_revision, client_release_digest, client_surface_id) = if candidate {
+        let (pack, release, surface) = current_listing_binding_identity()?;
+        (Some(pack), release, surface)
+    } else {
+        let (release, surface) = client_binding_identity()?;
+        (None, release, surface)
+    };
     let verified = PackBundleVerifierV1.inspect(Arc::<[u8]>::from(fs::read(
         candidate_bundle.unwrap_or_else(current_bundle_path),
     )?))?;
     assert_eq!(verified.inspection().pack_id, PACK_ID);
     assert_eq!(verified.inspection().explanatory_version, PACK_VERSION);
+    if let Some(expected) = expected_listing_revision {
+        assert_eq!(
+            verified.revision_digest().to_string(),
+            expected,
+            "current Archive Listing Pack revision drifted from the exercised Bundle"
+        );
+    }
     if !candidate {
         assert_eq!(verified.bundle_digest().to_string(), CURRENT_BUNDLE_DIGEST);
         assert_eq!(

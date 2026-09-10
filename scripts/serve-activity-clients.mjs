@@ -15,6 +15,7 @@ export const activityClientMounts = Object.freeze([
   Object.freeze({ prefix: "/negotiate-v3/", root: resolve(workspace, "clients/negotiate-web/dist") }),
   Object.freeze({ prefix: "/negotiate-v2/", root: resolve(workspace, "config/activity-clients/artifacts/negotiate-web-v2") }),
   Object.freeze({ prefix: "/negotiate/", root: resolve(workspace, "config/activity-clients/artifacts/negotiate-web-v1") }),
+  Object.freeze({ prefix: "/midnight-archive-v13/", root: resolve(workspace, "clients/midnight-archive-web/dist") }),
   Object.freeze({ prefix: "/midnight-archive-v12/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v12") }),
   Object.freeze({ prefix: "/midnight-archive-v11/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v11") }),
   Object.freeze({ prefix: "/midnight-archive-v10/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v10") }),

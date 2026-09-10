@@ -24,10 +24,12 @@ import {
   type MidnightArchiveLiveState,
 } from "./liveAdapter";
 import type { MidnightArchiveActionIntent } from "./model";
+import type { MidnightArchiveHostedExhibitionTerms } from "./config";
 
 export interface MidnightArchiveClientProps {
   readonly startup: ActivityClientStartup;
   readonly controller: MidnightArchiveSessionController;
+  readonly houseExhibitionTerms?: MidnightArchiveHostedExhibitionTerms;
 }
 
 export type MidnightArchiveSessionController = Pick<
@@ -38,6 +40,7 @@ export type MidnightArchiveSessionController = Pick<
 export function MidnightArchiveClient({
   startup,
   controller,
+  houseExhibitionTerms,
 }: MidnightArchiveClientProps) {
   const [session, setSession] = useState<HostedLiveSessionSnapshot>(controller.state);
   const [live, setLive] = useState<MidnightArchiveLiveState>(initialMidnightArchiveLiveState);
@@ -141,6 +144,7 @@ export function MidnightArchiveClient({
       message={clientMessage ?? session.message}
       onAction={submit}
       onReconnect={reconnect}
+      houseExhibitionTerms={houseExhibitionTerms}
     />
   );
 }

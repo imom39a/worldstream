@@ -440,7 +440,7 @@ test("internal catalog requires sign-in and exact deployment opt-in; missing art
   assert.equal(body.activities.find(({ slug }) => slug === "midnight-archive")?.availability, "dependency_unavailable");
   const denied = await bff.fetch(mutation("/api/launches", signedIn.sessionCookie, await csrf(bff, signedIn.sessionCookie), JSON.stringify({
     listing_slug: "midnight-archive", creator_access: "seat", creator_seat: "seat-1",
-    fill_mode: "people_only", idempotency_key: "a".repeat(32),
+    fill_mode: "people_only", roster_option: "solo", idempotency_key: "a".repeat(32),
   })));
   assert.equal(denied.status, 409);
   assert.equal((await denied.text()).includes("activity_unavailable"), true);

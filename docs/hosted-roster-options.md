@@ -2,7 +2,7 @@
 
 ADR 0027 extends the immutable Activity Listing Revision's launch-input contract.
 The Listing Revision document remains `worldstream/activity-listing-revision/v1`;
-its new input declaration is `worldstream/launch-input-schema/v2` with
+its first roster input declaration is `worldstream/launch-input-schema/v2` with
 `accepts: "roster_option"`. Retained `launch-input-schema/v1` / `none` documents
 continue accepting exactly `{}` without rewriting their artifacts or Rooms.
 
@@ -15,8 +15,15 @@ assigned, with no duplicate seat or revision. Options must retain every required
 seat. Every selected seat must resolve to an account or its pinned supplied
 agent. Option seat order does not override Listing seat order.
 
-The browser receives option labels, opaque seat keys, permitted creator seat
-keys, and the supplied-agent count. It sends `roster_option: "<option_id>"`
+`worldstream/launch-input-schema/v3` preserves those semantics and requires one
+reviewed `description` of at most 256 UTF-8 bytes on every option. The field is
+versioned because v2 is a closed contract: a v2 option carrying `description`
+is rejected, and old v2 bytes and identities remain unchanged.
+
+The browser receives option labels and descriptions copied from the reviewed
+Listing, opaque seat keys, permitted creator seat keys, and the supplied-agent
+count. A retained v2 option uses its reviewed label as the description. It
+sends `roster_option: "<option_id>"`
 alongside the existing bounded create-launch fields. `fill_mode` must agree
 with whether that option supplies agents. It cannot send configuration, Roles,
 Principal IDs, prompts, provider/model routes, code, or setup documents.

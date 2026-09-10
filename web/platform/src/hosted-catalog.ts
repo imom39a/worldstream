@@ -7,7 +7,10 @@ import {
 
 import {
   midnightArchiveListingBase64,
+  retainedMidnightArchiveListing02Base64,
   retainedMidnightArchiveListing01Base64,
+  midnightArchiveMiraBase64,
+  midnightArchiveJonahBase64,
   agentHeistListingBase64,
   retainedAgentHeistListing023Base64,
   retainedAgentHeistListing022Base64,
@@ -68,6 +71,8 @@ import {
 
 export const AGENT_HEIST_LISTING_DIGEST =
   "blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397";
+export const MIDNIGHT_ARCHIVE_LISTING_DIGEST =
+  "blake3:cc1c92ebc6ba7cccc9474186ff8107cf97f6bd0ce2676c6d1a2aa203c2a62d35";
 
 export interface PublicHostedActivity {
   readonly slug: string;
@@ -93,6 +98,7 @@ export interface PublicHostedActivity {
   readonly publicViewerClientPath: string | null;
   readonly houseTerms: {
     readonly exhibition: true;
+    readonly includedAtNoCharge: true;
     readonly maximumAgents: 2;
     readonly maximumCallsPerAgent: 10;
     readonly maximumInputTokensPerAgent: 120_000;
@@ -182,6 +188,7 @@ const agentHeistPublic = Object.freeze({
   publicViewerClientPath: "/agent-heist-v7/hosted/",
   houseTerms: {
     exhibition: true,
+    includedAtNoCharge: true,
     maximumAgents: 2,
     maximumCallsPerAgent: 10,
     maximumInputTokensPerAgent: 120_000,
@@ -227,46 +234,72 @@ const retainedAgentHeist = [retainedAgentHeistListing02Base64, retainedAgentHeis
     });
   });
 const archiveListing = readListingRevision(decode(midnightArchiveListingBase64));
-export const MIDNIGHT_ARCHIVE_LISTING_DIGEST = archiveListing.digest;
+if (archiveListing.digest !== MIDNIGHT_ARCHIVE_LISTING_DIGEST) {
+  throw new Error("reviewed_archive_listing_identity_changed");
+}
+const archiveHouseAgents = [
+  readHouseAgentRevision(decode(midnightArchiveMiraBase64)),
+  readHouseAgentRevision(decode(midnightArchiveJonahBase64)),
+];
 const reviewedMidnightArchive: ReviewedHostedActivity = Object.freeze({
   slug: "midnight-archive",
   listing: archiveListing,
-  houseAgents: new Map<string, HouseAgentRevision>(),
+  houseAgents: new Map(archiveHouseAgents.map((revision) => [revision.digest, revision])),
   public: Object.freeze({
     slug: "midnight-archive",
     title: archiveListing.value.title,
     description: archiveListing.value.description,
     availability: "available",
-    availabilityMessage: "Internal solo candidate",
-    seatSummary: "Solo · 16 turns · 3 power charges",
+    availabilityMessage: "Internal four-roster exhibition",
+    seatSummary: "1 human lead · up to 2 optional specialists",
     participationKinds: ["human"] as const,
-    seats: [{ key: "seat-1", label: "Expedition lead", required: true }],
+    seats: archiveListing.value.seats.map((seat, index) => ({
+      key: `seat-${index + 1}`,
+      label: seat.display_name,
+      required: seat.required,
+    })),
     creatorMaySpectate: false,
-    houseFillAvailable: false,
+    houseFillAvailable: true,
     publicViewingAvailable: false,
     resultPublication: "Private debrief in the activity; no public result publication.",
     attribution: "Anonymous viewing is disabled.",
-    clientPath: "/midnight-archive-v12/hosted/",
+    clientPath: "/midnight-archive-v13/hosted/",
     publicViewerClientPath: null,
-    houseTerms: null,
+    houseTerms: {
+      exhibition: true as const,
+      includedAtNoCharge: true as const,
+      maximumAgents: 2 as const,
+      maximumCallsPerAgent: 10 as const,
+      maximumInputTokensPerAgent: 120_000 as const,
+      maximumOutputTokensPerAgent: 10_000 as const,
+      callTimeoutSeconds: 60 as const,
+    },
   }),
 });
-const retainedMidnightArchive = (() => {
-  const retainedListing = readListingRevision(decode(retainedMidnightArchiveListing01Base64));
+const retainedMidnightArchive = [
+  { bytes: retainedMidnightArchiveListing02Base64, clientPath: "/midnight-archive-v12/hosted/" },
+  { bytes: retainedMidnightArchiveListing01Base64, clientPath: "/midnight-archive-v10/hosted/" },
+].map(({ bytes, clientPath }): ReviewedHostedActivity => {
+  const retainedListing = readListingRevision(decode(bytes));
   return Object.freeze({
     ...reviewedMidnightArchive,
     listing: retainedListing,
+    houseAgents: new Map<string, HouseAgentRevision>(),
     public: Object.freeze({
       ...reviewedMidnightArchive.public,
-      availabilityMessage: "Retained revision with its original client",
-      clientPath: "/midnight-archive-v10/hosted/",
+      availabilityMessage: "Retained solo revision with its original client",
+      seatSummary: "Solo · 16 turns · 3 power charges",
+      seats: [{ key: "seat-1", label: "Expedition lead", required: true }],
+      houseFillAvailable: false,
+      clientPath,
+      houseTerms: null,
     }),
-  } satisfies ReviewedHostedActivity);
-})();
+  });
+});
 const currentReviewedActivities = [reviewedAgentHeist, reviewedMidnightArchive];
 const reviewedBySlug = new Map(currentReviewedActivities.map((activity) => [activity.slug, activity]));
 const reviewedByDigest = new Map(
-  [...currentReviewedActivities, ...retainedAgentHeist, retainedMidnightArchive]
+  [...currentReviewedActivities, ...retainedAgentHeist, ...retainedMidnightArchive]
     .map((activity) => [activity.listing.digest, activity]),
 );
 
@@ -341,6 +374,7 @@ export function publicRosterOptions(activity: ReviewedHostedActivity) {
     rosterOptions: schema.roster_options.map((option) => ({
       key: option.option_id,
       label: option.label,
+      description: "description" in option ? option.description : option.label,
       seatKeys: option.seat_ids.map((id) => reviewedSeatKey(activity, id)!),
       creatorSeatKeys: option.seat_ids.filter((id) =>
         !option.house_agent_assignments.some((assignment) => assignment.seat_id === id)

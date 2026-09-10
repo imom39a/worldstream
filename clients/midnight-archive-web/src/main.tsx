@@ -8,6 +8,7 @@ import {
 } from "@worldstream/client";
 
 import { MidnightArchiveClient } from "./MidnightArchiveClient";
+import { MIDNIGHT_ARCHIVE_HOSTED_EXHIBITION_TERMS } from "./config";
 import { readPlatformSession } from "./platformSession";
 import { createMidnightArchiveRetryingFetch } from "./retryingFetch";
 import "./styles.css";
@@ -25,7 +26,11 @@ void platformSession().then(({ csrf, browserStreamUrl }) => {
   createRoot(root).render(
     <StrictMode>
       <PlatformNavigation>
-        <MidnightArchiveClient startup={startup} controller={controller} />
+        <MidnightArchiveClient
+          startup={startup}
+          controller={controller}
+          houseExhibitionTerms={MIDNIGHT_ARCHIVE_HOSTED_EXHIBITION_TERMS}
+        />
       </PlatformNavigation>
     </StrictMode>,
   );

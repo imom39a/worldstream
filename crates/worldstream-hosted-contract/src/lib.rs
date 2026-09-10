@@ -121,9 +121,17 @@ fn deserialize_roster_options<'de, D: serde::Deserializer<'de>>(
 struct RosterOption {
     option_id: String,
     label: String,
+    #[serde(default, deserialize_with = "deserialize_roster_option_description")]
+    description: Option<String>,
     seat_ids: Vec<String>,
     configuration: Value,
     house_agent_assignments: Vec<RosterHouseAssignment>,
+}
+
+fn deserialize_roster_option_description<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -760,16 +768,17 @@ fn validate_listing(document: &ListingDocument) -> Result<(), ContractError> {
 
 fn validate_roster_options(document: &ListingDocument) -> Result<(), ContractError> {
     let schema = &document.launch_input_schema;
-    match (&*schema.schema, schema.accepts) {
+    let descriptions_required = match (&*schema.schema, schema.accepts) {
         ("worldstream/launch-input-schema/v1", LaunchInputKind::None) => {
             if !schema.defaults.is_empty() || schema.roster_options.is_some() {
                 return Err(ContractError::InvalidShape);
             }
             return Ok(());
         }
-        ("worldstream/launch-input-schema/v2", LaunchInputKind::RosterOption) => {}
+        ("worldstream/launch-input-schema/v2", LaunchInputKind::RosterOption) => false,
+        ("worldstream/launch-input-schema/v3", LaunchInputKind::RosterOption) => true,
         _ => return Err(ContractError::Unsupported),
-    }
+    };
     let options = schema
         .roster_options
         .as_ref()
@@ -781,6 +790,11 @@ fn validate_roster_options(document: &ListingDocument) -> Result<(), ContractErr
     for option in options {
         validate_seat_label(&option.option_id)?;
         validate_text(&option.label, 128)?;
+        match (&option.description, descriptions_required) {
+            (None, false) => {}
+            (Some(description), true) => validate_text(description, 256)?,
+            _ => return Err(ContractError::InvalidShape),
+        }
         validate_json(&option.configuration)?;
         let selected = option.seat_ids.iter().collect::<BTreeSet<_>>();
         if !ids.insert(&option.option_id)

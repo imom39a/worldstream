@@ -239,7 +239,7 @@ function LaunchPanel({
             {activity.rosterOptions.map((option) => <label key={option.key}>
               <input type="radio" name="roster-option" checked={option.key === rosterOption}
                 onChange={() => { setRosterOption(option.key); setSeat(option.creatorSeatKeys[0] ?? ""); }} />
-              <span>{option.label}</span>
+              <span><strong>{option.label}</strong><small>{option.description}</small></span>
             </label>)}
           </div>
         </fieldset> : null}
@@ -276,7 +276,8 @@ function LaunchPanel({
           <p>{activity.resultPublication} {activity.attribution}</p>
           {chosenFillMode === "house_agents" && activity.houseTerms !== null ? (
             <p>
-              House Runs are permanent exhibitions. Each House Agent has at most {activity.houseTerms.maximumCallsPerAgent} model calls, {activity.houseTerms.maximumInputTokensPerAgent.toLocaleString()} input tokens, and {activity.houseTerms.maximumOutputTokensPerAgent.toLocaleString()} output tokens.
+              {activity.houseTerms.includedAtNoCharge ? "These platform-supplied companions are included at no charge for this experiment. " : ""}
+              Runs with platform-supplied companions are permanently marked as unranked exhibitions. Each House Agent has at most {activity.houseTerms.maximumCallsPerAgent} model calls, {activity.houseTerms.maximumInputTokensPerAgent.toLocaleString()} input tokens, and {activity.houseTerms.maximumOutputTokensPerAgent.toLocaleString()} output tokens. Each launch starts fresh; a familiar companion name does not carry memory from another Run.
             </p>
           ) : null}
         </div>

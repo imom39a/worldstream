@@ -12,6 +12,7 @@ pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAge
     const LISTINGS: &[&[u8]] = &[
         include_bytes!("../../../config/hosted/listings/midnight-archive-0.1.0.json"),
         include_bytes!("../../../config/hosted/listings/midnight-archive-0.2.0.json"),
+        include_bytes!("../../../config/hosted/listings/midnight-archive-0.3.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.4.0.json"),
@@ -37,6 +38,8 @@ pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAge
         include_bytes!("../../../config/hosted/listings/agent-heist-0.24.0.json"),
     ];
     const HOUSE_AGENTS: &[&[u8]] = &[
+        include_bytes!("../../../config/hosted/house-agents/mira-1.json"),
+        include_bytes!("../../../config/hosted/house-agents/jonah-1.json"),
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json"),
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-2.json"),
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-3.json"),
@@ -165,7 +168,7 @@ mod tests {
             .iter()
             .filter(|listing| !listing.allows_result_publication())
             .collect();
-        assert_eq!(private.len(), 2);
+        assert_eq!(private.len(), 3);
         assert!(
             private
                 .iter()
@@ -183,8 +186,62 @@ mod tests {
             .collect::<anyhow::Result<BTreeSet<_>>>()?;
         assert_eq!(
             versions,
-            BTreeSet::from(["0.1.0".to_owned(), "0.2.0".to_owned()])
+            BTreeSet::from(["0.1.0".to_owned(), "0.2.0".to_owned(), "0.3.0".to_owned(),])
         );
+        Ok(())
+    }
+
+    #[test]
+    fn archive_four_roster_listing_resolves_both_exact_house_revisions() -> anyhow::Result<()> {
+        let (listings, house_agents) = reviewed_hosted_artifacts()?;
+        let listing = listings
+            .iter()
+            .find(|listing| {
+                listing.digest()
+                    == "blake3:cc1c92ebc6ba7cccc9474186ff8107cf97f6bd0ce2676c6d1a2aa203c2a62d35"
+            })
+            .context("Archive Listing 0.3 missing")?;
+        assert_eq!(
+            listing.digest(),
+            "blake3:cc1c92ebc6ba7cccc9474186ff8107cf97f6bd0ce2676c6d1a2aa203c2a62d35"
+        );
+        let document: serde_json::Value = serde_json::from_slice(listing.canonical_bytes())?;
+        assert_eq!(
+            document["listing_id"],
+            "worldstream.midnight-archive.internal-solo"
+        );
+        assert_eq!(document["version"], "0.3.0");
+        let options = document["launch_input_schema"]["roster_options"]
+            .as_array()
+            .context("Archive roster options missing")?;
+        assert_eq!(options.len(), 4);
+        let expected = BTreeSet::from([
+            "blake3:7e0b07b386009d509d605c9efdbe491a035f219d10ef7ebebc6f71e99461cdde",
+            "blake3:b88da2260f391c91593996c5913961469619b53a9e457c5ea0783cd3cac59db0",
+        ]);
+        let embedded: BTreeSet<_> = house_agents.iter().map(|agent| agent.digest()).collect();
+        assert!(expected.is_subset(&embedded));
+        for option in options {
+            assert_eq!(
+                option["seat_ids"]
+                    .as_array()
+                    .and_then(|seats| seats.first())
+                    .and_then(serde_json::Value::as_str),
+                Some("lead")
+            );
+            for assignment in option["house_agent_assignments"]
+                .as_array()
+                .context("Archive assignments missing")?
+            {
+                assert!(
+                    expected.contains(
+                        assignment["house_agent_revision_digest"]
+                            .as_str()
+                            .context("Archive House digest missing")?
+                    )
+                );
+            }
+        }
         Ok(())
     }
 

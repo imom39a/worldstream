@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 
 import type { MidnightArchiveActionType } from "./actionContract";
+import type { MidnightArchiveHostedExhibitionTerms } from "./config";
 import type {
   MidnightArchiveLiveState,
   MidnightArchiveReadyState,
@@ -43,6 +44,7 @@ export interface MidnightArchiveClientViewProps {
   readonly onReconnect?: () => Promise<void>;
   readonly replay?: MidnightArchiveReplayState;
   readonly onOpenReplay?: () => Promise<void>;
+  readonly houseExhibitionTerms?: MidnightArchiveHostedExhibitionTerms;
 }
 
 export function MidnightArchiveClientView({
@@ -55,6 +57,7 @@ export function MidnightArchiveClientView({
   onReconnect,
   replay = { kind: "unavailable" },
   onOpenReplay,
+  houseExhibitionTerms,
 }: MidnightArchiveClientViewProps) {
   if (state.kind === "awaiting") {
     return <BoundarySurface
@@ -84,6 +87,7 @@ export function MidnightArchiveClientView({
       onReconnect={onReconnect}
       replay={replay}
       onOpenReplay={onOpenReplay}
+      houseExhibitionTerms={houseExhibitionTerms}
     />
   );
 }
@@ -98,6 +102,7 @@ function ReadyArchive({
   onReconnect,
   replay,
   onOpenReplay,
+  houseExhibitionTerms,
 }: {
   readonly state: MidnightArchiveReadyState;
   readonly connection: MidnightArchiveConnection;
@@ -108,6 +113,7 @@ function ReadyArchive({
   readonly onReconnect?: () => Promise<void>;
   readonly replay: MidnightArchiveReplayState;
   readonly onOpenReplay?: () => Promise<void>;
+  readonly houseExhibitionTerms?: MidnightArchiveHostedExhibitionTerms;
 }) {
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const projection = state.projection;
@@ -150,6 +156,8 @@ function ReadyArchive({
           {sessionLabel(connection, actionsEnabled, projection.phase)}
         </div>
       </header>
+
+      <ExhibitionNotice projection={projection} terms={houseExhibitionTerms} />
 
       {connection !== "live" ? (
         <section className="archive-notice connection-notice" role="status">
@@ -253,6 +261,27 @@ function ReadyArchive({
         </details>
       </footer>
     </main>
+  );
+}
+
+function ExhibitionNotice({ projection, terms }: {
+  readonly projection: MidnightArchiveProjection;
+  readonly terms?: MidnightArchiveHostedExhibitionTerms;
+}) {
+  const companions = [
+    projection.mira.presence === "absent" ? null : "Mira",
+    projection.jonah.presence === "absent" ? null : "Jonah",
+  ].filter((name): name is string => name !== null);
+  if (companions.length === 0 || terms === undefined) return null;
+  const names = companions.join(" and ");
+  return (
+    <section className="archive-notice exhibition-notice" aria-label="Platform companion exhibition terms">
+      <span aria-hidden="true">◇</span>
+      <div>
+        <strong>Exhibition — platform-supplied agents</strong>
+        <p>{names} {companions.length === 1 ? "is" : "are"} {terms.includedAtNoCharge ? "included at no charge" : "available"} for this capped exhibition. Runs with platform-supplied companions are permanently marked as unranked exhibitions. Each selected companion has at most {terms.maximumCallsPerAgent} model calls, {terms.maximumInputTokensPerAgent.toLocaleString("en-US")} input tokens, {terms.maximumOutputTokensPerAgent.toLocaleString("en-US")} output tokens, and {terms.callTimeoutSeconds} seconds per call. Every Run starts fresh; companion names carry no memory from another Run.</p>
+      </div>
+    </section>
   );
 }
 

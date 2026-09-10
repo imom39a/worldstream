@@ -1,0 +1,16 @@
+{
+  "schema": "worldstream/studio-agent-profile-publish/v2",
+  "profile_id": "house-midnight-archive-jonah",
+  "revision": "1",
+  "display_name": "Jonah — Service Specialist",
+  "non_secret_configuration": {},
+  "host_contract": {
+    "kind": "managed_house_openrouter",
+    "host_contract_revision": "1",
+    "runner_template": {
+      "template_id": "openrouter-house-archive",
+      "revision": "1"
+    }
+  },
+  "managed_provider_credential_id": "hosted-openrouter"
+}

@@ -8,7 +8,8 @@ const outputPath = join(
   "web/platform/src/hosted-artifacts.generated.ts",
 );
 const sources = {
-  midnightArchiveListing: "config/hosted/listings/midnight-archive-0.2.0.json",
+  midnightArchiveListing: "config/hosted/listings/midnight-archive-0.3.0.json",
+  retainedMidnightArchiveListing02: "config/hosted/listings/midnight-archive-0.2.0.json",
   retainedMidnightArchiveListing01: "config/hosted/listings/midnight-archive-0.1.0.json",
   midnightArchiveResultProjector: "config/hosted/result-projectors/midnight-archive-0.2.0.json",
   retainedMidnightArchiveResultProjector01: "config/hosted/result-projectors/midnight-archive-0.1.0.json",
@@ -38,6 +39,8 @@ const sources = {
   retainedAgentHeistListing03: "config/hosted/listings/agent-heist-0.3.0.json",
   retainedAgentHeistListing04: "config/hosted/listings/agent-heist-0.4.0.json",
   retainedAgentHeistListing05: "config/hosted/listings/agent-heist-0.5.0.json",
+  midnightArchiveMira: "config/hosted/house-agents/mira-1.json",
+  midnightArchiveJonah: "config/hosted/house-agents/jonah-1.json",
   cooperativePlanner: "config/hosted/house-agents/cooperative-planner-17.json",
   retainedCooperativePlanner16: "config/hosted/house-agents/cooperative-planner-16.json",
   retainedCooperativePlanner15: "config/hosted/house-agents/cooperative-planner-15.json",

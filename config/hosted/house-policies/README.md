@@ -1,11 +1,20 @@
 # Archive policy sources
 
 These reviewed behavior-policy source objects populate the exact
-`behavior_policy` field of new Mira and Jonah House Agent Revisions. They are
-not published House Agent Revisions or operational approvals. IMO-209 must
-separately pin Archive-compatible Agent Profiles, Runner Templates, exact
-executables, the reviewed route, and the unchanged allowance before assignment.
-Retained House Agent Revisions are unchanged.
+`behavior_policy` field of the Mira and Jonah House Agent Revisions in
+`../house-agents/mira-1.json` and `../house-agents/jonah-1.json`. The revisions
+pin the Archive-specific Profiles in `../house-agent-profiles/`, the separate
+`openrouter-house-archive` Runner Template revision `1`, the reviewed Granite
+route, the empty tool set, byte accounting revision and unchanged allowance.
+The Host still has to import the Profiles and an exact executable-bound Runner
+Template, approve their exact digests, and prove route readiness before either
+revision is available for a new Assignment. Checked-in source grants none of
+those operational approvals. Retained House Agent Revisions are unchanged.
+
+The canonical House revision identities are:
+
+- Mira: `blake3:7e0b07b386009d509d605c9efdbe491a035f219d10ef7ebebc6f71e99461cdde`
+- Jonah: `blake3:b88da2260f391c91593996c5913961469619b53a9e457c5ea0783cd3cac59db0`
 
 Policy IDs `worldstream.house.mira` and `worldstream.house.jonah`, revision `1`,
 select the managed model boundary's Archive context contract. It accepts only
@@ -36,6 +45,6 @@ privacy rejection with consumed allowance, retry fencing and route failures.
 
 Reproduce after `pack:prove` with the generator beside the fixture and
 `cargo test --locked -j 1 -p worldstream-studio-supervisor --lib house_model -- --nocapture`.
-These are deterministic qualification results. Live provider latency,
+These are deterministic local contract results. Live provider latency,
 contribution and attempt evidence remain outstanding until the exact named
 assignments and an authorized provider allowance are available.

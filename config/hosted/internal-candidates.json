@@ -1,11 +1,11 @@
 {
   "schema": "worldstream/local-hosted-candidates/v1",
   "candidates": [{
-    "listing_file": "config/hosted/listings/midnight-archive-0.2.0.json",
-    "listing_digest": "blake3:efa4b63c9da251431343fbaab03e85ee2de053722345f9bd7b1434c2762283f3",
+    "listing_file": "config/hosted/listings/midnight-archive-0.3.0.json",
+    "listing_digest": "blake3:cc1c92ebc6ba7cccc9474186ff8107cf97f6bd0ce2676c6d1a2aa203c2a62d35",
     "bundle_file": "packs/midnight-archive/releases/0.1.0/worldstream-midnight-archive-de3cd1d9fa45087b69cb107a663596305864c350f620fe4d7260e0341214d47a.wspack",
     "bundle_digest": "blake3:de3cd1d9fa45087b69cb107a663596305864c350f620fe4d7260e0341214d47a",
-    "client_release_file": "config/activity-clients/releases/midnight-archive-web-v12.json",
-    "client_artifact_directory": "config/activity-clients/artifacts/midnight-archive-web-v12"
+    "client_release_file": "config/activity-clients/releases/midnight-archive-web-v13.json",
+    "client_artifact_directory": "config/activity-clients/artifacts/midnight-archive-web-v13"
   }]
 }

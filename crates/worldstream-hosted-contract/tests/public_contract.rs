@@ -1276,3 +1276,51 @@ fn roster_options_reject_missing_required_seats_and_unknown_defaults() -> Result
     assert!(ListingRevision::from_canonical_bytes(&canonical_value(&invalid)?).is_err());
     Ok(())
 }
+
+#[test]
+fn roster_v3_requires_bounded_descriptions_and_retained_v2_stays_closed()
+-> Result<(), Box<dyn Error>> {
+    let document = source_value(include_bytes!(
+        "../../../fixtures/hosted-contract/valid/roster-options-listing.json"
+    ))?;
+    ListingRevision::from_canonical_bytes(&canonical_value(&document)?)?;
+
+    let mut described = document.clone();
+    described["launch_input_schema"]["schema"] = json!("worldstream/launch-input-schema/v3");
+    for option in described["launch_input_schema"]["roster_options"]
+        .as_array_mut()
+        .ok_or("options")?
+    {
+        option["description"] = json!(format!(
+            "Reviewed formation description for {}.",
+            option["label"].as_str().ok_or("label")?
+        ));
+    }
+    ListingRevision::from_canonical_bytes(&canonical_value(&described)?)?;
+
+    let mut invalid_v2 = document.clone();
+    invalid_v2["launch_input_schema"]["roster_options"][1]["description"] = json!("v2 is closed");
+    assert!(ListingRevision::from_canonical_bytes(&canonical_value(&invalid_v2)?).is_err());
+
+    let mut null_v2 = document.clone();
+    null_v2["launch_input_schema"]["roster_options"][1]["description"] = Value::Null;
+    assert!(ListingRevision::from_canonical_bytes(&canonical_value(&null_v2)?).is_err());
+
+    let mut missing = described.clone();
+    missing["launch_input_schema"]["roster_options"][0]
+        .as_object_mut()
+        .ok_or("option")?
+        .remove("description");
+    assert!(ListingRevision::from_canonical_bytes(&canonical_value(&missing)?).is_err());
+
+    let mut null_v3 = described.clone();
+    null_v3["launch_input_schema"]["roster_options"][1]["description"] = Value::Null;
+    assert!(ListingRevision::from_canonical_bytes(&canonical_value(&null_v3)?).is_err());
+
+    for description in [String::new(), "x".repeat(257)] {
+        let mut invalid = described.clone();
+        invalid["launch_input_schema"]["roster_options"][1]["description"] = json!(description);
+        assert!(ListingRevision::from_canonical_bytes(&canonical_value(&invalid)?).is_err());
+    }
+    Ok(())
+}

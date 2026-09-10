@@ -21,6 +21,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
 import {
+  renderArchiveHouseAgentProfiles,
+  renderArchiveHouseRunnerTemplate,
   renderHouseAgentProfiles,
   renderHouseRunnerTemplate,
   retainRunnerExecutable,
@@ -807,36 +809,35 @@ async function importHostedDeclarations(
   const generated = join(stateRoot, "generated-hosted-import");
   await mkdir(generated, { recursive: true, mode: 0o700 });
   const runner = join(generated, "openrouter-house-runner.json");
+  const archiveRunner = join(generated, "openrouter-house-archive-runner.json");
   const provider = join(generated, "openrouter-provider.json");
   const cooperative = join(generated, "cooperative-planner.json");
   const skeptical = join(generated, "skeptical-auditor.json");
+  const mira = join(generated, "midnight-archive-mira.json");
+  const jonah = join(generated, "midnight-archive-jonah.json");
   const profiles = renderHouseAgentProfiles();
+  const archiveProfiles = renderArchiveHouseAgentProfiles();
   let houseRunner = renderHouseRunnerTemplate(retainedRunner, executableDigest);
+  let archiveHouseRunner = renderArchiveHouseRunnerTemplate(retainedRunner, executableDigest);
   if (rosterFixture) {
     // Qualification must not repin a pre-existing Heist Runner revision to the
     // current build. Its independently retained executable remains authoritative.
-    const installedPath = join(stateDirectory, "runner-templates/installed", `${houseRunner.template_id}--${houseRunner.revision}.json`);
-    let installed;
-    try {
-      installed = await readRegularJson(installedPath);
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-    }
-    if (installed !== undefined) {
-      const { executable: installedExecutable, ...installedContract } = installed;
-      const { executable: _currentExecutable, ...expectedContract } = houseRunner;
-      if (!isDeepStrictEqual(installedContract, expectedContract)
-        || typeof installedExecutable?.path !== "string"
-        || taggedBlake3(await readFile(installedExecutable.path)) !== `blake3:${installedExecutable.blake3}`) {
-        throw new Error("retained Heist Runner contract or executable does not match its exact revision");
-      }
-      houseRunner = installed;
-    }
+    houseRunner = await reuseExactInstalledRunnerTemplate(stateDirectory, houseRunner, taggedBlake3);
+    archiveHouseRunner = await reuseExactInstalledRunnerTemplate(
+      stateDirectory,
+      archiveHouseRunner,
+      taggedBlake3,
+    );
   }
   await Promise.all([
     writeFile(
       runner,
       `${JSON.stringify(houseRunner)}\n`,
+      { mode: 0o600 },
+    ),
+    writeFile(
+      archiveRunner,
+      `${JSON.stringify(archiveHouseRunner)}\n`,
       { mode: 0o600 },
     ),
     writeFile(
@@ -853,6 +854,8 @@ async function importHostedDeclarations(
     ...[
       [profiles.cooperative, cooperative],
       [profiles.skeptical, skeptical],
+      [archiveProfiles.mira, mira],
+      [archiveProfiles.jonah, jonah],
     ].map(([profile, path]) =>
       writeFile(
         path,
@@ -864,9 +867,12 @@ async function importHostedDeclarations(
   const selected = [
     "init",
     "--runner-template", runner,
+    "--runner-template", archiveRunner,
     "--provider-declaration", provider,
     "--agent-profile", cooperative,
     "--agent-profile", skeptical,
+    "--agent-profile", mira,
+    "--agent-profile", jonah,
     "--client-declaration", declaration,
   ];
   let fixture;
@@ -900,6 +906,29 @@ async function importHostedDeclarations(
   }
   const applied = await ctl([...selected, "--approve-imports", digest], { capture: rosterFixture });
   if (fixture !== undefined) return { ...fixture, receipt: JSON.parse(applied.stdout) };
+}
+
+async function reuseExactInstalledRunnerTemplate(stateDirectory, expected, taggedBlake3) {
+  const installedPath = join(
+    stateDirectory,
+    "runner-templates/installed",
+    `${expected.template_id}--${expected.revision}.json`,
+  );
+  let installed;
+  try {
+    installed = await readRegularJson(installedPath);
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  }
+  if (installed === undefined) return expected;
+  const { executable: installedExecutable, ...installedContract } = installed;
+  const { executable: _currentExecutable, ...expectedContract } = expected;
+  if (!isDeepStrictEqual(installedContract, expectedContract)
+    || typeof installedExecutable?.path !== "string"
+    || taggedBlake3(await readFile(installedExecutable.path)) !== `blake3:${installedExecutable.blake3}`) {
+    throw new Error("retained Runner contract or executable does not match its exact revision");
+  }
+  return installed;
 }
 
 async function hostedClientDeclaration(stateDirectory, stateRoot) {

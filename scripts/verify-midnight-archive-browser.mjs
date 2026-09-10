@@ -93,7 +93,7 @@ const crewLiveProof = proofMode === "crew-live";
 const unavailableLiveProof = proofMode === "unavailable-live";
 const liveSpecialistRoles = crewLiveProof || unavailableLiveProof ? ["mira", "jonah"] : liveMiraProof ? ["mira"] : [];
 const liveCompanionProof = liveSpecialistRoles.length > 0;
-const clientReleaseGeneration = "v12";
+const clientReleaseGeneration = "v13";
 const archiveClientRelease = process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_CLIENT_RELEASE;
 const witness = lowReserveProof
   ? { route: lowReserveRoute, turns: 16, turnsRemaining: 0, powerRemaining: 0, candidate: "Cobalt Ledger", checks: ["sixteen_turn_low_reserve_witness", "sourced_evidence_disclosure", "authored_agreement_honored", "collection_preserved", "source_record_protected"] }
@@ -151,7 +151,7 @@ try {
   debug("binary preflight and bundle inspection complete");
 
   const releasePath = archiveClientRelease === undefined
-    ? join(workspace, "config/activity-clients/releases/midnight-archive-web-v12.json")
+    ? join(workspace, "config/activity-clients/releases/midnight-archive-web-v13.json")
     : resolve(workspace, archiveClientRelease);
   const release = JSON.parse(await readFile(releasePath, "utf8"));
   const standaloneSurface = release.surfaces.find((surface) => surface.surface_id === "midnight-archive-web");

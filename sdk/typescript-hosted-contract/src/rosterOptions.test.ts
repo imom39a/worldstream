@@ -58,9 +58,31 @@ test("reviewed schemas reject missing required seats, duplicated or unknown seat
     (v: any) => { v.roster_options[3].house_agent_assignments[1] = v.roster_options[3].house_agent_assignments[0]; },
     (v: any) => { v.roster_options = Array(17).fill(v.roster_options[0]); },
     (v: any) => { v.roster_options[0].prompt = "injected"; },
+    (v: any) => { v.roster_options[0].description = "Any addition is closed in v2."; },
   ];
   for (const mutate of mutations) {
     const value = source(); mutate(value.launch_input_schema);
     assert.throws(() => readListingRevision(encodeCanonical(value)));
+  }
+});
+
+test("v3 requires bounded reviewed descriptions while retained v2 stays closed", () => {
+  const value = source();
+  value.launch_input_schema.schema = "worldstream/launch-input-schema/v3";
+  for (const option of value.launch_input_schema.roster_options) {
+    option.description = `Reviewed formation description for ${option.label}.`;
+  }
+  const listing = readListingRevision(encodeCanonical(value));
+  const selected = resolveRosterOption(listing, { roster_option: "first" });
+  assert.ok(selected && "description" in selected);
+  assert.equal(
+    selected.description,
+    value.launch_input_schema.roster_options[1].description,
+  );
+  for (const description of [undefined, "", "x".repeat(257)]) {
+    const invalid = structuredClone(value);
+    if (description === undefined) delete invalid.launch_input_schema.roster_options[0].description;
+    else invalid.launch_input_schema.roster_options[0].description = description;
+    assert.throws(() => readListingRevision(encodeCanonical(invalid)));
   }
 });

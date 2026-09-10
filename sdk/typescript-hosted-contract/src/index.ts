@@ -63,7 +63,7 @@ interface SchemaReference {
   readonly digest: string;
 }
 
-export interface RosterOption {
+interface RosterOptionBase {
   readonly option_id: string;
   readonly label: string;
   readonly seat_ids: readonly string[];
@@ -73,6 +73,14 @@ export interface RosterOption {
     readonly house_agent_revision_digest: string;
   }[];
 }
+
+export type RosterOptionV2 = RosterOptionBase;
+
+export interface RosterOptionV3 extends RosterOptionBase {
+  readonly description: string;
+}
+
+export type RosterOption = RosterOptionV2 | RosterOptionV3;
 
 export interface ListingRevisionValue {
   readonly schema: "worldstream/activity-listing-revision/v1";
@@ -99,7 +107,12 @@ export interface ListingRevisionValue {
     readonly schema: "worldstream/launch-input-schema/v2";
     readonly accepts: "roster_option";
     readonly defaults: { readonly roster_option: string };
-    readonly roster_options: readonly RosterOption[];
+    readonly roster_options: readonly RosterOptionV2[];
+  } | {
+    readonly schema: "worldstream/launch-input-schema/v3";
+    readonly accepts: "roster_option";
+    readonly defaults: { readonly roster_option: string };
+    readonly roster_options: readonly RosterOptionV3[];
   };
   readonly room_setup: { readonly configuration: CanonicalJson };
   readonly seats: readonly ListingSeat[];
@@ -677,7 +690,11 @@ function validateLaunchInputSchema(listing: CanonicalObject): void {
     closedRecord(schema.defaults, []);
     return;
   }
-  if (schema.schema !== "worldstream/launch-input-schema/v2" || schema.accepts !== "roster_option") {
+  const described = schema.schema === "worldstream/launch-input-schema/v3";
+  if (
+    (schema.schema !== "worldstream/launch-input-schema/v2" && !described)
+    || schema.accepts !== "roster_option"
+  ) {
     throw new ContractViolation("unsupported");
   }
   closedKeys(schema, ["schema", "accepts", "defaults", "roster_options"]);
@@ -687,9 +704,14 @@ function validateLaunchInputSchema(listing: CanonicalObject): void {
   const seats = array(listing.seats).map(record);
   const ids = new Set<string>();
   for (const value of options) {
-    const option = closedRecord(value, ["option_id", "label", "seat_ids", "configuration", "house_agent_assignments"]);
+    const option = record(value);
+    closedKeys(option, [
+      "option_id", "label", ...(described ? ["description"] : []),
+      "seat_ids", "configuration", "house_agent_assignments",
+    ]);
     const id = seatLabel(option.option_id);
     text(option.label, 128);
+    if (described) text(option.description, 256);
     if (ids.has(id)) throw new ContractViolation("invalid_shape");
     ids.add(id);
     const selected = array(option.seat_ids).map(seatLabel);

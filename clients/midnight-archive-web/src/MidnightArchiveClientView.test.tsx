@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MidnightArchiveClientView } from "./MidnightArchiveClientView";
+import { MIDNIGHT_ARCHIVE_HOSTED_EXHIBITION_TERMS } from "./config";
 import { projection, rawJonah, rawMira, rawProjection, readyState } from "./testFixtures";
 
 afterEach(() => {
@@ -35,6 +36,39 @@ describe("Midnight Archive mission surface", () => {
     expect(markup).toContain("Commit Turn");
     expect(markup).not.toContain("<input");
     expect(markup).not.toMatch(/room_id|member_id|Bearer\s|wsh1:|wsb1:/u);
+  });
+
+  it("labels a live companion Run with the included exhibition limits and fresh-memory boundary", () => {
+    const current = projection({
+      mira: rawMira({ presence: "active", location: "atrium", mode: "following" }),
+      jonah: rawJonah({ presence: "active", location: "atrium", mode: "following" }),
+      crew_debrief: {
+        starting_roles: ["lead", "mira", "jonah"], extracted_roles: [], left_behind_roles: [], completed_work: [],
+      },
+    });
+    const markup = renderToStaticMarkup(
+      <MidnightArchiveClientView
+        state={readyState(current)}
+        connection="live"
+        actionsEnabled
+        onAction={vi.fn()}
+        houseExhibitionTerms={MIDNIGHT_ARCHIVE_HOSTED_EXHIBITION_TERMS}
+      />,
+    );
+    expect(markup).toContain("Exhibition — platform-supplied agents");
+    expect(markup).toContain("Mira and Jonah are included at no charge");
+    expect(markup).toContain("permanently marked as unranked exhibitions");
+    expect(markup).toContain("10 model calls");
+    expect(markup).toContain("120,000 input tokens");
+    expect(markup).toContain("10,000 output tokens");
+    expect(markup).toContain("60 seconds per call");
+    expect(markup).toContain("Every Run starts fresh");
+    expect(markup).toContain("no memory from another Run");
+    const standaloneMarkup = renderToStaticMarkup(
+      <MidnightArchiveClientView state={readyState(current)} connection="live" actionsEnabled onAction={vi.fn()} />,
+    );
+    expect(standaloneMarkup).not.toContain("platform-supplied agents");
+    expect(standaloneMarkup).not.toContain("included at no charge");
   });
 
   it("keeps staging separate from commit and never spends local resources", async () => {
@@ -347,7 +381,13 @@ describe("Midnight Archive mission surface", () => {
       },
     });
     const markup = renderToStaticMarkup(
-      <MidnightArchiveClientView state={readyState(current, [])} connection="live" actionsEnabled={false} onAction={vi.fn()} />,
+      <MidnightArchiveClientView
+        state={readyState(current, [])}
+        connection="live"
+        actionsEnabled={false}
+        onAction={vi.fn()}
+        houseExhibitionTerms={MIDNIGHT_ARCHIVE_HOSTED_EXHIBITION_TERMS}
+      />,
     );
     expect(markup).toContain("Evidence debrief:");
     expect(markup).toContain("Only one authored source was inspected");
@@ -389,7 +429,13 @@ describe("Midnight Archive mission surface", () => {
       },
     });
     const markup = renderToStaticMarkup(
-      <MidnightArchiveClientView state={readyState(current, [])} connection="live" actionsEnabled={false} onAction={vi.fn()} />,
+      <MidnightArchiveClientView
+        state={readyState(current, [])}
+        connection="live"
+        actionsEnabled={false}
+        onAction={vi.fn()}
+        houseExhibitionTerms={MIDNIGHT_ARCHIVE_HOSTED_EXHIBITION_TERMS}
+      />,
     );
     expect(markup).toContain("Agreement</dt><dd>honored");
     expect(markup).toContain("Collection preserved</dt><dd>Yes");
@@ -622,7 +668,13 @@ describe("Midnight Archive mission surface", () => {
       },
     });
     const markup = renderToStaticMarkup(
-      <MidnightArchiveClientView state={readyState(current, [])} connection="live" actionsEnabled={false} onAction={vi.fn()} />,
+      <MidnightArchiveClientView
+        state={readyState(current, [])}
+        connection="live"
+        actionsEnabled={false}
+        onAction={vi.fn()}
+        houseExhibitionTerms={MIDNIGHT_ARCHIVE_HOSTED_EXHIBITION_TERMS}
+      />,
     );
     expect(markup).toContain("Crew extracted");
     expect(markup).toContain("Lead, Mira");
@@ -630,6 +682,10 @@ describe("Midnight Archive mission surface", () => {
     expect(markup).toContain("Jonah");
     expect(markup).toContain("Mira · complete field assay · turn 5");
     expect(markup).toContain("Jonah · open service hatch · turn 3");
+    expect(markup).toContain("Exhibition — platform-supplied agents");
+    expect(markup).toContain("included at no charge");
+    expect(markup).toContain("permanently marked as unranked exhibitions");
+    expect(markup).toContain("Every Run starts fresh");
   });
 
   it("shows Mira waiting and ready progress without rendering private plan payloads", () => {
