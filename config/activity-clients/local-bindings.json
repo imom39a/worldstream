@@ -95,6 +95,19 @@
     },
     {
       "schema": "worldstream/client-deployment/v1",
+      "deployment_id": "first-party-agent-heist-web-v7",
+      "client_id": "worldstream.agent-heist.web",
+      "release_digest": "sha256:e1efd39ff8da4cddaa48e87ed4333d2c16fb71dd5ad0321f1245ac0a55aad33c",
+      "trust_level": "externally_trusted",
+      "surfaces": [
+        {
+          "surface_id": "heist-web",
+          "launch_url": "http://127.0.0.1:5173/agent-heist-v7/"
+        }
+      ]
+    },
+    {
+      "schema": "worldstream/client-deployment/v1",
       "deployment_id": "first-party-midnight-archive-web-v1",
       "client_id": "worldstream.midnight-archive.web",
       "release_digest": "sha256:0d31901fb8a0c1460b1abb6321579dfdfd03a7b78fe6a15a4c5a7a5517b0037f",
@@ -468,6 +481,40 @@
       "access_mode": "spectator",
       "roles": [],
       "deployment_id": "first-party-agent-heist-web-v6",
+      "surface_id": "heist-web",
+      "preference": "default"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "agent-heist-0-5-participant-web-v7",
+      "pack": {
+        "id": "worldstream.agent-heist",
+        "version": "0.5.0",
+        "digest": "blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "participant",
+      "roles": [
+        "navigator",
+        "insider",
+        "broker"
+      ],
+      "deployment_id": "first-party-agent-heist-web-v7",
+      "surface_id": "heist-web",
+      "preference": "default"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "agent-heist-0-5-spectator-web-v7",
+      "pack": {
+        "id": "worldstream.agent-heist",
+        "version": "0.5.0",
+        "digest": "blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "spectator",
+      "roles": [],
+      "deployment_id": "first-party-agent-heist-web-v7",
       "surface_id": "heist-web",
       "preference": "default"
     },

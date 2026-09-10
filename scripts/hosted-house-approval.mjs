@@ -91,7 +91,7 @@ export async function prepareHouseApprovals(options) {
     exactKeys(runner.executable, ["path", "blake3"]);
     if (runner.schema !== "worldstream/runner-template/v1"
         || runner.template_id !== house.runner_template.template_id || runner.revision !== house.runner_template.revision
-        || runner.executable.path !== "/usr/local/bin/worldstream-managed-agent-host"
+        || !approvedRunnerPath(runner.executable.path, runner.executable.blake3)
         || `blake3:${runner.executable.blake3}` !== executableDigest
         || !same(runner.secret_environment, [])
         || !same(runner.non_secret_environment, { WORLDSTREAM_RUNNER_MODE: "hosted-house" })
@@ -205,6 +205,12 @@ function requiredArray(value) {
   return value;
 }
 function same(left, right) { return canonicalBytes(left).equals(canonicalBytes(right)); }
+
+function approvedRunnerPath(path, executableDigest) {
+  if (typeof path !== "string" || !/^[0-9a-f]{64}$/u.test(executableDigest ?? "")) return false;
+  return path === "/usr/local/bin/worldstream-managed-agent-host"
+    || path === `/var/lib/worldstream/retained-runner-executables/blake3-${executableDigest}/worldstream-managed-agent-host`;
+}
 
 async function main() {
   const names = new Map([

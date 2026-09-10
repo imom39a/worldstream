@@ -20,6 +20,8 @@ const MAX_JSON_NODES: usize = 4_096;
 const MAX_JSON_DEPTH: usize = 32;
 const MAX_SEATS: usize = 32;
 const MAX_RESULT_OUTPUT_BYTES: usize = 16_384;
+/// Shared bound for each immutable hosted Listing or House revision catalog.
+pub const MAX_REVIEWED_HOSTED_CATALOG_REVISIONS: usize = 64;
 const PROJECTION_SCHEMA: &str = "agent-heist/projection/v1";
 const PROJECTION_SCHEMA_DIGEST: &str =
     "blake3:a617f398abd1469d237ce4d832704459deddf44193267fab8bb0e1311e5faa8f";
@@ -2036,7 +2038,7 @@ pub fn validate_hosted_launch_request(
         || request.capacity_authorization.schema != "worldstream/platform-capacity-authorization/v1"
         || request.listing_revision_digest != listing.digest()
         || request.capacity_authorization.host_installation_id != expected_host_installation_id
-        || house_agents.len() > 32
+        || house_agents.len() > MAX_REVIEWED_HOSTED_CATALOG_REVISIONS
     {
         return Err(ContractError::ReferenceMismatch);
     }
@@ -2093,7 +2095,7 @@ pub fn validate_hosted_house_runner_reservation_request(
     if request.schema != "worldstream/house-runner-reservation-request/v1"
         || request.host_installation_id != expected_host_installation_id
         || request.listing_revision_digest != listing.digest()
-        || house_agents.len() > 32
+        || house_agents.len() > MAX_REVIEWED_HOSTED_CATALOG_REVISIONS
     {
         return Err(ContractError::ReferenceMismatch);
     }
@@ -2162,6 +2164,11 @@ pub fn validate_hosted_house_runner_reservation_receipt(
 /// The receiving Host independently verifies that the supplied identifiers
 /// match one retained successful reservation and, when applicable, its exact
 /// Assignment and runtime binding.
+///
+/// # Errors
+///
+/// Returns [`ContractError`] when the schema or any retained identifier or
+/// evidence digest is invalid.
 pub fn validate_hosted_house_runner_retirement_request(
     request: &HostedHouseRunnerRetirementRequestV1,
 ) -> Result<(), ContractError> {
@@ -2182,6 +2189,11 @@ pub fn validate_hosted_house_runner_retirement_request(
 ///
 /// The platform may retain a hash of this response, while authentication is
 /// verified only by the issuing Host.
+///
+/// # Errors
+///
+/// Returns [`ContractError`] when the schema, identifiers, evidence fields, or
+/// authentication tag is invalid.
 pub fn validate_hosted_house_runner_retirement_receipt(
     receipt: &HostedHouseRunnerRetirementReceiptV1,
 ) -> Result<(), ContractError> {

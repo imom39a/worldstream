@@ -3,9 +3,12 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "n
 import { test } from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:net";
 
 import {
   assertHostedDevelopmentAllowed,
+  assertHostedDevelopmentBrowserAddressUnused,
+  assertHostedDevelopmentPortsAvailable,
   hostedDevelopmentGatewayConfiguration,
   hostedDevelopmentPorts,
   hostedDevelopmentListingAllowlist,
@@ -22,6 +25,61 @@ import {
   installHostedNativeBinaries,
   renderHostedDevelopmentConfig,
 } from "./hosted-dev.mjs";
+
+test("the browser-visible Gateway port must also be unused on IPv6 localhost", async (context) => {
+  const blocker = createServer();
+  try {
+    await new Promise((resolvePromise, rejectPromise) => {
+      blocker.once("error", rejectPromise);
+      blocker.listen({ host: "::1", port: 0, ipv6Only: true }, resolvePromise);
+    });
+  } catch (error) {
+    if (error?.code === "EADDRNOTAVAIL" || error?.code === "EAFNOSUPPORT") {
+      context.skip("IPv6 loopback is unavailable on this host");
+      return;
+    }
+    throw error;
+  }
+  try {
+    const address = blocker.address();
+    assert.equal(typeof address, "object");
+    await assert.rejects(
+      () => assertHostedDevelopmentPortsAvailable(
+        { gateway: address.port },
+        new Set(),
+      ),
+      /Gateway browser loopback port .* is already serving another process/u,
+    );
+  } finally {
+    await new Promise((resolvePromise) => blocker.close(resolvePromise));
+  }
+});
+
+test("the browser-visible Gateway rejects an already serving IPv6 endpoint", async (context) => {
+  const blocker = createServer();
+  try {
+    await new Promise((resolvePromise, rejectPromise) => {
+      blocker.once("error", rejectPromise);
+      blocker.listen({ host: "::1", port: 0, ipv6Only: true }, resolvePromise);
+    });
+  } catch (error) {
+    if (error?.code === "EADDRNOTAVAIL" || error?.code === "EAFNOSUPPORT") {
+      context.skip("IPv6 loopback is unavailable on this host");
+      return;
+    }
+    throw error;
+  }
+  try {
+    const address = blocker.address();
+    assert.equal(typeof address, "object");
+    await assert.rejects(
+      () => assertHostedDevelopmentBrowserAddressUnused(address.port),
+      /Gateway browser loopback port .* is already serving another process/u,
+    );
+  } finally {
+    await new Promise((resolvePromise) => blocker.close(resolvePromise));
+  }
+});
 
 test("hosted smoke uses a deterministic key derived from its exact request intent", () => {
   assert.match(HOSTED_LOCAL_SMOKE_IDEMPOTENCY_KEY, /^hosted_local_[0-9a-f]{32}$/u);
@@ -94,8 +152,8 @@ test("the readiness probe identity is stable and scoped to its Listing", () => {
   );
   assert.deepEqual(first, second);
   assert.deepEqual(first, {
-    roomSetupOperationId: "hosted-local-readiness-1cf75abc",
-    reservationReference: "1cf75abc-b30d-47fd-8e0a-bc5e39813a31",
+    roomSetupOperationId: "hosted-local-readiness-71805434",
+    reservationReference: "71805434-c253-4094-83a5-75336cb0a44d",
   });
   assert.notDeepEqual(first, earlierListing);
 });
@@ -236,7 +294,10 @@ test("local and Fly gateways retain all retained Listings as well as current dis
   const deployed = JSON.parse(value.slice(value.indexOf("=") + 1).trim());
   assert.equal(deployed, hostedDevelopmentListingAllowlist());
   const admitted = new Set(deployed.split(","));
-  assert.equal(admitted.size, 19);
+  assert.equal(admitted.size, 23);
+  assert.ok(admitted.has("blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397"));
+  assert.ok(admitted.has("blake3:945664f9fea18ace9991c44d43febc142a58244d69352d98514a69b4f7b22030"));
+  assert.ok(admitted.has("blake3:0cd11b3aee7596f0f4c2ff5640247c29038f903914d0206a784f7adde8a84c46"));
   assert.ok(admitted.has("blake3:1cf75abcb30d77fdbe0abc5e39813a315bea6900c61e9b49c51b84d995335d74"));
   assert.ok(admitted.has("blake3:21d7d5439208df0b1dbb18f7f42f3a3687d248a523b03fb5b4184b2dd0dcb626"));
   assert.ok(admitted.has("blake3:5b0993de4c858771cce34b16cb25e03b2bf509cbe16cd1ce7249a789ea8c426f"));
@@ -276,7 +337,7 @@ test("review-bound ports cannot drift silently", () => {
 
 test("the local browser stream uses a distinct loopback hostname from the product", () => {
   const product = new URL("http://127.0.0.1:5180");
-  const gateway = hostedDevelopmentGatewayConfiguration();
+  const gateway = hostedDevelopmentGatewayConfiguration({});
   const browserStream = new URL(gateway.browserStreamUrl);
   assert.deepEqual(gateway, {
     internalUrl: "http://127.0.0.1:8080",

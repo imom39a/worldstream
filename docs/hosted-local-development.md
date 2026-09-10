@@ -66,6 +66,8 @@ The ready output shows these default endpoints:
 
 The product proxies `/api/*` to the Platform BFF. Browser cookies and request
 origins therefore use the product origin, as they do in the hosted design.
+The browser connects to the Gateway as `http://localhost:8080` so the product's
+`127.0.0.1` cookies do not reach the credential-free WebSocket upgrade.
 Start at the product catalog, not at the asset server. The catalog opens
 `/agent-heist-v6/hosted/` on the product origin after it authorizes your entry.
 The separate `/agent-heist-v6/` surface is for the standalone local-kernel
@@ -196,8 +198,11 @@ Supabase ports stay fixed in `supabase/config.toml`.
 
 ## Troubleshooting
 
-If a port is in use, the command names the service and port. Stop the unrelated
-process. Do not change ports `9420` or `5173` without a new client review.
+If a port is in use, the command names the service and port. For the Gateway,
+the check covers both `127.0.0.1` and `::1` because a browser can resolve
+`localhost` to either address. Stop the unrelated process, or set
+`WORLDSTREAM_HOSTED_GATEWAY_PORT` to an unused port. Do not change ports `9420`
+or `5173` without a new client review.
 
 If Supabase cannot start, verify that Docker Desktop is running. Then run:
 

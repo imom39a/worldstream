@@ -32,9 +32,9 @@ use worldstream_hosted_contract::{
     HostedLaunchStageV1, HostedLaunchStatusV1, HostedPrestartAbandonmentEvidenceV1,
     HostedProvisioningAbandonmentEvidenceV1, HostedPublicRelayBindRequestV1,
     HostedResultSourceEvidenceV1, HostedResultSourceRequestV1, HouseAgentRevision, ListingRevision,
-    PackReference as HostedPackReference, validate_hosted_genesis_evidence,
-    validate_hosted_launch_evidence_request, validate_hosted_launch_request,
-    validate_hosted_prestart_abandonment_evidence,
+    MAX_REVIEWED_HOSTED_CATALOG_REVISIONS, PackReference as HostedPackReference,
+    validate_hosted_genesis_evidence, validate_hosted_launch_evidence_request,
+    validate_hosted_launch_request, validate_hosted_prestart_abandonment_evidence,
     validate_hosted_provisioning_abandonment_evidence, validate_hosted_public_relay_bind_request,
     validate_hosted_result_source_evidence, validate_hosted_result_source_request,
 };
@@ -361,8 +361,8 @@ impl HostedLaunchOperationsV1 {
     ) -> Result<Self, HostedLaunchErrorV1> {
         if !safe_public_reference(host_installation_id, 128)
             || listings.is_empty()
-            || listings.len() > 64
-            || house_agents.len() > 32
+            || listings.len() > MAX_REVIEWED_HOSTED_CATALOG_REVISIONS
+            || house_agents.len() > MAX_REVIEWED_HOSTED_CATALOG_REVISIONS
         {
             return Err(HostedLaunchErrorV1::Invalid);
         }
@@ -1825,13 +1825,13 @@ mod tests {
     const HOUSE_LISTING: &[u8] =
         include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json");
     const CURRENT_LISTING: &[u8] =
-        include_bytes!("../../../config/hosted/listings/agent-heist-0.20.0.json");
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.24.0.json");
     const HOUSE_AGENT: &[u8] =
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json");
     const CURRENT_PLANNER: &[u8] =
-        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-13.json");
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-17.json");
     const CURRENT_AUDITOR: &[u8] =
-        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-12.json");
+        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-16.json");
     const LAUNCH: &[u8] =
         include_bytes!("../../../fixtures/hosted-contract/valid/agent-heist-launch-request.json");
     const ROSTER: &[u8] =
@@ -2312,7 +2312,7 @@ mod tests {
     }
 
     #[test]
-    fn current_house_profiles_validate_against_listing_019() {
+    fn current_house_profiles_validate_against_listing_024() {
         for house_source in [CURRENT_PLANNER, CURRENT_AUDITOR] {
             let (request, listing, house) =
                 current_house_request("hosted-current-profile", house_source);
@@ -2324,6 +2324,41 @@ mod tests {
             )
             .unwrap_or_else(|error| unreachable!("current profile validation: {error:?}"));
         }
+    }
+
+    #[test]
+    fn full_reviewed_house_catalog_opens_within_the_shared_catalog_bound() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+        let (listings, house_agents) = crate::hosted_artifacts::reviewed_hosted_artifacts()
+            .unwrap_or_else(|error| unreachable!("reviewed catalog: {error}"));
+        let (request, current_listing, _) =
+            current_house_request("hosted-full-reviewed-catalog", CURRENT_PLANNER);
+        assert_eq!(
+            house_agents.len(),
+            33,
+            "update this regression when the catalog grows"
+        );
+        assert!(listings.len() <= MAX_REVIEWED_HOSTED_CATALOG_REVISIONS);
+        assert!(
+            listings
+                .iter()
+                .any(|listing| listing.digest() == current_listing.digest())
+        );
+
+        let operations = HostedLaunchOperationsV1::open_with_backend(
+            &directory.path().join("hosted-launches"),
+            "hosted-test",
+            listings,
+            house_agents,
+            FakeBackend::default(),
+        )
+        .unwrap_or_else(|error| unreachable!("full reviewed catalog: {error:?}"))
+        .with_house_runner_backend(FakeHouseBackend::new(
+            HostedHouseRunnerGateV1::RetryableFailure,
+        ));
+        operations
+            .submit(&request)
+            .unwrap_or_else(|error| unreachable!("full catalog launch validation: {error:?}"));
     }
 
     #[test]

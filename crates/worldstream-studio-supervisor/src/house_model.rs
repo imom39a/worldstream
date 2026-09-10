@@ -1678,6 +1678,10 @@ fn build_provider_request(
         ]),
     );
     body.insert("provider".to_owned(), provider);
+    // The reviewed Granite route enables high-effort reasoning by default.
+    // House output is one small Action object, so reasoning would consume the
+    // entire completion allowance before the JSON answer is emitted.
+    body.insert("reasoning".to_owned(), json!({"effort": "none"}));
     body.insert("response_format".to_owned(), json!({"type": "json_object"}));
     body.insert("stream".to_owned(), Value::Bool(false));
     let output_limit = Value::Number(Number::from(revision.allowance().output_tokens_per_call));
@@ -2289,6 +2293,68 @@ mod tests {
         }
     }
 
+    struct ReasoningHungryProvider;
+
+    impl HouseProviderPortV1 for ReasoningHungryProvider {
+        fn dispatch(
+            &self,
+            request: &HouseProviderRequestV1,
+            _credential: &HouseProviderCredentialV1,
+        ) -> Result<HouseProviderReplyV1, HouseProviderPortErrorV1> {
+            let request_body: Value = serde_json::from_slice(request.body())
+                .map_err(|_| HouseProviderPortErrorV1::Rejected)?;
+            let reasoning_disabled = request_body
+                .pointer("/reasoning/effort")
+                .and_then(Value::as_str)
+                == Some("none");
+            let (finish_reason, content, completion_tokens) = if reasoning_disabled {
+                (
+                    "stop",
+                    "{\"offer_id\":\"4:0:blake3-offer\",\"payload\":{}}",
+                    16,
+                )
+            } else {
+                ("length", "", 1_000)
+            };
+            let body = serde_json::to_vec(&json!({
+                "choices": [{
+                    "finish_reason": finish_reason,
+                    "index": 0,
+                    "message": {"content": content, "role": "assistant"}
+                }],
+                "id": "gen-reasoning-budget-regression",
+                "model": request.model_slug(),
+                "object": "chat.completion",
+                "openrouter_metadata": {
+                    "attempt": 1,
+                    "attempts": [{
+                        "provider": request.provider_slug(),
+                        "model": request.model_slug(),
+                        "status": 200
+                    }],
+                    "endpoints": {
+                        "available": [{
+                            "model": request.model_slug(),
+                            "provider": request.provider_slug(),
+                            "selected": true
+                        }],
+                        "total": 1
+                    },
+                    "requested": request.model_slug(),
+                    "strategy": "direct"
+                },
+                "usage": {
+                    "completion_tokens": completion_tokens,
+                    "cost": 0,
+                    "prompt_tokens": 1,
+                    "total_tokens": completion_tokens + 1
+                }
+            }))
+            .map_err(|_| HouseProviderPortErrorV1::Rejected)?;
+            HouseProviderReplyV1::new(body)
+        }
+    }
+
     fn first_attempt_metadata() -> Value {
         // OpenRouter's documented direct-success shape permits omitted `attempts`.
         json!({
@@ -2556,6 +2622,7 @@ mod tests {
                 "messages",
                 "model",
                 "provider",
+                "reasoning",
                 "response_format",
                 "stream"
             ]
@@ -2566,6 +2633,10 @@ mod tests {
         );
         assert_eq!(body.get("max_tokens").and_then(Value::as_u64), Some(1_000));
         assert_eq!(body.get("stream").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            body.pointer("/reasoning/effort").and_then(Value::as_str),
+            Some("none")
+        );
         assert!(body.get("tools").is_none());
         assert!(body.get("plugins").is_none());
         let provider = body
@@ -2609,6 +2680,30 @@ mod tests {
         );
         assert_eq!(request.timeout().as_secs(), 60);
         assert!(offered.contains_key("4:0:blake3-offer"));
+        Ok(())
+    }
+
+    #[test]
+    fn request_disables_reasoning_so_short_structured_action_can_complete()
+    -> Result<(), Box<dyn Error>> {
+        let directory = tempdir()?;
+        let ledger = FileHouseAllowanceLedgerV1::open_at(
+            directory.path().join("ledger"),
+            HouseSpendLimitsV1::hobby_preview(),
+            period()?,
+        )?;
+        let executor = HouseModelExecutorV1::new(ReasoningHungryProvider, ledger.clone());
+        let completion = executor.execute(
+            &credential()?,
+            &revision()?,
+            &identity("reasoning-budget", "reasoning-budget")?,
+            &json!({"phase": "planning"}),
+            &offers(),
+            period()?,
+        )?;
+        assert_eq!(completion.action.offer_id, "4:0:blake3-offer");
+        assert_eq!(completion.action.payload, json!({}));
+        assert_eq!(ledger.usage("reasoning-budget")?.attempts, 1);
         Ok(())
     }
 

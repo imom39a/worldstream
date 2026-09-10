@@ -369,6 +369,7 @@ mod tests {
     use worldstream_pack_bundle::MAX_INSTALLED_BUNDLE_COUNT;
     use worldstream_pack_bundle::PackInstallStateV1;
     use worldstream_runtime::StorageProfile;
+    use worldstream_transfer::DeploymentIdentityV1;
 
     use super::{
         StartupPackRegistryErrorV1, assemble_startup_pack_registry, pack_deployment_binding,
@@ -407,7 +408,30 @@ mod tests {
             startup.base_distribution_identity().packs().len(),
             expected.len()
         );
+        // These exact values are the immutable nine-pack successor identity
+        // and pack set. The prior eight-pack deployment remains an addressable
+        // historical distribution; adding Heist 0.5 creates this successor.
+        assert_eq!(
+            startup.base_distribution_identity().digest().to_string(),
+            "116c73b634a7eea201c3c92dc0cb2bd61704945da966087574d33617c2f08936"
+        );
+        assert_eq!(
+            hosted_sqlite_pack_set_digest(startup.base_distribution_identity()),
+            "23d454a84a6d908803674d7300fb4f4945814c827df29a78dd780f1693ce0e5a"
+        );
         assert!(directory.path().join("activity-packs/inventory").is_dir());
+    }
+
+    fn hosted_sqlite_pack_set_digest(identity: &DeploymentIdentityV1) -> String {
+        let mut bytes = b"worldstream/deployment-pack-set/v1".to_vec();
+        for pack in identity.packs() {
+            bytes.extend_from_slice(pack.pack_id().as_bytes());
+            bytes.push(0);
+            bytes.extend_from_slice(pack.revision().as_bytes());
+            bytes.push(0);
+            bytes.extend_from_slice(&pack.digest().as_bytes());
+        }
+        blake3::hash(&bytes).to_hex().to_string()
     }
 
     #[test]

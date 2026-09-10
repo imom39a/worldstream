@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostedDevelopmentListingAllowlist } from "./hosted-dev.mjs";
+import { hostedGatewayConfiguration } from "./hosted-runtime.mjs";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const LISTING_DIGEST = "blake3:21d7d5439208df0b1dbb18f7f42f3a3687d248a523b03fb5b4184b2dd0dcb626";
 const CONTROLLER_AUTHORITY = "hosted-smoke-controller-authority-000000000000";
 const SERVICE_AUTHORITY = "hosted-smoke-service-authority-000000000000000";
 
 async function main() {
+  const gatewayConfiguration = hostedGatewayConfiguration();
   const binaryRoot = hostedSmokeBinaryRoot();
   for (const binary of [
     "worldstreamctl",
@@ -35,7 +36,7 @@ async function main() {
   ]);
   await Promise.all([
     copyFile(
-      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "agent-heist-web-v6.json"),
+      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "agent-heist-web-v7.json"),
       join(assetRoot, "agent-heist-web.json"),
     ),
     copyFile(
@@ -73,7 +74,7 @@ async function main() {
     WORLDSTREAM_HOSTED_INSTALLATION_ID: "hosted-smoke",
     WORLDSTREAM_DEPLOYMENT_VERSION: "a".repeat(40),
     WORLDSTREAM_LISTING_ALLOWLIST: hostedDevelopmentListingAllowlist(),
-    WORLDSTREAM_PUBLIC_AUTHORITY: "127.0.0.1:8080",
+    WORLDSTREAM_PUBLIC_AUTHORITY: gatewayConfiguration.publicAuthority,
     WORLDSTREAM_HOSTED_CLIENT_ORIGIN: "https://worldstream.example",
     WORLDSTREAM_HOSTED_VOLUME_ROOT: volumeRoot,
     WORLDSTREAM_HOSTED_ASSET_ROOT: assetRoot,
@@ -87,9 +88,9 @@ async function main() {
   };
   let appliance = null;
   try {
-    await assertPortsClosed([8080, 9410, 9420]);
+    await assertPortsClosed([gatewayConfiguration.port, 9410, 9420]);
     appliance = startAppliance(environment);
-    await waitForReady(appliance);
+    await waitForReady(appliance, gatewayConfiguration);
     const config = join(ephemeralRoot, "worldstream.toml");
     const controllerState = join(volumeRoot, "studio");
     const setup = join(temporary, "retained-room.json");
@@ -108,7 +109,7 @@ async function main() {
     );
     await ctl([
       "room", "example",
-      "--pack", "worldstream.agent-heist@0.3.0",
+      "--pack", "worldstream.agent-heist@0.5.0",
       "--output", setup,
     ]);
     const created = JSON.parse((await runRoomCreateWithRetainedSetupRetry(
@@ -124,9 +125,9 @@ async function main() {
 
     await stopAppliance(appliance);
     appliance = null;
-    await assertPortsClosed([8080, 9410, 9420]);
+    await assertPortsClosed([gatewayConfiguration.port, 9410, 9420]);
     appliance = startAppliance(environment);
-    await waitForReady(appliance);
+    await waitForReady(appliance, gatewayConfiguration);
     await assertRoomRetained(ctl, roomId);
     const credential = join(temporary, "reentry-membership.json");
     await ctl([
@@ -175,14 +176,14 @@ function startAppliance(environment) {
   return { child, output: () => output };
 }
 
-async function waitForReady(appliance) {
+async function waitForReady(appliance, gatewayConfiguration) {
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     if (appliance.child.exitCode !== null || appliance.child.signalCode !== null) {
       throw new Error(`hosted_appliance_exited:${appliance.output().slice(-512)}`);
     }
     try {
-      const response = await fetch("http://127.0.0.1:8080/readyz", {
+      const response = await fetch(`${gatewayConfiguration.loopbackOrigin}/readyz`, {
         signal: AbortSignal.timeout(2_000),
       });
       if (response.status === 200) return;

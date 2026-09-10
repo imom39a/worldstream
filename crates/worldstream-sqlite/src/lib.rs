@@ -11913,17 +11913,15 @@ fn migration_requires_backup(connection: &Connection) -> Result<bool, SqliteStor
             })
             .map_err(SqliteStoreOpenError::Sqlite)?
     };
-    Ok(migrations
+    let retained = migrations
         .into_iter()
         .map(|(version, migration_id, _)| (version, migration_id))
-        .collect::<Vec<_>>()
-        != [
-            (1, INITIAL_MIGRATION_ID.to_owned()),
-            (2, AUTHORITY_MIGRATION_ID.to_owned()),
-            (3, OBSERVATION_MIGRATION_ID.to_owned()),
-            (4, ACTIVATION_MIGRATION_ID.to_owned()),
-            (5, SNAPSHOT_MIGRATION_ID.to_owned()),
-        ])
+        .collect::<Vec<_>>();
+    let current = migration_history()
+        .iter()
+        .map(|migration| (migration.version, migration.id.to_owned()))
+        .collect::<Vec<_>>();
+    Ok(retained != current)
 }
 
 fn native_migration_witness(
@@ -24251,6 +24249,23 @@ mod tests {
             .unwrap_or_else(|error| panic!("restart after migration interruption: {error}"));
         drop(interrupted);
         let _ = fs::remove_file(backup);
+    }
+
+    #[test]
+    fn current_database_does_not_require_another_migration_backup() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+        let database = directory.path().join("current.sqlite3");
+        let store = SqliteRoomStore::open(&database)
+            .unwrap_or_else(|error| panic!("initialize current database: {error}"));
+        drop(store);
+
+        let connection = Connection::open(&database)
+            .unwrap_or_else(|error| panic!("reopen current database: {error}"));
+        assert!(
+            !super::migration_requires_backup(&connection)
+                .unwrap_or_else(|error| panic!("inspect current migrations: {error}")),
+            "a current migration ledger must not create another full backup on every restart"
+        );
     }
 
     #[cfg(unix)]

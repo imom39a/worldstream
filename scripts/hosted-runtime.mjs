@@ -21,6 +21,24 @@ const MAX_CAPTURE_BYTES = 1_048_576;
 const DEFAULT_FATAL_READINESS_MS = 300_000;
 const MONITOR_INTERVAL_MS = 2_000;
 
+export function hostedGatewayConfiguration(environment = process.env) {
+  const raw = environment.WORLDSTREAM_HOSTED_GATEWAY_PORT ?? "8080";
+  if (!/^[1-9][0-9]{0,4}$/u.test(raw)) throw new Error("invalid_hosted_gateway_port");
+  const port = Number(raw);
+  if (!Number.isSafeInteger(port) || port > 65_535 || port === 9410 || port === 9420) {
+    throw new Error("invalid_hosted_gateway_port");
+  }
+  if (port !== 8080 && (environment.FLY_APP_NAME !== undefined || environment.FLY_MACHINE_ID !== undefined)) {
+    throw new Error("fly_gateway_port_override_forbidden");
+  }
+  return Object.freeze({
+    port,
+    bind: `0.0.0.0:${port}`,
+    loopbackOrigin: `http://127.0.0.1:${port}`,
+    publicAuthority: `127.0.0.1:${port}`,
+  });
+}
+
 export function hostedRuntimeLayout(environment = process.env) {
   const volumeRoot = resolve(environment.WORLDSTREAM_HOSTED_VOLUME_ROOT ?? DEFAULT_VOLUME_ROOT);
   const assetRoot = resolve(environment.WORLDSTREAM_HOSTED_ASSET_ROOT ?? DEFAULT_ASSET_ROOT);
@@ -118,19 +136,19 @@ export function renderHouseRunnerTemplate(executable, digest) {
   return {
     schema: "worldstream/runner-template/v1",
     template_id: "openrouter-house",
-    revision: "12",
+    revision: "16",
     display_name: "Hosted OpenRouter House Agent",
     executable: { path: executable, blake3: digest },
     compatibility: [{
       activity_pack_id: "worldstream.agent-heist",
-      exact_revisions: ["0.3.0"],
+      exact_revisions: ["0.5.0"],
     }],
     capacity: { maximum_concurrent_invocations: 4 },
     health: { path: "/healthz", timeout_ms: 1_000, stale_after_ms: 60_000 },
     non_secret_environment: { WORLDSTREAM_RUNNER_MODE: "hosted-house" },
     secret_environment: [],
     // Instance IDs are unique across retained immutable template revisions.
-    instances: [{ instance_id: "hosted-house-r12-01", health_address: "127.0.0.1:9602" }],
+    instances: [{ instance_id: "hosted-house-r16-01", health_address: "127.0.0.1:9606" }],
   };
 }
 
@@ -219,6 +237,7 @@ export function hostedStatusReady(value) {
 
 async function main() {
   validateHostedRuntimeEnvironment();
+  const gatewayConfiguration = hostedGatewayConfiguration();
   const layout = hostedRuntimeLayout();
   await prepareLayout(layout);
   const controllerAuthority = await readProtectedSecret(layout.controllerAuthority);
@@ -239,7 +258,7 @@ async function main() {
     await startManaged(layout, controllerAuthority);
     managedStarted = true;
   }
-  const gateway = startGateway(layout);
+  const gateway = startGateway(layout, gatewayConfiguration);
   const signal = shutdownSignal();
 
   try {
@@ -273,7 +292,7 @@ async function main() {
         managedStarted = true;
         maintenance = false;
       }
-      const ready = await requiredServicesReady(layout, controllerAuthority);
+      const ready = await requiredServicesReady(layout, controllerAuthority, gatewayConfiguration);
       if (ready) {
         readinessFailedAt = null;
       } else {
@@ -384,12 +403,12 @@ export function renderHouseAgentProfiles() {
   const hostContract = {
     kind: "managed_house_openrouter",
     host_contract_revision: "1",
-    runner_template: { template_id: "openrouter-house", revision: "12" },
+    runner_template: { template_id: "openrouter-house", revision: "16" },
   };
   const cooperative = {
     schema: "worldstream/studio-agent-profile-publish/v2",
     profile_id: "house-cooperative-planner",
-    revision: "13",
+    revision: "17",
     display_name: "Cooperative Planner",
     non_secret_configuration: {},
     host_contract: hostContract,
@@ -398,7 +417,7 @@ export function renderHouseAgentProfiles() {
   const skeptical = {
     schema: "worldstream/studio-agent-profile-publish/v2",
     profile_id: "house-skeptical-auditor",
-    revision: "12",
+    revision: "16",
     display_name: "Skeptical Auditor",
     non_secret_configuration: {},
     host_contract: hostContract,
@@ -461,7 +480,7 @@ async function writeClientImport(layout) {
   }));
   heistDeployment.surfaces = heistDeployment.surfaces.map((surface) => ({
     ...surface,
-    launch_url: new URL("/agent-heist-v6/hosted/", clientOrigin).toString(),
+    launch_url: new URL("/agent-heist-v7/hosted/", clientOrigin).toString(),
   }));
   bindings.deployments = [inspectorDeployment, heistDeployment];
   bindings.inspector_fallback = fallback;
@@ -497,12 +516,12 @@ async function stopManaged(layout, controllerAuthority) {
   await ctl(layout, ["server", "controller-stop"], controllerAuthority, true);
 }
 
-function startGateway(layout) {
+function startGateway(layout, configuration) {
   const environment = { ...process.env };
   delete environment.WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY;
   delete environment.WORLDSTREAM_VERCEL_SERVICE_AUTHORITY;
   Object.assign(environment, {
-    HOSTED_GATEWAY_BIND: "0.0.0.0:8080",
+    HOSTED_GATEWAY_BIND: configuration.bind,
     WORLDSTREAM_HOST_ADAPTER_UPSTREAM: "127.0.0.1:9420",
     WORLDSTREAM_RUNTIME_UPSTREAM: "127.0.0.1:9410",
     WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY_FILE: layout.controllerAuthority,
@@ -513,7 +532,7 @@ function startGateway(layout) {
     child.once("error", resolvePromise);
     child.once("exit", resolvePromise);
   });
-  return { child, exited };
+  return { child, exited, configuration };
 }
 
 async function waitForGatewayLiveness(gateway) {
@@ -523,7 +542,7 @@ async function waitForGatewayLiveness(gateway) {
       throw new Error("required_gateway_exited");
     }
     try {
-      const response = await fetch("http://127.0.0.1:8080/healthz", {
+      const response = await fetch(`${gateway.configuration.loopbackOrigin}/healthz`, {
         signal: AbortSignal.timeout(2_000),
       });
       if (response.status === 200) return;
@@ -535,11 +554,11 @@ async function waitForGatewayLiveness(gateway) {
   throw new Error("gateway_liveness_timeout");
 }
 
-async function requiredServicesReady(layout, controllerAuthority) {
+async function requiredServicesReady(layout, controllerAuthority, gatewayConfiguration) {
   try {
     const [status, ready] = await Promise.all([
       ctl(layout, ["server", "status"], controllerAuthority),
-      fetch("http://127.0.0.1:8080/readyz", { signal: AbortSignal.timeout(2_000) }),
+      fetch(`${gatewayConfiguration.loopbackOrigin}/readyz`, { signal: AbortSignal.timeout(2_000) }),
     ]);
     return hostedStatusReady(status) && ready.status === 200;
   } catch {

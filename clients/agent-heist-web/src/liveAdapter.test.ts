@@ -100,6 +100,11 @@ function observation({
 }
 
 describe("Agent Heist retained live adapter", () => {
+  it("accepts only the exact schema-safe revision/version pair", () => {
+    const digest = "blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9";
+    expect(reduceAgentHeistObservation(initialAgentHeistLiveState(), observation({ digest, version: "0.5.0" })).kind).toBe("ready");
+    expect(reduceAgentHeistObservation(initialAgentHeistLiveState(), observation({ digest, version: "0.4.0" })).kind).toBe("incompatible");
+  });
   it("accepts only the exact agent-ready revision/version pair", () => {
     const digest = "blake3:4455e4302bda695a5fc4aca150b5a8dac944775474930dafaef1539acb86c96e";
     expect(reduceAgentHeistObservation(initialAgentHeistLiveState(), observation({ digest, version: "0.4.0" })).kind).toBe("ready");

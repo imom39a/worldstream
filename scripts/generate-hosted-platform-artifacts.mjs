@@ -8,7 +8,11 @@ const outputPath = join(
   "web/platform/src/hosted-artifacts.generated.ts",
 );
 const sources = {
-  agentHeistListing: "config/hosted/listings/agent-heist-0.20.0.json",
+  agentHeistListing: "config/hosted/listings/agent-heist-0.24.0.json",
+  retainedAgentHeistListing023: "config/hosted/listings/agent-heist-0.23.0.json",
+  retainedAgentHeistListing022: "config/hosted/listings/agent-heist-0.22.0.json",
+  retainedAgentHeistListing021: "config/hosted/listings/agent-heist-0.21.0.json",
+  retainedAgentHeistListing020: "config/hosted/listings/agent-heist-0.20.0.json",
   retainedAgentHeistListing019: "config/hosted/listings/agent-heist-0.19.0.json",
   retainedAgentHeistListing018: "config/hosted/listings/agent-heist-0.18.0.json",
   retainedAgentHeistListing017: "config/hosted/listings/agent-heist-0.17.0.json",
@@ -27,7 +31,11 @@ const sources = {
   retainedAgentHeistListing03: "config/hosted/listings/agent-heist-0.3.0.json",
   retainedAgentHeistListing04: "config/hosted/listings/agent-heist-0.4.0.json",
   retainedAgentHeistListing05: "config/hosted/listings/agent-heist-0.5.0.json",
-  cooperativePlanner: "config/hosted/house-agents/cooperative-planner-13.json",
+  cooperativePlanner: "config/hosted/house-agents/cooperative-planner-17.json",
+  retainedCooperativePlanner16: "config/hosted/house-agents/cooperative-planner-16.json",
+  retainedCooperativePlanner15: "config/hosted/house-agents/cooperative-planner-15.json",
+  retainedCooperativePlanner14: "config/hosted/house-agents/cooperative-planner-14.json",
+  retainedCooperativePlanner13: "config/hosted/house-agents/cooperative-planner-13.json",
   retainedCooperativePlanner12: "config/hosted/house-agents/cooperative-planner-12.json",
   retainedCooperativePlanner11: "config/hosted/house-agents/cooperative-planner-11.json",
   retainedCooperativePlanner10: "config/hosted/house-agents/cooperative-planner-10.json",
@@ -40,7 +48,11 @@ const sources = {
   retainedCooperativePlanner3: "config/hosted/house-agents/cooperative-planner-3.json",
   retainedCooperativePlanner2: "config/hosted/house-agents/cooperative-planner-2.json",
   retainedCooperativePlanner1: "config/hosted/house-agents/cooperative-planner-1.json",
-  skepticalAuditor: "config/hosted/house-agents/skeptical-auditor-12.json",
+  skepticalAuditor: "config/hosted/house-agents/skeptical-auditor-16.json",
+  retainedSkepticalAuditor15: "config/hosted/house-agents/skeptical-auditor-15.json",
+  retainedSkepticalAuditor14: "config/hosted/house-agents/skeptical-auditor-14.json",
+  retainedSkepticalAuditor13: "config/hosted/house-agents/skeptical-auditor-13.json",
+  retainedSkepticalAuditor12: "config/hosted/house-agents/skeptical-auditor-12.json",
   retainedSkepticalAuditor11: "config/hosted/house-agents/skeptical-auditor-11.json",
   retainedSkepticalAuditor10: "config/hosted/house-agents/skeptical-auditor-10.json",
   retainedSkepticalAuditor9: "config/hosted/house-agents/skeptical-auditor-9.json",
@@ -53,7 +65,7 @@ const sources = {
   retainedSkepticalAuditor2: "config/hosted/house-agents/skeptical-auditor-2.json",
   retainedSkepticalAuditor1: "config/hosted/house-agents/skeptical-auditor-1.json",
   agentHeistResultProjector:
-    "config/hosted/result-projectors/agent-heist-0.3.0.json",
+    "config/hosted/result-projectors/agent-heist-0.5.0.json",
   retainedAgentHeistResultProjector04:
     "config/hosted/result-projectors/agent-heist-0.4.0.json",
   retainedAgentHeistResultProjector03:

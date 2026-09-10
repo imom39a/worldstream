@@ -956,7 +956,7 @@ mod tests {
 
     fn official_negotiate_candidate() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../packs/negotiate/releases/0.1.0/worldstream-negotiate-candidate.wspack")
+            .join("../../packs/negotiate/releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack")
     }
 
     fn sqlite_storage(data_directory: &Path) -> StorageConfig {

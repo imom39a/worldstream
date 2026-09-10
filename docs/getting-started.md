@@ -13,6 +13,34 @@ who joins a hosted match does not run the commands below or configure an LLM
 key. The platform operator supplies its House Agents. These commands are for
 a developer who wants to operate a local kernel installation.
 
+## Try the hosted preview
+
+Use this path if you want to play Agent Heist. You do not need to install this
+repository, supply a model key, or operate WorldStream.
+
+1. Open <https://worldstream-demos.vercel.app> in a current desktop Chrome
+   browser.
+2. Select **Agent Heist**, then select **Play now**.
+3. Sign in with GitHub. GitHub identifies your preview account; Supabase Auth
+   manages the secure application session.
+4. Select one role for yourself.
+5. Select **Fill with House Agents** to let the platform fill the remaining
+   seats with its spending-limited agents. The waiting period lets invited
+   people claim seats first.
+6. Select **Create waiting room**. Keep this page open while the room forms.
+7. When entry is ready, open the Activity Client. It connects directly to the
+   Fly Room authority for realtime state and actions.
+8. Use only the actions offered in the Activity Client. The other participants
+   act through their own clients or through the platform House Runner.
+9. After the Room completes, open **My games** or **Recent results** to view the
+   Replay-verified result. You can leave a waiting room before it starts and
+   create another one without operator cleanup.
+
+If room creation reports `formation_unavailable`, the platform cannot safely
+form the selected roster. It does not mean that you need to configure a model.
+See [Hosted preview support and limits](hosted-preview-support.md) for the
+current support boundary and operator status.
+
 ## Local kernel and Activity Clients
 
 This guide starts one local WorldStream installation from the command line.

@@ -92,6 +92,25 @@ test("approval recipe pins canonical installed metadata and actual binary withou
   assert.deepEqual((await prepareHouseApprovals(f.options)).evidence, prepared.evidence);
 });
 
+test("approval recipe accepts only the exact digest-addressed retained runner path", async (t) => {
+  const f = await fixture(t);
+  f.runner.executable.path =
+    `/var/lib/worldstream/retained-runner-executables/blake3-${f.runner.executable.blake3}/worldstream-managed-agent-host`;
+  f.report.import_apply.reused_runner_templates = [f.runner];
+  await f.write(f.runnerPath, f.runner);
+  await f.write(f.options.importReceipt, f.report);
+  const prepared = await prepareHouseApprovals(f.options);
+  assert.equal(prepared.evidence[0].receipt.runner_executable_digest,
+    `blake3:${f.runner.executable.blake3}`);
+
+  f.runner.executable.path =
+    `/var/lib/worldstream/retained-runner-executables/blake3-${"f".repeat(64)}/worldstream-managed-agent-host`;
+  f.report.import_apply.reused_runner_templates = [f.runner];
+  await f.write(f.runnerPath, f.runner);
+  await f.write(f.options.importReceipt, f.report);
+  await assert.rejects(prepareHouseApprovals(f.options), /approval_runner_binding_invalid/u);
+});
+
 test("the Granite successor approval binds profile revision 2 without reusing the retained Qwen identity", async (t) => {
   const f = await fixture(t, "2");
   const prepared = await prepareHouseApprovals(f.options);
@@ -172,6 +191,77 @@ test("r12 successor advances the executable chain without rebinding r11", async 
   assert.equal(planner.runner_template.revision, "12");
   assert.equal(skeptic.runner_template.revision, "12");
   assert.doesNotMatch(migration, /house_agent_host_approvals|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
+});
+
+test("r13 successor advances the executable chain without rebinding r12", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260909130000_retained_runner_r13_successor.sql", import.meta.url), "utf8");
+  const houses = [...migration.matchAll(/\$house\$([\s\S]*?)\$house\$/gu)].map((match) => Buffer.from(match[1]));
+  const planner = JSON.parse(await readFile(new URL("../config/hosted/house-agents/cooperative-planner-14.json", import.meta.url), "utf8"));
+  const skeptic = JSON.parse(await readFile(new URL("../config/hosted/house-agents/skeptical-auditor-13.json", import.meta.url), "utf8"));
+  const listing = JSON.parse(await readFile(new URL("../config/hosted/listings/agent-heist-0.21.0.json", import.meta.url), "utf8"));
+  const artifact = Buffer.from(migration.match(/\$artifact\$([\s\S]*?)\$artifact\$/u)?.[1] ?? "");
+  assert.deepEqual(houses, [canonicalBytes(planner), canonicalBytes(skeptic)]);
+  assert.deepEqual(artifact, canonicalBytes(listing));
+  assert.equal(`blake3:${hash(houses[0])}`, "blake3:bb9c56ffe925a130fe64c61386ca9f3d0638967719cc3dfed98d6ba06eead7fe");
+  assert.equal(`blake3:${hash(houses[1])}`, "blake3:5f718a17c4de50e72c67e441dec37c628582b2bf6d6bad2a6e10b6ef356a4a4d");
+  assert.equal(`blake3:${hash(artifact)}`, "blake3:3cdaaa7b2402b816ded0b36d5419f405b1be1428b37c89155a805d39bf826069");
+  assert.equal(planner.runner_template.revision, "13");
+  assert.equal(skeptic.runner_template.revision, "13");
+  assert.doesNotMatch(migration, /house_agent_host_approvals|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
+});
+
+test("r14 successor advances the executable chain without rebinding r13", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260909203034_retained_runner_r14_successor.sql", import.meta.url), "utf8");
+  const houses = [...migration.matchAll(/\$house\$([\s\S]*?)\$house\$/gu)].map((match) => Buffer.from(match[1]));
+  const planner = JSON.parse(await readFile(new URL("../config/hosted/house-agents/cooperative-planner-15.json", import.meta.url), "utf8"));
+  const skeptic = JSON.parse(await readFile(new URL("../config/hosted/house-agents/skeptical-auditor-14.json", import.meta.url), "utf8"));
+  const listing = JSON.parse(await readFile(new URL("../config/hosted/listings/agent-heist-0.22.0.json", import.meta.url), "utf8"));
+  const artifact = Buffer.from(migration.match(/\$artifact\$([\s\S]*?)\$artifact\$/u)?.[1] ?? "");
+  assert.deepEqual(houses, [canonicalBytes(planner), canonicalBytes(skeptic)]);
+  assert.deepEqual(artifact, canonicalBytes(listing));
+  assert.equal(`blake3:${hash(houses[0])}`, "blake3:9be618dd8e1d572dcdaa773c7f955aa6d6c365c6d8c4cfce2301a9073443e8fa");
+  assert.equal(`blake3:${hash(houses[1])}`, "blake3:8b28e6cd56f75d23cee5576154e78994667cc8b075bdbc8ab4d65feda637f85a");
+  assert.equal(`blake3:${hash(artifact)}`, "blake3:0cd11b3aee7596f0f4c2ff5640247c29038f903914d0206a784f7adde8a84c46");
+  assert.equal(planner.runner_template.revision, "14");
+  assert.equal(skeptic.runner_template.revision, "14");
+  assert.doesNotMatch(migration, /house_agent_host_approvals|hosted_operating_state|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
+});
+
+test("r15 successor advances the executable chain without rebinding r14", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260909230532_retained_runner_r15_successor.sql", import.meta.url), "utf8");
+  const houses = [...migration.matchAll(/\$house\$([\s\S]*?)\$house\$/gu)].map((match) => Buffer.from(match[1]));
+  const planner = JSON.parse(await readFile(new URL("../config/hosted/house-agents/cooperative-planner-16.json", import.meta.url), "utf8"));
+  const skeptic = JSON.parse(await readFile(new URL("../config/hosted/house-agents/skeptical-auditor-15.json", import.meta.url), "utf8"));
+  const listing = JSON.parse(await readFile(new URL("../config/hosted/listings/agent-heist-0.23.0.json", import.meta.url), "utf8"));
+  const artifact = Buffer.from(migration.match(/\$artifact\$([\s\S]*?)\$artifact\$/u)?.[1] ?? "");
+  assert.deepEqual(houses, [canonicalBytes(planner), canonicalBytes(skeptic)]);
+  assert.deepEqual(artifact, canonicalBytes(listing));
+  assert.equal(`blake3:${hash(houses[0])}`, "blake3:57c1e72a4147df339b35b557b35b1f2fa8239a66850c3d269df20ae111e2ea82");
+  assert.equal(`blake3:${hash(houses[1])}`, "blake3:8ffb7a9247cc647565c7b7a0f3ed29301b15b450e8110f4c96b521fdc3883c7c");
+  assert.equal(`blake3:${hash(artifact)}`, "blake3:945664f9fea18ace9991c44d43febc142a58244d69352d98514a69b4f7b22030");
+  assert.equal(planner.runner_template.revision, "15");
+  assert.equal(skeptic.runner_template.revision, "15");
+  assert.doesNotMatch(migration, /house_agent_host_approvals|hosted_operating_state|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
+});
+
+test("schema-safe Heist release advances Pack, client, projector, House, and Runner identities together", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260910010000_schema_safe_heist_release.sql", import.meta.url), "utf8");
+  const houses = [...migration.matchAll(/\$house\$([\s\S]*?)\$house\$/gu)].map((match) => Buffer.from(match[1]));
+  const planner = JSON.parse(await readFile(new URL("../config/hosted/house-agents/cooperative-planner-17.json", import.meta.url), "utf8"));
+  const skeptic = JSON.parse(await readFile(new URL("../config/hosted/house-agents/skeptical-auditor-16.json", import.meta.url), "utf8"));
+  const listing = JSON.parse(await readFile(new URL("../config/hosted/listings/agent-heist-0.24.0.json", import.meta.url), "utf8"));
+  const artifact = Buffer.from(migration.match(/\$artifact\$([\s\S]*?)\$artifact\$/u)?.[1] ?? "");
+  assert.deepEqual(houses, [canonicalBytes(planner), canonicalBytes(skeptic)]);
+  assert.deepEqual(artifact, canonicalBytes(listing));
+  assert.equal(`blake3:${hash(houses[0])}`, "blake3:9788fe46953cf5c049c2dc457dac4dc5f916c45627457d4647c7e6d16c9308b9");
+  assert.equal(`blake3:${hash(houses[1])}`, "blake3:2ec02c67644b04dcdcfcd76c9bd05e56cc4a4bf3e84b549be705fb26e43d5117");
+  assert.equal(`blake3:${hash(artifact)}`, "blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397");
+  assert.equal(planner.runner_template.revision, "16");
+  assert.equal(skeptic.runner_template.revision, "16");
+  assert.equal(listing.pack.version, "0.5.0");
+  assert.equal(listing.client.release_digest, "sha256:e1efd39ff8da4cddaa48e87ed4333d2c16fb71dd5ad0321f1245ac0a55aad33c");
+  assert.equal(listing.result.projector.version, "0.5.0");
+  assert.doesNotMatch(migration, /house_agent_host_approvals|hosted_operating_state|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
 });
 
 test("clock-safe migration retains exact metadata and grants no operating authority", async () => {

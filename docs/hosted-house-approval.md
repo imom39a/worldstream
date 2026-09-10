@@ -5,14 +5,22 @@ a migration, or an automatic startup action. Use it after the approved
 spending-limited OpenRouter credential and the exact Fly image are installed.
 Keep launches and House calls closed until the final checks pass.
 
-The current candidate Listing is Agent Heist `0.20.0`. Its two House strategies are
-Cooperative Planner `13` and Skeptical Auditor `12`. Both use the exact Granite
+The versioned formation installation identity must be identical in three
+places: the Fly appliance, the Vercel BFF environment, and each active House
+approval. Rotate all three together when an image needs fresh approvals. The
+current identity is `fly-primary-r3`. The Supabase platform operating row named
+`fly-primary` is a separate singleton admission gate and must remain available
+for launches; it is not the versioned formation identity.
+
+The current candidate Listing is Agent Heist `0.24.0`. Its two House strategies are
+Cooperative Planner `17` and Skeptical Auditor `16`. Both use the exact Granite
 model and DeepInfra provider route declared in their immutable files. Their
 instructions differ; this is a two-strategy exhibition, not a comparison of two
-models. This candidate pins the clock-safe Pack `0.3.0`, v6 Activity Client,
-result projector `0.3.0`, and Runner Template `12`. The provider route and hard
-allowances are unchanged. Check the deployment record before treating the
-candidate as installed or approved.
+models. This candidate pins the schema-safe Pack `0.5.0`, v7 Activity Client,
+result projector `0.5.0`, and Runner Template `16`. The Pack gives each Heist
+action its own closed payload schema, so an empty model action is rejected before
+it can reach the reducer. The provider route and hard allowances are unchanged.
+Check the deployment record before treating the candidate as installed or approved.
 
 Keep Cooperative Planner `1` (the Qwen route) and Listings `0.4.0` and
 `0.5.0` as retained records. Do not change their canonical bytes or transfer
@@ -45,9 +53,14 @@ actual executable before approving it. Candidate metadata is not evidence of
 live gameplay. The draft 0.11.0 metadata was corrected before its first hosted
 publication; the unqualified image from commit `2419456` must not be deployed.
 
-The current `0.20.0` successor uses Planner `13`, Auditor `12`, and Runner
-Template `12` at `hosted-house-r12-01` on port `9602`. It is a new immutable
-candidate, not a replacement for the retained r11 bytes or their approvals.
+Retain Listing `0.23.0`, Planner `16`, Auditor `15`, and Runner Template `15`
+unchanged for their historical assignments. The current `0.24.0` successor uses
+Planner `17`, Auditor `16`, and Runner Template `16` at
+`hosted-house-r16-01` on port `9606`. It explicitly disables
+the Granite route's default reasoning so the short Action JSON does not exhaust
+the fixed completion allowance. It is a new immutable candidate with the
+schema-safe Pack contract, not a replacement for the retained r15 bytes or their
+approvals.
 
 ## What this evidence means
 
@@ -83,6 +96,7 @@ generated SDK build.
 
 1. Verify the deployed source commit, Fly image digest, and installation ID.
    Do not copy these values from a different local build or a planned deployment.
+   Verify that Vercel uses this same installation ID before opening admission.
 2. Keep the machine in maintenance with the Controller and Runtime stopped.
    On the exact Fly machine, repeat the appliance's existing two-phase import
    with its generated declarations. Use `--preview`, review `import_review.digest`,
@@ -110,16 +124,21 @@ generated SDK build.
 3. Capture these records from that same installation into a private local
    directory. Preserve their relative layout beneath a `studio` directory:
 
-   - `agent-profiles/revisions/<hex profile ID>/3133.json` for
-     `house-cooperative-planner` revision `13`;
-   - `agent-profiles/revisions/<hex profile ID>/3132.json` for
-     `house-skeptical-auditor` revision `12`;
-   - `runner-templates/installed/openrouter-house--12.json`;
+   - `agent-profiles/revisions/<hex profile ID>/3137.json` for
+     `house-cooperative-planner` revision `17`;
+   - `agent-profiles/revisions/<hex profile ID>/3136.json` for
+     `house-skeptical-auditor` revision `16`;
+   - `runner-templates/installed/openrouter-house--16.json`;
    - `model-provider-credentials/installed/hosted-openrouter.json`.
 
    Profile path components are the lowercase hexadecimal encoding of UTF-8;
-   `3133` encodes revision `13`; `3132` encodes revision `12`. Capture the actual
-   `/usr/local/bin/worldstream-managed-agent-host` binary separately.
+   `3137` encodes revision `17`; `3136` encodes revision `16`. Capture the binary
+   from the installed Runner Template's exact `executable.path` separately.
+   Current installations use the persistent content-addressed path
+   `/var/lib/worldstream/retained-runner-executables/blake3-<exact digest>/worldstream-managed-agent-host`;
+   older retained installations can use `/usr/local/bin/worldstream-managed-agent-host`.
+   The approval tool accepts only those two path forms and requires the path's
+   digest, template digest, and captured binary bytes to agree.
    Do not capture or open vault secret files, the OpenRouter API key, controller
    credentials, or process environment. The named credential record contains
    only metadata and an opaque reference, not the API-key value.
@@ -142,8 +161,8 @@ node scripts/hosted-house-approval.mjs \
   --credential-id hosted-openrouter \
   --source-revision '<actual deployed Git commit>' \
   --image-digest 'sha256:<actual deployed image digest>' \
-  --house-revision config/hosted/house-agents/cooperative-planner-13.json \
-  --house-revision config/hosted/house-agents/skeptical-auditor-12.json \
+  --house-revision config/hosted/house-agents/cooperative-planner-17.json \
+  --house-revision config/hosted/house-agents/skeptical-auditor-16.json \
   --output-dir /private/tmp/worldstream-approval-capture/approval
 ```
 
@@ -179,7 +198,8 @@ and the closed-launch deployment checks. SQL activation does not itself open
 the platform or make a model call. Then perform the bounded live end-user test.
 
 Verify that the actual key permits the exact model/provider route, required
-parameters, and price ceilings with ZDR and data collection denied. A successful
+parameters (including `reasoning.effort = "none"`), and price ceilings with ZDR
+and data collection denied. A successful
 key lookup or a started Runner is not proof of model-route eligibility. Never
 enable fallback, relax privacy, or substitute a model to make this check pass.
 If a route is unavailable, leave its approval unavailable.

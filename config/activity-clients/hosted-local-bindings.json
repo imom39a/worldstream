@@ -17,14 +17,14 @@
     },
     {
       "schema": "worldstream/client-deployment/v1",
-      "deployment_id": "hosted-agent-heist-web-v6-ed70155d",
+      "deployment_id": "hosted-agent-heist-web-v7-e1efd39f",
       "client_id": "worldstream.agent-heist.web",
-      "release_digest": "sha256:ed70155dd56f13010f33ab6cba55f3085443840a7e0f7a286e32b2e6d1719d10",
+      "release_digest": "sha256:e1efd39ff8da4cddaa48e87ed4333d2c16fb71dd5ad0321f1245ac0a55aad33c",
       "trust_level": "externally_trusted",
       "surfaces": [
         {
           "surface_id": "heist-hosted-web",
-          "launch_url": "http://127.0.0.1:5180/agent-heist-v6/hosted/"
+          "launch_url": "http://127.0.0.1:5180/agent-heist-v7/hosted/"
         }
       ]
     }
@@ -32,7 +32,41 @@
   "bindings": [
     {
       "schema": "worldstream/client-binding/v1",
-      "binding_id": "hosted-agent-heist-0-4-v6-ed70155d-participant",
+      "binding_id": "hosted-agent-heist-0-5-v7-e1efd39f-participant",
+      "pack": {
+        "id": "worldstream.agent-heist",
+        "version": "0.5.0",
+        "digest": "blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "participant",
+      "roles": [
+        "navigator",
+        "insider",
+        "broker"
+      ],
+      "deployment_id": "hosted-agent-heist-web-v7-e1efd39f",
+      "surface_id": "heist-hosted-web",
+      "preference": "default"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "hosted-agent-heist-0-5-v7-e1efd39f-spectator",
+      "pack": {
+        "id": "worldstream.agent-heist",
+        "version": "0.5.0",
+        "digest": "blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "spectator",
+      "roles": [],
+      "deployment_id": "hosted-agent-heist-web-v7-e1efd39f",
+      "surface_id": "heist-hosted-web",
+      "preference": "default"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "hosted-agent-heist-0-4-v7-e1efd39f-participant",
       "pack": {
         "id": "worldstream.agent-heist",
         "version": "0.4.0",
@@ -45,13 +79,13 @@
         "insider",
         "broker"
       ],
-      "deployment_id": "hosted-agent-heist-web-v6-ed70155d",
+      "deployment_id": "hosted-agent-heist-web-v7-e1efd39f",
       "surface_id": "heist-hosted-web",
       "preference": "default"
     },
     {
       "schema": "worldstream/client-binding/v1",
-      "binding_id": "hosted-agent-heist-0-4-v6-ed70155d-spectator",
+      "binding_id": "hosted-agent-heist-0-4-v7-e1efd39f-spectator",
       "pack": {
         "id": "worldstream.agent-heist",
         "version": "0.4.0",
@@ -60,13 +94,13 @@
       "client_contract": "worldstream/activity-client-protocol/v1",
       "access_mode": "spectator",
       "roles": [],
-      "deployment_id": "hosted-agent-heist-web-v6-ed70155d",
+      "deployment_id": "hosted-agent-heist-web-v7-e1efd39f",
       "surface_id": "heist-hosted-web",
       "preference": "default"
     },
     {
       "schema": "worldstream/client-binding/v1",
-      "binding_id": "hosted-agent-heist-0-3-v6-ed70155d-participant",
+      "binding_id": "hosted-agent-heist-0-3-v7-e1efd39f-participant",
       "pack": {
         "id": "worldstream.agent-heist",
         "version": "0.3.0",
@@ -79,13 +113,13 @@
         "insider",
         "broker"
       ],
-      "deployment_id": "hosted-agent-heist-web-v6-ed70155d",
+      "deployment_id": "hosted-agent-heist-web-v7-e1efd39f",
       "surface_id": "heist-hosted-web",
       "preference": "default"
     },
     {
       "schema": "worldstream/client-binding/v1",
-      "binding_id": "hosted-agent-heist-0-3-v6-ed70155d-spectator",
+      "binding_id": "hosted-agent-heist-0-3-v7-e1efd39f-spectator",
       "pack": {
         "id": "worldstream.agent-heist",
         "version": "0.3.0",
@@ -94,7 +128,7 @@
       "client_contract": "worldstream/activity-client-protocol/v1",
       "access_mode": "spectator",
       "roles": [],
-      "deployment_id": "hosted-agent-heist-web-v6-ed70155d",
+      "deployment_id": "hosted-agent-heist-web-v7-e1efd39f",
       "surface_id": "heist-hosted-web",
       "preference": "default"
     }

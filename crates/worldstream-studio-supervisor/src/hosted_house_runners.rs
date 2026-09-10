@@ -21,7 +21,8 @@ use worldstream_hosted_contract::{
     HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerReservationRequestV1,
     HostedHouseRunnerRetirementDispositionV1, HostedHouseRunnerRetirementReceiptV1,
     HostedHouseRunnerRetirementRequestV1, HostedLaunchRequestV1, HouseAgentRevision,
-    ListingRevision, validate_hosted_house_runner_reservation_receipt,
+    ListingRevision, MAX_REVIEWED_HOSTED_CATALOG_REVISIONS,
+    validate_hosted_house_runner_reservation_receipt,
     validate_hosted_house_runner_reservation_request,
 };
 use worldstream_runtime::{
@@ -890,8 +891,8 @@ impl HostedHouseRunnerOperationsV1 {
     ) -> Result<Self, HostedHouseRunnerErrorV1> {
         if !safe_public_reference(host_installation_id, 128)
             || listings.is_empty()
-            || listings.len() > 64
-            || revisions.len() > 32
+            || listings.len() > MAX_REVIEWED_HOSTED_CATALOG_REVISIONS
+            || revisions.len() > MAX_REVIEWED_HOSTED_CATALOG_REVISIONS
         {
             return Err(HostedHouseRunnerErrorV1::Invalid);
         }
@@ -2152,6 +2153,65 @@ mod tests {
             .unwrap_or_else(|error| unreachable!("second receipt key: {error:?}"));
         assert_eq!(first.as_slice(), second.as_slice());
         assert_eq!(first.len(), 32);
+    }
+
+    #[test]
+    fn full_reviewed_house_catalog_opens_within_the_shared_catalog_bound() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("tempdir: {error}"));
+        let (listings, revisions) = crate::hosted_artifacts::reviewed_hosted_artifacts()
+            .unwrap_or_else(|error| unreachable!("reviewed catalog: {error}"));
+        assert_eq!(
+            revisions.len(),
+            33,
+            "update this regression when the catalog grows"
+        );
+        assert!(listings.len() <= MAX_REVIEWED_HOSTED_CATALOG_REVISIONS);
+
+        let operations = HostedHouseRunnerOperationsV1::open_with(
+            directory.path(),
+            "hosted-test",
+            listings.clone(),
+            revisions.clone(),
+            FakeSource::ready(),
+        )
+        .unwrap_or_else(|error| unreachable!("full reviewed catalog: {error:?}"));
+        assert_eq!(operations.revisions.len(), revisions.len());
+        let (listing, seat, revision) = listings
+            .iter()
+            .find_map(|listing| {
+                ["navigator", "insider", "broker"]
+                    .into_iter()
+                    .find_map(|seat| {
+                        revisions
+                            .iter()
+                            .find(|revision| {
+                                listing
+                                    .verify_house_agent_for_seat(seat, revision.digest())
+                                    .is_ok()
+                            })
+                            .map(|revision| (listing, seat, revision))
+                    })
+            })
+            .unwrap_or_else(|| unreachable!("reviewed catalog contains a House-enabled seat"));
+        let request = request(1, 1, seat, revision, listing);
+        operations
+            .reserve(&request)
+            .unwrap_or_else(|error| unreachable!("full catalog reservation: {error:?}"));
+
+        let mut over_limit = revisions;
+        let padding = MAX_REVIEWED_HOSTED_CATALOG_REVISIONS - over_limit.len() + 1;
+        let retained = over_limit.clone();
+        over_limit.extend(retained.into_iter().cycle().take(padding));
+        assert!(matches!(
+            HostedHouseRunnerOperationsV1::open_with(
+                directory.path(),
+                "hosted-test-over-limit",
+                listings,
+                over_limit,
+                FakeSource::ready(),
+            ),
+            Err(HostedHouseRunnerErrorV1::Invalid)
+        ));
     }
 
     fn make_operations(

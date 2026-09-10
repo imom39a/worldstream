@@ -8,7 +8,7 @@ FROM ${WORLDSTREAM_RUST_BUILDER_IMAGE} AS builder
 ARG SOURCE_REVISION
 WORKDIR /src
 COPY . .
-RUN WORLDSTREAM_BUILD_REVISION="${SOURCE_REVISION}" cargo build --locked --release \
+RUN WORLDSTREAM_BUILD_REVISION="${SOURCE_REVISION}" cargo build --locked --release --jobs 1 \
       -p worldstream-server \
       -p worldstream-studio-supervisor \
       -p worldstream-hosted-gateway \
@@ -57,7 +57,7 @@ COPY --from=builder /out/worldstream-hosted-artifact-digest /usr/local/bin/world
 COPY --from=builder /out/managed-agent-host.blake3 /opt/worldstream/hosted/managed-agent-host.blake3
 COPY scripts/hosted-runtime.mjs /opt/worldstream/hosted/hosted-runtime.mjs
 COPY scripts/hosted-volume-capture.mjs /opt/worldstream/hosted/hosted-volume-capture.mjs
-COPY config/activity-clients/releases/agent-heist-web-v6.json /opt/worldstream/hosted/agent-heist-web.json
+COPY config/activity-clients/releases/agent-heist-web-v7.json /opt/worldstream/hosted/agent-heist-web.json
 COPY config/activity-clients/releases/inspector-web-v2.json /opt/worldstream/hosted/inspector-web.json
 COPY config/activity-clients/hosted-local-bindings.json /opt/worldstream/hosted/activity-client-bindings.json
 COPY packaging/hosted/entrypoint.sh /usr/local/bin/worldstream-hosted-entrypoint

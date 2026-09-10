@@ -44,8 +44,8 @@ an ordinary restart pass never upgrades that deferred recovery claim.
 
 The commands and historical evidence described below are not automatically
 proof of this expanded journey. The existing local protocol harness does not
-render browser pages and must be extended or supplemented for these checks.
-No passing stabilization evidence is claimed by this documentation change.
+render browser pages and must be extended or supplemented for those checks.
+The current live Chrome smoke evidence is recorded separately below.
 
 ## Deployment addresses
 
@@ -57,11 +57,36 @@ The operator has provisioned these MVP endpoints:
 | Fly authority | <https://worldstream-preview.fly.dev> | Health checks, protected gateway, and direct browser WebSockets |
 | Supabase | `grbuawkxcyyubzbzoeux` | WorldStream Free-plan project for Auth and platform data |
 
-These addresses are not an acceptance result. The operator must check the
+These addresses alone are not an acceptance result. The operator must check the
 deployed source identities and complete the tests below before inviting users.
 A maintenance response or an older demo gallery does not mean that live match
 formation is available. Do not put service keys in links, browser settings, or
 support reports.
+
+## Live Chrome smoke acceptance — passed 2026-09-10
+
+The platform MVP completed one bounded paid Agent Heist Run through the public
+site, Vercel control plane, Supabase platform store, direct Fly WebSocket, and
+OpenRouter-backed House Runner. The deployed source was
+`c90a1fe252ecdba5471d0e613ea4f6de890f82ae`; the Fly image digest was
+`sha256:8d5a44b2d547b1f0bb970bf2d9a67ba7db4fd7ea66840e93a4e1e1f29a1f0f07`.
+
+The signed-in human played Navigator. The platform assigned the reviewed
+Skeptical Auditor and Cooperative Planner to the other seats. The Activity
+Client received the authorized Projection, the human submitted live actions,
+and both House Agents submitted model-generated actions. The Room reached
+`Complete` at sequence 20 with a Replay-verified success result and score 5/5.
+The result appeared in both **My games** and **Recent results**. A second
+people-only waiting room was then created and abandoned; **My games** showed
+both the cancelled setup and completed result, and all active Run and House
+capacity returned to zero.
+
+The paid provider usage observed after this run was USD `0.00862742` lifetime
+against the dedicated key's USD 2 lifetime limit. Auto Top-Up remained off.
+This is Chrome platform smoke acceptance, not the complete device, restart,
+WebMCP, sustained-push, or disaster-recovery qualification below. The detailed
+record is in the
+[2026-09-07 deployment status log](hosted-preview-status-2026-09-07.md#september-10--live-platform-smoke-acceptance-passed).
 
 ## Supported product path
 
@@ -277,11 +302,12 @@ executable paths and are not safe to carry through an active executable
 upgrade; do not claim that this new rule repairs them. Drain or fence those
 legacy assignments before changing their image.
 
-The current fresh-assignment chain is Runner template r12, Cooperative Planner
-profile 13, Skeptical Auditor profile 12, and Agent Heist Listing 0.20.0. It
-exists because the recovery-read fix changed the managed Host executable. The
-chain changes no Pack, client, model route, allowance, projector, or gameplay
-rule; r11/0.19 and earlier remain retained immutable identities.
+The current fresh-assignment chain is Runner template r15, Cooperative Planner
+profile 16, Skeptical Auditor profile 15, and Agent Heist Listing 0.23.0. It
+exists so the reasoning-disabled House model request has separate approval
+evidence and an isolated Runner instance. The chain changes no Pack, client,
+model route, allowance, projector, or gameplay rule. r14/0.22 and earlier
+remain retained immutable identities.
 A failed match retains its state and capacity
 reservation for diagnosis; the command does not silently delete it or create a
 replacement authority. Keep a private copy of the local Runtime and database

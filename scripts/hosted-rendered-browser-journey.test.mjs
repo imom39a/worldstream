@@ -109,7 +109,7 @@ test("retained recovery binds verified My Games evidence to the exact Launch", (
 test("rendered-client bootstrap failures retain only bounded, capability-safe browser diagnostics", () => {
   const diagnostic = activityClientBootstrapDiagnostic({
     expectedRole: "Navigator participant",
-    url: `http://127.0.0.1:5180/agent-heist-v6/hosted/?ignored=value#handoff=wsh1:${"a".repeat(64)}`,
+    url: `http://127.0.0.1:5180/agent-heist-v7/hosted/?ignored=value#handoff=wsh1:${"a".repeat(64)}`,
     heading: "Waiting for authorized Projection",
     cause: `network rejected Bearer ${"b".repeat(64)}`,
     failures: [
@@ -117,7 +117,7 @@ test("rendered-client bootstrap failures retain only bounded, capability-safe br
       ...Array.from({ length: 10 }, (_, index) => `request-${index}`),
     ],
   });
-  assert.match(diagnostic, /url=http:\/\/127\.0\.0\.1:5180\/agent-heist-v6\/hosted\//u);
+  assert.match(diagnostic, /url=http:\/\/127\.0\.0\.1:5180\/agent-heist-v7\/hosted\//u);
   assert.match(diagnostic, /heading=Waiting for authorized Projection/u);
   assert.match(diagnostic, /wst1:\[redacted\]/u);
   assert.match(diagnostic, /Bearer \[redacted\]/u);
@@ -126,7 +126,7 @@ test("rendered-client bootstrap failures retain only bounded, capability-safe br
 });
 
 test("rendered-client bootstrap diagnostics retain only same-origin failed response status and path", () => {
-  const page = `http://127.0.0.1:5180/agent-heist-v6/hosted/#handoff=wsh1:${"a".repeat(64)}`;
+  const page = `http://127.0.0.1:5180/agent-heist-v7/hosted/#handoff=wsh1:${"a".repeat(64)}`;
   assert.equal(
     sameOriginBrowserResponseFailure(page, "http://127.0.0.1:5180/api/v1/participant-console/session:stream-ticket?ignored=true", 401),
     "response 401: http://127.0.0.1:5180/api/v1/participant-console/session:stream-ticket",

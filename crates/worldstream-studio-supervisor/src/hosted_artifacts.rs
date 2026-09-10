@@ -29,6 +29,10 @@ pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAge
         include_bytes!("../../../config/hosted/listings/agent-heist-0.18.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.19.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.20.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.21.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.22.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.23.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.24.0.json"),
     ];
     const HOUSE_AGENTS: &[&[u8]] = &[
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json"),
@@ -44,6 +48,10 @@ pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAge
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-11.json"),
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-12.json"),
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-13.json"),
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-14.json"),
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-15.json"),
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-16.json"),
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-17.json"),
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-1.json"),
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-2.json"),
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-3.json"),
@@ -56,6 +64,10 @@ pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAge
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-10.json"),
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-11.json"),
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-12.json"),
+        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-13.json"),
+        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-14.json"),
+        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-15.json"),
+        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-16.json"),
     ];
     let listings = LISTINGS
         .iter()
@@ -84,7 +96,9 @@ mod tests {
 
     #[test]
     fn reviewed_listings_resolve_exact_installed_pack_rules() -> anyhow::Result<()> {
-        let registry = worldstream_core::builtin_worldstream_registry()?;
+        // The reviewed hosted catalog retains every Agent Heist Pack revision,
+        // including revisions intentionally omitted from the base daemon image.
+        let registry = worldstream_core::builtin_agent_heist_registry()?;
         let (listings, _) = reviewed_hosted_artifacts()?;
         for listing in listings {
             let document: serde_json::Value = serde_json::from_slice(listing.canonical_bytes())?;

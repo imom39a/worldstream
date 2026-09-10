@@ -25,6 +25,29 @@ const MAX_HOUSE_REVISION_BYTES: usize = 256 * 1024;
 const HOUSE_ALLOWANCE_LEDGER_DIRECTORY: &str = "../allowance";
 const PROVIDER_TIMEOUT: Duration = Duration::from_secs(20);
 const NO_WORK_BACKOFF: Duration = Duration::from_millis(250);
+const MAX_NO_WORK_BACKOFF: Duration = Duration::from_secs(5);
+
+struct NoWorkBackoff {
+    next: Duration,
+}
+
+impl NoWorkBackoff {
+    const fn new() -> Self {
+        Self {
+            next: NO_WORK_BACKOFF,
+        }
+    }
+
+    fn take(&mut self) -> Duration {
+        let current = self.next;
+        self.next = self.next.saturating_mul(2).min(MAX_NO_WORK_BACKOFF);
+        current
+    }
+
+    fn reset(&mut self) {
+        self.next = NO_WORK_BACKOFF;
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "worldstream-managed-agent-host")]
@@ -59,12 +82,13 @@ fn main() -> Result<()> {
                 read_credential(&mut input).context("model credential delivery failed")?;
             let mut client = McpClient::initialize(&mut input, &mut output)
                 .context("assignment MCP initialization failed")?;
+            let mut no_work_backoff = NoWorkBackoff::new();
             loop {
                 match run_one_reference_turn(&mut client, provider_address, &model, &credential)
                     .context("managed Activity turn failed")?
                 {
-                    TurnOutcomeV1::Completed => {}
-                    TurnOutcomeV1::NoWork => std::thread::sleep(NO_WORK_BACKOFF),
+                    TurnOutcomeV1::Completed => no_work_backoff.reset(),
+                    TurnOutcomeV1::NoWork => std::thread::sleep(no_work_backoff.take()),
                 }
             }
         }
@@ -155,6 +179,7 @@ fn run_house_host<P: HouseProviderPortV1>(
     let executor = HouseModelExecutorV1::new(provider, ledger);
     let mut client =
         McpClient::initialize(input, output).context("assignment MCP initialization failed")?;
+    let mut no_work_backoff = NoWorkBackoff::new();
     loop {
         match run_one_house_turn(
             &mut client,
@@ -165,8 +190,8 @@ fn run_house_host<P: HouseProviderPortV1>(
         )
         .context("managed House turn failed")?
         {
-            TurnOutcomeV1::Completed => {}
-            TurnOutcomeV1::NoWork => std::thread::sleep(NO_WORK_BACKOFF),
+            TurnOutcomeV1::Completed => no_work_backoff.reset(),
+            TurnOutcomeV1::NoWork => std::thread::sleep(no_work_backoff.take()),
         }
     }
 }
@@ -656,4 +681,23 @@ fn descend<'a>(mut value: &'a Value, path: &[&str]) -> Option<&'a Value> {
         };
     }
     Some(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_poll_backoff_is_bounded_and_resets_after_work() {
+        let mut backoff = NoWorkBackoff::new();
+        assert_eq!(backoff.take(), Duration::from_millis(250));
+        assert_eq!(backoff.take(), Duration::from_millis(500));
+        assert_eq!(backoff.take(), Duration::from_secs(1));
+        assert_eq!(backoff.take(), Duration::from_secs(2));
+        assert_eq!(backoff.take(), Duration::from_secs(4));
+        assert_eq!(backoff.take(), Duration::from_secs(5));
+        assert_eq!(backoff.take(), Duration::from_secs(5));
+        backoff.reset();
+        assert_eq!(backoff.take(), Duration::from_millis(250));
+    }
 }

@@ -1496,6 +1496,13 @@ impl PackSchemaBundleV1 {
         })?))
     }
 
+    pub(crate) fn with_additions(
+        &self,
+        additions: impl IntoIterator<Item = PackSchemaV1>,
+    ) -> Result<Self, PackRegistryErrorV1> {
+        Self::new(self.schemas.values().cloned().chain(additions))
+    }
+
     fn get(&self, schema_id: &str) -> Option<&PackSchemaV1> {
         self.schemas.get(schema_id)
     }
@@ -2421,6 +2428,7 @@ enum ReviewedExecutorProvenanceV1 {
     AgentHeistLobbyV2,
     AgentHeistLobbyV3,
     AgentHeistLobbyV4,
+    AgentHeistLobbyV5,
     AgentHeistV1,
     AgentHeistV0,
     #[cfg(test)]
@@ -2444,6 +2452,7 @@ impl ReviewedExecutorProvenanceV1 {
             }
             Self::AgentHeistV1 => TypeId::of::<crate::agent_heist::AgentHeistV1>(),
             Self::AgentHeistLobbyV4 => TypeId::of::<crate::AgentHeistLobbyV4>(),
+            Self::AgentHeistLobbyV5 => TypeId::of::<crate::AgentHeistLobbyV5>(),
             Self::AgentHeistV0 => TypeId::of::<crate::agent_heist::AgentHeistV0>(),
             #[cfg(test)]
             Self::Test {
@@ -2466,6 +2475,7 @@ impl ReviewedExecutorProvenanceV1 {
             }
             Self::AgentHeistV1 => std::any::type_name::<crate::agent_heist::AgentHeistV1>(),
             Self::AgentHeistLobbyV4 => std::any::type_name::<crate::AgentHeistLobbyV4>(),
+            Self::AgentHeistLobbyV5 => std::any::type_name::<crate::AgentHeistLobbyV5>(),
             Self::AgentHeistV0 => std::any::type_name::<crate::agent_heist::AgentHeistV0>(),
             #[cfg(test)]
             Self::Test {
@@ -2489,6 +2499,7 @@ impl ReviewedExecutorProvenanceV1 {
             }
             Self::AgentHeistV1 => crate::agent_heist::agent_heist_artifact_digest(),
             Self::AgentHeistLobbyV4 => crate::agent_heist_lobby_v4::artifact_digest(),
+            Self::AgentHeistLobbyV5 => crate::agent_heist_lobby_v5::artifact_digest(),
             Self::AgentHeistV0 => crate::agent_heist::agent_heist_legacy_artifact_digest(),
             #[cfg(test)]
             Self::Test {
@@ -2673,6 +2684,22 @@ impl PackRegistryEntryV1 {
             artifacts,
             ReviewedExecutorProvenanceV1::AgentHeistLobbyV4,
             crate::AgentHeistLobbyV4,
+            status,
+        )
+    }
+
+    pub(crate) fn agent_heist_lobby_v5(
+        revision_lock: PackRevisionLockV1,
+        descriptor: &'static PackRevisionDescriptorV1,
+        artifacts: PackRegistryArtifactsV1,
+        status: PackRegistryStatusV1,
+    ) -> Self {
+        Self::embedded(
+            revision_lock,
+            descriptor,
+            artifacts,
+            ReviewedExecutorProvenanceV1::AgentHeistLobbyV5,
+            crate::AgentHeistLobbyV5,
             status,
         )
     }
@@ -3318,6 +3345,7 @@ impl ActivityPackHostV1 {
             crate::agent_heist_lobby::LOBBY_RETAINS_DEPARTED_ROLE_MINIMA
                 && descriptor.pack_id == "worldstream.agent-heist"
                 && (descriptor.explanatory_version == crate::AGENT_HEIST_AGENT_READY_VERSION
+                    || descriptor.explanatory_version == crate::AGENT_HEIST_SCHEMA_SAFE_VERSION
                     || descriptor.explanatory_version == crate::AGENT_HEIST_LOBBY_VERSION
                     || (crate::agent_heist_lobby_v3::LOBBY_RETAINS_DEPARTED_ROLE_MINIMA
                         && descriptor.explanatory_version

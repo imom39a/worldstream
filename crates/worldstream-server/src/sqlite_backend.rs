@@ -5274,7 +5274,7 @@ mod tests {
         let registry =
             Arc::new(builtin_agent_heist_registry().unwrap_or_else(|_| panic!("Heist registry")));
         let descriptor = registry
-            .load_retained(&agent_heist_lobby_digest())
+            .load_retained(&agent_heist_clock_safe_digest())
             .unwrap_or_else(|_| panic!("Lobby revision"))
             .descriptor()
             .clone();
@@ -5300,7 +5300,7 @@ mod tests {
                     pack: PackReference {
                         id: descriptor.pack_id,
                         version: descriptor.explanatory_version,
-                        digest: agent_heist_lobby_digest().to_string(),
+                        digest: agent_heist_clock_safe_digest().to_string(),
                     },
                     configuration: json!({
                         "pack_id":"worldstream.agent-heist","pack_schema":1,
@@ -5348,7 +5348,7 @@ mod tests {
         assert_eq!(resolved.transition_id, first.transition_id);
         assert_eq!(resolved.room_head, first.room_head);
         let exact_request = LobbyLaunchRequest {
-            pack_digest: Some(agent_heist_lobby_digest().to_string()),
+            pack_digest: Some(agent_heist_clock_safe_digest().to_string()),
             ..request.clone()
         };
         let exact_resolved = backend
@@ -5411,7 +5411,7 @@ mod tests {
         // immutable Pack head is the final exactness check, without a live
         // Room read or a second mutation.
         let same_identity_wrong_digest = LobbyLaunchRequest {
-            pack_digest: Some(agent_heist_clock_safe_digest().to_string()),
+            pack_digest: Some(agent_heist_lobby_digest().to_string()),
             ..request.clone()
         };
         assert!(matches!(
@@ -5429,7 +5429,7 @@ mod tests {
         let absent_wrong_digest = LobbyLaunchRequest {
             input_id: "01ARZ3NDEKTSV4RRFFQ69G5FDA".to_owned(),
             based_on_room_seq: 1,
-            pack_digest: Some(agent_heist_clock_safe_digest().to_string()),
+            pack_digest: Some(agent_heist_lobby_digest().to_string()),
         };
         assert!(matches!(
             backend.launch_lobby(&host, &room.room_id, absent_wrong_digest),
