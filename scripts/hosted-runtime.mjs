@@ -6,6 +6,7 @@ import {
   link,
   lstat,
   mkdir,
+  realpath,
   readFile,
   readdir,
   rm,
@@ -314,20 +315,29 @@ export async function reuseExactInstalledRunnerTemplate({
     installedExecutable === null || typeof installedExecutable !== "object" ||
     typeof installedExecutable.path !== "string" ||
     typeof installedExecutable.blake3 !== "string" ||
-    !/^[0-9a-f]{64}$/u.test(installedExecutable.blake3) ||
-    installedExecutable.path !== join(
-      retainedRoot,
-      `blake3-${installedExecutable.blake3}`,
-      "worldstream-managed-agent-host",
-    )
+    !/^[0-9a-f]{64}$/u.test(installedExecutable.blake3)
   ) {
     throw new Error("retained_runner_template_invalid");
   }
-  const executableMetadata = await lstat(installedExecutable.path).catch(() => null);
+  const digestDirectory = join(retainedRoot, `blake3-${installedExecutable.blake3}`);
+  const expectedExecutable = join(digestDirectory, "worldstream-managed-agent-host");
+  const [retainedMetadata, digestMetadata, executableMetadata, installedCanonical, expectedCanonical] =
+    await Promise.all([
+      lstat(retainedRoot),
+      lstat(digestDirectory),
+      lstat(installedExecutable.path),
+      realpath(installedExecutable.path),
+      realpath(expectedExecutable),
+    ]).catch(() => [null, null, null, null, null]);
   if (
+    retainedMetadata === null || !retainedMetadata.isDirectory() || retainedMetadata.isSymbolicLink() ||
+    (retainedMetadata.mode & 0o077) !== 0 ||
+    digestMetadata === null || !digestMetadata.isDirectory() || digestMetadata.isSymbolicLink() ||
+    (digestMetadata.mode & 0o077) !== 0 ||
     executableMetadata === null || !executableMetadata.isFile() ||
     executableMetadata.isSymbolicLink() || executableMetadata.size < 1 ||
-    (executableMetadata.mode & 0o077) !== 0
+    (executableMetadata.mode & 0o077) !== 0 ||
+    installedCanonical !== expectedCanonical
   ) {
     throw new Error("retained_runner_executable_invalid");
   }
