@@ -362,8 +362,8 @@ pub struct FixedDaemonParticipantConsoleGatewayV1 {
     absolute_http_deadline: bool,
 }
 
-// Ordinary participant/public relay calls retain per-operation idle timeouts.
-// Hosted browser admission explicitly selects one budget across native HTTP I/O.
+// Ordinary Participant Console calls retain per-operation idle timeouts.
+// Hosted browser admission and public relay explicitly select one native HTTP budget.
 struct NativeHttpStream {
     stream: TcpStream,
     deadline: Option<Instant>,

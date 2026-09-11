@@ -1997,6 +1997,47 @@ fn result_source_result(
     }
 }
 
+// Controller HTTP requests use one absolute budget across connect, writes,
+// header reads and body reads. Progress must not renew the outer BFF deadline.
+struct ControllerHttpStream {
+    stream: TcpStream,
+    deadline: Instant,
+}
+
+impl ControllerHttpStream {
+    fn connect(address: SocketAddr, timeout: Duration) -> std::io::Result<Self> {
+        let deadline = Instant::now() + timeout;
+        let stream = TcpStream::connect_timeout(&address, timeout)?;
+        Ok(Self { stream, deadline })
+    }
+
+    fn remaining(&self) -> std::io::Result<Duration> {
+        self.deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| std::io::ErrorKind::TimedOut.into())
+    }
+}
+
+impl std::io::Read for ControllerHttpStream {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.stream.set_read_timeout(Some(self.remaining()?))?;
+        self.stream.read(bytes)
+    }
+}
+
+impl std::io::Write for ControllerHttpStream {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.stream.set_write_timeout(Some(self.remaining()?))?;
+        self.stream.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.set_write_timeout(Some(self.remaining()?))?;
+        self.stream.flush()
+    }
+}
+
 fn fixed_http_request(
     upstream: SocketAddr,
     timeout: Duration,
@@ -2044,11 +2085,7 @@ fn fixed_http_request(
     .map_err(|_| HostedGatewayError::Unavailable)?;
     request.extend_from_slice(body);
 
-    let stream = TcpStream::connect_timeout(&upstream, timeout)
-        .map_err(|_| HostedGatewayError::Unavailable)?;
-    stream
-        .set_read_timeout(Some(timeout))
-        .and_then(|()| stream.set_write_timeout(Some(timeout)))
+    let stream = ControllerHttpStream::connect(upstream, timeout)
         .map_err(|_| HostedGatewayError::Unavailable)?;
     let mut reader = BufReader::new(stream);
     reader
@@ -2100,11 +2137,16 @@ fn fixed_http_request(
     reader
         .read_exact(&mut response)
         .map_err(|_| HostedGatewayError::Unavailable)?;
+    // A response already buffered before expiry must not escape after expiry.
+    reader
+        .get_ref()
+        .remaining()
+        .map_err(|_| HostedGatewayError::Unavailable)?;
     Ok((status, response))
 }
 
 fn read_upstream_line(
-    reader: &mut BufReader<TcpStream>,
+    reader: &mut BufReader<ControllerHttpStream>,
     used: &mut usize,
 ) -> Result<String, HostedGatewayError> {
     let remaining = MAX_UPSTREAM_HEADERS_BYTES

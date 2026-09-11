@@ -54,6 +54,7 @@ describe("hosted Browser Activity Session service client", () => {
     const supervisor = readFileSync(new URL("../../../crates/worldstream-studio-supervisor/src/main.rs", import.meta.url), "utf8");
     const broker = readFileSync(new URL("../../../crates/worldstream-studio-supervisor/src/hosted_browser_sessions.rs", import.meta.url), "utf8");
     const gateway = readFileSync(new URL("../../../crates/worldstream-hosted-gateway/src/main.rs", import.meta.url), "utf8");
+    const gatewayTransport = readFileSync(new URL("../../../crates/worldstream-hosted-gateway/src/lib.rs", import.meta.url), "utf8");
     const runtimeMs = Number(/HOSTED_BROWSER_RUNTIME_REQUEST_TIMEOUT: Duration = Duration::from_secs\((\d+)\)/u.exec(supervisor)?.[1]) * 1_000;
     const gatewayMs = Number(/HOST_ADAPTER_OPERATION_TIMEOUT: Duration = Duration::from_secs\((\d+)\)/u.exec(gateway)?.[1]) * 1_000;
     const retries = /const TRANSIENT_GATEWAY_RETRY_DELAYS[^=]*=\s*\[([^;]+)\];/u.exec(broker)?.[1] ?? "";
@@ -64,7 +65,11 @@ describe("hosted Browser Activity Session service client", () => {
     const worstCaseMs = (retryMs.length + 1 + mutationCalls + cleanupCalls) * runtimeMs
       + retryMs.reduce((sum, ms) => sum + ms, 0);
     assert.ok(gatewayMs - worstCaseMs >= 4_000, "reserve Controller processing and transport margin");
+    // The Rust slow-drip integration test exercises this actual constructor
+    // and its session route; keep production wired to that absolute transport.
     assert.match(gateway, /FixedHostAdapterBackend::new\(\s*upstream,[\s\S]*?HOST_ADAPTER_OPERATION_TIMEOUT,\s*\)/u);
+    assert.match(gatewayTransport, /let result = fixed_http_request\(\s*self.upstream,\s*self.timeout,/u);
+    assert.match(gatewayTransport, /let stream = ControllerHttpStream::connect\(upstream, timeout\)/u);
     assert.match(supervisor, /HostedBrowserSessionBrokerV1::new\([\s\S]*?FixedDaemonParticipantConsoleGatewayV1::new\(\s*args.daemon,\s*HOSTED_BROWSER_RUNTIME_REQUEST_TIMEOUT,\s*\)\s*\.with_absolute_http_deadline\(\)/u);
     assert.match(supervisor, /HostedPublicStreamBrokerV1::open\([\s\S]*?FixedDaemonParticipantConsoleGatewayV1::new\(\s*args.daemon,\s*HOSTED_BROWSER_RUNTIME_REQUEST_TIMEOUT,\s*\)\s*\.with_absolute_http_deadline\(\)/u);
     assert.match(supervisor, /PARTICIPANT_OPERATION_TIMEOUT: Duration = Duration::from_secs\(30\)/u);

@@ -589,6 +589,59 @@ fn fixed_host_adapter_requires_loopback_strong_authority_and_bounded_timeout() {
 }
 
 #[test]
+fn fixed_host_adapter_deadline_contains_progressing_headers_and_body() {
+    for drip_stage in ["none", "headers", "body"] {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listen");
+        let address = listener.local_addr().expect("address");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("fixture timeout");
+            let (path, authorization, _, mut stream) = read_request(stream);
+            assert!(path.starts_with("POST /api/v1/hosted-browser-sessions:status "));
+            assert_eq!(authorization, format!("Bearer {TOKEN}"));
+            let body =
+                json!({"schema":"worldstream/hosted-browser-session-status/v1", "state":"usable"})
+                    .to_string();
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            for (stage, bytes) in [("headers", headers.as_bytes()), ("body", body.as_bytes())] {
+                if stage == drip_stage {
+                    // Every chunk arrives within 400ms, but the full response
+                    // cannot finish within the configured absolute deadline.
+                    for chunk in bytes.chunks(bytes.len().div_ceil(8)) {
+                        if stream.write_all(chunk).is_err() {
+                            return;
+                        }
+                        thread::sleep(Duration::from_millis(75));
+                    }
+                } else if stream.write_all(bytes).is_err() {
+                    return;
+                }
+            }
+        });
+        // Exercise the real backend constructor and session route, not only
+        // the transport helper or the production constant's spelling.
+        let backend =
+            FixedHostAdapterBackend::new(address, TOKEN.to_owned(), Duration::from_millis(400))
+                .expect("backend");
+        let result = backend.browser_session_status(&browser_session_request());
+        if drip_stage == "none" {
+            assert_eq!(
+                result.expect("valid prompt response").state,
+                HostedBrowserSessionStateV1::Usable
+            );
+        } else {
+            assert_eq!(result, Err(HostedGatewayError::Unavailable));
+        }
+        server.join().expect("server");
+    }
+}
+
+#[test]
 fn configuration_requires_exact_listings_strong_authority_and_loopback_upstream() {
     assert!(
         HostedGatewayConfig::new(
