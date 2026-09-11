@@ -146,8 +146,9 @@ Run Re-entry. The initial failure itself remains visible.
 
 The Hosted Gateway records fixed browser operation labels, numeric Controller
 HTTP status (or transport failure), and elapsed time. The Controller emits
-`hosted_session_diagnostic` events with a process-local call counter, PID,
-operation, stage, detail, closed category, numeric upstream status and duration.
+`hosted_session_diagnostic` events with a bounded UTC Unix-millisecond timestamp,
+process-local call counter, PID, operation, stage, detail, closed category,
+numeric upstream status and duration.
 Stages separate authority resolution, Membership lookup, Client Selection,
 Runtime ticket issuance, and overall session completion. Nested Runtime HTTP
 probes distinguish connect/write/read failures, timeouts, HTTP status,

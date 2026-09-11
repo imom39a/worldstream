@@ -9,7 +9,7 @@ use std::{
         Mutex, OnceLock, PoisonError,
         atomic::{AtomicU64, Ordering},
     },
-    time::Instant,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use worldstream_runtime::{create_owner_only_file, validate_owner_only_file};
@@ -247,8 +247,14 @@ fn record(
     status: Option<u16>,
     elapsed_ms: Option<u128>,
 ) -> serde_json::Value {
+    let at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+        .unwrap_or(0);
     serde_json::json!({
-        "event": "hosted_session_diagnostic", "pid": std::process::id(),
+        "event": "hosted_session_diagnostic", "at_unix_ms": at_unix_ms,
+        "pid": std::process::id(),
         "call": context.call, "operation": context.operation, "stage": context.stage,
         "detail": detail, "category": category, "status": status, "elapsed_ms": elapsed_ms,
     })
@@ -285,13 +291,16 @@ pub(crate) fn capture<T>(action: impl FnOnce() -> T) -> (T, Vec<serde_json::Valu
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use worldstream_runtime::prepare_data_directory;
 
     const TEST_SINK_PATH: &str = "WORLDSTREAM_TEST_HOSTED_SESSION_DIAGNOSTIC_LOG";
 
     #[test]
     fn configured_sink_receives_actual_scoped_events() {
         let directory = tempfile::tempdir().expect("diagnostic test fixture");
-        let path = directory.path().join(HOSTED_SESSION_DIAGNOSTIC_FILE);
+        let state = prepare_data_directory(&directory.path().join("state"))
+            .expect("protected diagnostic test directory");
+        let path = state.join(HOSTED_SESSION_DIAGNOSTIC_FILE);
         let status = std::process::Command::new(
             std::env::current_exe().expect("diagnostic test fixture executable"),
         )
@@ -314,6 +323,7 @@ mod tests {
             .map(|line| serde_json::from_slice(line).expect("complete diagnostic event"))
             .collect();
         assert_eq!(events.len(), 3);
+        assert!(events[0]["at_unix_ms"].as_u64().unwrap_or_default() > 0);
         assert_eq!(events[0]["stage"], "membership");
         assert_eq!(events[0]["detail"], "http");
         assert_eq!(events[0]["status"], 503);
@@ -343,7 +353,9 @@ mod tests {
     #[test]
     fn protected_file_sink_retains_only_complete_bounded_events() {
         let directory = tempfile::tempdir().expect("diagnostic test fixture");
-        let path = directory.path().join("events.ndjson");
+        let state = prepare_data_directory(&directory.path().join("state"))
+            .expect("protected diagnostic test directory");
+        let path = state.join("events.ndjson");
         let sink = BoundedFileSink::open(&path, 512).expect("diagnostic test fixture");
         let context = Context {
             call: 1,
@@ -370,7 +382,7 @@ mod tests {
             let event: serde_json::Value =
                 serde_json::from_slice(line).expect("complete diagnostic event");
             assert_eq!(event["event"], "hosted_session_diagnostic");
-            assert_eq!(event.as_object().map(serde_json::Map::len), Some(9));
+            assert_eq!(event.as_object().map(serde_json::Map::len), Some(10));
         }
         validate_owner_only_file(&path).expect("protected diagnostic sink");
     }
@@ -381,7 +393,9 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
 
         let directory = tempfile::tempdir().expect("diagnostic test fixture");
-        let path = directory.path().join("events.ndjson");
+        let state = prepare_data_directory(&directory.path().join("state"))
+            .expect("protected diagnostic test directory");
+        let path = state.join("events.ndjson");
         fs::write(&path, b"untrusted\n").expect("diagnostic test fixture");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
             .expect("diagnostic test fixture");
@@ -406,11 +420,12 @@ mod tests {
                     Some(12),
                 );
                 assert_eq!(record["call"], call);
+                assert!(record["at_unix_ms"].as_u64().unwrap_or_default() > 0);
                 assert_eq!(record["stage"], "membership");
                 assert_eq!(record["status"], 503);
                 assert_eq!(
                     record.as_object().expect("diagnostic test fixture").len(),
-                    9
+                    10
                 );
                 Err(Category::Unavailable)
             })
