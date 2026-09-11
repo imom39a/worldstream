@@ -101,6 +101,28 @@ test("the canonical hosted candidate provisions its locked Playwright browser be
   );
 });
 
+test("the canonical hosted candidate qualifies the exact PR head without serializing outer gates", async () => {
+  const workflow = await readFile(
+    new URL(".github/workflows/hosted-foundations.yml", repository),
+    "utf8",
+  );
+  const candidate = workflow.slice(workflow.indexOf("  local-candidate:"));
+
+  assert.match(
+    workflow,
+    /concurrency:\n  group: hosted-foundations-\$\{\{ github\.event\.pull_request\.number \|\| github\.ref \}\}\n  cancel-in-progress: true/u,
+  );
+  assert.doesNotMatch(candidate, /^    needs:/mu);
+  assert.match(
+    candidate,
+    /ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/u,
+  );
+  assert.match(
+    candidate,
+    /name: hosted-local-\$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/u,
+  );
+});
+
 test("hosted server start retries the bounded Runtime-restart startup sequence", async () => {
   const attempts = [];
   const pauses = [];

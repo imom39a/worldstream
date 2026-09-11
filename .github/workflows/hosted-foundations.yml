@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: hosted-foundations-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 # Bound build artifacts consistently across Cargo phases after hosted runner
 # disk exhaustion during the appliance smoke step; keep every test enabled.
 env:
@@ -117,7 +121,6 @@ jobs:
 
   local-candidate:
     name: Canonical hosted local candidate
-    needs: [application-boundaries, database-boundary]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -125,6 +128,10 @@ jobs:
       SUPABASE_AUTH_EXTERNAL_GITHUB_SECRET: local-ci-secret
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # PR workflows otherwise check out GitHub's synthetic merge commit,
+          # while release evidence must name the exact candidate revision.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install pinned Rust
         run: |
           rustup toolchain install 1.97.1 --profile minimal
@@ -162,7 +169,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: hosted-local-${{ github.sha }}
+          name: hosted-local-${{ github.event.pull_request.head.sha || github.sha }}
           path: .worldstream/evidence/hosted-local-*.json
           include-hidden-files: true
           if-no-files-found: ignore
