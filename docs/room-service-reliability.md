@@ -164,20 +164,23 @@ or per-frame logging. No arbitrary exception text, query, body, token, origin,
 account, Room, Membership, or capability enters the event schema. Sink write
 errors do not change admission results.
 
-Important activation gap: the detached Controller launcher currently sets
-stderr to `Stdio::null()` in `operator_connection.rs`. The new Controller events
-are tested, but **are not yet observable in the packaged Fly service**. Gateway
-tracing already inherits the appliance log stream. The coordinated appliance
-release must connect the Controller diagnostics to a bounded protected log file
-or an explicit appliance-owned log sink, then verify an actual event. Do not
-inherit the startup CLI's captured pipe: a long-lived child can keep the Node
-startup command waiting for its `close` event. Do not call the deep diagnostics
-operational until this wiring is tested.
+The managed launcher prepares
+`hosted-session-diagnostics.ndjson` inside the owner-only Controller state
+directory and passes only that fixed path to its detached child. The Controller
+opens the file as its independent sink and caps it at 1 MiB, truncating the old
+window before appending an event would cross the bound. The launch still sends
+stderr to `Stdio::null()`, so a long-lived child cannot keep the startup CLI's
+captured pipe open. Unsafe sink setup fails managed Controller startup; later
+sink write errors do not change admission results. The coordinated appliance
+release must verify an actual event before calling the deep diagnostics
+operational.
 
-After that log wiring is verified, inspect the session path with:
+On the hosted appliance, inspect the protected Controller window and Gateway
+stream separately:
 
 ```sh
-fly logs -a worldstream-preview --no-tail | rg 'hosted_session_diagnostic|hosted browser Controller request'
+fly ssh console -a worldstream-preview -C 'tail -n 200 /var/lib/worldstream/studio/hosted-session-diagnostics.ndjson' | rg 'hosted_session_diagnostic'
+fly logs -a worldstream-preview --no-tail | rg 'hosted browser Controller request'
 ```
 
 Use the failure time and operation from the Vercel request to locate the

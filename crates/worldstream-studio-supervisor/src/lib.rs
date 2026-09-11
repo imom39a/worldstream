@@ -52,7 +52,7 @@ pub mod runner_attention;
 pub mod runner_templates;
 pub mod scoped_connections;
 pub mod scoped_runners;
-mod session_diagnostics;
+pub mod session_diagnostics;
 
 pub mod secrets;
 pub mod startup_authority;

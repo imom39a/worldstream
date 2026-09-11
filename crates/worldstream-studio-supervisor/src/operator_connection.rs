@@ -5,6 +5,7 @@ use crate::{
     local_initialization::validate_initialized_at,
     process_ownership::{ProcessOwnership, ProcessPhase, ProcessRole},
     protected_publication::{PublicationMode, publish},
+    session_diagnostics::{HOSTED_SESSION_DIAGNOSTIC_FILE, prepare_file_sink},
     verified_control::{ControlResponse, VerifiedConnection},
 };
 use serde::{Deserialize, Serialize};
@@ -385,6 +386,11 @@ impl OperatorConnection {
                 return Err(OperatorConnectionError::Incomplete);
             }
         }
+        let diagnostic_log = self.state.join(HOSTED_SESSION_DIAGNOSTIC_FILE);
+        if prepare_file_sink(&diagnostic_log).is_err() {
+            let _ = ownership.cancel_abandoned(ProcessRole::Controller, &generation);
+            return Err(OperatorConnectionError::Incomplete);
+        }
         let mut command = Command::new(controller);
         for (key, _) in std::env::vars_os() {
             // Config has already been resolved once, including explicit overrides.
@@ -414,6 +420,8 @@ impl OperatorConnection {
             .arg(&generation)
             .arg("--graceful-stop-timeout-ms")
             .arg(self.timeout.as_millis().to_string())
+            .arg("--hosted-session-diagnostic-log")
+            .arg(&diagnostic_log)
             .current_dir(&self.state)
             .stdin(Stdio::null())
             .stdout(Stdio::null())

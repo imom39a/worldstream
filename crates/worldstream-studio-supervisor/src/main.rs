@@ -112,6 +112,10 @@ struct Args {
     #[arg(long, default_value = ".worldstream/studio")]
     state_dir: PathBuf,
 
+    /// Fixed protected sink selected by the managed Controller launcher.
+    #[arg(long, hide = true)]
+    hosted_session_diagnostic_log: Option<PathBuf>,
+
     /// Fixed assignment-bound MCP helper used for managed reference hosts.
     #[arg(long, default_value = "target/debug/worldstream-assignment-mcp")]
     assignment_mcp_executable: PathBuf,
@@ -142,6 +146,24 @@ fn daemon_timeouts(probe_timeout_ms: u64) -> (Duration, Duration) {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    if args.managed_generation.is_some() {
+        let expected = args.state_dir.join(
+            worldstream_studio_supervisor::session_diagnostics::HOSTED_SESSION_DIAGNOSTIC_FILE,
+        );
+        let selected = args
+            .hosted_session_diagnostic_log
+            .as_deref()
+            .unwrap_or(&expected);
+        if selected != expected {
+            anyhow::bail!("managed Controller diagnostic sink must use its protected state");
+        }
+        worldstream_studio_supervisor::session_diagnostics::configure_managed_file_sink(
+            &args.state_dir,
+        )
+        .context("managed Controller diagnostic sink is unavailable")?;
+    } else if args.hosted_session_diagnostic_log.is_some() {
+        anyhow::bail!("managed Controller ownership is required for a diagnostic sink");
+    }
     let mut lease = args
         .managed_generation
         .as_ref()

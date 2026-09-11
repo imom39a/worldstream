@@ -52,6 +52,14 @@ fn participant_origin_is_retained_and_conflicts_do_not_launch()
     let arguments = directory.join("arguments");
     let first = fs::read_to_string(&arguments)?;
     assert!(first.contains("--participant-console-origin\nhttp://127.0.0.1:15173\n"));
+    let diagnostic_log = state.join("hosted-session-diagnostics.ndjson");
+    assert!(first.contains(&format!(
+        "--hosted-session-diagnostic-log\n{}\n",
+        diagnostic_log.display()
+    )));
+    let diagnostic_metadata = fs::metadata(&diagnostic_log)?;
+    assert!(diagnostic_metadata.is_file());
+    assert_eq!(diagnostic_metadata.permissions().mode() & 0o777, 0o600);
     assert!(matches!(
         start(None),
         Err(OperatorConnectionError::Incomplete)
