@@ -99,6 +99,57 @@ test("fake House prioritizes an expiring commitment over optional dossier work",
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
+test("fake House publishes unfinished evidence instead of repeating its endorsement", async () => {
+  const { server } = createDevelopmentFakeOpenRouter(environment());
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "worldstream/development-house",
+        provider: { only: ["fixture-provider"] },
+        messages: [{ role: "user", content: JSON.stringify({
+          schema: "worldstream/house-model-invocation/v1",
+          projection: {
+            role: "broker",
+            projection_reset: {
+              projection: {
+                activity: {
+                  private_clues: [{
+                    clue_id: "required_tool",
+                    claim_code: "required_tool_disguise",
+                  }],
+                  public_claims: [],
+                  plans: [{ plan_id: "reviewed-plan" }],
+                  endorsements: { broker: "reviewed-plan" },
+                },
+              },
+            },
+            observations: [],
+          },
+          action_offers: {
+            schema: "worldstream/assignment-action-offer-list/v1",
+            offers: [
+              { offer_id: "endorse", action_type: "endorse_plan" },
+              { offer_id: "publish", action_type: "publish_clue" },
+            ],
+          },
+        }) }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(JSON.parse((await response.json()).choices[0].message.content), {
+      offer_id: "publish",
+      payload: {
+        clue_id: "required_tool",
+        claim_code: "required_tool_disguise",
+      },
+    });
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
 test("fake provider exposes an authenticated deterministic OpenRouter-shaped response", async () => {
   const { server } = createDevelopmentFakeOpenRouter(environment());
   server.listen(0, "127.0.0.1");

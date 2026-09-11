@@ -155,6 +155,7 @@ function deterministicHouseCompletion(input) {
   const firstPlanId = Array.isArray(activity.plans)
     ? activity.plans.find((plan) => typeof plan?.plan_id === "string")?.plan_id
     : undefined;
+  const ownEndorsement = activity.endorsements?.[role];
   const proposedPlan = planFromAuthorizedClaims(activity);
   const choices = [
     // Commitment is the Pack's expiring required action. Take it while its
@@ -167,7 +168,9 @@ function deterministicHouseCompletion(input) {
       }],
     ]),
     // A proposal is the Pack's explicit request for this reactive House turn.
-    ...(firstPlanId === undefined ? [] : [["endorse_plan", { plan_id: firstPlanId }]]),
+    // Never spend another bounded model attempt repeating the same endorsement.
+    ...(firstPlanId === undefined || ownEndorsement === firstPlanId
+      ? [] : [["endorse_plan", { plan_id: firstPlanId }]]),
     ...(unknown ? [["inspect_clue", { clue_id: unknown }]] : []),
     ...(unpublished
       ? [["publish_clue", { clue_id: unpublished, claim_code: clueClaim(activity.private_clues, unpublished) }]]
