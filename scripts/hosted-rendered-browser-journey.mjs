@@ -127,7 +127,7 @@ export async function runHostedRenderedBrowserJourney({
     await ensureRenderedPublishedRouteClaim(participant, routeClaim, timeouts.action);
     const navigatorPlan = navigatorPlanForRouteClaim(routeClaim);
     await ensureRenderedNavigatorPlan(participant, navigatorPlan, timeouts.action);
-    await waitForHouseEndorsement(participant, timeouts.formation);
+    await waitForHouseEndorsement(participant, navigatorPlan, timeouts.formation);
 
     // Leaving is a platform navigation action, not a destructive Membership
     // mutation.  Re-enter before the terminal phase to prove that the current
@@ -152,7 +152,7 @@ export async function runHostedRenderedBrowserJourney({
     }).waitFor({ timeout: timeouts.action });
     await spectator.getByRole("link", { name: "Watch live Run" }).click();
     await waitForIndependentActivityClient(spectator, timeouts.action, "Spectator view", failures);
-    const participantActionForms = await spectator.locator("form.live-action-form").count();
+    const participantActionForms = await renderedParticipantActionForms(spectator).count();
     if (participantActionForms !== 0) {
       throw new Error("anonymous spectator client rendered participant Action controls");
     }
@@ -172,7 +172,10 @@ export async function runHostedRenderedBrowserJourney({
     // does not forge their Actions; it only waits for its own next rendered
     // offer after the House commitment advances the authoritative state.
     await ensureRenderedCurrentPlanCommitment(participant, timeouts.formation);
-    await ensureRenderedResultAcknowledgement(participant, timeouts.action);
+    // Agent Heist may auto-complete Result before the acknowledgement control
+    // can produce a distinct durable Projection. Observe terminal Complete;
+    // do not claim an acknowledgement from a disappearing form.
+    await waitForRenderedTerminalComplete(participant, timeouts.formation);
 
     // The platform's result index is deliberately asynchronous.  The visible
     // My Games page is the acceptance boundary, not an out-of-band result
@@ -288,7 +291,7 @@ export async function runHostedRenderedRetainedRecovery({
       "Navigator participant",
       failures,
     );
-    await renderedCompletePhase(participant).waitFor({ timeout: timeouts.formation });
+    await waitForRenderedTerminalComplete(participant, timeouts.formation);
 
     const verifiedHistory = captureVerifiedMyGamesLaunch(participant, origin, launchId);
     await participant.getByRole("button", { name: "Back to games" }).click();
@@ -673,56 +676,64 @@ function safeBrowserDiagnosticText(value) {
 export async function ensureRenderedNavigatorRouteClaim(page, timeoutMs) {
   const existing = await renderedRouteClaim(page);
   if (existing !== null) return existing;
-  await submitRenderedAction(page, "Inspect clue", { clue_id: "route" }, timeoutMs, async () => {
+  await submitRenderedChoiceAction(page, "Open a dossier", "clue_id", "route", timeoutMs, async () => {
     await renderedRouteClaim(page, timeoutMs);
   });
   const routeClaim = await renderedRouteClaim(page, timeoutMs);
-  if (routeClaim === null) throw new Error("rendered Inspect clue Action did not install an authorized Route claim");
+  if (routeClaim === null) throw new Error("rendered Open a dossier Action did not install an authorized Route claim");
   return routeClaim;
 }
 
 async function renderedRouteClaim(page, timeoutMs) {
-  const clue = page.locator(".private-clue-list article").filter({
-    has: page.getByText("route", { exact: true }),
+  const clue = page.locator(".private-intel .known-clue").filter({
+    has: page.getByText("Route", { exact: true }),
   });
   if (timeoutMs === undefined) {
     if (await clue.count() === 0) return null;
   } else {
-    await clue.waitFor({ timeout: timeoutMs });
+    await clue.waitFor({ state: "attached", timeout: timeoutMs });
   }
-  const routeClaim = await clue.locator("code").innerText();
+  const routeClaim = canonicalRouteClaim(await clue.locator("strong").textContent());
   navigatorPlanForRouteClaim(routeClaim);
   return routeClaim;
 }
 
 async function ensureRenderedPublishedRouteClaim(page, routeClaim, timeoutMs) {
   if (await hasRenderedPublishedRouteClaim(page, routeClaim)) return;
-  await submitRenderedAction(page, "Publish clue", {
-    clue_id: "route",
-    claim_code: routeClaim,
-  }, timeoutMs, async () => {
+  await submitRenderedChoiceAction(page, "Share intel", "clue_id", "route", timeoutMs, async () => {
     await waitForRenderedPublishedRouteClaim(page, routeClaim, timeoutMs);
   });
 }
 
 async function ensureRenderedNavigatorPlan(page, plan, timeoutMs) {
   if (await hasRenderedNavigatorPlan(page, plan)) return;
-  await submitRenderedAction(page, "Propose plan", plan, timeoutMs, async () => {
+  const form = await waitForRenderedActionForm(page, "Build a plan", timeoutMs);
+  for (const [label, value] of [
+    ["Route", plan.route],
+    ["When to enter", plan.entry_window],
+    ["Equipment", plan.required_tool],
+    ["Extraction", plan.extraction],
+  ]) {
+    await form.getByRole("tab").filter({ hasText: label }).click();
+    const choices = form.getByRole("radiogroup", { name: label, exact: true });
+    await choices.locator('button[role="radio"]').filter({
+      has: page.getByText(humanizeRenderedValue(value), { exact: true }),
+    }).click();
+  }
+  await submitRenderedForm(form, "Build a plan", timeoutMs, async () => {
     await waitForRenderedNavigatorPlan(page, plan, timeoutMs);
   });
 }
 
-async function submitRenderedAction(page, actionLabel, fields, timeoutMs, postcondition) {
-  const form = page.locator("form.live-action-form").filter({ hasText: actionLabel });
-  await form.waitFor({ timeout: timeoutMs });
-  for (const [name, value] of Object.entries(fields)) {
-    await form.locator(`input[name="${name}"]`).fill(value);
-  }
+async function submitRenderedChoiceAction(page, actionLabel, name, value, timeoutMs, postcondition) {
+  const form = await waitForRenderedActionForm(page, actionLabel, timeoutMs);
+  const choice = form.locator(`select[name="${name}"]`);
+  await choice.waitFor({ state: "visible", timeout: timeoutMs });
+  await choice.selectOption(value);
   await submitRenderedForm(form, actionLabel, timeoutMs, postcondition);
 }
 
 async function ensureRenderedCurrentPlanCommitment(page, timeoutMs) {
-  if (await hasRenderedOwnCommitment(page)) return;
   await retryRenderedStaleAction(
     () => submitRenderedCurrentPlanCommitmentAttempt(page, timeoutMs),
     async () => reconnectRenderedCommitment(page, timeoutMs),
@@ -730,18 +741,17 @@ async function ensureRenderedCurrentPlanCommitment(page, timeoutMs) {
 }
 
 async function submitRenderedCurrentPlanCommitmentAttempt(page, timeoutMs) {
-  const form = page.locator("form.live-action-form").filter({ hasText: "Commit move" });
-  await form.waitFor({ timeout: timeoutMs });
+  const form = await waitForRenderedActionForm(page, "Seal your choice", timeoutMs);
+  const commitmentBefore = await waitForRenderedHouseCommitments(page, timeoutMs);
   const plan = form.locator('select[name="selected_plan_id"]');
   await plan.waitFor({ state: "visible", timeout: timeoutMs });
   const planCount = await plan.locator('option:not([value=""])').count();
   if (planCount === 0) throw new Error("rendered current-plan control did not contain a reviewed plan");
   await plan.selectOption({ index: 1 });
-  const selectedPlanId = await plan.inputValue();
   const resource = form.locator('input[name="contribute_required_resource"]');
   if (await resource.isChecked()) await resource.uncheck();
-  return submitRenderedForm(form, "Commit move", timeoutMs, async () => {
-    return waitForRenderedCommitmentOutcome(page, selectedPlanId, timeoutMs);
+  return submitRenderedForm(form, "Seal your choice", timeoutMs, async () => {
+    return waitForRenderedCommitmentOutcome(page, commitmentBefore, timeoutMs);
   });
 }
 
@@ -763,19 +773,37 @@ export async function retryRenderedStaleAction(attempt, reconnect) {
   throw new Error("rendered Action remained stale after five visible reconnect attempts");
 }
 
-async function waitForRenderedCommitmentOutcome(page, selectedPlanId, timeoutMs) {
-  const commitment = renderedOwnCommitment(page, selectedPlanId);
+async function waitForRenderedCommitmentOutcome(page, commitmentBefore, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await commitment.count() > 0) return "committed";
     if (await hasExplicitRenderedStaleRoom(page)) return "stale";
+    const current = await readRenderedCommitmentCount(
+      page,
+      Math.max(1, deadline - Date.now()),
+    );
+    const actionCount = await renderedActionForm(page, "Seal your choice").count();
+    if (renderedCommitmentCompleted(commitmentBefore, current, actionCount)) return "committed";
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error("rendered Commit move Action did not produce an authorized commitment");
+  throw new Error("rendered Seal your choice Action did not produce an authorized commitment");
+}
+
+async function waitForRenderedHouseCommitments(page, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const current = await readRenderedCommitmentCount(
+      page,
+      Math.max(1, deadline - Date.now()),
+    );
+    const actionCount = await renderedActionForm(page, "Seal your choice").count();
+    if (renderedHouseCommitmentsReady(current, actionCount)) return current;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("rendered House seats did not commit before the Navigator's bounded deadline");
 }
 
 export async function hasExplicitRenderedStaleRoom(page) {
-  const staleMessage = page.locator(".live-client-notice").filter({
+  const staleMessage = page.locator(".mission-connection").filter({
     has: page.getByText(RENDERED_STALE_ROOM_MESSAGE, { exact: true }),
   });
   const reconnect = page.getByRole("button", { name: "Reconnect", exact: true });
@@ -786,45 +814,17 @@ async function reconnectRenderedCommitment(page, timeoutMs) {
   const reconnect = page.getByRole("button", { name: "Reconnect", exact: true });
   await reconnect.waitFor({ timeout: timeoutMs });
   await reconnect.click();
-  const form = page.locator("form.live-action-form").filter({ hasText: "Commit move" });
-  const live = page.locator(".play-state").filter({ has: page.getByText("Live", { exact: true }) });
+  const form = renderedActionForm(page, "Seal your choice");
+  const live = page.locator(".mission-connection").filter({
+    has: page.getByText("Mission link live", { exact: true }),
+  });
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const action = form.locator('button[type="submit"]');
     if (await live.count() > 0 && await form.count() > 0 && await action.isEnabled()) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error("rendered reconnect did not restore a current live Commit move Action");
-}
-
-async function ensureRenderedResultAcknowledgement(page, timeoutMs) {
-  const acknowledgement = await waitForRenderedResultAcknowledgementOpportunity(page, timeoutMs);
-  if (acknowledgement === null) return;
-  await submitRenderedForm(acknowledgement, "Acknowledge result", timeoutMs, async () => {
-    // Acknowledgement has no private receipt field. The disappearance of its
-    // exact offer from the next authorized Projection is the reviewed durable
-    // acknowledgement boundary. It is deliberately queried from the page,
-    // never from the form that the Projection may have unmounted.
-    await acknowledgement.waitFor({ state: "hidden", timeout: timeoutMs });
-  });
-}
-
-/**
- * The reviewed House seats can advance Resolution after the Navigator commits.
- * Do not mistake that short interval, when the acknowledgement offer has not
- * arrived, for a prior acknowledgement. Completion is the only authorized
- * state that may legitimately omit this participant's offer.
- */
-export async function waitForRenderedResultAcknowledgementOpportunity(page, timeoutMs) {
-  const acknowledgement = renderedActionForm(page, "Acknowledge result");
-  const complete = renderedCompletePhase(page);
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await acknowledgement.count() > 0) return acknowledgement;
-    if (await complete.count() > 0) return null;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  throw new Error("rendered result did not offer Acknowledge result or reach complete before the bounded deadline");
+  throw new Error("rendered reconnect did not restore a current live Seal your choice Action");
 }
 
 /**
@@ -839,6 +839,10 @@ export async function submitRenderedForm(form, actionLabel, timeoutMs, postcondi
   }
   const action = form.locator('button[type="submit"]');
   await action.waitFor({ state: "visible", timeout: timeoutMs });
+  const deadline = Date.now() + timeoutMs;
+  while (!(await action.isEnabled()) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
   if (!(await action.isEnabled())) throw new Error(`rendered ${actionLabel} Action was not enabled after live admission`);
   await action.click();
   try {
@@ -851,8 +855,32 @@ export async function submitRenderedForm(form, actionLabel, timeoutMs, postcondi
   }
 }
 
-function renderedActionForm(page, actionLabel) {
-  return page.locator("form.live-action-form").filter({ hasText: actionLabel });
+export function renderedParticipantActionForms(page) {
+  return page.locator('#mission-action form.mission-action-surface');
+}
+
+export function renderedActionForm(page, actionLabel) {
+  return page.locator("section#mission-action").filter({
+    has: page.getByRole("heading", { name: actionLabel, exact: true }),
+  }).locator("form.mission-action-surface");
+}
+
+async function waitForRenderedActionForm(page, actionLabel, timeoutMs) {
+  const form = renderedActionForm(page, actionLabel);
+  const switcher = page.locator("nav.mission-moves").getByRole("button", {
+    name: actionLabel,
+    exact: true,
+  });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await form.count() > 0) {
+      await form.waitFor({ state: "visible", timeout: Math.max(1, deadline - Date.now()) });
+      return form;
+    }
+    if (await switcher.count() > 0) await switcher.click();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`rendered ${actionLabel} Action did not become available before the bounded deadline`);
 }
 
 async function hasRenderedPublishedRouteClaim(page, routeClaim) {
@@ -860,16 +888,16 @@ async function hasRenderedPublishedRouteClaim(page, routeClaim) {
 }
 
 async function waitForRenderedPublishedRouteClaim(page, routeClaim, timeoutMs) {
-  await renderedPublishedRouteClaim(page, routeClaim).waitFor({ timeout: timeoutMs });
+  await renderedPublishedRouteClaim(page, routeClaim).waitFor({ state: "attached", timeout: timeoutMs });
 }
 
 function renderedPublishedRouteClaim(page, routeClaim) {
-  return page.locator(".live-board-grid section").filter({
-    has: page.getByRole("heading", { name: "Clue board", exact: true }),
+  return page.locator(".crew-board-content section").filter({
+    has: page.getByText("Shared clues", { exact: true }),
   }).locator("li").filter({
-    has: page.getByText("route", { exact: true }),
+    has: page.getByText("Route", { exact: true }),
   }).filter({
-    has: page.getByText(humanizeRenderedValue(routeClaim), { exact: true }),
+    hasText: humanizeRenderedValue(routeClaim),
   });
 }
 
@@ -878,58 +906,85 @@ async function hasRenderedNavigatorPlan(page, plan) {
 }
 
 async function waitForRenderedNavigatorPlan(page, plan, timeoutMs) {
-  await renderedNavigatorPlan(page, plan).waitFor({ timeout: timeoutMs });
+  await renderedNavigatorPlan(page, plan).waitFor({ state: "attached", timeout: timeoutMs });
 }
 
 export function renderedNavigatorPlan(page, plan) {
-  return page.locator(".plan-grid article").filter({
-    has: page.getByText("navigator", { exact: true }),
+  return page.locator(".crew-plan-list article").filter({
+    has: page.getByText(/^Plan [1-9][0-9]* · Navigator$/u),
   }).filter({
-    has: page.getByText(`${humanizeRenderedValue(plan.route)} · ${humanizeRenderedValue(plan.entry_window)}`, {
-      exact: true,
-    }),
+    hasText: `${humanizeRenderedValue(plan.route)} · ${humanizeRenderedValue(plan.entry_window)}`,
   }).filter({
-    has: page.getByText(`${humanizeRenderedValue(plan.required_tool)} → ${humanizeRenderedValue(plan.extraction)}`, {
-      exact: true,
-    }),
+    hasText: `${humanizeRenderedValue(plan.required_tool)} → ${humanizeRenderedValue(plan.extraction)}`,
   });
 }
 
 function renderedCompletePhase(page) {
-  return page.locator(".phase-window").filter({
-    has: page.getByText("Current phase", { exact: true }),
-  }).filter({
-    has: page.getByText("Complete", { exact: true }),
+  return page.locator(".mission-action .no-action").filter({
+    hasText: "This operation is complete.",
   });
 }
 
-async function hasRenderedOwnCommitment(page) {
-  return (await page.locator(".own-commitment").count()) > 0;
+export async function waitForRenderedTerminalComplete(page, timeoutMs) {
+  await renderedCompletePhase(page).waitFor({ state: "visible", timeout: timeoutMs });
 }
 
-function renderedOwnCommitment(page, selectedPlanId) {
-  return page.locator(".own-commitment").filter({
-    has: page.getByText("Your sealed commitment", { exact: true }),
-  }).filter({
-    has: page.getByText(humanizeRenderedValue(selectedPlanId), { exact: true }),
-  }).filter({
-    has: page.getByText("No resource committed", { exact: true }),
-  });
+async function readRenderedCommitmentCount(page, timeoutMs) {
+  const count = page.locator(".crew-commitments strong");
+  await count.waitFor({ state: "attached", timeout: timeoutMs });
+  return parseRenderedCommitmentCount(await count.textContent());
+}
+
+export function parseRenderedCommitmentCount(value) {
+  const match = typeof value === "string" ? value.trim().match(/^([0-9]+) of ([1-9][0-9]*)$/u) : null;
+  const current = match === null ? Number.NaN : Number(match[1]);
+  const total = match === null ? Number.NaN : Number(match[2]);
+  if (!Number.isSafeInteger(current) || !Number.isSafeInteger(total) || current > total) {
+    throw new Error("rendered commitment count is invalid");
+  }
+  return Object.freeze({ current, total });
+}
+
+export function renderedHouseCommitmentsReady(current, actionCount) {
+  return current.total >= 2 && current.current === current.total - 1 && actionCount === 1;
+}
+
+export function renderedCommitmentCompleted(before, current, actionCount) {
+  return before.total >= 2 &&
+    before.current === before.total - 1 &&
+    current.total === before.total &&
+    current.current === current.total &&
+    actionCount === 0;
 }
 
 function humanizeRenderedValue(value) {
-  return value.replaceAll("_", " ");
+  const replacement = { service: "Service entrance", roof: "Rooftop" }[value];
+  return replacement ?? value.replaceAll("_", " ").replace(/\b\w/gu, (letter) => letter.toUpperCase());
 }
 
-async function waitForHouseEndorsement(page, timeoutMs) {
-  const endorsements = page.locator(".plan-grid article footer span").filter({ hasText: "endorsements" });
+function canonicalRouteClaim(value) {
+  const normalized = typeof value === "string"
+    ? value.trim().toLowerCase().replaceAll(" ", "_")
+    : "";
+  if (!/^route_(?:canal|service|roof)$/u.test(normalized)) {
+    throw new Error("rendered Navigator Route claim is invalid");
+  }
+  return normalized;
+}
+
+export async function waitForHouseEndorsement(page, plan, timeoutMs) {
+  const endorsements = renderedNavigatorPlan(page, plan).locator("small");
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const values = await endorsements.allTextContents();
-    if (values.some((value) => /^[1-9][0-9]* endorsements$/u.test(value.trim()))) return;
+    if (hasRenderedHouseEndorsement(values)) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error("reviewed House Agent did not endorse the rendered Navigator plan before the bounded deadline");
+}
+
+export function hasRenderedHouseEndorsement(values) {
+  return values.some((value) => /^[1-9][0-9]* backed · [0-9]+ flagged$/u.test(value.trim()));
 }
 
 /**

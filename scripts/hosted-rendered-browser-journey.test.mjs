@@ -7,12 +7,18 @@ import {
   browserConsoleFailure,
   browserRequestFailure,
   ensureRenderedNavigatorRouteClaim,
+  hasRenderedHouseEndorsement,
   hasExplicitRenderedStaleRoom,
   launchIdFromUrl,
   localProductOrigin,
   navigatorPlanForRouteClaim,
+  parseRenderedCommitmentCount,
   publicRunPath,
+  renderedActionForm,
+  renderedCommitmentCompleted,
+  renderedHouseCommitmentsReady,
   renderedNavigatorPlan,
+  renderedParticipantActionForms,
   retryRenderedStaleAction,
   runHostedRenderedBrowserJourney,
   sameOriginBrowserResponseFailure,
@@ -20,8 +26,9 @@ import {
   validateLaunchId,
   validateTimeouts,
   verifiedMyGamesLaunch,
+  waitForHouseEndorsement,
   waitForIndependentActivityClient,
-  waitForRenderedResultAcknowledgementOpportunity,
+  waitForRenderedTerminalComplete,
 } from "./hosted-rendered-browser-journey.mjs";
 
 test("rendered-browser journey accepts only exact local product origins", () => {
@@ -210,6 +217,37 @@ test("rendered-client bootstrap proves the current Mission Focus authorization c
   }
 });
 
+test("rendered journey scopes actions and spectator checks to the Mission Focus surface", () => {
+  const form = {};
+  const filteredSection = {
+    locator(selector) {
+      assert.equal(selector, "form.mission-action-surface");
+      return form;
+    },
+  };
+  const section = {
+    filter(options) {
+      assert.equal(options.has.value, "Open a dossier");
+      return filteredSection;
+    },
+  };
+  const participantForms = {};
+  const page = {
+    locator(selector) {
+      if (selector === "section#mission-action") return section;
+      assert.equal(selector, "#mission-action form.mission-action-surface");
+      return participantForms;
+    },
+    getByRole(role, options) {
+      assert.equal(role, "heading");
+      assert.deepEqual(options, { name: "Open a dossier", exact: true });
+      return { value: options.name };
+    },
+  };
+  assert.equal(renderedActionForm(page, "Open a dossier"), form);
+  assert.equal(renderedParticipantActionForms(page), participantForms);
+});
+
 test("rendered-browser diagnostics ignore expected browser aborts and redundant resource console noise", () => {
   assert.equal(
     browserRequestFailure(
@@ -277,7 +315,7 @@ test("rendered Action acceptance follows a durable Projection after its form is 
       };
     },
   };
-  await submitRenderedForm(form, "Inspect clue", 1_000, async () => {
+  await submitRenderedForm(form, "Open a dossier", 1_000, async () => {
     assert.equal(clicked, true);
     // The fake intentionally has no getByRole/status API: a committed frame
     // may already have unmounted its local form before React writes a notice.
@@ -286,7 +324,7 @@ test("rendered Action acceptance follows a durable Projection after its form is 
 
 test("rendered Action acceptance requires a durable Projection postcondition", async () => {
   await assert.rejects(
-    () => submitRenderedForm({}, "Inspect clue", 1_000),
+    () => submitRenderedForm({}, "Open a dossier", 1_000),
     /lacks a durable postcondition/u,
   );
 });
@@ -302,29 +340,29 @@ test("rendered Action acceptance fails closed when no durable Projection arrives
     },
   };
   await assert.rejects(
-    () => submitRenderedForm(form, "Inspect clue", 1_000, async () => {
+    () => submitRenderedForm(form, "Open a dossier", 1_000, async () => {
       throw new Error("transport rejected");
     }),
     /did not produce its durable authorized Projection\/result postcondition/u,
   );
 });
 
-test("resumed rendered journey reads its existing authorized Route claim without replaying Inspect", async () => {
+test("resumed rendered journey reads its humanized Mission Focus Route claim without reopening a dossier", async () => {
   const existingClue = {
     filter() { return this; },
     async count() { return 1; },
     locator(selector) {
-      assert.equal(selector, "code");
-      return { async innerText() { return "route_canal"; } };
+      assert.equal(selector, "strong");
+      return { async textContent() { return "Route Canal"; } };
     },
   };
   const page = {
     locator(selector) {
-      if (selector === ".private-clue-list article") return existingClue;
-      throw new Error("a resumed Route claim must not recreate an Inspect Action form");
+      if (selector === ".private-intel .known-clue") return existingClue;
+      throw new Error("a resumed Route claim must not reopen its dossier");
     },
     getByText(value, options) {
-      assert.equal(value, "route");
+      assert.equal(value, "Route");
       assert.deepEqual(options, { exact: true });
       return {};
     },
@@ -332,52 +370,98 @@ test("resumed rendered journey reads its existing authorized Route claim without
   assert.equal(await ensureRenderedNavigatorRouteClaim(page, 1_000), "route_canal");
 });
 
-test("rendered journey waits for a delayed result acknowledgement offer", async () => {
-  let observedResult = false;
-  const acknowledgement = {
-    async count() { return observedResult ? 1 : 0; },
-  };
-  const complete = {
-    async count() {
-      observedResult = true;
-      return 0;
-    },
-  };
+test("rendered journey waits for terminal Complete without claiming an acknowledgement", async () => {
+  let waited = false;
   const page = {
     locator(selector) {
-      if (selector === "form.live-action-form") {
-        return { filter() { return acknowledgement; } };
-      }
-      if (selector === ".phase-window") {
-        return { filter() { return { filter() { return complete; } }; } };
-      }
-      throw new Error(`unexpected locator ${selector}`);
+      assert.equal(selector, ".mission-action .no-action");
+      return {
+        filter(options) {
+          assert.deepEqual(options, { hasText: "This operation is complete." });
+          return {
+            async waitFor(waitOptions) {
+              assert.deepEqual(waitOptions, { state: "visible", timeout: 1_000 });
+              waited = true;
+            },
+          };
+        },
+      };
     },
-    getByText() { return {}; },
   };
-  assert.equal(await waitForRenderedResultAcknowledgementOpportunity(page, 1_000), acknowledgement);
+  await waitForRenderedTerminalComplete(page, 1_000);
+  assert.equal(waited, true);
 });
 
 test("rendered Navigator plan postcondition requires the Navigator proposer", () => {
   const expectedTexts = [];
   const locator = {
     filter(options) {
-      expectedTexts.push(options.has.value);
+      expectedTexts.push(options.has?.value ?? options.hasText);
       return this;
     },
   };
   const page = {
     locator(selector) {
-      assert.equal(selector, ".plan-grid article");
+      assert.equal(selector, ".crew-plan-list article");
       return locator;
     },
     getByText(value, options) {
-      assert.deepEqual(options, { exact: true });
+      assert.equal(options, undefined);
       return { value };
     },
   };
   assert.equal(renderedNavigatorPlan(page, navigatorPlanForRouteClaim("route_canal")), locator);
-  assert.deepEqual(expectedTexts, ["navigator", "canal · late", "disguise → van"]);
+  assert.equal(expectedTexts[0].test("Plan 1 · Navigator"), true);
+  assert.deepEqual(expectedTexts.slice(1), ["Canal · Late", "Disguise → Van"]);
+});
+
+test("rendered House endorsement is scoped to the exact Navigator plan", async () => {
+  const expectedTexts = [];
+  const endorsement = {
+    async allTextContents() { return ["1 backed · 0 flagged"]; },
+  };
+  const exactPlan = {
+    filter(options) {
+      expectedTexts.push(options.has?.value ?? options.hasText);
+      return this;
+    },
+    locator(selector) {
+      assert.equal(selector, "small");
+      return endorsement;
+    },
+  };
+  const page = {
+    locator(selector) {
+      assert.equal(selector, ".crew-plan-list article");
+      return exactPlan;
+    },
+    getByText(value, options) {
+      assert.equal(options, undefined);
+      return { value };
+    },
+  };
+  await waitForHouseEndorsement(page, navigatorPlanForRouteClaim("route_canal"), 1_000);
+  assert.equal(expectedTexts[0].test("Plan 4 · Navigator"), true);
+  assert.deepEqual(expectedTexts.slice(1), ["Canal · Late", "Disguise → Van"]);
+  assert.equal(hasRenderedHouseEndorsement(["0 backed · 0 flagged"]), false);
+  assert.equal(hasRenderedHouseEndorsement(["1 endorsements"]), false);
+});
+
+test("rendered commitment waits for all House seats and proves exact full completion", () => {
+  const ambiguousBefore = parseRenderedCommitmentCount("1 of 3");
+  const houseReady = parseRenderedCommitmentCount("2 of 3");
+  const completed = parseRenderedCommitmentCount("3 of 3");
+  assert.deepEqual(houseReady, { current: 2, total: 3 });
+  assert.equal(renderedHouseCommitmentsReady(ambiguousBefore, 1), false);
+  assert.equal(renderedHouseCommitmentsReady(houseReady, 0), false);
+  assert.equal(renderedHouseCommitmentsReady(houseReady, 1), true);
+  assert.equal(renderedCommitmentCompleted(ambiguousBefore, houseReady, 0), false);
+  assert.equal(renderedCommitmentCompleted(houseReady, completed, 1), false);
+  assert.equal(renderedCommitmentCompleted(houseReady, completed, 0), true);
+  assert.equal(renderedCommitmentCompleted(houseReady, { current: 3, total: 4 }, 0), false);
+  for (const invalid of [null, "", "2/3", "4 of 3", "1 of 0"]) {
+    assert.throws(() => parseRenderedCommitmentCount(invalid), /commitment count is invalid/u);
+  }
 });
 
 test("rendered commitment retries only after the explicit stale Room reconnect boundary", async () => {
@@ -397,7 +481,7 @@ test("rendered commitment retries only after the explicit stale Room reconnect b
 test("rendered stale Room boundary requires both the exact message and Reconnect control", async () => {
   const fixture = (messageCount, reconnectCount) => ({
     locator(selector) {
-      assert.equal(selector, ".live-client-notice");
+      assert.equal(selector, ".mission-connection");
       return { filter() { return { async count() { return messageCount; } }; } };
     },
     getByText(value, options) {
