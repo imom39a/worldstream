@@ -51,13 +51,32 @@ test("Archive 0.3 registers exact immutable House and Listing documents without 
   );
 });
 
-test("the internal candidate advances only to exact Archive Listing 0.3", async () => {
+test("the internal candidate advances only to exact Archive Listing 0.4", async () => {
   const candidates = JSON.parse(await bytes("config/hosted/internal-candidates.json"));
   assert.deepEqual(candidates.candidates.map(({ listing_file, listing_digest }) => ({
     listing_file,
     listing_digest,
   })), [{
-    listing_file: "config/hosted/listings/midnight-archive-0.3.0.json",
-    listing_digest: LISTING_DIGEST,
+    listing_file: "config/hosted/listings/midnight-archive-0.4.0.json",
+    listing_digest: "blake3:4c9a98ec044e9389b9a4e3d8a8f33a371dc6ed3991556037ada61cfba4bf718a",
   }]);
 });
+
+for (const [client, version, predecessor] of [
+  ["agent-heist", "0.28.0", "0.27.0"],
+  ["midnight-archive", "0.4.0", "0.3.0"],
+]) {
+  test(`${client} ${version} seeds only the exact client successor and preserves its activity contract`, async () => {
+    const source = await canonical(`config/hosted/listings/${client}-${version}.json`);
+    const previous = JSON.parse(await bytes(`config/hosted/listings/${client}-${predecessor}.json`));
+    const listing = readListingRevision(source);
+    assert.deepEqual(listing.value, { ...previous, version, client: listing.value.client });
+    assert.notEqual(listing.value.client.release_digest, previous.client.release_digest);
+    const sql = (await bytes(`supabase/catalog/${client}-${version}.sql`)).toString("utf8");
+    assert.deepEqual(Buffer.from(sql.match(/\$artifact\$([\s\S]*?)\$artifact\$/u)?.[1] ?? ""), source);
+    assert.ok(sql.includes(listing.digest));
+    assert.doesNotMatch(sql, /house_agent_host_approvals|hosted_operating_state|available_for_new_assignments|\b(?:alter|drop|truncate|delete|update|create)\s/iu);
+    assert.match(sql, /on conflict \(listing_revision_digest\) do nothing/iu);
+    assert.match(sql, /canonical_document = expected_document/iu);
+  });
+}

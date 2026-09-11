@@ -28,38 +28,38 @@ test("the Vercel product build prepares dist-only workspace dependencies", async
   assert.equal(contract.scripts.prebuild, "pnpm --filter @worldstream/pack-sdk build");
 });
 
-test("the Vercel product build installs the exact reviewed Midnight Archive v13 artifact", async () => {
+test("the Vercel product build installs the exact reviewed Midnight Archive v14 artifact", async () => {
   assert.deepEqual(
     hostedClientArtifacts.filter(([label]) => label === "Midnight Archive").map(([, path]) => path),
-    ["midnight-archive-v13", "midnight-archive-v12", "midnight-archive-v10"],
+    ["midnight-archive-v14", "midnight-archive-v13", "midnight-archive-v12", "midnight-archive-v10"],
   );
-  const archive = hostedClientArtifacts.find(([, path]) => path === "midnight-archive-v13");
+  const archive = hostedClientArtifacts.find(([, path]) => path === "midnight-archive-v14");
   assert.deepEqual(archive, [
     "Midnight Archive",
-    "midnight-archive-v13",
-    "config/activity-clients/artifacts/midnight-archive-web-v13",
-    "midnight-archive-web-v13.json",
+    "midnight-archive-v14",
+    "config/activity-clients/artifacts/midnight-archive-web-v14",
+    "midnight-archive-web-v14.json",
   ]);
 
   const release = await manifest(`config/activity-clients/releases/${archive[3]}`);
   assert.equal(release.client_id, "worldstream.midnight-archive.web");
   assert.equal(
     release.release_digest,
-    "sha256:240ac1b94e9e89c0eb5a059ba85d116b807258cfd5917bc0dd879139de1b35bb",
+    "sha256:2040145dc2017df23f810a410b9cc9c36ce56da7e242dcaaf28feeda2d099886",
   );
   assert.equal(
     release.artifacts[0]?.digest,
-    "sha256:6d7fcea16b1305034af5a4f46214fb22b686d6aa831d53513ebe7d33ee342c4e",
+    "sha256:e4c0b6c75297d3320b70f492c8034d733f94dd01d082e1b36838cda7649dc1cd",
   );
   assert.ok(release.surfaces.some(
-    ({ entrypoint }) => entrypoint === "/midnight-archive-v13/hosted/",
+    ({ entrypoint }) => entrypoint === "/midnight-archive-v14/hosted/",
   ));
 
   const output = await mkdtemp(resolve(tmpdir(), "worldstream-vercel-clients-"));
   try {
     await installHostedClientArtifacts({ destinationRoot: output, artifacts: [archive] });
     assert.equal(
-      await activityClientBuildDigest(resolve(output, "midnight-archive-v13")),
+      await activityClientBuildDigest(resolve(output, "midnight-archive-v14")),
       release.artifacts[0].digest,
     );
   } finally {

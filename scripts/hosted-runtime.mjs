@@ -77,10 +77,12 @@ export function hostedRuntimeLayout(environment = process.env) {
     managedAgentHostDigest: join(assetRoot, "managed-agent-host.blake3"),
     artifactDigest: join(binaryRoot, "worldstream-hosted-artifact-digest"),
     clientRelease: join(assetRoot, "agent-heist-web.json"),
+    retainedClientReleaseV10: join(assetRoot, "agent-heist-web-v10.json"),
     retainedClientReleaseV9: join(assetRoot, "agent-heist-web-v9.json"),
     retainedClientReleaseV8: join(assetRoot, "agent-heist-web-v8.json"),
     retainedClientRelease: join(assetRoot, "agent-heist-web-v7.json"),
     archiveClientRelease: join(assetRoot, "midnight-archive-web.json"),
+    retainedArchiveClientReleaseV13: join(assetRoot, "midnight-archive-web-v13.json"),
     retainedArchiveClientReleaseV12: join(assetRoot, "midnight-archive-web-v12.json"),
     retainedArchiveClientReleaseV10: join(assetRoot, "midnight-archive-web-v10.json"),
     archivePackBundle: join(assetRoot, "midnight-archive.wspack"),
@@ -450,10 +452,12 @@ async function prepareLayout(layout) {
     layout.managedAgentHostDigest,
     layout.artifactDigest,
     layout.clientRelease,
+    layout.retainedClientReleaseV10,
     layout.retainedClientReleaseV9,
     layout.retainedClientReleaseV8,
     layout.retainedClientRelease,
     layout.archiveClientRelease,
+    layout.retainedArchiveClientReleaseV13,
     layout.retainedArchiveClientReleaseV12,
     layout.retainedArchiveClientReleaseV10,
     layout.archivePackBundle,
@@ -650,10 +654,10 @@ export async function writeHostedClientImport(
     inspectorDeployment === undefined ||
     !Array.isArray(inspectorDeployment.surfaces) ||
     !Array.isArray(heistDeployments) ||
-    heistDeployments.length !== 4 ||
+    heistDeployments.length !== 5 ||
     heistDeployments.some((deployment) => !Array.isArray(deployment.surfaces)) ||
     !Array.isArray(archiveDeployments) ||
-    archiveDeployments.length !== 3 ||
+    archiveDeployments.length !== 4 ||
     archiveDeployments.some((deployment) => !Array.isArray(deployment.surfaces))
   ) {
     throw new Error("hosted_client_deployment_invalid");
@@ -670,6 +674,7 @@ export async function writeHostedClientImport(
     await readJson(layout.retainedClientReleaseV9),
     await readJson(layout.retainedClientReleaseV8),
     await readJson(layout.retainedClientRelease),
+    await readJson(layout.retainedClientReleaseV10),
   ];
   for (const deployment of heistDeployments) {
     const release = heistReleases.find((candidate) => candidate.release_digest === deployment.release_digest);
@@ -686,6 +691,7 @@ export async function writeHostedClientImport(
     await readJson(layout.archiveClientRelease),
     await readJson(layout.retainedArchiveClientReleaseV12),
     await readJson(layout.retainedArchiveClientReleaseV10),
+    await readJson(layout.retainedArchiveClientReleaseV13),
   ];
   for (const deployment of archiveDeployments) {
     const release = archiveReleases.find((candidate) => candidate.release_digest === deployment.release_digest);
@@ -732,6 +738,14 @@ export async function writeHostedClientImport(
     join(layout.generatedRoot, "midnight-archive-web-v10.json"),
     archiveReleases[2],
   );
+  const retainedHeistReleaseV10 = await writeJson(
+    join(layout.generatedRoot, "agent-heist-web-v10.json"),
+    heistReleases[4],
+  );
+  const retainedArchiveReleaseV13 = await writeJson(
+    join(layout.generatedRoot, "midnight-archive-web-v13.json"),
+    archiveReleases[3],
+  );
   const bindingFile = await writeJson(
     join(layout.generatedRoot, "hosted-client-bindings.json"),
     bindings,
@@ -740,10 +754,12 @@ export async function writeHostedClientImport(
     schema: "worldstream/client-declaration-import/v1",
     release_files: [
       heistRelease,
+      retainedHeistReleaseV10,
       retainedHeistReleaseV9,
       retainedHeistRelease,
       legacyHeistRelease,
       archiveRelease,
+      retainedArchiveReleaseV13,
       retainedArchiveReleaseV12,
       retainedArchiveReleaseV10,
       retainedInspector,

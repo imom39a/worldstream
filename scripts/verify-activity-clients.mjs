@@ -16,15 +16,15 @@ const buildRoots = new Map([
   ["worldstream.inspector.web", "web/console/dist"],
 ]);
 const currentReleaseFiles = new Map([
-  ["worldstream.agent-heist.web", "agent-heist-web-v10.json"],
+  ["worldstream.agent-heist.web", "agent-heist-web-v11.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
-  ["worldstream.midnight-archive.web", "midnight-archive-web-v13.json"],
+  ["worldstream.midnight-archive.web", "midnight-archive-web-v14.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const currentEvidenceFiles = new Map([
-  ["worldstream.agent-heist.web", "agent-heist-web-v10.json"],
+  ["worldstream.agent-heist.web", "agent-heist-web-v11.json"],
   ["worldstream.negotiate.web", "negotiate-web-v3.json"],
-  ["worldstream.midnight-archive.web", "midnight-archive-web-v13.json"],
+  ["worldstream.midnight-archive.web", "midnight-archive-web-v14.json"],
   ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const expectedChecks = new Map([
@@ -96,7 +96,7 @@ for (const { name, value: evidence } of evidenceDocuments) {
     JSON.stringify(evidence.checks) === JSON.stringify([
       ...expectedChecks.get(evidence.subject.client_id),
       ...(evidence.subject.client_id === "worldstream.midnight-archive.web" ? (
-        ["midnight-archive-web-v5.json", "midnight-archive-web-v6.json", "midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json", "midnight-archive-web-v12.json", "midnight-archive-web-v13.json"].includes(name) ? [
+        ["midnight-archive-web-v5.json", "midnight-archive-web-v6.json", "midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json", "midnight-archive-web-v12.json", "midnight-archive-web-v13.json", "midnight-archive-web-v14.json"].includes(name) ? [
           "fixed-agreement-and-optional-objective-projection-boundaries",
           "all-four-starting-roster-component-host-witnesses",
           "structured-specialist-task-plan-and-private-knowledge-boundaries",
@@ -106,7 +106,7 @@ for (const { name, value: evidence } of evidenceDocuments) {
           "staged-extraction-preview-and-exact-crew-acknowledgement",
           "terminal-full-and-partial-crew-debrief-work-attribution",
           "responsive-specialist-controls",
-          ...(["midnight-archive-web-v10.json", "midnight-archive-web-v11.json", "midnight-archive-web-v12.json", "midnight-archive-web-v13.json"].includes(name) ? [
+          ...(["midnight-archive-web-v10.json", "midnight-archive-web-v11.json", "midnight-archive-web-v12.json", "midnight-archive-web-v13.json", "midnight-archive-web-v14.json"].includes(name) ? [
             "authored-standard-and-low-reserve-scenario-boundaries",
             "closed-genesis-operation-cost-schedule",
           ] : []),
@@ -122,17 +122,18 @@ for (const { name, value: evidence } of evidenceDocuments) {
           "solo-eleven-and-fifteen-turn-component-host-browser-and-replay-witnesses",
         ] : ["solo-ten-turn-component-host-browser-and-replay-witness"]
       ) : []),
-      ...(["agent-heist-web-v2.json", "agent-heist-web-v3.json", "agent-heist-web-v4.json", "agent-heist-web-v5.json", "agent-heist-web-v6.json", "agent-heist-web-v7.json", "agent-heist-web-v8.json", "agent-heist-web-v9.json", "agent-heist-web-v10.json"].includes(name) ? [
+      ...(["agent-heist-web-v2.json", "agent-heist-web-v3.json", "agent-heist-web-v4.json", "agent-heist-web-v5.json", "agent-heist-web-v6.json", "agent-heist-web-v7.json", "agent-heist-web-v8.json", "agent-heist-web-v9.json", "agent-heist-web-v10.json", "agent-heist-web-v11.json"].includes(name) ? [
         "deployment-owned-stream-bootstrap-and-recovery",
         "separate-local-kernel-and-hosted-entrypoints-without-auth-fallback",
       ] : []),
-      ...(["midnight-archive-web-v2.json", "midnight-archive-web-v3.json", "midnight-archive-web-v4.json", "midnight-archive-web-v5.json", "midnight-archive-web-v6.json", "midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json", "midnight-archive-web-v12.json", "midnight-archive-web-v13.json"].includes(name)
+      ...(["midnight-archive-web-v2.json", "midnight-archive-web-v3.json", "midnight-archive-web-v4.json", "midnight-archive-web-v5.json", "midnight-archive-web-v6.json", "midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json", "midnight-archive-web-v12.json", "midnight-archive-web-v13.json", "midnight-archive-web-v14.json"].includes(name)
         ? ["bounded-idempotent-upstream-retry"] : []),
-      ...(["midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json", "midnight-archive-web-v12.json", "midnight-archive-web-v13.json"].includes(name)
+      ...(["midnight-archive-web-v7.json", "midnight-archive-web-v8.json", "midnight-archive-web-v9.json", "midnight-archive-web-v10.json", "midnight-archive-web-v11.json", "midnight-archive-web-v12.json", "midnight-archive-web-v13.json", "midnight-archive-web-v14.json"].includes(name)
         ? ["unavailable-companion-plan-continuation-boundaries"] : []),
-      ...(["midnight-archive-web-v11.json", "midnight-archive-web-v12.json", "midnight-archive-web-v13.json"].includes(name) ? ["bounded-companion-dialogue-literal-rendering-and-schema-boundaries"] : []),
-      ...(["midnight-archive-web-v12.json", "midnight-archive-web-v13.json"].includes(name) ? ["recorded-session-expiry-and-terminal-replay-boundaries"] : []),
-      ...(name === "midnight-archive-web-v13.json" ? ["hosted-live-and-terminal-house-exhibition-disclosure"] : []),
+      ...(["midnight-archive-web-v11.json", "midnight-archive-web-v12.json", "midnight-archive-web-v13.json", "midnight-archive-web-v14.json"].includes(name) ? ["bounded-companion-dialogue-literal-rendering-and-schema-boundaries"] : []),
+      ...(["midnight-archive-web-v12.json", "midnight-archive-web-v13.json", "midnight-archive-web-v14.json"].includes(name) ? ["recorded-session-expiry-and-terminal-replay-boundaries"] : []),
+      ...(["midnight-archive-web-v13.json", "midnight-archive-web-v14.json"].includes(name) ? ["hosted-live-and-terminal-house-exhibition-disclosure"] : []),
+      ...(["agent-heist-web-v11.json", "midnight-archive-web-v14.json"].includes(name) ? ["retryable-room-busy-synchronization-within-owning-attempt-deadline"] : []),
     ]),
     `${evidence.subject.client_id} conformance checks do not match the exercised canonical lane`,
   );
@@ -359,7 +360,10 @@ async function verifySourceBoundaries() {
     "Agent Heist WebMCP surface is missing its bounded reviewed tools",
   );
   for (const [prefix, root] of [
-    ["/agent-heist-v10/", "clients/agent-heist-web/dist"],
+    ["/agent-heist-v11/", "clients/agent-heist-web/dist"],
+    ["/agent-heist-v10/", "config/activity-clients/artifacts/agent-heist-web-v10"],
+    ["/midnight-archive-v14/", "clients/midnight-archive-web/dist"],
+    ["/midnight-archive-v13/", "config/activity-clients/artifacts/midnight-archive-web-v13"],
     ["/agent-heist-v9/", "config/activity-clients/artifacts/agent-heist-web-v9"],
     ["/agent-heist-v8/", "config/activity-clients/artifacts/agent-heist-web-v8"],
     ["/agent-heist-v7/", "config/activity-clients/artifacts/agent-heist-web-v7"],

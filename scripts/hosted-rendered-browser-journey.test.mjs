@@ -175,7 +175,7 @@ test("rendered-client bootstrap proves the current Mission Focus authorization c
     };
     const page = {
       async waitForURL(pattern, options) {
-        assert.equal(pattern.test("/agent-heist-v10/hosted/"), true);
+        assert.equal(pattern.test("/agent-heist-v11/hosted/"), true);
         observed.push(["url", options]);
       },
       getByRole(role, options) {
@@ -191,7 +191,7 @@ test("rendered-client bootstrap proves the current Mission Focus authorization c
         return card;
       },
       url() {
-        return "http://127.0.0.1:5180/agent-heist-v10/hosted/";
+        return "http://127.0.0.1:5180/agent-heist-v11/hosted/";
       },
     };
 

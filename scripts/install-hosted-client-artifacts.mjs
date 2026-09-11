@@ -8,7 +8,8 @@ const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Current and retained clients remain separate immutable builds. Old Rooms
 // must never fetch changed bytes at their retained entrypoint.
 export const hostedClientArtifacts = Object.freeze([
-  Object.freeze(["Agent Heist", "agent-heist-v10", "clients/agent-heist-web/dist", "agent-heist-web-v10.json"]),
+  Object.freeze(["Agent Heist", "agent-heist-v11", "clients/agent-heist-web/dist", "agent-heist-web-v11.json"]),
+  Object.freeze(["Agent Heist", "agent-heist-v10", "config/activity-clients/artifacts/agent-heist-web-v10", "agent-heist-web-v10.json"]),
   Object.freeze(["Agent Heist", "agent-heist-v9", "config/activity-clients/artifacts/agent-heist-web-v9", "agent-heist-web-v9.json"]),
   Object.freeze(["Agent Heist", "agent-heist-v8", "config/activity-clients/artifacts/agent-heist-web-v8", "agent-heist-web-v8.json"]),
   Object.freeze(["Agent Heist", "agent-heist-v7", "config/activity-clients/artifacts/agent-heist-web-v7", "agent-heist-web-v7.json"]),
@@ -17,6 +18,7 @@ export const hostedClientArtifacts = Object.freeze([
   Object.freeze(["Agent Heist", "agent-heist-v4", "config/activity-clients/artifacts/agent-heist-web-v4", "agent-heist-web-v4.json"]),
   Object.freeze(["Agent Heist", "agent-heist-v3", "config/activity-clients/artifacts/agent-heist-web-v3", "agent-heist-web-v3.json"]),
   Object.freeze(["Agent Heist", "agent-heist-v2", "config/activity-clients/artifacts/agent-heist-web-v2", "agent-heist-web-v2.json"]),
+  Object.freeze(["Midnight Archive", "midnight-archive-v14", "config/activity-clients/artifacts/midnight-archive-web-v14", "midnight-archive-web-v14.json"]),
   Object.freeze(["Midnight Archive", "midnight-archive-v13", "config/activity-clients/artifacts/midnight-archive-web-v13", "midnight-archive-web-v13.json"]),
   Object.freeze(["Midnight Archive", "midnight-archive-v12", "config/activity-clients/artifacts/midnight-archive-web-v12", "midnight-archive-web-v12.json"]),
   Object.freeze(["Midnight Archive", "midnight-archive-v10", "config/activity-clients/artifacts/midnight-archive-web-v10", "midnight-archive-web-v10.json"]),

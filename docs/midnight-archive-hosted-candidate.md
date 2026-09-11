@@ -2,11 +2,11 @@
 
 IMO-207 established the first solo candidate, IMO-211 added recorded session
 expiry, and IMO-209 added the four reviewed roster choices. The current
-revision is `worldstream.midnight-archive.internal-solo` version `0.3.0`, with
+revision is `worldstream.midnight-archive.internal-solo` version `0.4.0`, with
 digest
-`blake3:cc1c92ebc6ba7cccc9474186ff8107cf97f6bd0ce2676c6d1a2aa203c2a62d35`.
+`blake3:4c9a98ec044e9389b9a4e3d8a8f33a371dc6ed3991556037ada61cfba4bf718a`.
 The `internal-solo` Listing ID is retained for identity continuity; version
-0.3.0 is not solo-only. Versions 0.1.0 and 0.2.0 remain available for exact
+0.4.0 adds bounded Room-busy synchronization recovery. Versions 0.1.0 through 0.3.0 remain available for exact
 old-Run resolution.
 
 The candidate remains reviewed and unlisted. It offers exactly four starts:
@@ -23,10 +23,10 @@ The current Listing pins:
   `blake3:aea45a1c056c4a7da744be33d38df672499062fd2548302fae43adc49b833b07`
   in Bundle
   `blake3:de3cd1d9fa45087b69cb107a663596305864c350f620fe4d7260e0341214d47a`.
-- Activity Client v13 Release
-  `sha256:240ac1b94e9e89c0eb5a059ba85d116b807258cfd5917bc0dd879139de1b35bb`
+- Activity Client v14 Release
+  `sha256:2040145dc2017df23f810a410b9cc9c36ce56da7e242dcaaf28feeda2d099886`
   with artifact
-  `sha256:6d7fcea16b1305034af5a4f46214fb22b686d6aa831d53513ebe7d33ee342c4e`.
+  `sha256:e4c0b6c75297d3320b70f492c8034d733f94dd01d082e1b36838cda7649dc1cd`.
 - Mira House Agent Revision
   `blake3:7e0b07b386009d509d605c9efdbe491a035f219d10ef7ebebc6f71e99461cdde`
   and Jonah House Agent Revision
@@ -62,7 +62,7 @@ Listing digest above. Omitting the variable leaves the production catalog
 public-only; every other value stops production startup.
 
 `pnpm hosted:dev` reads `config/hosted/internal-candidates.json`, approves and
-installs the exact Bundle, imports the v13 client, and configures the local
+installs the exact Bundle, imports the v14 client, and configures the local
 availability check. An empty candidate list still starts the public-only
 library. Retained Listings resolve through their original clients and
 projectors; they are not current discovery entries.
@@ -77,6 +77,6 @@ paid external-provider completion has been claimed.
 
 Run `node scripts/verify-midnight-archive-hosted.mjs` against `pnpm hosted:dev`
 for the current signed-in solo launch/play/private-debrief journey through the
-v13 hosted client. New journey evidence writes under
+v14 hosted client. New journey evidence writes under
 `.worldstream/evidence/imo-209`; historical IMO-207 and IMO-211 evidence remains
 under its original directories.

@@ -35,7 +35,7 @@ function artifact(path: string): CanonicalObject {
   return JSON.parse(readFileSync(new URL(`../../../${path}`, import.meta.url), "utf8")) as CanonicalObject;
 }
 
-const listing = readListingRevision(encodeCanonical(artifact("config/hosted/listings/midnight-archive-0.3.0.json")));
+const listing = readListingRevision(encodeCanonical(artifact("config/hosted/listings/midnight-archive-0.4.0.json")));
 const houseAgents = [
   readHouseAgentRevision(encodeCanonical(artifact("config/hosted/house-agents/mira-1.json"))),
   readHouseAgentRevision(encodeCanonical(artifact("config/hosted/house-agents/jonah-1.json"))),
@@ -62,7 +62,7 @@ const reviewed: ReviewedHostedActivity = {
     publicViewingAvailable: false,
     resultPublication: "Private",
     attribution: "None",
-    clientPath: "/midnight-archive-v13/hosted/",
+    clientPath: "/midnight-archive-v14/hosted/",
     publicViewerClientPath: null,
     houseTerms: {
       exhibition: true,
@@ -367,7 +367,7 @@ class RosterGateway implements HostedFormationGateway {
 }
 
 test("the production Listing exposes exactly four bounded Archive rosters and exact House identities", () => {
-  assert.equal(listing.value.version, "0.3.0");
+  assert.equal(listing.value.version, "0.4.0");
   assert.equal(listing.value.launch_input_schema.schema, "worldstream/launch-input-schema/v3");
   assert.deepEqual(houseAgents.map(({ digest }) => digest), [MIRA_DIGEST, JONAH_DIGEST]);
   assert.deepEqual(

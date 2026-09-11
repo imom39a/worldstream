@@ -6,7 +6,8 @@ import { activityClientBuildDigest } from "./activity-client-identities.mjs";
 
 const workspace = resolve(fileURLToPath(new URL("..", import.meta.url)));
 export const activityClientMounts = Object.freeze([
-  Object.freeze({ prefix: "/agent-heist-v10/", root: resolve(workspace, "clients/agent-heist-web/dist") }),
+  Object.freeze({ prefix: "/agent-heist-v11/", root: resolve(workspace, "clients/agent-heist-web/dist") }),
+  Object.freeze({ prefix: "/agent-heist-v10/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v10") }),
   Object.freeze({ prefix: "/agent-heist-v9/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v9") }),
   Object.freeze({ prefix: "/agent-heist-v8/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v8") }),
   Object.freeze({ prefix: "/agent-heist-v7/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v7") }),
@@ -18,7 +19,8 @@ export const activityClientMounts = Object.freeze([
   Object.freeze({ prefix: "/negotiate-v3/", root: resolve(workspace, "clients/negotiate-web/dist") }),
   Object.freeze({ prefix: "/negotiate-v2/", root: resolve(workspace, "config/activity-clients/artifacts/negotiate-web-v2") }),
   Object.freeze({ prefix: "/negotiate/", root: resolve(workspace, "config/activity-clients/artifacts/negotiate-web-v1") }),
-  Object.freeze({ prefix: "/midnight-archive-v13/", root: resolve(workspace, "clients/midnight-archive-web/dist") }),
+  Object.freeze({ prefix: "/midnight-archive-v14/", root: resolve(workspace, "clients/midnight-archive-web/dist") }),
+  Object.freeze({ prefix: "/midnight-archive-v13/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v13") }),
   Object.freeze({ prefix: "/midnight-archive-v12/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v12") }),
   Object.freeze({ prefix: "/midnight-archive-v11/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v11") }),
   Object.freeze({ prefix: "/midnight-archive-v10/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v10") }),

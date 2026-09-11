@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 export default defineConfig(({ command }) => ({
   // Preserve the design-review URL while publishing new immutable release paths.
-  base: command === "serve" ? "/agent-heist-v8/" : "/agent-heist-v10/",
+  base: command === "serve" ? "/agent-heist-v8/" : "/agent-heist-v11/",
   build: {
     rollupOptions: {
       input: {

@@ -151,7 +151,7 @@ try {
   debug("binary preflight and bundle inspection complete");
 
   const releasePath = archiveClientRelease === undefined
-    ? join(workspace, "config/activity-clients/releases/midnight-archive-web-v13.json")
+    ? join(workspace, "config/activity-clients/releases/midnight-archive-web-v14.json")
     : resolve(workspace, archiveClientRelease);
   const release = JSON.parse(await readFile(releasePath, "utf8"));
   const standaloneSurface = release.surfaces.find((surface) => surface.surface_id === "midnight-archive-web");

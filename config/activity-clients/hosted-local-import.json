@@ -8,7 +8,9 @@
     "./releases/agent-heist-web-v8.json",
     "./releases/inspector-web-v2.json",
     "./releases/agent-heist-web-v9.json",
-    "./releases/agent-heist-web-v10.json"
+    "./releases/agent-heist-web-v10.json",
+    "./releases/agent-heist-web-v11.json",
+    "./releases/midnight-archive-web-v14.json"
   ],
   "bindings_file": "./hosted-local-bindings.json"
 }

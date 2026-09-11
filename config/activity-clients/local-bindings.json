@@ -313,6 +313,32 @@
           "launch_url": "http://127.0.0.1:5173/agent-heist-v10/"
         }
       ]
+    },
+    {
+      "schema": "worldstream/client-deployment/v1",
+      "deployment_id": "first-party-agent-heist-web-v11",
+      "client_id": "worldstream.agent-heist.web",
+      "release_digest": "sha256:40d452a04b096d3a0952f99b877f094f90c6e4a84063d3212265b5c2b97306ee",
+      "trust_level": "externally_trusted",
+      "surfaces": [
+        {
+          "surface_id": "heist-web",
+          "launch_url": "http://127.0.0.1:5173/agent-heist-v11/"
+        }
+      ]
+    },
+    {
+      "schema": "worldstream/client-deployment/v1",
+      "deployment_id": "first-party-midnight-archive-web-v14",
+      "client_id": "worldstream.midnight-archive.web",
+      "release_digest": "sha256:2040145dc2017df23f810a410b9cc9c36ce56da7e242dcaaf28feeda2d099886",
+      "trust_level": "externally_trusted",
+      "surfaces": [
+        {
+          "surface_id": "midnight-archive-web",
+          "launch_url": "http://127.0.0.1:5173/midnight-archive-v14/"
+        }
+      ]
     }
   ],
   "bindings": [
@@ -930,6 +956,57 @@
       "roles": [],
       "deployment_id": "first-party-agent-heist-web-v10",
       "surface_id": "heist-web",
+      "preference": "eligible"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "agent-heist-0-5-participant-web-v11",
+      "pack": {
+        "id": "worldstream.agent-heist",
+        "version": "0.5.0",
+        "digest": "blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "participant",
+      "roles": [
+        "navigator",
+        "insider",
+        "broker"
+      ],
+      "deployment_id": "first-party-agent-heist-web-v11",
+      "surface_id": "heist-web",
+      "preference": "eligible"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "agent-heist-0-5-spectator-web-v11",
+      "pack": {
+        "id": "worldstream.agent-heist",
+        "version": "0.5.0",
+        "digest": "blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "spectator",
+      "roles": [],
+      "deployment_id": "first-party-agent-heist-web-v11",
+      "surface_id": "heist-web",
+      "preference": "eligible"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "midnight-archive-0-1-lead-web-v14",
+      "pack": {
+        "id": "worldstream.midnight-archive",
+        "version": "0.1.0",
+        "digest": "blake3:aea45a1c056c4a7da744be33d38df672499062fd2548302fae43adc49b833b07"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "participant",
+      "roles": [
+        "lead"
+      ],
+      "deployment_id": "first-party-midnight-archive-web-v14",
+      "surface_id": "midnight-archive-web",
       "preference": "eligible"
     }
   ],

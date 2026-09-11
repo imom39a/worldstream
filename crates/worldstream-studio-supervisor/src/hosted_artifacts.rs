@@ -13,6 +13,7 @@ pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAge
         include_bytes!("../../../config/hosted/listings/midnight-archive-0.1.0.json"),
         include_bytes!("../../../config/hosted/listings/midnight-archive-0.2.0.json"),
         include_bytes!("../../../config/hosted/listings/midnight-archive-0.3.0.json"),
+        include_bytes!("../../../config/hosted/listings/midnight-archive-0.4.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.4.0.json"),
@@ -39,6 +40,7 @@ pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAge
         include_bytes!("../../../config/hosted/listings/agent-heist-0.25.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.26.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.27.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.28.0.json"),
     ];
     const HOUSE_AGENTS: &[&[u8]] = &[
         include_bytes!("../../../config/hosted/house-agents/mira-1.json"),
@@ -171,7 +173,7 @@ mod tests {
             .iter()
             .filter(|listing| !listing.allows_result_publication())
             .collect();
-        assert_eq!(private.len(), 3);
+        assert_eq!(private.len(), 4);
         assert!(
             private
                 .iter()
@@ -189,7 +191,12 @@ mod tests {
             .collect::<anyhow::Result<BTreeSet<_>>>()?;
         assert_eq!(
             versions,
-            BTreeSet::from(["0.1.0".to_owned(), "0.2.0".to_owned(), "0.3.0".to_owned(),])
+            BTreeSet::from([
+                "0.1.0".to_owned(),
+                "0.2.0".to_owned(),
+                "0.3.0".to_owned(),
+                "0.4.0".to_owned(),
+            ])
         );
         Ok(())
     }
@@ -201,19 +208,19 @@ mod tests {
             .iter()
             .find(|listing| {
                 listing.digest()
-                    == "blake3:cc1c92ebc6ba7cccc9474186ff8107cf97f6bd0ce2676c6d1a2aa203c2a62d35"
+                    == "blake3:4c9a98ec044e9389b9a4e3d8a8f33a371dc6ed3991556037ada61cfba4bf718a"
             })
-            .context("Archive Listing 0.3 missing")?;
+            .context("Archive Listing 0.4 missing")?;
         assert_eq!(
             listing.digest(),
-            "blake3:cc1c92ebc6ba7cccc9474186ff8107cf97f6bd0ce2676c6d1a2aa203c2a62d35"
+            "blake3:4c9a98ec044e9389b9a4e3d8a8f33a371dc6ed3991556037ada61cfba4bf718a"
         );
         let document: serde_json::Value = serde_json::from_slice(listing.canonical_bytes())?;
         assert_eq!(
             document["listing_id"],
             "worldstream.midnight-archive.internal-solo"
         );
-        assert_eq!(document["version"], "0.3.0");
+        assert_eq!(document["version"], "0.4.0");
         let options = document["launch_input_schema"]["roster_options"]
             .as_array()
             .context("Archive roster options missing")?;

@@ -33,9 +33,9 @@ projected verifier (one power) and ordinary service hatch (two power) costs, who
 combined cost exceeds Low Reserve's initial budget. Action Offers still determine
 which controls are available; the client neither selects nor rerolls a scenario.
 
-The current local `/midnight-archive-v13/` surface uses the existing loopback
+The current local `/midnight-archive-v14/` surface uses the existing loopback
 retained session and exposes exact-head verified Replay after a terminal outcome.
-The current `/midnight-archive-v13/hosted/` surface uses the authenticated
+The current `/midnight-archive-v14/hosted/` surface uses the authenticated
 WebSocket session. Its controller currently has no Replay method, so terminal
 Replay is visibly unavailable there. The retained `/midnight-archive-v12/`
 paths remain available

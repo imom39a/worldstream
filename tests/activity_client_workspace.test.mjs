@@ -91,7 +91,7 @@ test("the Activity Client Host authorizes its exact configured Controller origin
     controllerOrigin: "http://127.0.0.1:19420",
   });
   try {
-    const response = await fetch(`${host.origin}/agent-heist-v10/`);
+    const response = await fetch(`${host.origin}/agent-heist-v11/`);
     assert.equal(response.status, 200);
     const policy = response.headers.get("content-security-policy");
     assert.match(policy, /connect-src 'self' http:\/\/127\.0\.0\.1:19420(?:;|$)/);
@@ -105,7 +105,7 @@ test("the Host does not serve the current Heist artifact at its unavailable reta
   const host = await startActivityClientHost({ port: 0 });
   try {
     assert.equal((await fetch(`${host.origin}/agent-heist/`)).status, 404);
-    assert.equal((await fetch(`${host.origin}/agent-heist-v10/`)).status, 200);
+    assert.equal((await fetch(`${host.origin}/agent-heist-v11/`)).status, 200);
     assert.equal((await fetch(`${host.origin}/agent-heist-v8/`)).status, 200);
   } finally {
     await host.close();
@@ -128,7 +128,7 @@ test("the Activity Client Host rejects non-loopback or non-origin Controller val
 test("the Activity Client Host accepts the canonical IPv6 loopback Controller origin", async () => {
   const host = await startActivityClientHost({ port: 0, controllerOrigin: "http://[::1]:19420" });
   try {
-    const response = await fetch(`${host.origin}/agent-heist-v10/`);
+    const response = await fetch(`${host.origin}/agent-heist-v11/`);
     assert.equal(response.status, 200);
     assert.match(
       response.headers.get("content-security-policy") ?? "",
@@ -158,7 +158,7 @@ test("the Host command applies the declared Controller origin", async () => {
       });
       child.once("exit", (code) => rejectOrigin(new Error(`Host exited ${code}: ${stderr}`)));
     });
-    const response = await fetch(`${origin}/agent-heist-v10/`);
+    const response = await fetch(`${origin}/agent-heist-v11/`);
     assert.equal(response.status, 200);
     assert.match(
       response.headers.get("content-security-policy") ?? "",
@@ -174,6 +174,8 @@ test("retained clients still serve their original assets after the shared design
   const host = await startActivityClientHost({ port: 0 });
   try {
     for (const [path, releaseFile] of [
+      ["/agent-heist-v10/", "agent-heist-web-v10.json"],
+      ["/midnight-archive-v13/", "midnight-archive-web-v13.json"],
       ["/agent-heist-v8/", "agent-heist-web-v8.json"],
       ["/agent-heist-v2/", "agent-heist-web-v2.json"],
       ["/negotiate-v2/", "negotiate-web-v2.json"],

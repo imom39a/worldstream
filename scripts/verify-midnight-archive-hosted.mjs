@@ -65,7 +65,7 @@ try {
   const initialDatabase = databaseSnapshot(evidence.run_id);
   assert.equal(initialDatabase.runs_for_launch, 1);
   await entry.click();
-  await page.waitForURL("**/midnight-archive-v13/hosted/**");
+  await page.waitForURL("**/midnight-archive-v14/hosted/**");
   await page.getByText("Projection current", { exact: true }).waitFor();
   assert.equal(new URL(page.url()).hash, "");
   evidence.checks.push("idempotent_start", "exact_client_handoff", "authoritative_projection");

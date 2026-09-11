@@ -1,6 +1,6 @@
 # First-party client design release
 
-Current source builds are Agent Heist v10, Negotiate v3, Midnight Archive v13,
+Current source builds are Agent Heist v11, Negotiate v3, Midnight Archive v14,
 and Inspector v2. Each release has an exact build-tree digest and linked
 evidence under `releases/` and `conformance/`. The shared CSS in `web/design/`
 is bundled independently; it does not create a runtime dependency between
@@ -8,9 +8,9 @@ clients.
 
 | Current path | Source |
 | --- | --- |
-| `/agent-heist-v10/`, `/agent-heist-v10/hosted/`, and `/agent-heist-v10/practice/` | `clients/agent-heist-web` |
+| `/agent-heist-v11/`, `/agent-heist-v11/hosted/`, and `/agent-heist-v11/practice/` | `clients/agent-heist-web` |
 | `/negotiate-v3/` | `clients/negotiate-web` |
-| `/midnight-archive-v13/` and `/midnight-archive-v13/hosted/` | `clients/midnight-archive-web` |
+| `/midnight-archive-v14/` and `/midnight-archive-v14/hosted/` | `clients/midnight-archive-web` |
 | `/inspector-v2/` | `web/console` |
 
 The prior Heist v2, Negotiate v2, and Inspector v1 build trees under
@@ -19,7 +19,7 @@ unchanged release digests before retention. Midnight Archive v1 through v12 and
 Negotiate v1 remain retained too. Midnight Archive v7 and v8 are retained,
 superseded, unqualified Pack-candidate client releases; v9 is the retained
 unavailable-companion revision, v10 through v12 are retained authored-scenario
-builds, and v13 is the current four-roster build. Do not add files inside a
+builds, v13 is the retained four-roster build, and v14 adds bounded Room-busy synchronization recovery. Do not add files inside a
 retained build tree or modify its bytes. Inspector v1 used root-relative assets,
 which the local Host continues to serve for that release.
 
@@ -32,8 +32,8 @@ selection is scoped to the Room's exact Pack revision digest. The repository
 binding-store test proves the ten Pack digests resolve v1 through v10 even
 though all revisions retain the same publisher version label.
 
-The hosted platform installs the current Heist v10 build and retained v9/v8/v7/v6/v5/v4/v3/v2
-artifacts. Midnight Archive v1 through v12 remain retained, with v13 bound only
+The hosted platform installs the current Heist v11 build and retained v10/v9/v8/v7/v6/v5/v4/v3/v2
+artifacts. Midnight Archive v1 through v13 remain retained, with v14 bound only
 to the four-roster Pack Revision. Listing 0.26.0 and its database migration pin
 v9, while retained Listing 0.25.0 resolves v8 and Listing 0.24.0 resolves v7.
 The session-recovery successor is Listing 0.27.0 and v10. It uses a data-only
@@ -48,3 +48,8 @@ Run `pnpm activity-clients:build`, `node scripts/verify-activity-clients.mjs`, a
 `node --test tests/activity_client_workspace.test.mjs` to check current bytes,
 retained mounts, and exact binding references. The full conformance lane remains
 `pnpm activity-clients:verify`.
+
+The retryable Room-busy successors are Heist Listing 0.28.0 / client v11 and
+Archive Listing 0.4.0 / client v14. Both retain their predecessor Pack, House
+Agent, Result Projector, and roster contracts. Data-only seeds live under
+`supabase/catalog/`. See [release identities](../../docs/client-room-busy-successors.md).

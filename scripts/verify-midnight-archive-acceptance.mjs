@@ -19,7 +19,7 @@ const bundle = resolve(process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_BUNDLE ?? join(
   `worldstream-midnight-archive-${proof.bundleDigest.slice("blake3:".length)}.wspack`,
 ));
 const release = process.env.WORLDSTREAM_MIDNIGHT_ARCHIVE_CLIENT_RELEASE
-  ?? join(workspace, "config/activity-clients/releases/midnight-archive-web-v13.json");
+  ?? join(workspace, "config/activity-clients/releases/midnight-archive-web-v14.json");
 const modes = ["agreement", "both-objectives", "low-reserve", "mira-live", "crew-live", "unavailable-live"];
 
 // Qualify the exact retained Bundle across real Runtime, SQLite, WebSocket and

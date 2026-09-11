@@ -91,7 +91,7 @@ it("shows reviewed roster descriptions and exact exhibition terms before formati
     publicViewingAvailable: false,
     resultPublication: "Private debrief in the activity; no public result publication.",
     attribution: "Anonymous viewing is disabled.",
-    clientPath: "/midnight-archive-v13/hosted/",
+    clientPath: "/midnight-archive-v14/hosted/",
     houseTerms: {
       exhibition: true,
       includedAtNoCharge: true,

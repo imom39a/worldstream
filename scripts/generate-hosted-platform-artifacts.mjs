@@ -8,7 +8,8 @@ const outputPath = join(
   "web/platform/src/hosted-artifacts.generated.ts",
 );
 const sources = {
-  midnightArchiveListing: "config/hosted/listings/midnight-archive-0.3.0.json",
+  midnightArchiveListing: "config/hosted/listings/midnight-archive-0.4.0.json",
+  retainedMidnightArchiveListing03: "config/hosted/listings/midnight-archive-0.3.0.json",
   retainedMidnightArchiveListing02: "config/hosted/listings/midnight-archive-0.2.0.json",
   retainedMidnightArchiveListing01: "config/hosted/listings/midnight-archive-0.1.0.json",
   midnightArchiveResultProjector: "config/hosted/result-projectors/midnight-archive-0.2.0.json",
@@ -16,7 +17,8 @@ const sources = {
   midnightArchivePublicProjectionSchema: "config/hosted/schemas/midnight-archive-public-projection-v2.schema.json",
   retainedMidnightArchivePublicProjectionSchema01: "config/hosted/schemas/midnight-archive-public-projection-v1.schema.json",
   midnightArchiveTerminalSummarySchema: "config/hosted/schemas/midnight-archive-terminal-summary-v1.schema.json",
-  agentHeistListing: "config/hosted/listings/agent-heist-0.27.0.json",
+  agentHeistListing: "config/hosted/listings/agent-heist-0.28.0.json",
+  retainedAgentHeistListing027: "config/hosted/listings/agent-heist-0.27.0.json",
   retainedAgentHeistListing026: "config/hosted/listings/agent-heist-0.26.0.json",
   retainedAgentHeistListing025: "config/hosted/listings/agent-heist-0.25.0.json",
   retainedAgentHeistListing024: "config/hosted/listings/agent-heist-0.24.0.json",

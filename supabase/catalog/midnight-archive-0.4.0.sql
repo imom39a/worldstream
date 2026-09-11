@@ -1,0 +1,32 @@
+-- Immutable retryable Room synchronization client successor. Catalog data only.
+
+do $listing_revision$
+declare expected_document bytea; expected_value jsonb;
+begin
+  expected_document := convert_to($artifact${"catalog":{"review_status":"reviewed","visibility":"unlisted"},"client":{"client_contract":"worldstream/activity-client-protocol/v1","client_id":"worldstream.midnight-archive.web","release_digest":"sha256:2040145dc2017df23f810a410b9cc9c36ce56da7e242dcaaf28feeda2d099886","surface_id":"midnight-archive-hosted-web"},"creator_access":"must_claim_seat","description":"Identify the authentic ledger, gain access to the vault, and escape through the Atrium. Choose a solo expedition or bring Mira, Jonah, or both as platform-supplied specialists. You remain the human lead and make every binding decision. Companion execution is included at no charge for this capped exhibition and starts without memory from another Run. Every roster keeps the Standard mission's 16 turns and 3 power charges; reading costs no turns. The session expires 24 hours after Activity Start; closing or re-entering does not pause the deadline. Expiry records no success or loss outcome.","launch_input_schema":{"accepts":"roster_option","defaults":{"roster_option":"solo"},"roster_options":[{"configuration":{"scenario_id":"standard-v1"},"description":"Solve the entire mission yourself; no companion Runner is started.","house_agent_assignments":[],"label":"Solo","option_id":"solo","seat_ids":["lead"]},{"configuration":{"scenario_id":"standard-v1"},"description":"Mira correlates evidence, can operate the verifier, and can complete the two-step Vault field assay while you lead.","house_agent_assignments":[{"house_agent_revision_digest":"blake3:7e0b07b386009d509d605c9efdbe491a035f219d10ef7ebebc6f71e99461cdde","seat_id":"mira"}],"label":"Mira — evidence specialist","option_id":"mira","seat_ids":["lead","mira"]},{"configuration":{"scenario_id":"standard-v1"},"description":"Jonah investigates records and can open the Plant service hatch with less preparation and power while you lead.","house_agent_assignments":[{"house_agent_revision_digest":"blake3:b88da2260f391c91593996c5913961469619b53a9e457c5ea0783cd3cac59db0","seat_id":"jonah"}],"label":"Jonah — service specialist","option_id":"jonah","seat_ids":["lead","jonah"]},{"configuration":{"scenario_id":"standard-v1"},"description":"Mira handles evidence while Jonah handles service access in parallel; you remain the human lead and make every binding decision.","house_agent_assignments":[{"house_agent_revision_digest":"blake3:7e0b07b386009d509d605c9efdbe491a035f219d10ef7ebebc6f71e99461cdde","seat_id":"mira"},{"house_agent_revision_digest":"blake3:b88da2260f391c91593996c5913961469619b53a9e457c5ea0783cd3cac59db0","seat_id":"jonah"}],"label":"Mira + Jonah — full crew","option_id":"full-crew","seat_ids":["lead","mira","jonah"]}],"schema":"worldstream/launch-input-schema/v3"},"listing_id":"worldstream.midnight-archive.internal-solo","pack":{"digest":"blake3:aea45a1c056c4a7da744be33d38df672499062fd2548302fae43adc49b833b07","id":"worldstream.midnight-archive","version":"0.1.0"},"pre_start_deadline_seconds":1800,"public_viewing_policy":"disabled","result":{"projection":{"digest":"blake3:c8045ca0762df97d4e82488f562f7a69eea2b480e41f06889eef3dff133086d0","schema":"worldstream.midnight-archive/public-projection/v5"},"projector":{"digest":"blake3:93bdc21b4b09ec6e7c1ed7a11df80d984e2f80175e9fae01143f3a00c65d4a17","id":"worldstream.midnight-archive.result","version":"0.2.0"},"publication":{"attribution":"none","policy":"disabled","public_output":"none","suppression":"unhealthy_inconclusive_or_conflict"}},"room_setup":{"configuration":{"scenario_id":"standard-v1"}},"schema":"worldstream/activity-listing-revision/v1","seats":[{"allowed_house_agent_revisions":[],"allowed_participation":["account_human"],"display_name":"Expedition lead","required":true,"role":"lead","seat_id":"lead"},{"allowed_house_agent_revisions":["blake3:7e0b07b386009d509d605c9efdbe491a035f219d10ef7ebebc6f71e99461cdde"],"allowed_participation":["house_agent_fill"],"display_name":"Mira","required":false,"role":"mira","seat_id":"mira"},{"allowed_house_agent_revisions":["blake3:b88da2260f391c91593996c5913961469619b53a9e457c5ea0783cd3cac59db0"],"allowed_participation":["house_agent_fill"],"display_name":"Jonah","required":false,"role":"jonah","seat_id":"jonah"}],"title":"Midnight Archive","version":"0.4.0"}$artifact$, 'utf8');
+  expected_value := convert_from(expected_document, 'utf8')::jsonb;
+  insert into platform_store.activity_listing_revisions (
+    listing_revision_digest, listing_key, canonical_document, pack_revision_digest,
+    client_release_digest, client_surface_id, catalog_visibility, creator_access,
+    public_viewing_policy, result_publication_policy, result_projector_revision_digest,
+    public_projection_schema, public_projection_schema_digest, result_output_schema,
+    result_output_schema_digest, result_canonicalizer_version, result_output_max_bytes,
+    room_setup_configuration, seat_templates, allow_multiple_seats_per_account, pre_start_deadline_seconds
+  ) values (
+    'blake3:4c9a98ec044e9389b9a4e3d8a8f33a371dc6ed3991556037ada61cfba4bf718a', expected_value ->> 'listing_id', expected_document,
+    expected_value #>> '{pack,digest}', expected_value #>> '{client,release_digest}',
+    expected_value #>> '{client,surface_id}', expected_value #>> '{catalog,visibility}',
+    expected_value ->> 'creator_access', expected_value ->> 'public_viewing_policy',
+    expected_value #>> '{result,publication,policy}', expected_value #>> '{result,projector,digest}',
+    expected_value #>> '{result,projection,schema}', expected_value #>> '{result,projection,digest}',
+    'midnight-archive/terminal-summary/v1', 'blake3:dc4772ec95b72de7fe6d937a51844d9d1ff48cd01c01a2227408ef474b8d792e',
+    'worldstream/canonical-json/v1', 1024, expected_value #> '{room_setup,configuration}',
+    expected_value -> 'seats', false, 1800
+  ) on conflict (listing_revision_digest) do nothing;
+  if not exists (
+    select 1 from platform_store.activity_listing_revisions
+    where listing_revision_digest = 'blake3:4c9a98ec044e9389b9a4e3d8a8f33a371dc6ed3991556037ada61cfba4bf718a' and canonical_document = expected_document
+  ) then raise exception using errcode = '23505', message = 'midnight_archive_room_busy_client_listing_identity_conflict';
+  end if;
+end;
+$listing_revision$;

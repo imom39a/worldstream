@@ -21,7 +21,7 @@ for (const mode of modes) {
 if (modes.size > 1) throw new Error("choose at most one Archive roster verification mode");
 
 const listing = JSON.parse(await readFile(
-  join(workspace, "config/hosted/listings/midnight-archive-0.3.0.json"),
+  join(workspace, "config/hosted/listings/midnight-archive-0.4.0.json"),
   "utf8",
 ));
 const proof = JSON.parse(await readFile(
