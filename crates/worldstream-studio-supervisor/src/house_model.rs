@@ -6,6 +6,7 @@
 //! are short-lived, zeroized buffers; durable state contains only bounded usage
 //! evidence and hashes.
 
+mod agent_heist_context;
 mod archive_context;
 
 use std::{
@@ -1654,8 +1655,8 @@ fn build_provider_request(
     }
     let offered_schemas = exact_offer_schemas(action_offers)?;
     let (policy_id, policy_revision, _) = revision.behavior_policy();
-    let current_context = archive_context::current_context(policy_id, policy_revision, projection)?;
-    if current_context.is_some() {
+    let archive_context = archive_context::current_context(policy_id, policy_revision, projection)?;
+    if archive_context.is_some() {
         let offers = action_offers["offers"]
             .as_array()
             .ok_or(HouseModelErrorV1::InvalidInput)?;
@@ -1663,7 +1664,21 @@ fn build_provider_request(
             return Err(HouseModelErrorV1::InvalidInput);
         }
     }
+    let current_context = archive_context.or(agent_heist_context::current_context(
+        policy_id,
+        policy_revision,
+        projection,
+    )?);
     let projection = current_context.as_ref().unwrap_or(projection);
+    encode_provider_request(revision, projection, action_offers, offered_schemas)
+}
+
+fn encode_provider_request(
+    revision: &HouseAgentRevision,
+    projection: &Value,
+    action_offers: &Value,
+    offered_schemas: BTreeMap<String, Value>,
+) -> Result<(HouseProviderRequestV1, BTreeMap<String, Value>), HouseModelErrorV1> {
     let invocation = json!({
         "action_offers": action_offers,
         "instruction": "Return exactly one JSON object with offer_id and payload. Select only a listed offer. Do not include prose or reasoning.",
