@@ -505,7 +505,7 @@ test("Room-busy successors retain their predecessors' exact launch clients and H
   for (const [slug, version, path] of [
     ["agent-heist", "0.27.0", "/agent-heist-v10/hosted/"],
     ["midnight-archive", "0.3.0", "/midnight-archive-v13/hosted/"],
-  ]) {
+  ] as const) {
     const source = JSON.parse(await readFile(resolve("../..", `config/hosted/listings/${slug}-${version}.json`), "utf8"));
     const original = readListingRevision(encodeCanonical(source));
     const retained = reviewedActivityByDigest(original.digest);
