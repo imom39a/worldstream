@@ -20,6 +20,7 @@ import {
   validateLaunchId,
   validateTimeouts,
   verifiedMyGamesLaunch,
+  waitForIndependentActivityClient,
   waitForRenderedResultAcknowledgementOpportunity,
 } from "./hosted-rendered-browser-journey.mjs";
 
@@ -137,6 +138,76 @@ test("rendered-client bootstrap diagnostics retain only same-origin failed respo
   );
   assert.equal(sameOriginBrowserResponseFailure(page, "http://127.0.0.1:8080/v1/hosted/browser-stream", 403), null);
   assert.equal(sameOriginBrowserResponseFailure(page, "http://127.0.0.1:5180/api/auth/session", 200), null);
+});
+
+test("rendered-client bootstrap proves the current Mission Focus authorization cards", async () => {
+  for (const expected of [
+    {
+      diagnosticRole: "Navigator participant",
+      selector: "section.role-card.role-navigator",
+      label: "Your role",
+      heading: "Navigator",
+    },
+    {
+      diagnosticRole: "Spectator view",
+      selector: "section.role-card.spectator-card",
+      label: "Public spectator view",
+      heading: "Follow the crew",
+    },
+  ]) {
+    const observed = [];
+    const ready = (name) => ({
+      async waitFor(options) {
+        observed.push([name, options]);
+      },
+    });
+    const card = {
+      getByText(value, options) {
+        assert.equal(value, expected.label);
+        assert.deepEqual(options, { exact: true });
+        return ready("authorization-label");
+      },
+      getByRole(role, options) {
+        assert.equal(role, "heading");
+        assert.deepEqual(options, { name: expected.heading, exact: true });
+        return ready("authorization-heading");
+      },
+    };
+    const page = {
+      async waitForURL(pattern, options) {
+        assert.equal(pattern.test("/agent-heist-v10/hosted/"), true);
+        observed.push(["url", options]);
+      },
+      getByRole(role, options) {
+        assert.equal(role, "heading");
+        assert.deepEqual(options, { name: "Agent Heist" });
+        return ready("client-heading");
+      },
+      getByText() {
+        throw new Error("bootstrap must scope authorization checks to the current role card");
+      },
+      locator(selector) {
+        assert.equal(selector, expected.selector);
+        return card;
+      },
+      url() {
+        return "http://127.0.0.1:5180/agent-heist-v10/hosted/";
+      },
+    };
+
+    await waitForIndependentActivityClient(
+      page,
+      1_000,
+      expected.diagnosticRole,
+      [],
+    );
+    assert.deepEqual(observed, [
+      ["url", { timeout: 1_000 }],
+      ["client-heading", { timeout: 1_000 }],
+      ["authorization-label", { timeout: 1_000 }],
+      ["authorization-heading", { timeout: 1_000 }],
+    ]);
+  }
 });
 
 test("rendered-browser diagnostics ignore expected browser aborts and redundant resource console noise", () => {

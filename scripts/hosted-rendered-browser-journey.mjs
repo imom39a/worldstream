@@ -574,11 +574,32 @@ function captureVerifiedMyGamesLaunch(page, origin, launchId) {
   };
 }
 
-async function waitForIndependentActivityClient(page, timeoutMs, expectedRole, failures) {
+export async function waitForIndependentActivityClient(page, timeoutMs, expectedRole, failures) {
   try {
     await page.waitForURL(/\/agent-heist-v[0-9]+\/hosted\//u, { timeout: timeoutMs });
     await page.getByRole("heading", { name: "Agent Heist" }).waitFor({ timeout: timeoutMs });
-    await page.getByText(expectedRole, { exact: true }).waitFor({ timeout: timeoutMs });
+    const authorization = expectedRole === "Navigator participant"
+      ? {
+          selector: "section.role-card.role-navigator",
+          label: "Your role",
+          heading: "Navigator",
+        }
+      : expectedRole === "Spectator view"
+        ? {
+            selector: "section.role-card.spectator-card",
+            label: "Public spectator view",
+            heading: "Follow the crew",
+          }
+        : null;
+    if (authorization === null) {
+      throw new Error("rendered Activity Client expected an unreviewed authorization surface");
+    }
+    const roleCard = page.locator(authorization.selector);
+    await roleCard.getByText(authorization.label, { exact: true }).waitFor({ timeout: timeoutMs });
+    await roleCard.getByRole("heading", {
+      name: authorization.heading,
+      exact: true,
+    }).waitFor({ timeout: timeoutMs });
   } catch (error) {
     const heading = await page.locator("main h1").first().textContent().catch(() => null);
     throw new Error(activityClientBootstrapDiagnostic({
