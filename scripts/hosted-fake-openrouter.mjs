@@ -157,6 +157,15 @@ function deterministicHouseCompletion(input) {
     : undefined;
   const proposedPlan = planFromAuthorizedClaims(activity);
   const choices = [
+    // Commitment is the Pack's expiring required action. Take it while its
+    // offer is live instead of spending the phase-open Activation on optional
+    // dossier work and depending on the final reminder window.
+    ...(firstPlanId === undefined ? [] : [
+      ["commit_move", {
+        selected_plan_id: firstPlanId,
+        contribute_required_resource: true,
+      }],
+    ]),
     // A proposal is the Pack's explicit request for this reactive House turn.
     ...(firstPlanId === undefined ? [] : [["endorse_plan", { plan_id: firstPlanId }]]),
     ...(unknown ? [["inspect_clue", { clue_id: unknown }]] : []),
@@ -165,12 +174,6 @@ function deterministicHouseCompletion(input) {
       : []),
     ...(firstPlanId === undefined && proposedPlan !== null
       ? [["propose_plan", proposedPlan]] : []),
-    ...(firstPlanId === undefined ? [] : [
-      ["commit_move", {
-        selected_plan_id: firstPlanId,
-        contribute_required_resource: true,
-      }],
-    ]),
     ["acknowledge_result", {}],
   ];
   for (const [actionType, payload] of choices) {

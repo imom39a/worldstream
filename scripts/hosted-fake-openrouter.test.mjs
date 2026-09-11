@@ -53,6 +53,52 @@ test("fake House decisions respect the current role and its authorized clues", a
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
+test("fake House prioritizes an expiring commitment over optional dossier work", async () => {
+  const { server } = createDevelopmentFakeOpenRouter(environment());
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "worldstream/development-house",
+        provider: { only: ["fixture-provider"] },
+        messages: [{ role: "user", content: JSON.stringify({
+          schema: "worldstream/house-model-invocation/v1",
+          projection: {
+            role: "broker",
+            projection_reset: {
+              projection: {
+                activity: {
+                  private_clues: [],
+                  plans: [{ plan_id: "reviewed-plan" }],
+                },
+              },
+            },
+            observations: [],
+          },
+          action_offers: {
+            schema: "worldstream/assignment-action-offer-list/v1",
+            offers: [
+              { offer_id: "inspect", action_type: "inspect_clue" },
+              { offer_id: "commit", action_type: "commit_move" },
+            ],
+          },
+        }) }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(JSON.parse((await response.json()).choices[0].message.content), {
+      offer_id: "commit",
+      payload: {
+        selected_plan_id: "reviewed-plan",
+        contribute_required_resource: true,
+      },
+    });
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
 test("fake provider exposes an authenticated deterministic OpenRouter-shaped response", async () => {
   const { server } = createDevelopmentFakeOpenRouter(environment());
   server.listen(0, "127.0.0.1");
