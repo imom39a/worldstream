@@ -59,9 +59,13 @@ describe("hosted Browser Activity Session service client", () => {
     const retries = /const TRANSIENT_GATEWAY_RETRY_DELAYS[^=]*=\s*\[([^;]+)\];/u.exec(broker)?.[1] ?? "";
     const retryMs = [...retries.matchAll(/Duration::from_millis\((\d+)\)/gu)].map((match) => Number(match[1]));
     assert.equal(retryMs.length, 2);
-    const worstCaseMs = (retryMs.length + 1 + 2) * runtimeMs + retryMs.reduce((sum, ms) => sum + ms, 0);
+    const mutationCalls = 1; // Ticket issuance or prior-session rotation.
+    const cleanupCalls = 1; // Revoke a ticket after a concurrent session retirement.
+    const worstCaseMs = (retryMs.length + 1 + mutationCalls + cleanupCalls) * runtimeMs
+      + retryMs.reduce((sum, ms) => sum + ms, 0);
     assert.ok(gatewayMs - worstCaseMs >= 4_000, "reserve Controller processing and transport margin");
-    assert.match(supervisor, /HostedBrowserSessionBrokerV1::new\([\s\S]*?FixedDaemonParticipantConsoleGatewayV1::new\(\s*args.daemon,\s*HOSTED_BROWSER_RUNTIME_REQUEST_TIMEOUT,/u);
+    assert.match(gateway, /FixedHostAdapterBackend::new\(\s*upstream,[\s\S]*?HOST_ADAPTER_OPERATION_TIMEOUT,\s*\)/u);
+    assert.match(supervisor, /HostedBrowserSessionBrokerV1::new\([\s\S]*?FixedDaemonParticipantConsoleGatewayV1::new\(\s*args.daemon,\s*HOSTED_BROWSER_RUNTIME_REQUEST_TIMEOUT,\s*\)\s*\.with_absolute_http_deadline\(\)/u);
     assert.match(supervisor, /PARTICIPANT_OPERATION_TIMEOUT: Duration = Duration::from_secs\(30\)/u);
 
     const timeout = vi.spyOn(AbortSignal, "timeout");

@@ -359,38 +359,47 @@ pub trait ParticipantConsoleGatewayV1: Send + Sync + 'static {
 pub struct FixedDaemonParticipantConsoleGatewayV1 {
     address: SocketAddr,
     timeout: Duration,
+    absolute_http_deadline: bool,
 }
 
-// Native HTTP calls share one wall-clock budget across connect, writes and
-// every response read. Per-socket idle timeouts alone reset after each byte.
-struct DeadlineHttpStream {
+// Ordinary participant/public relay calls retain per-operation idle timeouts.
+// Hosted browser admission explicitly selects one budget across native HTTP I/O.
+struct NativeHttpStream {
     stream: TcpStream,
-    deadline: Instant,
+    deadline: Option<Instant>,
+    idle_timeout: Duration,
 }
 
-impl DeadlineHttpStream {
-    fn connect(address: SocketAddr, timeout: Duration) -> std::io::Result<Self> {
-        let deadline = Instant::now() + timeout;
+impl NativeHttpStream {
+    fn connect(address: SocketAddr, timeout: Duration, absolute: bool) -> std::io::Result<Self> {
+        let deadline = absolute.then(|| Instant::now() + timeout);
         let stream = TcpStream::connect_timeout(&address, timeout)?;
-        Ok(Self { stream, deadline })
+        Ok(Self {
+            stream,
+            deadline,
+            idle_timeout: timeout,
+        })
     }
 
     fn remaining(&self) -> std::io::Result<Duration> {
-        self.deadline
+        let Some(deadline) = self.deadline else {
+            return Ok(self.idle_timeout);
+        };
+        deadline
             .checked_duration_since(Instant::now())
             .filter(|remaining| !remaining.is_zero())
             .ok_or_else(|| std::io::ErrorKind::TimedOut.into())
     }
 }
 
-impl std::io::Read for DeadlineHttpStream {
+impl std::io::Read for NativeHttpStream {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
         self.stream.set_read_timeout(Some(self.remaining()?))?;
         self.stream.read(bytes)
     }
 }
 
-impl std::io::Write for DeadlineHttpStream {
+impl std::io::Write for NativeHttpStream {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.stream.set_write_timeout(Some(self.remaining()?))?;
         self.stream.write(bytes)
@@ -405,7 +414,23 @@ impl std::io::Write for DeadlineHttpStream {
 impl FixedDaemonParticipantConsoleGatewayV1 {
     #[must_use]
     pub const fn new(address: SocketAddr, timeout: Duration) -> Self {
-        Self { address, timeout }
+        Self {
+            address,
+            timeout,
+            absolute_http_deadline: false,
+        }
+    }
+
+    /// Bounds each native HTTP request across connect, writes and all reads.
+    /// WebSocket operations retain their existing per-operation timeout.
+    #[must_use]
+    pub const fn with_absolute_http_deadline(mut self) -> Self {
+        self.absolute_http_deadline = true;
+        self
+    }
+
+    fn connect_native_http(&self) -> std::io::Result<NativeHttpStream> {
+        NativeHttpStream::connect(self.address, self.timeout, self.absolute_http_deadline)
     }
 
     fn connect(
@@ -476,7 +501,8 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
             self.address,
             authority.bearer().as_str(),
         ));
-        let mut stream = DeadlineHttpStream::connect(self.address, self.timeout)
+        let mut stream = self
+            .connect_native_http()
             .inspect_err(|error| {
                 session_diagnostic::io(Detail::Connect, error.kind());
                 #[cfg(debug_assertions)]
@@ -577,7 +603,8 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
             std::str::from_utf8(&canonical)
                 .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?,
         ));
-        let mut stream = DeadlineHttpStream::connect(self.address, self.timeout)
+        let mut stream = self
+            .connect_native_http()
             .inspect_err(|error| session_diagnostic::io(Detail::Connect, error.kind()))
             .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
         stream
@@ -2847,34 +2874,45 @@ mod transport_error_tests {
     type ClientHandshake = tungstenite::handshake::client::ClientHandshake<TcpStream>;
 
     #[test]
-    fn native_http_progress_does_not_renew_the_request_deadline() {
+    fn native_http_progress_renews_only_the_legacy_idle_timeout() {
         use std::{net::TcpListener, thread};
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listen");
-        let address = listener.local_addr().expect("address");
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept");
-            // Every byte arrives within the old idle timeout, but the complete
-            // response exceeds the one request budget.
-            for _ in 0..10 {
-                if stream.write_all(b"x").is_err() {
-                    break;
+        for absolute in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("listen");
+            let address = listener.local_addr().expect("address");
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept");
+                // Each byte arrives within the idle timeout; the complete
+                // response exceeds the absolute hosted request deadline.
+                for _ in 0..10 {
+                    if stream.write_all(b"x").is_err() {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(50));
                 }
-                thread::sleep(Duration::from_millis(50));
+            });
+            let gateway =
+                FixedDaemonParticipantConsoleGatewayV1::new(address, Duration::from_millis(200));
+            let gateway = if absolute {
+                gateway.with_absolute_http_deadline()
+            } else {
+                gateway
+            };
+            let mut stream = gateway.connect_native_http().expect("connect");
+            let mut response = Vec::new();
+            let result = stream.read_to_end(&mut response);
+            if absolute {
+                let error = result.expect_err("absolute deadline");
+                assert!(matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ));
+                assert!(response.len() < 10);
+            } else {
+                assert_eq!(result.expect("legacy idle timeout permits progress"), 10);
             }
-        });
-        let mut stream =
-            DeadlineHttpStream::connect(address, Duration::from_millis(200)).expect("connect");
-        let mut response = Vec::new();
-        let error = stream
-            .read_to_end(&mut response)
-            .expect_err("absolute deadline");
-        assert!(matches!(
-            error.kind(),
-            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-        ));
-        assert!(response.len() < 10);
-        drop(stream);
-        server.join().expect("server");
+            drop(stream);
+            server.join().expect("server");
+        }
     }
 
     #[test]

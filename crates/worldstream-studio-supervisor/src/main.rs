@@ -639,7 +639,8 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
                 FixedDaemonParticipantConsoleGatewayV1::new(
                     args.daemon,
                     HOSTED_BROWSER_RUNTIME_REQUEST_TIMEOUT,
-                ),
+                )
+                .with_absolute_http_deadline(),
                 client_bindings.clone(),
             )
             .map_err(|_| anyhow::anyhow!("hosted Browser Activity Sessions are unavailable"))?;
