@@ -254,6 +254,165 @@ async function openResetSession(
 }
 
 describe("HostedLiveSessionController", () => {
+  it("retries a retryable pre-sync room_busy with a fresh ticket before completing reconnect", async () => {
+    const setup = fixture();
+    const first = await openResetSession(setup);
+    first.remoteClose();
+    const freshTicket = `wst1:${"cd".repeat(32)}`;
+    setup.authority.issueStreamTicket
+      .mockResolvedValueOnce({ ticket: TICKET, expiresInMs: 15_000 })
+      .mockResolvedValueOnce({ ticket: freshTicket, expiresInMs: 15_000 });
+    const reconnecting = setup.controller.reconnect();
+    await vi.waitFor(() => expect(setup.sockets).toHaveLength(2));
+    const busy = setup.sockets[1] as FakeSocket;
+    busy.open();
+    busy.receive(welcome());
+    busy.receive(envelope("error", {
+      code: "room_busy", message: "the room is temporarily busy", retryable: true,
+    }));
+    await vi.waitFor(() => expect(setup.sockets).toHaveLength(3));
+    expect(busy.closed).toBe(true);
+    expect(setup.controller.state.canAct).toBe(false);
+    expect(setup.authority.resume).toHaveBeenCalledTimes(1);
+    expect(setup.authority.issueStreamTicket).toHaveBeenCalledTimes(3);
+    const recovered = setup.sockets[2] as FakeSocket;
+    recovered.open();
+    expect(busy.sent).toEqual([TICKET]);
+    expect(recovered.sent).toEqual([freshTicket]);
+    recovered.receive(welcome());
+    recovered.receive(attached({ kind: "projection_reset", baseline_frame_head: 9, reason: "retention_gap" }));
+    recovered.receive(reset());
+    const sync = sentMessages(recovered).find((message) => message.type === "room.sync_ack");
+    recovered.receive(envelope("room.sync_acked", { through_frame_head: 9 }, String(sync?.message_id)));
+    await expect(reconnecting).resolves.toMatchObject({ status: "live", synchronized: true });
+    expect(sentMessages(recovered).some((message) => message.type === "action.submit")).toBe(false);
+    setup.controller.close();
+  });
+  it.each([
+    ["room_busy", false],
+    ["forbidden", true],
+    ["sync_barrier_mismatch", true],
+  ])("does not retry pre-sync %s with retryable=%s", async (code, retryable) => {
+    const setup = fixture();
+    const starting = setup.controller.start({ kind: "retained", status: USABLE });
+    await vi.waitFor(() => expect(setup.sockets).toHaveLength(1));
+    const socket = setup.sockets[0] as FakeSocket;
+    socket.open();
+    socket.receive(welcome());
+    socket.receive(envelope("error", { code, message: "operation rejected", retryable }));
+    await expect(starting).resolves.toMatchObject({ status: "disconnected", synchronized: false });
+    expect(setup.authority.issueStreamTicket).toHaveBeenCalledTimes(1);
+    setup.controller.close();
+  });
+  it("bounds repeated busy synchronization by the original deadline", async () => {
+    vi.useFakeTimers();
+    const setup = fixture();
+    try {
+      const starting = setup.controller.start({ kind: "retained", status: USABLE });
+      await vi.advanceTimersByTimeAsync(0);
+      for (const delay of [100, 200, 400, 800]) {
+        const socket = setup.sockets.at(-1) as FakeSocket;
+        socket.open();
+        socket.receive(welcome());
+        socket.receive(envelope("error", { code: "room_busy", message: "busy", retryable: true }));
+        await vi.advanceTimersByTimeAsync(delay);
+      }
+      await expect(starting).resolves.toMatchObject({ status: "disconnected", canAct: false });
+      expect(setup.sockets).toHaveLength(4);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(setup.sockets).toHaveLength(4);
+    } finally {
+      setup.controller.close();
+      vi.useRealTimers();
+    }
+  });
+  it("cancels busy synchronization backoff when closed", async () => {
+    const setup = fixture();
+    const starting = setup.controller.start({ kind: "retained", status: USABLE });
+    await vi.waitFor(() => expect(setup.sockets).toHaveLength(1));
+    const socket = setup.sockets[0] as FakeSocket;
+    socket.open();
+    socket.receive(envelope("error", { code: "room_busy", message: "busy", retryable: true }));
+    await Promise.resolve();
+    setup.controller.close();
+    await expect(starting).resolves.toMatchObject({ status: "closed" });
+    expect(setup.authority.issueStreamTicket).toHaveBeenCalledTimes(1);
+  });
+  it("does not extend the synchronization deadline when the replacement stream stalls", async () => {
+    vi.useFakeTimers();
+    const setup = fixture();
+    try {
+      let settled = false;
+      const starting = setup.controller.start({ kind: "retained", status: USABLE }).finally(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(0);
+      const socket = setup.sockets[0] as FakeSocket;
+      socket.open();
+      await vi.advanceTimersByTimeAsync(600);
+      socket.receive(envelope("error", { code: "room_busy", message: "busy", retryable: true }));
+      await vi.advanceTimersByTimeAsync(399);
+      expect(settled).toBe(false);
+      expect(setup.sockets).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(starting).resolves.toMatchObject({ status: "disconnected", canAct: false });
+      expect(settled).toBe(true);
+    } finally {
+      setup.controller.close();
+      vi.useRealTimers();
+    }
+  });
+  it("honors session authority loss while obtaining the replacement ticket", async () => {
+    const setup = fixture();
+    setup.authority.issueStreamTicket.mockResolvedValueOnce({ ticket: TICKET, expiresInMs: 15_000 })
+      .mockRejectedValueOnce(new ActivityClientHandoffError(
+        "participant_session_unavailable", "Rejoin to continue.", "return_to_task_setup", false,
+      ));
+    const starting = setup.controller.start({ kind: "retained", status: USABLE });
+    await vi.waitFor(() => expect(setup.sockets).toHaveLength(1));
+    const socket = setup.sockets[0] as FakeSocket;
+    socket.open();
+    socket.receive(envelope("error", { code: "room_busy", message: "busy", retryable: true }));
+    await expect(starting).resolves.toMatchObject({ status: "setup_required", canAct: false });
+    expect(setup.sockets).toHaveLength(1);
+    setup.controller.close();
+  });
+  it("expires a stalled replacement ticket and discards its late result", async () => {
+    vi.useFakeTimers();
+    const setup = fixture();
+    try {
+      let releaseTicket!: (ticket: { ticket: string; expiresInMs: number }) => void;
+      setup.authority.issueStreamTicket.mockResolvedValueOnce({ ticket: TICKET, expiresInMs: 15_000 })
+        .mockImplementationOnce(() => new Promise((resolve) => { releaseTicket = resolve; }));
+      const starting = setup.controller.start({ kind: "retained", status: USABLE });
+      await vi.advanceTimersByTimeAsync(0);
+      const socket = setup.sockets[0] as FakeSocket;
+      socket.open();
+      socket.receive(envelope("error", { code: "room_busy", message: "busy", retryable: true }));
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(starting).resolves.toMatchObject({ status: "disconnected", canAct: false });
+      expect(setup.authority.issueStreamTicket).toHaveBeenCalledTimes(2);
+      releaseTicket({ ticket: `wst1:${"cd".repeat(32)}`, expiresInMs: 15_000 });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(setup.sockets).toHaveLength(1);
+      expect(setup.controller.state.status).toBe("disconnected");
+    } finally {
+      setup.controller.close();
+      vi.useRealTimers();
+    }
+  });
+  it("does not reconnect or replay an Action for room_busy after becoming Live", async () => {
+    const setup = fixture();
+    const socket = await openResetSession(setup);
+    const action = setup.controller.submitAction({
+      actionId: id("70"), basedOnRoomSeq: 7, actionType: "inspect_clue", payload: {},
+    });
+    const rejected = expect(action).rejects.toThrow("WorldStream rejected the realtime operation.");
+    socket.receive(envelope("error", { code: "room_busy", message: "busy", retryable: true }));
+    await rejected;
+    expect(setup.controller.state).toMatchObject({ status: "disconnected", canAct: false });
+    expect(setup.authority.issueStreamTicket).toHaveBeenCalledTimes(1);
+    expect(sentMessages(socket).filter((message) => message.type === "action.submit")).toHaveLength(1);
+    setup.controller.close();
+  });
   it("recovers an initial ticket 503 with the retained session, never replaying the handoff or an Action", async () => {
     const setup = fixture();
     setup.authority.issueStreamTicket.mockRejectedValueOnce(new ActivityClientHandoffError(

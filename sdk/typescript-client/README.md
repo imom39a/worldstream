@@ -22,6 +22,12 @@ An Action receipt is an opaque browser-safe record whose required `state` is
 either `accepted` or `rejected`. Successful primitive, array, or unknown-state
 responses are rejected rather than leaking an untyped value into a client.
 
+`HostedLiveSessionController` recovers an explicitly retryable `room_busy`
+during initial synchronization with bounded backoff and a fresh one-use Stream
+Admission Ticket. All attempts share the original connection deadline and must
+complete an authorized Projection Reset or Catch-up before enabling Actions.
+This recovery never retries a handoff, an Action, or a post-Live error.
+
 The package preserves the existing `/api/v1/participant-console/*` wire routes,
 handoff header, safe error codes, and `participant_console_session.v1` response
 because those are frozen compatibility identities, not code-facing product

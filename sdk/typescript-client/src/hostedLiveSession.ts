@@ -170,6 +170,7 @@ export class HostedLiveSessionController {
   private lastInboundAt = 0;
   private activeWaiters = 0;
   private welcomed = false;
+  private synchronizationBusy = false;
 
   constructor(options: HostedLiveSessionControllerOptions) {
     this.streamUrl = exactHostedStreamUrl(options.streamUrl);
@@ -395,8 +396,34 @@ export class HostedLiveSessionController {
   }
 
   private async connectStream(): Promise<HostedLiveSessionSnapshot> {
+    const deadline = Date.now() + this.connectTimeoutMs;
+    let retryDelayMs = 100;
+    while (true) {
+      const result = await this.connectStreamAttempt(deadline);
+      const generation = this.generation;
+      if (!this.synchronizationBusy || result.status !== "disconnected") return result;
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= retryDelayMs) return result;
+      // room_busy is an explicit retryable concurrency fence. Restart only
+      // pre-Live synchronization, within the original connection deadline.
+      // Never reuse a consumed ticket, handoff, or replay a domain Action.
+      try {
+        await this.waitFor((state) => state.status === "closed" || state.status === "setup_required", {
+          timeoutMs: retryDelayMs,
+        });
+        return this.current;
+      } catch {
+        // Backoff elapsed. A close or superseding connection still wins.
+      }
+      if (this.generation !== generation || Date.now() >= deadline) return this.current;
+      retryDelayMs = Math.min(retryDelayMs * 2, 1_000);
+    }
+  }
+
+  private async connectStreamAttempt(deadline: number): Promise<HostedLiveSessionSnapshot> {
     const generation = this.generation + 1;
     this.generation = generation;
+    this.synchronizationBusy = false;
     this.clearHeartbeat();
     this.closeSocket();
     this.sync = null;
@@ -417,11 +444,17 @@ export class HostedLiveSessionController {
 
     let ticketValue = "";
     try {
-      const admission = await this.authority.issueStreamTicket(
-        this.current.lastAcknowledgedFrameSeq,
-      );
+      const ticketWait = new AbortController();
+      const admission = await Promise.race([
+        this.authority.issueStreamTicket(this.current.lastAcknowledgedFrameSeq),
+        this.waitFor((state) => state.status === "closed" || state.status === "setup_required", {
+          timeoutMs: Math.max(1, deadline - Date.now()),
+          signal: ticketWait.signal,
+        }).then(() => { throw new Error("Realtime admission was interrupted."); }),
+      ]).finally(() => ticketWait.abort());
       if (
         this.generation !== generation ||
+        Date.now() >= deadline ||
         !TICKET_PATTERN.test(admission.ticket) ||
         !safeInteger(admission.expiresInMs) ||
         admission.expiresInMs <= 0 ||
@@ -474,7 +507,7 @@ export class HostedLiveSessionController {
           snapshot.status === "disconnected" ||
           snapshot.status === "setup_required" ||
           snapshot.status === "closed",
-        { timeoutMs: this.connectTimeoutMs },
+        { timeoutMs: Math.max(1, deadline - Date.now()) },
       );
     } catch (error) {
       ticketValue = "";
@@ -523,9 +556,13 @@ export class HostedLiveSessionController {
             encodeHostedRequest("client.pong", this.nextMessageId(), {}),
           );
           break;
-        case "error":
+        case "error": {
+          const error = record(message.body);
+          this.synchronizationBusy = this.current.status === "synchronizing" &&
+            error.code === "room_busy" && error.retryable === true;
           this.failConnection("WorldStream rejected the realtime operation.");
           break;
+        }
         default:
           break;
       }
