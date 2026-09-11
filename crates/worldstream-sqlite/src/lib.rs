@@ -141,6 +141,7 @@ const TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID: &str = "0010-transfer-recover
 const TRANSFER_LIFECYCLE_MIGRATION_ID: &str = "0011-transfer-lifecycle-and-resource-identity-v1";
 const TRANSFER_BACKUP_IDENTITY_MIGRATION_ID: &str = "0012-transfer-backup-file-identity-v1";
 const EXTERNAL_INPUT_PREPARATION_MIGRATION_ID: &str = "0013-external-input-preparations-v1";
+const OBSERVATION_RETENTION_MIGRATION_ID: &str = "0014-observation-retention-v1";
 const OPERATION_RECEIPT_CODEC_ID: &str = "worldstream/operation-receipt/v1";
 const PAIRED_SNAPSHOT_SCHEMA_VERSION: &str = "worldstream/paired-snapshot/v1";
 const MIGRATION_BACKUP_PREFIX: &str = "worldstream-migration-backup";
@@ -725,6 +726,14 @@ CREATE TRIGGER external_input_preparations_immutable_delete
 BEFORE DELETE ON external_input_preparations BEGIN
     SELECT RAISE(ABORT, 'ExternalInput preparation is immutable');
 END;
+";
+
+const OBSERVATION_RETENTION_MIGRATION_SCHEMA: &str = r"
+ALTER TABLE observation_frames ADD COLUMN retained_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z';
+ALTER TABLE room_members ADD COLUMN reset_generation INTEGER NOT NULL DEFAULT 0
+    CHECK (reset_generation BETWEEN 0 AND 9007199254740991);
+CREATE INDEX observation_frames_retention_order
+ON observation_frames(room_id, member_id, retained_at, frame_seq);
 ";
 
 const INITIAL_MIGRATION_SCHEMA: &str = r"
@@ -1741,7 +1750,39 @@ pub struct SqliteGatewayRoomSnapshotV1 {
     frame_heads: BTreeMap<MemberId, u64>,
 }
 
+/// Exact lightweight serving fence read from the durable Room root and
+/// Membership frame heads.  Unlike a gateway snapshot it never reconstructs
+/// canonical history; callers use it only to validate an owned serving trace.
+pub struct SqliteRoomServingFenceV1 {
+    head: CompleteHeadV1,
+    integrity: RoomIntegrityStateV1,
+    frame_heads: BTreeMap<MemberId, u64>,
+}
+
+impl SqliteRoomServingFenceV1 {
+    #[must_use]
+    pub const fn head(&self) -> &CompleteHeadV1 {
+        &self.head
+    }
+
+    #[must_use]
+    pub const fn integrity(&self) -> &RoomIntegrityStateV1 {
+        &self.integrity
+    }
+
+    #[must_use]
+    pub const fn frame_heads(&self) -> &BTreeMap<MemberId, u64> {
+        &self.frame_heads
+    }
+}
+
 impl SqliteGatewayRoomSnapshotV1 {
+    /// Releases the uniquely owned recovered trace into a serving cache after
+    /// the caller has established its exact durable fence.
+    #[must_use]
+    pub fn into_parts(self) -> (CoreTraceV1, RoomIntegrityStateV1, BTreeMap<MemberId, u64>) {
+        (self.trace, self.integrity, self.frame_heads)
+    }
     pub fn trace(&self) -> &CoreTraceV1 {
         &self.trace
     }
@@ -2353,6 +2394,7 @@ impl SqliteObservationFrameV1 {
 pub enum SqliteObservationResetReasonV1 {
     FirstAttach,
     RetainedRangeUnavailable,
+    RetainedBacklogTooLarge,
     ResetMarked,
 }
 
@@ -2449,6 +2491,7 @@ pub struct SqliteObservationAttachV1 {
     frame_head: u64,
     retained_floor: u64,
     cursor: Option<u64>,
+    reset_generation: u64,
     delivery: SqliteObservationDeliveryV1,
 }
 
@@ -2461,6 +2504,7 @@ impl fmt::Debug for SqliteObservationAttachV1 {
             .field("frame_head", &self.frame_head)
             .field("retained_floor", &self.retained_floor)
             .field("cursor", &self.cursor)
+            .field("reset_generation", &self.reset_generation)
             .field("delivery", &self.delivery)
             .finish()
     }
@@ -2491,6 +2535,12 @@ impl SqliteObservationAttachV1 {
     #[must_use]
     pub const fn cursor(&self) -> Option<u64> {
         self.cursor
+    }
+
+    /// Monotonic durable reset epoch captured with this attach baseline.
+    #[must_use]
+    pub const fn reset_generation(&self) -> u64 {
+        self.reset_generation
     }
 
     #[must_use]
@@ -2557,6 +2607,8 @@ pub enum SqliteObservationErrorV1 {
     Corrupt,
     #[error("observation cursor is ahead of the durable frame head")]
     CursorAhead,
+    #[error("observation stream requires a Projection Reset before incremental delivery")]
+    ResetRequired,
     #[error("observation membership or Room is unavailable")]
     MembershipUnavailable,
     #[error("Room is quarantined; normal observation delivery is withheld")]
@@ -2990,6 +3042,12 @@ enum WriterCommand {
     ReadObservationSuffix {
         authority: ViewerAdapterInputV1,
         after_frame_seq: u64,
+        reply: mpsc::Sender<Result<Vec<SqliteObservationFrameV1>, SqliteObservationErrorV1>>,
+    },
+    ReadObservationSuffixAtResetGeneration {
+        authority: ViewerAdapterInputV1,
+        after_frame_seq: u64,
+        installed_reset_generation: u64,
         reply: mpsc::Sender<Result<Vec<SqliteObservationFrameV1>, SqliteObservationErrorV1>>,
     },
     PruneObservationFrames {
@@ -4595,6 +4653,89 @@ impl SqliteRoomStore {
             .map_err(|()| SqliteGatewayErrorV1::Corrupt)
     }
 
+    /// Reads the current durable Complete Head, integrity generation, and
+    /// per-Membership frame heads without inspecting or replaying history.
+    /// This is a serving-cache fence, never a recovery substitute.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage or corruption error when the bounded current-record
+    /// materialization check cannot establish a serving fence.
+    pub fn current_room_serving_fence(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<Option<SqliteRoomServingFenceV1>, SqliteGatewayErrorV1> {
+        let connection = self
+            .writer
+            .open_read_connection()
+            .map_err(|_| SqliteGatewayErrorV1::StorageUnavailable)?;
+        // A warm executor must never hide mutation of the durable current
+        // materialization. This bounded check reads only the head-named
+        // Genesis/Transition and current Core/Activity bytes; it is not a
+        // history replay.
+        match load_authoritative_current_materialization(&connection, room_id) {
+            Ok(Some(_)) => {}
+            Ok(None) => return Ok(None),
+            Err(AuthorityStoreErrorV1::Unavailable) => {
+                return Err(SqliteGatewayErrorV1::StorageUnavailable);
+            }
+            Err(_) => return Err(SqliteGatewayErrorV1::Corrupt),
+        }
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|_| SqliteGatewayErrorV1::StorageUnavailable)?;
+        let row: Option<(Vec<u8>, String, i64)> = transaction
+            .query_row(
+                "SELECT r.complete_head_bytes, i.status, i.generation FROM rooms r \
+                 JOIN room_integrity i ON i.room_id = r.room_id WHERE r.room_id = ?1",
+                [room_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|_| SqliteGatewayErrorV1::StorageUnavailable)?;
+        let Some((head_bytes, status, generation)) = row else {
+            return Ok(None);
+        };
+        let head =
+            worldstream_core::CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&head_bytes)
+                .map_err(|_| SqliteGatewayErrorV1::Corrupt)?;
+        if head.room_id() != room_id {
+            return Err(SqliteGatewayErrorV1::Corrupt);
+        }
+        let integrity = parse_integrity_state(Some(&status), Some(generation))
+            .map_err(|()| SqliteGatewayErrorV1::Corrupt)?;
+        let mut frame_heads = BTreeMap::new();
+        {
+            let mut statement = transaction
+                .prepare("SELECT member_id, frame_head FROM room_members WHERE room_id = ?1")
+                .map_err(|_| SqliteGatewayErrorV1::StorageUnavailable)?;
+            let rows = statement
+                .query_map([room_id.as_str()], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
+                .map_err(|_| SqliteGatewayErrorV1::StorageUnavailable)?;
+            for row in rows {
+                let (member_id, frame_head) =
+                    row.map_err(|_| SqliteGatewayErrorV1::StorageUnavailable)?;
+                let member_id =
+                    MemberId::from_str(&member_id).map_err(|_| SqliteGatewayErrorV1::Corrupt)?;
+                let frame_head =
+                    u64::try_from(frame_head).map_err(|_| SqliteGatewayErrorV1::Corrupt)?;
+                if frame_heads.insert(member_id, frame_head).is_some() {
+                    return Err(SqliteGatewayErrorV1::Corrupt);
+                }
+            }
+        }
+        transaction
+            .commit()
+            .map_err(|_| SqliteGatewayErrorV1::StorageUnavailable)?;
+        Ok(Some(SqliteRoomServingFenceV1 {
+            head,
+            integrity,
+            frame_heads,
+        }))
+    }
+
     /// Releases a bounded Room diagnostic summary only after the consumed
     /// diagnostic grant is revalidated against current authority.
     ///
@@ -4979,14 +5120,49 @@ impl SqliteRoomStore {
             integrity,
             frame_heads,
         } = snapshot;
+        self.commit_authorized_participant_action_from_serving_trace(
+            authority,
+            request,
+            admitted_at,
+            transition_id,
+            &mut trace,
+            &integrity,
+            &frame_heads,
+        )
+    }
+
+    /// Commits from an adapter-owned, uniquely leased serving trace after the
+    /// adapter has compared it with [`Self::current_room_serving_fence`].
+    /// The normal atomic commit still rechecks every Complete Head, integrity,
+    /// authority, and frame-head witness at COMMIT.
+    // These are separate fence witnesses. Bundling them would make it easier
+    // for an adapter to accidentally pair a trace with unrelated authority or
+    // frame-head evidence at its COMMIT boundary.
+    #[allow(clippy::too_many_arguments)]
+    /// # Errors
+    ///
+    /// Returns a closed error when the leased trace, authority, or durable
+    /// commit fence cannot be verified.
+    pub fn commit_authorized_participant_action_from_serving_trace(
+        &self,
+        authority: ParticipantActionAuthorityV1,
+        request: &ParticipantActionRequestV1,
+        admitted_at: ActionAdmittedAt,
+        transition_id: TransitionId,
+        trace: &mut CoreTraceV1,
+        integrity: &RoomIntegrityStateV1,
+        frame_heads: &BTreeMap<MemberId, u64>,
+    ) -> Result<RoomCommitResolutionV1, SqliteParticipantActionErrorV1> {
+        let parts = participant_action_request_parts(request)?;
+        if trace.head().room_id() != &parts.room_id {
+            return Err(SqliteParticipantActionErrorV1::RoomUnavailable);
+        }
         if integrity.status() == RoomIntegrityStatusV1::Faulted {
             return Err(SqliteParticipantActionErrorV1::RoomFaulted);
         }
         if integrity.status() == RoomIntegrityStatusV1::Quarantined {
             return Err(SqliteParticipantActionErrorV1::IntegrityUnavailable);
         }
-        let integrity_generation = integrity.generation();
-
         let payload_schema_digest = trace
             .retained_pack()
             .ok_or(SqliteParticipantActionErrorV1::InvalidResult)?
@@ -4996,7 +5172,6 @@ impl SqliteRoomStore {
             .find(|definition| definition.action_type == parts.action_type.as_str())
             .map(|definition| definition.payload_schema.schema_digest.clone())
             .ok_or(SqliteParticipantActionErrorV1::Rejected)?;
-
         let stimulus = RecordedStimulusV1::ParticipantAction(ParticipantActionV1 {
             member_id: parts.member_id.clone(),
             action_id: parts.action_id.clone(),
@@ -5006,28 +5181,27 @@ impl SqliteRoomStore {
             exact_basis_head: trace.head().clone(),
             admitted_at: admitted_at.clone(),
         });
-
         let prepared = if parts.based_on_room_seq == trace.head().room_seq() {
             match trace.prepare(stimulus) {
                 Ok(transition) => match authority {
                     ParticipantActionAuthorityV1::EnabledParticipant(authority) => {
                         PreparedRoomCommitV1::for_authorized_action(
-                            &trace,
+                            trace,
                             request,
                             transition,
                             transition_id,
-                            integrity_generation,
+                            integrity.generation(),
                             authority,
-                            &frame_heads,
+                            frame_heads,
                         )
                         .map_err(map_participant_action_preparation_error)?
                     }
                     ParticipantActionAuthorityV1::StableMembershipNotEnabled(authority) => {
                         PreparedRoomCommitV1::for_authorized_stable_action_disposition(
-                            &trace,
+                            trace,
                             request,
                             admitted_at,
-                            integrity_generation,
+                            integrity.generation(),
                             ParticipantActionAuthorityV1::StableMembershipNotEnabled(authority),
                         )
                         .map_err(map_participant_action_preparation_error)?
@@ -5038,31 +5212,26 @@ impl SqliteRoomStore {
                     | TraceErrorV1::ArchivedStimulusForbidden
                     | TraceErrorV1::CompleteHeadMismatch,
                 ) => PreparedRoomCommitV1::for_authorized_stable_action_disposition(
-                    &trace,
+                    trace,
                     request,
                     admitted_at,
-                    integrity_generation,
+                    integrity.generation(),
                     authority,
                 )
                 .map_err(map_participant_action_preparation_error)?,
-                Err(error) => {
-                    return Err(map_participant_action_trace_error(&error));
-                }
+                Err(error) => return Err(map_participant_action_trace_error(&error)),
             }
         } else {
             PreparedRoomCommitV1::for_authorized_stable_action_disposition(
-                &trace,
+                trace,
                 request,
                 admitted_at,
-                integrity_generation,
+                integrity.generation(),
                 authority,
             )
             .map_err(map_participant_action_preparation_error)?
         };
-
-        Ok(commit_existing_room(self, &mut trace, prepared)
-            .into_parts()
-            .0)
+        Ok(commit_existing_room(self, trace, prepared).into_parts().0)
     }
 
     /// Prepares and commits one exact, server-loaded Timer generation through
@@ -5344,6 +5513,34 @@ impl SqliteRoomStore {
             .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?
     }
 
+    /// Reads a bounded suffix only when it still belongs to the reset epoch
+    /// installed by this Session's attach baseline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authority, storage, corruption, cursor, or reset-fence
+    /// error when the installed Session generation is no longer current.
+    pub fn read_observation_suffix_at_reset_generation(
+        &self,
+        authority: AuthorizedViewerV1,
+        after_frame_seq: u64,
+        installed_reset_generation: u64,
+    ) -> Result<Vec<SqliteObservationFrameV1>, SqliteObservationErrorV1> {
+        let (reply, receive) = mpsc::channel();
+        self.writer
+            .commands
+            .send(WriterCommand::ReadObservationSuffixAtResetGeneration {
+                authority: authority.into_adapter_input(),
+                after_frame_seq,
+                installed_reset_generation,
+                reply,
+            })
+            .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+        receive
+            .recv()
+            .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?
+    }
+
     /// Deletes only the physical frame prefix below `retain_from_frame_seq`.
     /// Durable frame head and Cursor positions never move; deleting an
     /// unacknowledged prefix records a reset marker for the next attach.
@@ -5371,6 +5568,101 @@ impl SqliteRoomStore {
         receive
             .recv()
             .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?
+    }
+
+    /// Runs one bounded retention slice for a Room.  The caller supplies the
+    /// trusted operational cutoff; canonical timestamps are never inferred.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage, corruption, or membership errors when the bounded
+    /// retention pass cannot determine or advance a durable frame floor.
+    pub fn enforce_observation_retention(
+        &self,
+        room_id: &RoomId,
+        cutoff: &AuthorityCheckedAt,
+    ) -> Result<usize, SqliteObservationErrorV1> {
+        self.enforce_observation_retention_after(room_id, cutoff, None)
+            .map(|(pruned, _)| pruned)
+    }
+
+    /// Runs one fair bounded retention page after `after_member_id`. The
+    /// returned cursor is `None` after the final page, allowing callers to
+    /// restart at the first Membership without retaining an unbounded scan.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage, corruption, or membership errors when the bounded
+    /// page cannot safely read or prune its durable observation prefixes.
+    pub fn enforce_observation_retention_after(
+        &self,
+        room_id: &RoomId,
+        cutoff: &AuthorityCheckedAt,
+        after_member_id: Option<&MemberId>,
+    ) -> Result<(usize, Option<MemberId>), SqliteObservationErrorV1> {
+        let connection = self
+            .writer
+            .open_read_connection()
+            .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT member_id FROM room_members WHERE room_id = ?1 \
+                 AND (?2 IS NULL OR member_id > ?2) ORDER BY member_id LIMIT ?3",
+            )
+            .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+        let rows = statement
+            .query_map(
+                params![
+                    room_id.as_str(),
+                    after_member_id.map(MemberId::as_str),
+                    i64::try_from(OBSERVATION_RETENTION_MEMBERS_PER_RUN)
+                        .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?,
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+        let members = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+        drop(statement);
+        let mut pruned = 0;
+        let next_member = (members.len() == OBSERVATION_RETENTION_MEMBERS_PER_RUN)
+            .then(|| members.last().cloned())
+            .flatten()
+            .map(|member| {
+                MemberId::from_str(&member).map_err(|_| SqliteObservationErrorV1::Corrupt)
+            })
+            .transpose()?;
+        for member in members {
+            let member_id =
+                MemberId::from_str(&member).map_err(|_| SqliteObservationErrorV1::Corrupt)?;
+            if let Some(retain_from) =
+                observation_retention_floor(&connection, room_id, &member_id, cutoff)?
+            {
+                let retained_floor: i64 = connection
+                    .query_row(
+                        "SELECT retained_frame_floor FROM room_members WHERE room_id = ?1 AND member_id = ?2",
+                        params![room_id.as_str(), member_id.as_str()],
+                        |row| row.get(0),
+                    )
+                    .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+                let retained_floor =
+                    u64::try_from(retained_floor).map_err(|_| SqliteObservationErrorV1::Corrupt)?;
+                // Delete a bounded prefix per writer transaction. Every
+                // progressive floor remains reset-fenced before the next run.
+                let retain_from = retain_from.min(
+                    retained_floor
+                        .checked_add(OBSERVATION_RETENTION_MAX_DELETE_FRAMES)
+                        .ok_or(SqliteObservationErrorV1::Corrupt)?,
+                );
+                if retain_from <= retained_floor {
+                    continue;
+                }
+                self.prune_observation_frames(room_id, &member_id, retain_from)?;
+                pruned += 1;
+            }
+        }
+        Ok((pruned, next_member))
     }
 
     /// Offers pending Activations without exposing private room content.
@@ -8779,6 +9071,17 @@ fn inspect_room_at_path(
     if !genesis_receipt_matches_genesis(genesis_receipt, &genesis) {
         return Err(SqliteRoomInspectionErrorV1::Corrupt);
     }
+    // Semantic receipts are keyed by their committed Room sequence.  Building
+    // this index once keeps inspection/recovery linear in Room history instead
+    // of rescanning every receipt for every Transition.
+    let mut receipts_by_transition = BTreeMap::new();
+    for receipt in &receipts {
+        if let Some(sequence) = receipt.transition_seq().map(RoomSequenceV1::get)
+            && receipts_by_transition.insert(sequence, receipt).is_some()
+        {
+            return Err(SqliteRoomInspectionErrorV1::Corrupt);
+        }
+    }
     // A paired snapshot is a disposable acceleration/cache source only.  Read
     // it before the operational materialization so recovery can rebuild a
     // missing projection from an exact current-head pair, but never let a
@@ -8877,17 +9180,9 @@ fn inspect_room_at_path(
             {
                 return Err(SqliteRoomInspectionErrorV1::Corrupt);
             }
-            let transition_receipts = receipts
-                .iter()
-                .filter(|receipt| {
-                    receipt
-                        .transition_seq()
-                        .is_some_and(|value| value.get() == sequence_u64)
-                })
-                .collect::<Vec<_>>();
-            let [receipt] = transition_receipts.as_slice() else {
-                return Err(SqliteRoomInspectionErrorV1::Corrupt);
-            };
+            let receipt = receipts_by_transition
+                .get(&sequence_u64)
+                .ok_or(SqliteRoomInspectionErrorV1::Corrupt)?;
             match receipt.result() {
                 SemanticResultV1::TransitionCommitted {
                     room_id: receipt_room,
@@ -8914,12 +9209,7 @@ fn inspect_room_at_path(
         }
         transitions
     };
-    if receipts
-        .iter()
-        .filter(|receipt| receipt.transition_seq().is_some())
-        .count()
-        != canonical_transition_bytes.len()
-    {
+    if receipts_by_transition.len() != canonical_transition_bytes.len() {
         return Err(SqliteRoomInspectionErrorV1::Corrupt);
     }
     if receipts.iter().any(|receipt| match receipt.result() {
@@ -9836,6 +10126,24 @@ fn writer_main(
                         &mut connection,
                         &authority,
                         after_frame_seq,
+                        None,
+                        clock,
+                    )
+                );
+            }
+            WriterCommand::ReadObservationSuffixAtResetGeneration {
+                authority,
+                after_frame_seq,
+                installed_reset_generation,
+                reply,
+            } => {
+                reply_after_namespace_check!(
+                    reply,
+                    read_observation_suffix_guarded(
+                        &mut connection,
+                        &authority,
+                        after_frame_seq,
+                        Some(installed_reset_generation),
                         clock,
                     )
                 );
@@ -10958,6 +11266,7 @@ type StoredObservationRoomHead = (
     i64,
     Option<i64>,
     Option<i64>,
+    i64,
 );
 
 #[allow(clippy::too_many_lines)]
@@ -14112,6 +14421,7 @@ enum MigrationFailpoint {
     TransferLifecycle,
     TransferBackupIdentity,
     ExternalInputPreparation,
+    ObservationRetention,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -14327,6 +14637,23 @@ fn migrate_with_failpoint_and_telemetry(
         fail_migration_at(failpoint, MigrationFailpoint::ExternalInputPreparation)?;
         insert_migration(&transaction, history[11], has_checksum_column)?;
     }
+    if migrations.len() < 13 {
+        transaction
+            .execute_batch(history[12].sql)
+            .map_err(SqliteStoreOpenError::Sqlite)?;
+        // Operational retention was unavailable before this migration.  Give
+        // existing private Frames one fresh seven-day window rather than
+        // inventing canonical timestamps or forcing every Membership to reset
+        // at upgrade.
+        transaction
+            .execute(
+                "UPDATE observation_frames SET retained_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+                (),
+            )
+            .map_err(SqliteStoreOpenError::Sqlite)?;
+        fail_migration_at(failpoint, MigrationFailpoint::ObservationRetention)?;
+        insert_migration(&transaction, history[12], has_checksum_column)?;
+    }
     let persisted = read_migration_rows(&transaction, has_checksum_column)?;
     let persisted = persisted
         .into_iter()
@@ -14502,6 +14829,7 @@ fn fail_migration_at(
             MigrationFailpoint::ExternalInputPreparation => {
                 "after-external-input-preparation-schema"
             }
+            MigrationFailpoint::ObservationRetention => "after-observation-retention-schema",
         };
         return Err(SqliteStoreOpenError::MigrationInterrupted { boundary });
     }
@@ -15543,13 +15871,14 @@ fn prepare_activation_claim_readonly(
         i64,
         Option<i64>,
         Option<i64>,
+        i64,
         Vec<u8>,
     )> = connection
         .query_row(
             "SELECT i.target_member_id, i.state, i.reason_code, i.policy_revision, \
                     i.lease_generation, i.cause_room_seq, i.semantic_deadline, m.frame_head, \
                     m.retained_frame_floor, m.last_ack_frame_seq, m.reset_required_through, \
-                    m.membership_bytes \
+                    m.reset_generation, m.membership_bytes \
              FROM activation_intents i \
              JOIN room_members m ON m.room_id = i.room_id AND m.member_id = i.target_member_id \
              WHERE i.room_id = ?1 AND i.activation_id = ?2",
@@ -15568,6 +15897,7 @@ fn prepare_activation_claim_readonly(
                     row.get(9)?,
                     row.get(10)?,
                     row.get(11)?,
+                    row.get(12)?,
                 ))
             },
         )
@@ -15585,6 +15915,7 @@ fn prepare_activation_claim_readonly(
         retained_floor,
         cursor,
         reset_required_through,
+        _reset_generation,
         membership_bytes,
     )) = row
     else {
@@ -16537,8 +16868,8 @@ fn commit_advance(
                 transaction
                     .execute(
                         "INSERT INTO observation_frames(\
-                         room_id, member_id, frame_seq, cause_room_seq, payload_hash, payload_bytes\
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                         room_id, member_id, frame_seq, cause_room_seq, payload_hash, payload_bytes, retained_at\
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
                         params![
                             room_id,
                             frame.member_id().to_string(),
@@ -16659,7 +16990,8 @@ fn persist_delivery_consequence(
     let changed = transaction
         .execute(
             "UPDATE room_members SET reset_required_through = \
-             max(coalesce(reset_required_through, 0), frame_head) \
+             max(coalesce(reset_required_through, 0), frame_head), \
+             reset_generation = reset_generation + 1 \
              WHERE room_id = ?1 AND member_id = ?2",
             params![room_id, member_id.to_string()],
         )
@@ -16961,7 +17293,7 @@ fn observation_room_head(
              r.core_schema_version, r.pack_digest, r.core_state_hash, \
              r.activity_state_hash, r.authoritative_state_hash, r.complete_head_bytes, \
              i.status, i.generation, m.frame_head, m.retained_frame_floor, \
-             m.last_ack_frame_seq, m.reset_required_through \
+             m.last_ack_frame_seq, m.reset_required_through, m.reset_generation \
              FROM rooms r JOIN room_members m ON m.room_id = r.room_id \
              JOIN room_integrity i ON i.room_id = r.room_id \
              WHERE r.room_id = ?1 AND m.member_id = ?2",
@@ -16985,6 +17317,7 @@ fn observation_room_head(
                     row.get::<_, i64>(12)?,
                     row.get::<_, Option<i64>>(13)?,
                     row.get::<_, Option<i64>>(14)?,
+                    row.get::<_, i64>(15)?,
                 ))
             },
         )
@@ -17005,6 +17338,7 @@ fn observation_room_head(
         || stored
             .6
             .is_some_and(|marker| !(0..=MAX_SAFE_INTEGER).contains(&marker))
+        || !(0..=MAX_SAFE_INTEGER).contains(&stored.7)
     {
         return Err(SqliteObservationErrorV1::Corrupt);
     }
@@ -17018,7 +17352,7 @@ fn observation_room_head(
         return Err(SqliteObservationErrorV1::Corrupt);
     }
     Ok((
-        head, stored.1, stored.2, stored.3, stored.4, stored.5, stored.6,
+        head, stored.1, stored.2, stored.3, stored.4, stored.5, stored.6, stored.7,
     ))
 }
 
@@ -17054,12 +17388,78 @@ fn observation_positions(
     })
 }
 
+// Retained delivery has the same bounded contract as the gateway's outbound
+// burst.  Check this from indexed metadata before loading frame payloads so a
+// reconnect never allocates an unbounded historical suffix only to reject it.
+const MAX_RETAINED_OBSERVATION_FRAMES: usize = 256;
+// Delivery adds fixed envelope fields around an already canonical Frame.  Keep
+// one KiB per Frame below the 4 MiB queue budget and below the 512 KiB wire
+// envelope ceiling before allocating/deserializing any payload.
+const MAX_RETAINED_OBSERVATION_BYTES: usize =
+    4 * 1024 * 1024 - MAX_RETAINED_OBSERVATION_FRAMES * 1024;
+const MAX_SINGLE_RETAINED_OBSERVATION_BYTES: usize = 512 * 1024 - 1024;
+const OBSERVATION_RETENTION_MAX_FRAMES: usize = 10_000;
+const OBSERVATION_RETENTION_MAX_BYTES: usize = 64 * 1024 * 1024;
+// The scheduler advances this keyset in small slices. Retention is
+// operational maintenance, so it must not turn a timer tick into a scan of
+// every Membership or a single unbounded delete transaction.
+const OBSERVATION_RETENTION_MEMBERS_PER_RUN: usize = 8;
+const OBSERVATION_RETENTION_MAX_DELETE_FRAMES: u64 = 256;
+
+fn retained_observation_range_is_bounded(
+    transaction: &Transaction<'_>,
+    authority: &ViewerAdapterInputV1,
+    cursor: u64,
+    frame_head: u64,
+) -> Result<bool, SqliteObservationErrorV1> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT length(payload_bytes) FROM observation_frames \
+             WHERE room_id = ?1 AND member_id = ?2 AND frame_seq > ?3 AND frame_seq <= ?4 \
+             ORDER BY frame_seq LIMIT ?5",
+        )
+        .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+    let rows = statement
+        .query_map(
+            params![
+                authority.room_id().as_str(),
+                authority.membership().member_id().as_str(),
+                i64::try_from(cursor).map_err(|_| SqliteObservationErrorV1::Corrupt)?,
+                i64::try_from(frame_head).map_err(|_| SqliteObservationErrorV1::Corrupt)?,
+                i64::try_from(MAX_RETAINED_OBSERVATION_FRAMES + 1)
+                    .map_err(|_| SqliteObservationErrorV1::Corrupt)?,
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+    let mut count = 0_usize;
+    let mut payload_bytes = 0_usize;
+    for row in rows {
+        count = count
+            .checked_add(1)
+            .ok_or(SqliteObservationErrorV1::Corrupt)?;
+        let length =
+            usize::try_from(row.map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?)
+                .map_err(|_| SqliteObservationErrorV1::Corrupt)?;
+        payload_bytes = payload_bytes
+            .checked_add(length)
+            .ok_or(SqliteObservationErrorV1::Corrupt)?;
+        if length > MAX_SINGLE_RETAINED_OBSERVATION_BYTES
+            || count > MAX_RETAINED_OBSERVATION_FRAMES
+            || payload_bytes > MAX_RETAINED_OBSERVATION_BYTES
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn read_observation_frames(
     transaction: &Transaction<'_>,
     authority: &ViewerAdapterInputV1,
     cursor: u64,
     frame_head: u64,
-    retained_floor: u64,
+    _retained_floor: u64,
     room_head_seq: RoomSequenceV1,
 ) -> Result<Vec<SqliteObservationFrameV1>, SqliteObservationErrorV1> {
     let mut statement = transaction
@@ -17088,7 +17488,10 @@ fn read_observation_frames(
         )
         .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
     let mut frames = Vec::new();
-    let mut previous = cursor.max(retained_floor.saturating_sub(1));
+    // A requested retained suffix must start at its exact successor.  The
+    // caller decides whether a below-floor request is reset-required; this
+    // verifier must never silently normalize that gap to the retained floor.
+    let mut previous = cursor;
     for row in rows {
         let (frame_seq, cause_room_seq, payload_hash, payload_bytes) =
             row.map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
@@ -17201,6 +17604,7 @@ fn attach_observations_guarded(
         retained_floor,
         cursor,
         reset_required_through,
+        reset_generation,
     ) = observation_room_head(&transaction, authority)?;
     validate_current_attach_view(&transaction, authority, &room_head, current_view)?;
     let positions =
@@ -17230,17 +17634,30 @@ fn attach_observations_guarded(
         let cursor = positions
             .cursor()
             .ok_or(SqliteObservationErrorV1::Corrupt)?;
-        SqliteObservationDeliveryV1::Retained {
-            cursor_exclusive: cursor,
-            through_frame_head: positions.frame_head(),
-            frames: read_observation_frames(
-                &transaction,
-                authority,
-                cursor,
-                positions.frame_head(),
-                positions.retained_floor(),
-                room_head.room_seq(),
-            )?,
+        if retained_observation_range_is_bounded(
+            &transaction,
+            authority,
+            cursor,
+            positions.frame_head(),
+        )? {
+            SqliteObservationDeliveryV1::Retained {
+                cursor_exclusive: cursor,
+                through_frame_head: positions.frame_head(),
+                frames: read_observation_frames(
+                    &transaction,
+                    authority,
+                    cursor,
+                    positions.frame_head(),
+                    positions.retained_floor(),
+                    room_head.room_seq(),
+                )?,
+            }
+        } else {
+            SqliteObservationDeliveryV1::Reset {
+                baseline_frame_head: positions.frame_head(),
+                reason: SqliteObservationResetReasonV1::RetainedBacklogTooLarge,
+                projection_reset: reset_from_current_view(&room_head, current_view)?,
+            }
         }
     };
     transaction
@@ -17261,6 +17678,8 @@ fn attach_observations_guarded(
         frame_head: positions.frame_head(),
         retained_floor: positions.retained_floor(),
         cursor: positions.cursor(),
+        reset_generation: u64::try_from(reset_generation)
+            .map_err(|_| SqliteObservationErrorV1::Corrupt)?,
         delivery,
     })
 }
@@ -17288,6 +17707,7 @@ fn acknowledge_observation_guarded(
         retained_floor,
         cursor,
         reset_required_through,
+        _reset_generation,
     ) = observation_room_head(&transaction, authority)?;
     let positions =
         observation_positions(frame_head, retained_floor, cursor, reset_required_through)?;
@@ -17320,6 +17740,21 @@ fn acknowledge_observation_guarded(
             ],
         )
         .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+    if next > positions.cursor().unwrap_or(0) {
+        transaction
+            .execute(
+                "UPDATE observation_frames SET retained_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                 WHERE room_id = ?1 AND member_id = ?2 AND frame_seq > ?3 AND frame_seq <= ?4",
+                params![
+                    authority.room_id().as_str(),
+                    authority.membership().member_id().as_str(),
+                    i64::try_from(positions.cursor().unwrap_or(0))
+                        .map_err(|_| SqliteObservationErrorV1::Corrupt)?,
+                    i64::try_from(next).map_err(|_| SqliteObservationErrorV1::Corrupt)?,
+                ],
+            )
+            .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+    }
     transaction
         .commit()
         .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
@@ -17330,6 +17765,7 @@ fn read_observation_suffix_guarded(
     connection: &mut Connection,
     authority: &ViewerAdapterInputV1,
     after_frame_seq: u64,
+    installed_reset_generation: Option<u64>,
     clock: &dyn TrustedAuthorityClock,
 ) -> Result<Vec<SqliteObservationFrameV1>, SqliteObservationErrorV1> {
     let transaction = connection
@@ -17348,11 +17784,26 @@ fn read_observation_suffix_guarded(
         frame_head,
         retained_floor,
         cursor,
-        reset,
+        reset_required_through,
+        reset_generation,
     ) = observation_room_head(&transaction, authority)?;
-    let positions = observation_positions(frame_head, retained_floor, cursor, reset)?;
+    let positions =
+        observation_positions(frame_head, retained_floor, cursor, reset_required_through)?;
     if after_frame_seq > positions.frame_head() {
         return Err(SqliteObservationErrorV1::CursorAhead);
+    }
+    if installed_reset_generation
+        .is_some_and(|installed| u64::try_from(reset_generation).ok() != Some(installed))
+        || (installed_reset_generation.is_none() && positions.reset_required_through().is_some())
+        || after_frame_seq.saturating_add(1) < positions.retained_floor()
+        || !retained_observation_range_is_bounded(
+            &transaction,
+            authority,
+            after_frame_seq,
+            positions.frame_head(),
+        )?
+    {
+        return Err(SqliteObservationErrorV1::ResetRequired);
     }
     let frames = read_observation_frames(
         &transaction,
@@ -17452,10 +17903,13 @@ fn prune_observation_frames(
         .transpose()?;
     transaction
         .execute(
-            "UPDATE room_members SET retained_frame_floor = ?1, reset_required_through = ?2 \
-             WHERE room_id = ?3 AND member_id = ?4",
+            "UPDATE room_members SET retained_frame_floor = ?1, reset_required_through = ?2, \
+             reset_generation = reset_generation + CASE WHEN ?3 IS NOT NULL \
+                 AND (reset_required_through IS NULL OR ?3 != reset_required_through) THEN 1 ELSE 0 END \
+             WHERE room_id = ?4 AND member_id = ?5",
             params![
                 retained_floor,
+                new_marker_i64,
                 new_marker_i64,
                 room_id.as_str(),
                 member_id.as_str(),
@@ -17467,6 +17921,88 @@ fn prune_observation_frames(
         .commit()
         .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
     Ok(positions)
+}
+
+fn observation_retention_floor(
+    connection: &Connection,
+    room_id: &RoomId,
+    member_id: &MemberId,
+    checked_at: &AuthorityCheckedAt,
+) -> Result<Option<u64>, SqliteObservationErrorV1> {
+    let cutoff = OffsetDateTime::parse(checked_at.as_str(), &Rfc3339)
+        .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?
+        .checked_sub(time::Duration::days(7))
+        .ok_or(SqliteObservationErrorV1::StorageUnavailable)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT frame_seq, length(payload_bytes), retained_at FROM observation_frames \
+             WHERE room_id = ?1 AND member_id = ?2 ORDER BY frame_seq DESC LIMIT ?3",
+        )
+        .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+    let rows = statement
+        .query_map(
+            params![
+                room_id.as_str(),
+                member_id.as_str(),
+                i64::try_from(OBSERVATION_RETENTION_MAX_FRAMES + 1)
+                    .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+    let mut retained_bytes = 0_usize;
+    let mut retain_from = None;
+    let cursor: Option<u64> = connection
+        .query_row(
+            "SELECT last_ack_frame_seq FROM room_members WHERE room_id = ?1 AND member_id = ?2",
+            params![room_id.as_str(), member_id.as_str()],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?
+        .map(|cursor| u64::try_from(cursor).map_err(|_| SqliteObservationErrorV1::Corrupt))
+        .transpose()?;
+    for (retained, row) in rows.enumerate() {
+        let (frame_seq, payload_bytes, retained_at) =
+            row.map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+        let frame_seq = u64::try_from(frame_seq).map_err(|_| SqliteObservationErrorV1::Corrupt)?;
+        let payload_bytes =
+            usize::try_from(payload_bytes).map_err(|_| SqliteObservationErrorV1::Corrupt)?;
+        let retained_at = OffsetDateTime::parse(&retained_at, &Rfc3339)
+            .map_err(|_| SqliteObservationErrorV1::Corrupt)?;
+        // Seven-day retention applies only after a durable ACK. An
+        // unacknowledged Frame is pruned only at the hard count/byte ceiling,
+        // where the writer installs an explicit reset fence.
+        let exceeds_hard_ceiling = retained >= OBSERVATION_RETENTION_MAX_FRAMES
+            || retained_bytes
+                .checked_add(payload_bytes)
+                .is_none_or(|value| value > OBSERVATION_RETENTION_MAX_BYTES);
+        let acknowledged_age_expired =
+            retained_at < cutoff && cursor.is_some_and(|acknowledged| frame_seq <= acknowledged);
+        if exceeds_hard_ceiling || acknowledged_age_expired {
+            break;
+        }
+        retained_bytes += payload_bytes;
+        retain_from = Some(frame_seq);
+    }
+    let frame_head: i64 = connection
+        .query_row(
+            "SELECT frame_head FROM room_members WHERE room_id = ?1 AND member_id = ?2",
+            params![room_id.as_str(), member_id.as_str()],
+            |row| row.get(0),
+        )
+        .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+    let frame_head = u64::try_from(frame_head).map_err(|_| SqliteObservationErrorV1::Corrupt)?;
+    Ok(match retain_from {
+        Some(first) if first > 1 => Some(first),
+        None if frame_head > 0 => Some(frame_head.saturating_add(1)),
+        Some(_) | None => None,
+    })
 }
 
 fn resolve_authorized_guarded(
@@ -19198,12 +19734,12 @@ mod tests {
         DEPLOYMENT_IDENTITIES_MIGRATION_ID, DiagnosticHistoryV1,
         EXTERNAL_INPUT_PREPARATION_MIGRATION_ID, INITIAL_MIGRATION_ID, INITIAL_MIGRATION_SCHEMA,
         MAX_SAFE_INTEGER, MIGRATION_CHECKSUMS_MIGRATION_ID, MigrationFailpoint,
-        OBSERVATION_MIGRATION_ID, PAIRED_SNAPSHOT_SCHEMA_VERSION, SNAPSHOT_MIGRATION_ID,
-        SQLITE_SOURCE_ID, SQLITE_VERSION, SqliteActivationErrorV1, SqliteAuthorizedReplayErrorV1,
-        SqliteAuthorizedReplayOutcomeV1, SqliteAuthorizedReplayProjectionV1,
-        SqliteCanonicalExportErrorV1, SqliteCanonicalMetadataInitializationErrorV1,
-        SqliteCanonicalMetadataInitializationV1, SqliteCanonicalRecordKindV1,
-        SqliteCanonicalRecordV1, SqliteDeploymentIdentityErrorV1,
+        OBSERVATION_MIGRATION_ID, OBSERVATION_RETENTION_MIGRATION_ID,
+        PAIRED_SNAPSHOT_SCHEMA_VERSION, SNAPSHOT_MIGRATION_ID, SQLITE_SOURCE_ID, SQLITE_VERSION,
+        SqliteActivationErrorV1, SqliteAuthorizedReplayErrorV1, SqliteAuthorizedReplayOutcomeV1,
+        SqliteAuthorizedReplayProjectionV1, SqliteCanonicalExportErrorV1,
+        SqliteCanonicalMetadataInitializationErrorV1, SqliteCanonicalMetadataInitializationV1,
+        SqliteCanonicalRecordKindV1, SqliteCanonicalRecordV1, SqliteDeploymentIdentityErrorV1,
         SqliteDeploymentIdentityInitializationV1, SqliteExternalInputPreparationErrorV1,
         SqliteGatewayErrorV1, SqliteMigrationPhaseV1, SqliteObservationDeliveryV1,
         SqliteObservationErrorV1, SqliteObservationFrameV1, SqliteObservationPositionsV1,
@@ -20805,7 +21341,7 @@ mod tests {
                 "room_members",
                 "SELECT room_id, member_id, principal_id, principal_kind, standing, access_mode, \
                  role, membership_bytes, membership_generation, frame_head, retained_frame_floor, \
-                 last_ack_frame_seq, reset_required_through FROM room_members \
+                 last_ack_frame_seq, reset_required_through, reset_generation FROM room_members \
                  WHERE room_id = ?1 ORDER BY member_id",
             ),
             (
@@ -22047,7 +22583,7 @@ mod tests {
         let history = migration_history();
         assert_eq!(
             history.map(|migration| migration.version),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
         assert_eq!(
             history.map(|migration| migration.id),
@@ -22064,6 +22600,7 @@ mod tests {
                 TRANSFER_LIFECYCLE_MIGRATION_ID,
                 TRANSFER_BACKUP_IDENTITY_MIGRATION_ID,
                 EXTERNAL_INPUT_PREPARATION_MIGRATION_ID,
+                OBSERVATION_RETENTION_MIGRATION_ID,
             ]
         );
         let expected_checksums = [
@@ -22079,7 +22616,9 @@ mod tests {
             "blake3:cd0fe750ca3ba68d2dad7254a60dddb887912d40db270e5562a19b3b3cced0a3",
             "blake3:4605547211cde35f16fecf1d156b91d9ca24c39fc24b9fe875f29dcb491965b9",
             "blake3:2097e928196db3f2c572818b4ac87e436512df6f2e9f0cd098521a90366651f0",
+            "blake3:153136e4d0fff3ffee1a02c0349fec8a2c1c907b636ce3396276177518225ac6",
         ];
+        assert_eq!(expected_checksums.len(), history.len());
         for (migration, expected) in history.iter().zip(expected_checksums) {
             assert_eq!(migration.checksum().to_string(), expected);
             assert_eq!(migration.checksum(), migration.checksum());
@@ -22124,10 +22663,10 @@ mod tests {
         ));
 
         let mut too_long = complete.clone();
-        too_long.push((13, "0014-future-schema".to_owned()));
+        too_long.push((14, "0015-future-schema".to_owned()));
         assert!(matches!(
             verify_migration_prefix(&too_long),
-            Err(super::MigrationVerificationError::Unsupported { version: 13 })
+            Err(super::MigrationVerificationError::Unsupported { version: 14 })
         ));
 
         let downgraded = vec![(0, "0000-downgraded-schema".to_owned())];
@@ -23808,6 +24347,7 @@ mod tests {
                 (10, TRANSFER_LIFECYCLE_MIGRATION_ID.to_owned()),
                 (11, TRANSFER_BACKUP_IDENTITY_MIGRATION_ID.to_owned()),
                 (12, EXTERNAL_INPUT_PREPARATION_MIGRATION_ID.to_owned()),
+                (13, OBSERVATION_RETENTION_MIGRATION_ID.to_owned()),
             ]
         );
         let retired: (String, String, i64, Vec<u8>, Vec<u8>, i64) = connection
@@ -23947,7 +24487,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap_or_else(|error| panic!("read restarted migration ledger: {error}"));
-        assert_eq!(migration_count, 12);
+        assert_eq!(migration_count, 13);
     }
 
     #[test]
@@ -24240,7 +24780,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap_or_else(|error| panic!("restored migration ledger: {error}"));
-        assert_eq!(restored_migrations, 12);
+        assert_eq!(restored_migrations, 13);
 
         let startup_dir = tempdir().unwrap_or_else(|error| panic!("startup directory: {error}"));
         let startup = startup_dir.path().join("startup.sqlite3");
@@ -32886,6 +33426,286 @@ mod tests {
     }
 
     #[test]
+    fn live_suffix_fences_reset_markers_and_pruned_prefixes() {
+        let file =
+            NamedTempFile::new().unwrap_or_else(|error| panic!("temp live suffix SQLite: {error}"));
+        let store = SqliteRoomStore::open(file.path())
+            .unwrap_or_else(|error| panic!("open live suffix SQLite: {error}"));
+        let (mut trace, authority) = committed_trace_with_real_authority(
+            &store,
+            MembershipStandingV1::Enabled,
+            [
+                CapabilityScopeV1::RoomAct,
+                CapabilityScopeV1::RoomAttach,
+                CapabilityScopeV1::RoomObserveMember,
+            ],
+            None,
+        );
+        for (action_id, transition_id, admitted_at, frame_head) in [
+            (ACTION_A, TRANSITION_A, "2026-08-15T12:00:04Z", 0),
+            (ACTION_B, TRANSITION_B, "2026-08-15T12:00:05Z", 1),
+        ] {
+            let request = increment_request(&trace, action_id);
+            let grant = authorize_enabled_action(&authority, &request, action_id, admitted_at);
+            let prepared = seal_authorized_increment(
+                &trace,
+                &request,
+                action_id,
+                transition_id,
+                admitted_at,
+                frame_head,
+                grant,
+            )
+            .unwrap_or_else(|error| panic!("prepare live suffix Frame: {error}"));
+            assert!(matches!(
+                commit_existing_room_at(&store, &mut trace, prepared).resolution(),
+                RoomCommitResolutionV1::TransitionCommitted {
+                    status: ResolutionStatusV1::New,
+                    ..
+                }
+            ));
+            if action_id == ACTION_A {
+                let attach = authority
+                    .authorize_member_read(
+                        &presented_member_capability(),
+                        parsed(ROOM),
+                        parsed(PARTICIPANT),
+                        MemberReadOperationV1::Attach,
+                        parsed(admitted_at),
+                    )
+                    .unwrap_or_else(|error| panic!("authorize first suffix attach: {error}"));
+                store
+                    .attach_observations(attach, current_participant_view(&trace))
+                    .unwrap_or_else(|error| panic!("first suffix attach: {error}"));
+                let acknowledge = authority
+                    .authorize_member_read(
+                        &presented_member_capability(),
+                        parsed(ROOM),
+                        parsed(PARTICIPANT),
+                        MemberReadOperationV1::AcknowledgeObservation,
+                        parsed(admitted_at),
+                    )
+                    .unwrap_or_else(|error| panic!("authorize suffix baseline ACK: {error}"));
+                assert_eq!(
+                    store
+                        .acknowledge_observation(acknowledge, 1)
+                        .unwrap_or_else(|error| panic!("ACK suffix baseline: {error}")),
+                    Some(1)
+                );
+            }
+        }
+        let catch_up = || {
+            authority
+                .authorize_member_read(
+                    &presented_member_capability(),
+                    parsed(ROOM),
+                    parsed(PARTICIPANT),
+                    MemberReadOperationV1::CatchUp,
+                    parsed("2026-08-15T12:00:06Z"),
+                )
+                .unwrap_or_else(|error| panic!("authorize suffix catch-up: {error}"))
+        };
+        assert_eq!(
+            store
+                .read_observation_suffix(catch_up(), 1)
+                .unwrap_or_else(|error| panic!("read contiguous suffix: {error}"))
+                .iter()
+                .map(SqliteObservationFrameV1::frame_seq)
+                .collect::<Vec<_>>(),
+            [2]
+        );
+        store
+            .prune_observation_frames(&parsed(ROOM), &parsed(PARTICIPANT), 3)
+            .unwrap_or_else(|error| panic!("prune unacknowledged suffix: {error}"));
+        assert_eq!(
+            store.read_observation_suffix(catch_up(), 1),
+            Err(SqliteObservationErrorV1::ResetRequired)
+        );
+
+        // A missing retained prefix remains reset-required even if an older
+        // database has no marker.  It must not normalize the requested
+        // successor to the retained floor and silently skip frame 2.
+        Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open pruned-prefix fixture: {error}"))
+            .execute(
+                "UPDATE room_members SET reset_required_through = NULL \
+                 WHERE room_id = ?1 AND member_id = ?2",
+                params![ROOM, PARTICIPANT],
+            )
+            .unwrap_or_else(|error| panic!("clear legacy reset marker: {error}"));
+        assert_eq!(
+            store.read_observation_suffix(catch_up(), 1),
+            Err(SqliteObservationErrorV1::ResetRequired)
+        );
+    }
+
+    #[test]
+    fn attach_resets_oversized_retained_frame_before_loading_payloads() {
+        let file = NamedTempFile::new()
+            .unwrap_or_else(|error| panic!("temp bounded attach SQLite: {error}"));
+        let store = SqliteRoomStore::open(file.path())
+            .unwrap_or_else(|error| panic!("open bounded attach SQLite: {error}"));
+        let (mut trace, authority) = committed_trace_with_real_authority(
+            &store,
+            MembershipStandingV1::Enabled,
+            [
+                CapabilityScopeV1::RoomAct,
+                CapabilityScopeV1::RoomAttach,
+                CapabilityScopeV1::RoomObserveMember,
+            ],
+            None,
+        );
+        // Two committed Frames let the durable Cursor remain at Frame 1 while
+        // Frame 2 is considered for retained delivery. The suffix is real;
+        // only its body is replaced below to prove the metadata admission
+        // fence runs before a payload is loaded or canonicalized.
+        for (action_id, transition_id, admitted_at, frame_head) in [
+            (ACTION_A, TRANSITION_A, "2026-08-15T12:00:04Z", 0),
+            (ACTION_B, TRANSITION_B, "2026-08-15T12:00:05Z", 1),
+        ] {
+            let request = increment_request(&trace, action_id);
+            let prepared = seal_authorized_increment(
+                &trace,
+                &request,
+                action_id,
+                transition_id,
+                admitted_at,
+                frame_head,
+                authorize_enabled_action(&authority, &request, action_id, admitted_at),
+            )
+            .unwrap_or_else(|error| panic!("prepare bounded attach Frame: {error}"));
+            assert!(matches!(
+                commit_existing_room_at(&store, &mut trace, prepared).resolution(),
+                RoomCommitResolutionV1::TransitionCommitted {
+                    status: ResolutionStatusV1::New,
+                    ..
+                }
+            ));
+        }
+        Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open bounded attach fixture: {error}"))
+            .execute(
+                "UPDATE observation_frames SET payload_bytes = zeroblob(?1) \
+                 WHERE room_id = ?2 AND member_id = ?3 AND frame_seq = 2",
+                params![
+                    i64::try_from(super::MAX_SINGLE_RETAINED_OBSERVATION_BYTES + 1).unwrap_or_else(
+                        |error| panic!("oversized retained payload length: {error}")
+                    ),
+                    ROOM,
+                    PARTICIPANT,
+                ],
+            )
+            .unwrap_or_else(|error| panic!("seed oversized retained Frame: {error}"));
+        Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open bounded Cursor fixture: {error}"))
+            .execute(
+                "UPDATE room_members SET last_ack_frame_seq = 1 \
+                 WHERE room_id = ?1 AND member_id = ?2",
+                params![ROOM, PARTICIPANT],
+            )
+            .unwrap_or_else(|error| panic!("set bounded suffix Cursor: {error}"));
+        let attach = authority
+            .authorize_member_read(
+                &presented_member_capability(),
+                parsed(ROOM),
+                parsed(PARTICIPANT),
+                MemberReadOperationV1::Attach,
+                parsed("2026-08-15T12:00:05Z"),
+            )
+            .unwrap_or_else(|error| panic!("authorize bounded backlog attach: {error}"));
+        let captured = store
+            .attach_observations(attach, current_participant_view(&trace))
+            .unwrap_or_else(|error| panic!("attach bounded retained backlog: {error}"));
+        assert!(matches!(
+            captured.delivery(),
+            SqliteObservationDeliveryV1::Reset {
+                reason: SqliteObservationResetReasonV1::RetainedBacklogTooLarge,
+                baseline_frame_head: 2,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn scheduled_retention_ages_only_acknowledged_observations() {
+        let file =
+            NamedTempFile::new().unwrap_or_else(|error| panic!("temp retention SQLite: {error}"));
+        let store = SqliteRoomStore::open(file.path())
+            .unwrap_or_else(|error| panic!("open retention SQLite: {error}"));
+        let (mut trace, authority) = committed_trace_with_real_authority(
+            &store,
+            MembershipStandingV1::Enabled,
+            [CapabilityScopeV1::RoomAct, CapabilityScopeV1::RoomAttach],
+            None,
+        );
+        let request = increment_request(&trace, ACTION_A);
+        let prepared = seal_authorized_increment(
+            &trace,
+            &request,
+            ACTION_A,
+            TRANSITION_A,
+            "2026-08-15T12:00:04Z",
+            0,
+            authorize_enabled_action(&authority, &request, ACTION_A, "2026-08-15T12:00:04Z"),
+        )
+        .unwrap_or_else(|error| panic!("prepare retention Frame: {error}"));
+        assert!(matches!(
+            commit_existing_room_at(&store, &mut trace, prepared).resolution(),
+            RoomCommitResolutionV1::TransitionCommitted { .. }
+        ));
+        Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open retention fixture: {error}"))
+            .execute(
+                "UPDATE observation_frames SET retained_at = '2026-08-01T00:00:00Z' \
+                 WHERE room_id = ?1 AND member_id = ?2",
+                params![ROOM, PARTICIPANT],
+            )
+            .unwrap_or_else(|error| panic!("age Observation Frame: {error}"));
+        assert_eq!(
+            store
+                .enforce_observation_retention(&parsed(ROOM), &parsed("2026-08-15T12:00:00Z"))
+                .unwrap_or_else(|error| panic!("run retention slice: {error}")),
+            0,
+            "an old unacknowledged Frame stays available below hard ceilings"
+        );
+        Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open acknowledgement fixture: {error}"))
+            .execute(
+                "UPDATE room_members SET last_ack_frame_seq = 1 WHERE room_id = ?1 AND member_id = ?2",
+                params![ROOM, PARTICIPANT],
+            )
+            .unwrap_or_else(|error| panic!("acknowledge aged Observation Frame: {error}"));
+        assert_eq!(
+            store
+                .enforce_observation_retention(&parsed(ROOM), &parsed("2026-08-15T12:00:00Z"))
+                .unwrap_or_else(|error| panic!("run acknowledged retention slice: {error}")),
+            1
+        );
+        let connection = Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("inspect retained fixture: {error}"));
+        let facts: (i64, i64, Option<i64>, Option<i64>, i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT count(*) FROM transitions WHERE room_id = ?1), \
+                        (SELECT count(*) FROM observation_frames WHERE room_id = ?1), \
+                        last_ack_frame_seq, reset_required_through, retained_frame_floor, \
+                        reset_generation FROM room_members WHERE room_id = ?1 AND member_id = ?2",
+                params![ROOM, PARTICIPANT],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap_or_else(|error| panic!("read retention facts: {error}"));
+        assert_eq!(facts, (1, 0, Some(1), None, 2, 0));
+    }
+
+    #[test]
     fn attach_requires_owned_current_view_and_converts_exact_snapshot_to_session_barrier() {
         let file =
             NamedTempFile::new().unwrap_or_else(|error| panic!("temp session attach DB: {error}"));
@@ -34603,11 +35423,11 @@ mod tests {
             vec![
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Started,
-                    schema_version: 12,
+                    schema_version: 13,
                 },
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Applied,
-                    schema_version: 12,
+                    schema_version: 13,
                 },
             ]
         );
@@ -34647,16 +35467,16 @@ mod tests {
             [
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Started,
-                    schema_version: 12,
+                    schema_version: 13,
                 },
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::AlreadyCurrent,
-                    schema_version: 12,
+                    schema_version: 13,
                 },
             ]
         );
         assert!(final_events.iter().all(|event| match event {
-            SqliteTelemetryEventV1::Migration { schema_version, .. } => *schema_version <= 12,
+            SqliteTelemetryEventV1::Migration { schema_version, .. } => *schema_version <= 13,
             SqliteTelemetryEventV1::Recovery { .. }
             | SqliteTelemetryEventV1::Integrity { .. }
             | SqliteTelemetryEventV1::StorageDiagnostic { .. } => true,

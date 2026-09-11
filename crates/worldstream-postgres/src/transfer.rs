@@ -2843,25 +2843,27 @@ fn publish_room_member(
         Some(NativeValue::Null) => None,
         _ => return Err(PostgresTransferError::Canonical("native member reset")),
     };
+    let reset_generation = native_integer(row, 13)?;
     transaction
         .execute(
-            "INSERT INTO worldstream_members(room_id, member_id, membership_bytes, frame_head, membership_generation, retained_frame_floor, last_ack_frame_seq, reset_required_through) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (room_id, member_id) DO NOTHING",
-            &[&room_id, &member_id, &membership, &frame_head, &membership_generation, &retained_frame_floor, &last_ack_frame_seq, &reset_required_through],
+            "INSERT INTO worldstream_members(room_id, member_id, membership_bytes, frame_head, membership_generation, retained_frame_floor, last_ack_frame_seq, reset_required_through, reset_generation) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (room_id, member_id) DO NOTHING",
+            &[&room_id, &member_id, &membership, &frame_head, &membership_generation, &retained_frame_floor, &last_ack_frame_seq, &reset_required_through, &reset_generation],
         )
         .map_err(PostgresTransferError::Sql)?;
     let stored = transaction
         .query_one(
-            "SELECT membership_bytes, frame_head, membership_generation, retained_frame_floor, last_ack_frame_seq, reset_required_through FROM worldstream_members WHERE room_id = $1 AND member_id = $2 FOR UPDATE",
+            "SELECT membership_bytes, frame_head, membership_generation, retained_frame_floor, last_ack_frame_seq, reset_required_through, reset_generation FROM worldstream_members WHERE room_id = $1 AND member_id = $2 FOR UPDATE",
             &[&room_id, &member_id],
         )
         .map_err(PostgresTransferError::Sql)?;
-    let actual: (Vec<u8>, i64, i64, i64, Option<i64>, Option<i64>) = (
+    let actual: (Vec<u8>, i64, i64, i64, Option<i64>, Option<i64>, i64) = (
         stored.try_get(0).map_err(PostgresTransferError::Sql)?,
         stored.try_get(1).map_err(PostgresTransferError::Sql)?,
         stored.try_get(2).map_err(PostgresTransferError::Sql)?,
         stored.try_get(3).map_err(PostgresTransferError::Sql)?,
         stored.try_get(4).map_err(PostgresTransferError::Sql)?,
         stored.try_get(5).map_err(PostgresTransferError::Sql)?,
+        stored.try_get(6).map_err(PostgresTransferError::Sql)?,
     );
     if actual
         != (
@@ -2871,6 +2873,7 @@ fn publish_room_member(
             retained_frame_floor,
             last_ack_frame_seq,
             reset_required_through,
+            reset_generation,
         )
     {
         return Err(PostgresTransferError::Canonical("membership row mismatch"));
@@ -2928,15 +2931,16 @@ fn publish_observation_frame(
     let cause_room_seq = native_integer(row, 3)?;
     let payload_hash = native_blake3(&native_text(row, 4)?)?;
     let payload = native_blob(row, 5)?;
+    let retained_at = native_text(row, 6)?;
     transaction
         .execute(
-            "INSERT INTO worldstream_frames(room_id, member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (room_id, member_id, frame_seq) DO NOTHING",
-            &[&room_id, &member_id, &frame_seq, &cause_room_seq, &payload, &payload_hash],
+            "INSERT INTO worldstream_frames(room_id, member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash, retained_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (room_id, member_id, frame_seq) DO NOTHING",
+            &[&room_id, &member_id, &frame_seq, &cause_room_seq, &payload, &payload_hash, &retained_at],
         )
         .map_err(PostgresTransferError::Sql)?;
     let stored = transaction
         .query_one(
-            "SELECT cause_room_seq, payload_bytes, payload_hash FROM worldstream_frames WHERE room_id = $1 AND member_id = $2 AND frame_seq = $3",
+            "SELECT cause_room_seq, payload_bytes, payload_hash, retained_at FROM worldstream_frames WHERE room_id = $1 AND member_id = $2 AND frame_seq = $3",
             &[&room_id, &member_id, &frame_seq],
         )
         .map_err(PostgresTransferError::Sql)?;
@@ -2955,6 +2959,15 @@ fn publish_observation_frame(
     {
         return Err(PostgresTransferError::Canonical(
             "observation frame mismatch",
+        ));
+    }
+    if stored
+        .try_get::<_, String>(3)
+        .map_err(PostgresTransferError::Sql)?
+        != retained_at
+    {
+        return Err(PostgresTransferError::Canonical(
+            "observation retention time mismatch",
         ));
     }
     Ok(())
@@ -4136,10 +4149,11 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let fingerprint = postgres_backend_fingerprint()?;
         assert_eq!(fingerprint.profile(), BundleProfileV1::PostgresPrimary17);
-        assert_eq!(fingerprint.schema().migrations().len(), 12);
+        assert_eq!(fingerprint.schema().migrations().len(), 14);
         assert_eq!(fingerprint.schema().migrations()[5].version(), 6);
         assert_eq!(fingerprint.schema().migrations()[10].version(), 11);
         assert_eq!(fingerprint.schema().migrations()[11].version(), 12);
+        assert_eq!(fingerprint.schema().migrations()[12].version(), 13);
         Ok(())
     }
 

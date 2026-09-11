@@ -24,7 +24,7 @@ use std::{
     fmt::Write as _,
     net::SocketAddr,
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
@@ -370,6 +370,8 @@ pub enum BackendError {
     RoomQuarantined,
     #[error("the operation is not applicable in the current Activity phase")]
     WrongPhase,
+    #[error("the retained Observation range requires a fresh synchronization barrier")]
+    ResetRequired,
 }
 
 impl BackendError {
@@ -387,6 +389,7 @@ impl BackendError {
             Self::RoomFaulted => ErrorCode::RoomFaulted,
             Self::RoomQuarantined => ErrorCode::RoomQuarantined,
             Self::WrongPhase => ErrorCode::WrongPhase,
+            Self::ResetRequired => ErrorCode::SyncBarrierMismatch,
         }
     }
 }
@@ -1700,11 +1703,78 @@ struct SchedulerRuntimeOwner {
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
+#[derive(Default)]
+struct ScheduledPublicationState {
+    running: bool,
+    dirty: bool,
+}
+
+fn schedule_scheduler_rooms(
+    backend: &Arc<dyn GatewayBackend>,
+    live_streams: &LiveStreamRegistry,
+    rooms: Vec<String>,
+    scheduled: &Arc<Mutex<HashMap<String, ScheduledPublicationState>>>,
+) {
+    for room in rooms {
+        let should_spawn = {
+            let mut scheduled = scheduled
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let state = scheduled.entry(room.clone()).or_default();
+            if state.running {
+                state.dirty = true;
+                false
+            } else {
+                state.running = true;
+                true
+            }
+        };
+        if !should_spawn {
+            continue;
+        }
+        let backend = Arc::clone(backend);
+        let live_streams = live_streams.clone();
+        let scheduled = Arc::clone(scheduled);
+        tokio::spawn(async move {
+            loop {
+                publish_live_frames(Arc::clone(&backend), &live_streams, &room).await;
+                let run_again = {
+                    let mut scheduled = scheduled
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let Some(state) = scheduled.get_mut(&room) else {
+                        break;
+                    };
+                    if state.dirty {
+                        state.dirty = false;
+                        true
+                    } else {
+                        scheduled.remove(&room);
+                        false
+                    }
+                };
+                if !run_again {
+                    break;
+                }
+            }
+        });
+    }
+}
+
+async fn wait_for_scheduler_stop(stop: Arc<AtomicBool>) {
+    while !stop.load(Ordering::Acquire) {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 impl SchedulerRuntimeOwner {
     fn start(
         backend: Arc<dyn GatewayBackend>,
         live_streams: LiveStreamRegistry,
     ) -> Result<Arc<Self>, BackendError> {
+        // Preserve the startup readiness contract: the first durable scheduler
+        // tick must succeed before the runtime is reported as running.  Later
+        // ticks execute on the long-lived async scheduler below.
         let initial_rooms = backend.scheduler_tick()?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1712,26 +1782,50 @@ impl SchedulerRuntimeOwner {
             .map_err(|_| BackendError::StorageUnavailable)?;
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
+        let scheduled = Arc::new(Mutex::new(HashMap::new()));
         let thread = std::thread::Builder::new()
             .name("worldstream-activation-scheduler".to_owned())
             .spawn(move || {
-                runtime.block_on(async {
-                    for room in initial_rooms {
-                        publish_live_frames(Arc::clone(&backend), &live_streams, &room).await;
+                runtime.block_on(async move {
+                    schedule_scheduler_rooms(&backend, &live_streams, initial_rooms, &scheduled);
+                    let mut tick = tokio::time::interval(Duration::from_millis(250));
+                    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    while !thread_stop.load(Ordering::Acquire) {
+                        tick.tick().await;
+                        if thread_stop.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let tick_result = tokio::select! {
+                            result = backend_call(
+                                Arc::clone(&backend),
+                                GatewayBackend::scheduler_tick,
+                            ) => Some(result),
+                            () = wait_for_scheduler_stop(Arc::clone(&thread_stop)) => None,
+                        };
+                        let Some(tick_result) = tick_result else {
+                            break;
+                        };
+                        match tick_result {
+                            Ok(rooms) => {
+                                schedule_scheduler_rooms(
+                                    &backend,
+                                    &live_streams,
+                                    rooms,
+                                    &scheduled,
+                                );
+                            }
+                            Err(error) => {
+                                tracing::warn!(?error, "Runtime scheduler tick failed");
+                            }
+                        }
                     }
                 });
-                while !thread_stop.load(Ordering::Acquire) {
-                    match backend.scheduler_tick() {
-                        Ok(rooms) => runtime.block_on(async {
-                            for room in rooms {
-                                publish_live_frames(Arc::clone(&backend), &live_streams, &room)
-                                    .await;
-                            }
-                        }),
-                        Err(error) => tracing::warn!(?error, "Runtime scheduler tick failed"),
-                    }
-                    std::thread::sleep(Duration::from_millis(250));
-                }
+                // A provider call runs in Tokio's blocking pool and cannot be
+                // aborted by dropping its JoinHandle.  Bound runtime shutdown
+                // so a wedged provider cannot make process shutdown wait
+                // forever; the blocking worker is allowed to finish in the
+                // background after this timeout.
+                runtime.shutdown_timeout(Duration::from_millis(100));
             })
             .map_err(|_| BackendError::StorageUnavailable)?;
         Ok(Arc::new(Self {
@@ -3695,7 +3789,9 @@ impl From<BackendError> for ResponseError {
                 StatusCode::NOT_FOUND
             }
             BackendError::Busy => StatusCode::TOO_MANY_REQUESTS,
-            BackendError::Conflict | BackendError::WrongPhase => StatusCode::CONFLICT,
+            BackendError::Conflict | BackendError::WrongPhase | BackendError::ResetRequired => {
+                StatusCode::CONFLICT
+            }
             BackendError::StorageUnavailable
             | BackendError::Indeterminate
             | BackendError::RoomFaulted
@@ -3709,6 +3805,7 @@ impl From<BackendError> for ResponseError {
                 | ErrorCode::CommitIndeterminate
                 | ErrorCode::RoomBusy
                 | ErrorCode::RoomFaulted
+                | ErrorCode::SyncBarrierMismatch
         );
         Self {
             status,
@@ -3749,6 +3846,9 @@ fn safe_message(code: ErrorCode) -> &'static str {
             "the operation identity conflicts with an existing request"
         }
         ErrorCode::InvalidPayload => "the request payload is invalid",
+        ErrorCode::SyncBarrierMismatch => {
+            "the synchronization barrier is no longer current; attach again"
+        }
         ErrorCode::WrongPhase => "the Activity is not in its declared pre-start phase",
         _ => "the request could not be completed",
     }
@@ -4055,7 +4155,14 @@ fn require_websocket_subprotocol(
     {
         return Err(ResponseError::from(BackendError::Rejected));
     }
-    let upgrade = upgrade.protocols([WEBSOCKET_SUBPROTOCOL]);
+    // Apply the protocol envelope bound to Tungstenite itself.  The limit
+    // must be configured on the upgrade, before its reader can assemble a
+    // fragmented message; the post-receive envelope check is defense in
+    // depth only.
+    let upgrade = upgrade
+        .max_message_size(worldstream_protocol::MAX_MESSAGE_BYTES)
+        .max_frame_size(worldstream_protocol::MAX_MESSAGE_BYTES)
+        .protocols([WEBSOCKET_SUBPROTOCOL]);
     if upgrade.selected_protocol().is_none() {
         return Err(ResponseError::from(BackendError::Rejected));
     }
@@ -4484,6 +4591,8 @@ async fn stream_loop(
         correlation,
     );
     let mut live = false;
+    let mut stream_generation = 0_u64;
+    let mut synchronized_generation = None;
     let (push_sender, mut push_receiver) = mpsc::channel(LIVE_PUSH_CAPACITY);
     let mut attached_stream = None;
     let mut runner = RunnerConnectionState {
@@ -4513,10 +4622,13 @@ async fn stream_loop(
             Arc::clone(&backend),
             &live_streams,
             &push_sender,
+            &mut push_receiver,
             &close_sender,
             &session,
             attach,
             &mut live,
+            &mut stream_generation,
+            &mut synchronized_generation,
             &mut attached_stream,
             &mut runner,
             &runner_presence,
@@ -4547,12 +4659,29 @@ async fn stream_loop(
                 if runner.ready {
                     runner_presence.touch(session.session_id());
                 }
-                let Message::Text(text) = message else {
-                    if admission.admit_base(&session).is_err() {
-                        let _ = send_error(&mut socket, None, ErrorCode::RateLimited, true).await;
+                let text = match message {
+                    Message::Text(text) => text,
+                    Message::Binary(_) => {
+                        // The kernel protocol has one textual envelope format.
+                        // Binary data is rejected at the transport boundary so it
+                        // cannot bypass envelope validation or admission accounting.
+                        if admission.admit_base(&session).is_err() {
+                            let _ = send_error(
+                                &mut socket,
+                                None,
+                                ErrorCode::RateLimited,
+                                true,
+                            )
+                            .await;
+                        }
+                        let _ = send_websocket_message(
+                            socket.send(browser_admission_close_message()),
+                            WEBSOCKET_SEND_TIMEOUT,
+                        )
+                        .await;
                         break;
                     }
-                    continue;
+                    _ => continue,
                 };
                 let raw = text.as_bytes();
                 let mut value: VersionedEnvelope<Value> = match decode_envelope(raw) {
@@ -4612,10 +4741,13 @@ async fn stream_loop(
                     Arc::clone(&backend),
                     &live_streams,
                     &push_sender,
+                    &mut push_receiver,
                     &close_sender,
                     &session,
                     value,
                     &mut live,
+                    &mut stream_generation,
+                    &mut synchronized_generation,
                     &mut attached_stream,
                     &mut runner,
                     &runner_presence,
@@ -4626,9 +4758,27 @@ async fn stream_loop(
                 .await;
                 if result.is_err() { break; }
             }
+            // A revocation or generation fence wins over an already queued
+            // frame.  This prevents stale delivery from extending a closed
+            // connection's authorization window.
+            close = close_receiver.changed() => {
+                if close.is_ok() {
+                    let code = *close_receiver.borrow();
+                    if let Some(code) = code {
+                        let _ = send_error(&mut socket, None, code, true).await;
+                    }
+                }
+                break;
+            }
             push = push_receiver.recv() => {
                 match push {
                     Some(LivePush::Frame(push)) => {
+                        if close_receiver.borrow().is_some()
+                            || push.generation != stream_generation
+                            || !live
+                        {
+                            continue;
+                        }
                         if send_websocket_message(
                             socket.send(push.message),
                             WEBSOCKET_SEND_TIMEOUT,
@@ -4641,15 +4791,6 @@ async fn stream_loop(
                     }
                     None => break,
                 }
-            }
-            close = close_receiver.changed() => {
-                if close.is_ok() {
-                    let code = *close_receiver.borrow();
-                    if let Some(code) = code {
-                        let _ = send_error(&mut socket, None, code, true).await;
-                    }
-                }
-                break;
             }
             _ = heartbeat.tick() => {
                 if send_body(&mut socket, "server.ping", None, serde_json::json!({})).await.is_err() {
@@ -4824,6 +4965,19 @@ struct AttachedStream {
     member_id: String,
 }
 
+fn action_matches_active_barrier(
+    request: &ActionSubmit,
+    live: bool,
+    synchronized_generation: Option<u64>,
+    stream_generation: u64,
+    attached_stream: Option<&AttachedStream>,
+) -> bool {
+    live && synchronized_generation == Some(stream_generation)
+        && attached_stream.is_some_and(|attached| {
+            attached.room_id == request.room_id && attached.member_id == request.member_id
+        })
+}
+
 #[derive(Clone, Default)]
 struct HostedBrowserStreamRegistry {
     sessions: Arc<Mutex<HashMap<String, UlidString>>>,
@@ -4906,7 +5060,7 @@ struct LiveStreamRegistry {
     sessions: Arc<Mutex<HashMap<String, LiveStreamRegistration>>>,
     active_session_ids: Arc<Mutex<HashSet<UlidString>>>,
     connection_closers: Arc<Mutex<HashMap<String, watch::Sender<Option<ErrorCode>>>>>,
-    publication_lock: Arc<AsyncMutex<()>>,
+    room_publication_locks: Arc<Mutex<HashMap<String, Weak<AsyncMutex<()>>>>>,
     queue_metrics: Arc<LiveStreamQueueMetrics>,
 }
 
@@ -4943,10 +5097,21 @@ impl Drop for ActiveGatewaySession {
     }
 }
 
+struct LiveStreamRegistrationInput {
+    session: Arc<GatewaySession>,
+    room_id: String,
+    member_id: String,
+    generation: u64,
+    last_delivered_frame_seq: u64,
+    sender: mpsc::Sender<LivePush>,
+    close: watch::Sender<Option<ErrorCode>>,
+}
+
 struct LiveStreamRegistration {
     session: Arc<GatewaySession>,
     room_id: String,
     member_id: String,
+    generation: u64,
     last_delivered_frame_seq: u64,
     sender: mpsc::Sender<LivePush>,
     queued_frames: Arc<AtomicUsize>,
@@ -4960,6 +5125,7 @@ struct LiveStreamSnapshot {
     session: Arc<GatewaySession>,
     room_id: String,
     member_id: String,
+    generation: u64,
     last_delivered_frame_seq: u64,
     sender: mpsc::Sender<LivePush>,
     queued_frames: Arc<AtomicUsize>,
@@ -5092,6 +5258,7 @@ impl OutboundFrameReservation {
 }
 
 struct LiveFramePush {
+    generation: u64,
     #[cfg(test)]
     frame: ObservationDeliver,
     message: Message,
@@ -5104,12 +5271,32 @@ enum LivePush {
 }
 
 impl LiveStreamRegistry {
+    fn room_publication_lock(&self, room_id: &str) -> Arc<AsyncMutex<()>> {
+        let mut locks = self
+            .room_publication_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        locks.retain(|_, weak| weak.strong_count() > 0);
+        if let Some(lock) = locks.get(room_id).and_then(std::sync::Weak::upgrade) {
+            return lock;
+        }
+        locks.remove(room_id);
+        // Keep only weak references so a burst of invalid or short-lived Room
+        // IDs cannot permanently grow the lock registry.  The returned strong
+        // reference is held by the caller for the complete critical section.
+        let lock = Arc::new(AsyncMutex::new(()));
+        locks.insert(room_id.to_owned(), Arc::downgrade(&lock));
+        lock
+    }
+
     fn is_registered(&self, session_id: &str) -> bool {
         self.sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(session_id)
     }
+
+    #[cfg(test)]
     fn register(
         &self,
         session: Arc<GatewaySession>,
@@ -5119,7 +5306,22 @@ impl LiveStreamRegistry {
         sender: mpsc::Sender<LivePush>,
         close: watch::Sender<Option<ErrorCode>>,
     ) -> Result<(), BackendError> {
-        let session_id = session.session_id().to_string();
+        self.register_generation(LiveStreamRegistrationInput {
+            session,
+            room_id,
+            member_id,
+            generation: 0,
+            last_delivered_frame_seq,
+            sender,
+            close,
+        })
+    }
+
+    fn register_generation(
+        &self,
+        registration: LiveStreamRegistrationInput,
+    ) -> Result<(), BackendError> {
+        let session_id = registration.session.session_id().to_string();
         let mut sessions = self
             .sessions
             .lock()
@@ -5127,14 +5329,15 @@ impl LiveStreamRegistry {
         match sessions.entry(session_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(LiveStreamRegistration {
-                    session,
-                    room_id,
-                    member_id,
-                    last_delivered_frame_seq,
-                    sender,
+                    session: registration.session,
+                    room_id: registration.room_id,
+                    member_id: registration.member_id,
+                    generation: registration.generation,
+                    last_delivered_frame_seq: registration.last_delivered_frame_seq,
+                    sender: registration.sender,
                     queued_frames: Arc::new(AtomicUsize::new(0)),
                     queued_payload_bytes: Arc::new(AtomicUsize::new(0)),
-                    close,
+                    close: registration.close,
                 });
                 Ok(())
             }
@@ -5192,6 +5395,7 @@ impl LiveStreamRegistry {
                 session: Arc::clone(&registration.session),
                 room_id: registration.room_id.clone(),
                 member_id: registration.member_id.clone(),
+                generation: registration.generation,
                 last_delivered_frame_seq: registration.last_delivered_frame_seq,
                 sender: registration.sender.clone(),
                 queued_frames: Arc::clone(&registration.queued_frames),
@@ -5200,12 +5404,13 @@ impl LiveStreamRegistry {
             .collect()
     }
 
-    fn mark_delivered(&self, session_id: &str, frame_seq: u64) {
+    fn mark_delivered(&self, session_id: &str, generation: u64, frame_seq: u64) {
         if let Some(registration) = self
             .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get_mut(session_id)
+            .filter(|registration| registration.generation == generation)
         {
             registration.last_delivered_frame_seq = frame_seq;
         }
@@ -5226,6 +5431,20 @@ impl LiveStreamRegistry {
             .cloned();
         if let Some(close) = stream_close.or(connection_close) {
             let _ = close.send(Some(code));
+        }
+    }
+
+    fn close_generation(&self, session_id: &str, generation: u64, code: ErrorCode) {
+        let stream_close = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .filter(|registration| registration.generation == generation)
+            .map(|registration| registration.close.clone());
+        if let Some(close) = stream_close {
+            let _ = close.send(Some(code));
+            self.unregister(session_id);
         }
     }
 
@@ -5265,6 +5484,7 @@ fn prepare_observation_batch(
 
 fn prepare_live_push(
     frame: &ObservationDeliver,
+    generation: u64,
     queued_frames: Arc<AtomicUsize>,
     queued_payload_bytes: Arc<AtomicUsize>,
     metrics: &LiveStreamQueueMetrics,
@@ -5283,6 +5503,7 @@ fn prepare_live_push(
         return Err(OutboundMessageError::SlowConsumer);
     };
     Ok(LivePush::Frame(LiveFramePush {
+        generation,
         #[cfg(test)]
         frame: frame.clone(),
         message,
@@ -5296,13 +5517,14 @@ async fn publish_live_frames(
     registry: &LiveStreamRegistry,
     room_id: &str,
 ) {
-    let _publication_guard = registry.publication_lock.lock().await;
+    let room_lock = registry.room_publication_lock(room_id);
+    let _publication_guard = room_lock.lock().await;
     for snapshot in registry.snapshots_for_room(room_id) {
         let session = Arc::clone(&snapshot.session);
         let snapshot_room_id = snapshot.room_id.clone();
         let snapshot_member_id = snapshot.member_id.clone();
         let after_frame_seq = snapshot.last_delivered_frame_seq;
-        let Ok(frames) = backend_call(Arc::clone(&backend), move |backend| {
+        let frames = match backend_call(Arc::clone(&backend), move |backend| {
             backend.live_observation_suffix(
                 &session,
                 &snapshot_room_id,
@@ -5311,26 +5533,39 @@ async fn publish_live_frames(
             )
         })
         .await
-        else {
-            registry.close(&snapshot.session_id, ErrorCode::StorageUnavailable);
-            continue;
+        {
+            Ok(frames) => frames,
+            Err(error) => {
+                registry.close_generation(&snapshot.session_id, snapshot.generation, error.code());
+                continue;
+            }
         };
         if frames.len() > LIVE_PUSH_CAPACITY {
             registry.queue_metrics.frames.note_backpressure();
-            registry.close(&snapshot.session_id, ErrorCode::SlowConsumer);
+            registry.close_generation(
+                &snapshot.session_id,
+                snapshot.generation,
+                ErrorCode::SlowConsumer,
+            );
             continue;
         }
+        let mut expected_frame_seq = snapshot.last_delivered_frame_seq.saturating_add(1);
         for frame in frames {
             if frame.room_id != snapshot.room_id
                 || frame.member_id != snapshot.member_id
-                || frame.frame_seq <= snapshot.last_delivered_frame_seq
+                || frame.frame_seq != expected_frame_seq
             {
-                registry.close(&snapshot.session_id, ErrorCode::Internal);
+                registry.close_generation(
+                    &snapshot.session_id,
+                    snapshot.generation,
+                    ErrorCode::Internal,
+                );
                 break;
             }
             let frame_seq = frame.frame_seq;
             match prepare_live_push(
                 &frame,
+                snapshot.generation,
                 Arc::clone(&snapshot.queued_frames),
                 Arc::clone(&snapshot.queued_payload_bytes),
                 &registry.queue_metrics,
@@ -5338,17 +5573,30 @@ async fn publish_live_frames(
                 Ok(push) => {
                     if snapshot.sender.try_send(push).is_err() {
                         registry.queue_metrics.frames.note_backpressure();
-                        registry.close(&snapshot.session_id, ErrorCode::SlowConsumer);
+                        registry.close_generation(
+                            &snapshot.session_id,
+                            snapshot.generation,
+                            ErrorCode::SlowConsumer,
+                        );
                         break;
                     }
-                    registry.mark_delivered(&snapshot.session_id, frame_seq);
+                    registry.mark_delivered(&snapshot.session_id, snapshot.generation, frame_seq);
+                    expected_frame_seq = frame_seq.saturating_add(1);
                 }
                 Err(OutboundMessageError::SlowConsumer) => {
-                    registry.close(&snapshot.session_id, ErrorCode::SlowConsumer);
+                    registry.close_generation(
+                        &snapshot.session_id,
+                        snapshot.generation,
+                        ErrorCode::SlowConsumer,
+                    );
                     break;
                 }
                 Err(OutboundMessageError::Internal) => {
-                    registry.close(&snapshot.session_id, ErrorCode::Internal);
+                    registry.close_generation(
+                        &snapshot.session_id,
+                        snapshot.generation,
+                        ErrorCode::Internal,
+                    );
                     break;
                 }
             }
@@ -5452,10 +5700,13 @@ async fn dispatch_message(
     backend: Arc<dyn GatewayBackend>,
     live_streams: &LiveStreamRegistry,
     push_sender: &mpsc::Sender<LivePush>,
+    push_receiver: &mut mpsc::Receiver<LivePush>,
     close_sender: &watch::Sender<Option<ErrorCode>>,
     session: &Arc<GatewaySession>,
     envelope: VersionedEnvelope<Value>,
     live: &mut bool,
+    stream_generation: &mut u64,
+    synchronized_generation: &mut Option<u64>,
     attached_stream: &mut Option<AttachedStream>,
     runner: &mut RunnerConnectionState,
     runner_presence: &RunnerPresenceRegistry,
@@ -5671,7 +5922,25 @@ async fn dispatch_message(
         "room.attach" => {
             // A fresh attach must acknowledge its own synchronization; it cannot
             // inherit the previous stream's readiness evidence.
-            live_streams.unregister(session.session_id().as_str());
+            let prior_room_id = attached_stream
+                .as_ref()
+                .map(|attached| attached.room_id.clone());
+            *live = false;
+            *synchronized_generation = None;
+            *attached_stream = None;
+            *stream_generation = stream_generation.wrapping_add(1).max(1);
+            // Fence the old registration under its Room's publication lock.
+            // A publisher either completes before this unregister or observes
+            // no registration at all; its queued push still carries the old
+            // generation and is discarded by the connection loop.
+            if let Some(room_id) = prior_room_id {
+                let room_lock = live_streams.room_publication_lock(&room_id);
+                let _guard = room_lock.lock().await;
+                live_streams.unregister(session.session_id().as_str());
+            } else {
+                live_streams.unregister(session.session_id().as_str());
+            }
+            while push_receiver.try_recv().is_ok() {}
             let request = decode_body::<RoomAttach>(body).map_err(|_| ())?;
             let reply = match backend_call(Arc::clone(&backend), {
                 let session = Arc::clone(session);
@@ -5777,8 +6046,18 @@ async fn dispatch_message(
             let sync_room_id = request.room_id.clone();
             let sync_member_id = request.member_id.clone();
             let through_frame_head = request.through_frame_head;
+            let Some(attached) = attached_stream.as_ref() else {
+                send_error(socket, request_id, ErrorCode::SyncBarrierMismatch, true).await?;
+                return Ok(());
+            };
+            if attached.room_id != sync_room_id || attached.member_id != sync_member_id {
+                send_error(socket, request_id, ErrorCode::SyncBarrierMismatch, true).await?;
+                return Ok(());
+            }
+            let current_generation = *stream_generation;
             let sync_result = {
-                let _publication_guard = live_streams.publication_lock.lock().await;
+                let room_lock = live_streams.room_publication_lock(&sync_room_id);
+                let _publication_guard = room_lock.lock().await;
                 match backend_call(Arc::clone(&backend), {
                     let session = Arc::clone(session);
                     move |backend| backend.sync_ack(&session, request)
@@ -5794,20 +6073,18 @@ async fn dispatch_message(
                             .unwrap_or(through_frame_head);
                         match prepare_observation_batch(frames) {
                             Ok(prepared_frames) => {
-                                let registration = if let Some(attached) = attached_stream.as_ref()
-                                    && attached.room_id == sync_room_id
-                                    && attached.member_id == sync_member_id
-                                {
-                                    live_streams.register(
-                                        Arc::clone(session),
-                                        sync_room_id.clone(),
-                                        sync_member_id.clone(),
-                                        registration_frame_seq,
-                                        push_sender.clone(),
-                                        close_sender.clone(),
-                                    )
+                                let registration = if *stream_generation == current_generation {
+                                    live_streams.register_generation(LiveStreamRegistrationInput {
+                                        session: Arc::clone(session),
+                                        room_id: sync_room_id.clone(),
+                                        member_id: sync_member_id.clone(),
+                                        generation: current_generation,
+                                        last_delivered_frame_seq: registration_frame_seq,
+                                        sender: push_sender.clone(),
+                                        close: close_sender.clone(),
+                                    })
                                 } else {
-                                    Ok(())
+                                    Err(BackendError::ResetRequired)
                                 };
                                 registration
                                     .map(|()| (prepared_frames, frame_count))
@@ -5855,6 +6132,7 @@ async fn dispatch_message(
                 correlation,
             );
             *live = true;
+            *synchronized_generation = Some(current_generation);
             for message in prepared_frames {
                 if send_websocket_message(socket.send(message), WEBSOCKET_SEND_TIMEOUT)
                     .await
@@ -5946,7 +6224,13 @@ async fn dispatch_message(
                 );
                 return Ok(());
             }
-            if !*live {
+            if !action_matches_active_barrier(
+                &request,
+                *live,
+                *synchronized_generation,
+                *stream_generation,
+                attached_stream.as_ref(),
+            ) {
                 send_error(socket, request_id, ErrorCode::SyncBarrierMismatch, true).await?;
                 record_admission_with_correlation(
                     telemetry,
@@ -6215,6 +6499,7 @@ fn reason_for_backend_error(error: &BackendError) -> telemetry::ReasonCodeV1 {
         BackendError::RoomFaulted | BackendError::RoomQuarantined => {
             telemetry::ReasonCodeV1::RecoveryRequired
         }
+        BackendError::ResetRequired => telemetry::ReasonCodeV1::RecoveryRequired,
     }
 }
 
@@ -6225,6 +6510,7 @@ fn is_retryable(error: &BackendError) -> bool {
             | BackendError::Indeterminate
             | BackendError::Busy
             | BackendError::StorageUnavailable
+            | BackendError::ResetRequired
     )
 }
 
@@ -6421,9 +6707,9 @@ mod tests {
     use std::str::FromStr;
     use std::sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use axum::{
         body::Body,
@@ -6443,7 +6729,8 @@ mod tests {
         CreateRoomRequest, CreateRoomResponse, ErrorCode, ErrorEnvelope, LobbyLaunchResponse,
         ObservationAck, ObservationDeliver, OperatorRunnerConnectionV1, OperatorRunnerPresenceV1,
         PackReference, PrincipalKind, Projection, ProjectionResponse, ReplayResponse, RoomAttach,
-        RoomHead, RoomSyncAck, RunnerHello, ServerWelcome, TimerFireResponse, UlidString,
+        RoomHead, RoomSyncAck, RunnerHello, ServerWelcome, TimerFireRequest, TimerFireResponse,
+        UlidString,
     };
     use worldstream_runtime::{EffectiveConfig, StorageProfile};
     use worldstream_sqlite::SqliteRoomStore;
@@ -6707,6 +6994,130 @@ mod tests {
     impl TelemetryExporter for FailingExporter {
         fn export(&self, _: &[TelemetryEventV1]) -> Result<(), ExportError> {
             Err(ExportError::Unavailable)
+        }
+    }
+
+    #[derive(Clone)]
+    struct BlockedRoomPublicationBackend {
+        room_a_entered: Arc<AtomicBool>,
+        release_room_a: Arc<AtomicBool>,
+        scheduler_tick_calls: Arc<AtomicUsize>,
+        scheduler_tick_blocked: Arc<AtomicBool>,
+        release_scheduler_tick: Option<Arc<AtomicBool>>,
+    }
+
+    impl super::GatewayBackend for BlockedRoomPublicationBackend {
+        fn admission_principal(
+            &self,
+            session: &super::GatewaySession,
+        ) -> Result<String, super::BackendError> {
+            super::UnavailableBackend.admission_principal(session)
+        }
+
+        fn hello(
+            &self,
+            session: &super::GatewaySession,
+            request: &ClientHello,
+        ) -> Result<ServerWelcome, super::BackendError> {
+            super::UnavailableBackend.hello(session, request)
+        }
+
+        fn create_room(
+            &self,
+            session: &super::GatewaySession,
+            request: CreateRoomRequest,
+        ) -> Result<CreateRoomResponse, super::BackendError> {
+            super::UnavailableBackend.create_room(session, request)
+        }
+
+        fn projection(
+            &self,
+            session: &super::GatewaySession,
+            room_id: &str,
+        ) -> Result<ProjectionResponse, super::BackendError> {
+            super::UnavailableBackend.projection(session, room_id)
+        }
+
+        fn attach(
+            &self,
+            session: &super::GatewaySession,
+            request: RoomAttach,
+        ) -> Result<super::AttachReply, super::BackendError> {
+            super::UnavailableBackend.attach(session, request)
+        }
+
+        fn sync_ack(
+            &self,
+            session: &super::GatewaySession,
+            request: RoomSyncAck,
+        ) -> Result<Vec<ObservationDeliver>, super::BackendError> {
+            super::UnavailableBackend.sync_ack(session, request)
+        }
+
+        fn observation_ack(
+            &self,
+            session: &super::GatewaySession,
+            request: ObservationAck,
+        ) -> Result<Option<u64>, super::BackendError> {
+            super::UnavailableBackend.observation_ack(session, request)
+        }
+
+        fn action(
+            &self,
+            session: &super::GatewaySession,
+            request: ActionSubmit,
+        ) -> Result<super::ActionReply, super::BackendError> {
+            super::UnavailableBackend.action(session, request)
+        }
+
+        fn fire_timer(
+            &self,
+            session: &super::GatewaySession,
+            room_id: &str,
+            request: TimerFireRequest,
+        ) -> Result<TimerFireResponse, super::BackendError> {
+            super::UnavailableBackend.fire_timer(session, room_id, request)
+        }
+
+        fn scheduler_tick(&self) -> Result<Vec<String>, super::BackendError> {
+            let call = self.scheduler_tick_calls.fetch_add(1, Ordering::AcqRel);
+            if call > 0 {
+                if let Some(release) = &self.release_scheduler_tick {
+                    self.scheduler_tick_blocked.store(true, Ordering::Release);
+                    while !release.load(Ordering::Acquire) {
+                        std::thread::yield_now();
+                    }
+                }
+            }
+            Ok(vec!["room-a".to_owned(), "room-b".to_owned()])
+        }
+
+        fn live_observation_suffix(
+            &self,
+            _: &super::GatewaySession,
+            room_id: &str,
+            member_id: &str,
+            after_frame_seq: u64,
+        ) -> Result<Vec<ObservationDeliver>, super::BackendError> {
+            if room_id == "room-a" {
+                self.room_a_entered.store(true, Ordering::Release);
+                while !self.release_room_a.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+            }
+            if after_frame_seq >= 1 {
+                return Ok(Vec::new());
+            }
+            Ok(vec![ObservationDeliver {
+                room_id: room_id.to_owned(),
+                member_id: member_id.to_owned(),
+                frame_seq: 1,
+                cause_room_seq: 1,
+                frame_kind: "transition".to_owned(),
+                observation_schema: "test/v1".to_owned(),
+                observation: serde_json::json!({"room": room_id}),
+                frame_payload_hash: "hash".to_owned(),
+            }])
         }
     }
 
@@ -7698,6 +8109,109 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stale_publication_generation_cannot_advance_or_close_a_reattached_stream() {
+        let session_id = "01ARZ3NDEKTSV4RRFFQ69G5FB2"
+            .parse()
+            .unwrap_or_else(|error| unreachable!("ULID: {error}"));
+        let session = Arc::new(GatewaySession::new(
+            session_id,
+            CapabilityBearerV1::from_bytes([0x4b; 32]),
+        ));
+        let (old_sender, _old_receiver) = tokio::sync::mpsc::channel(super::LIVE_PUSH_CAPACITY);
+        let (old_close, _old_close_receiver) = tokio::sync::watch::channel(None);
+        let registry = super::LiveStreamRegistry::default();
+        registry
+            .register_generation(super::LiveStreamRegistrationInput {
+                session: Arc::clone(&session),
+                room_id: "room".to_owned(),
+                member_id: "member".to_owned(),
+                generation: 1,
+                last_delivered_frame_seq: 3,
+                sender: old_sender,
+                close: old_close,
+            })
+            .unwrap_or_else(|error| unreachable!("old registration: {error:?}"));
+        registry.unregister(session.session_id().as_str());
+
+        let (new_sender, _new_receiver) = tokio::sync::mpsc::channel(super::LIVE_PUSH_CAPACITY);
+        let (new_close, new_close_receiver) = tokio::sync::watch::channel(None);
+        registry
+            .register_generation(super::LiveStreamRegistrationInput {
+                session,
+                room_id: "room".to_owned(),
+                member_id: "member".to_owned(),
+                generation: 2,
+                last_delivered_frame_seq: 7,
+                sender: new_sender,
+                close: new_close,
+            })
+            .unwrap_or_else(|error| unreachable!("new registration: {error:?}"));
+        registry.mark_delivered("01ARZ3NDEKTSV4RRFFQ69G5FB2", 1, 99);
+        assert_eq!(
+            registry
+                .snapshots_for_room("room")
+                .first()
+                .map(|snapshot| snapshot.last_delivered_frame_seq),
+            Some(7)
+        );
+        registry.close_generation("01ARZ3NDEKTSV4RRFFQ69G5FB2", 1, ErrorCode::Internal);
+        assert!(
+            !new_close_receiver
+                .has_changed()
+                .unwrap_or_else(|error| unreachable!("new close receiver: {error}"))
+        );
+        assert!(registry.is_registered("01ARZ3NDEKTSV4RRFFQ69G5FB2"));
+    }
+
+    #[test]
+    fn reattach_requires_new_sync_before_action() {
+        let request = ActionSubmit {
+            room_id: "room".to_owned(),
+            member_id: "member".to_owned(),
+            action_id: "action".to_owned(),
+            based_on_room_seq: 0,
+            action_type: "increment".to_owned(),
+            payload: serde_json::json!({}),
+        };
+        let attached = super::AttachedStream {
+            room_id: "room".to_owned(),
+            member_id: "member".to_owned(),
+        };
+        assert!(super::action_matches_active_barrier(
+            &request,
+            true,
+            Some(2),
+            2,
+            Some(&attached),
+        ));
+        assert!(!super::action_matches_active_barrier(
+            &request,
+            true,
+            Some(1),
+            2,
+            Some(&attached),
+        ));
+        assert!(!super::action_matches_active_barrier(
+            &request, false, None, 2, None,
+        ));
+    }
+
+    #[test]
+    fn failed_attach_leaves_connection_unsynchronized_and_targetless() {
+        let request = ActionSubmit {
+            room_id: "room".to_owned(),
+            member_id: "member".to_owned(),
+            action_id: "action".to_owned(),
+            based_on_room_seq: 0,
+            action_type: "increment".to_owned(),
+            payload: serde_json::json!({}),
+        };
+        assert!(!super::action_matches_active_barrier(
+            &request, false, None, 3, None,
+        ));
+    }
+
     #[tokio::test]
     async fn publication_waits_for_registration_barrier_without_a_gap() {
         let session_id = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
@@ -7710,7 +8224,8 @@ mod tests {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(super::LIVE_PUSH_CAPACITY);
         let (close_sender, _close_receiver) = tokio::sync::watch::channel(None);
         let registry = super::LiveStreamRegistry::default();
-        let publication_guard = registry.publication_lock.lock().await;
+        let room_lock = registry.room_publication_lock("room");
+        let publication_guard = room_lock.lock().await;
         let registry_for_publish = registry.clone();
         let backend = Arc::new(SuccessfulCreateBackend);
         let publisher = tokio::spawn(async move {
@@ -7736,6 +8251,251 @@ mod tests {
             unreachable!("live frame was lost across the registration barrier")
         };
         assert_eq!(push.frame.frame_seq, 1);
+    }
+
+    #[tokio::test]
+    async fn independent_room_publication_locks_do_not_stall_each_other() {
+        let registry = super::LiveStreamRegistry::default();
+        let room_a = registry.room_publication_lock("room-a");
+        let room_b = registry.room_publication_lock("room-b");
+        let guard_a = room_a.lock().await;
+        let waiting_lock = Arc::clone(&room_a);
+        let waiting_a = tokio::spawn(async move {
+            let _guard = waiting_lock.lock().await;
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiting_a.is_finished(), "Room A should still be blocked");
+        let _guard_b = tokio::time::timeout(Duration::from_millis(50), room_b.lock())
+            .await
+            .unwrap_or_else(|error| unreachable!("Room B publication was stalled: {error}"));
+        drop(guard_a);
+        waiting_a
+            .await
+            .unwrap_or_else(|error| unreachable!("Room A lock task: {error}"));
+    }
+
+    async fn wait_for_test_flag(flag: &AtomicBool, release: &AtomicBool, label: &str) {
+        let result = tokio::time::timeout(Duration::from_secs(2), async {
+            while !flag.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        if result.is_err() {
+            release.store(true, Ordering::Release);
+            unreachable!("{label} did not become set before the test deadline");
+        }
+    }
+
+    #[tokio::test]
+    async fn blocked_room_a_publication_does_not_stall_room_b_publication() {
+        let entered_a = Arc::new(AtomicBool::new(false));
+        let release_a = Arc::new(AtomicBool::new(false));
+        let backend = Arc::new(BlockedRoomPublicationBackend {
+            room_a_entered: Arc::clone(&entered_a),
+            release_room_a: Arc::clone(&release_a),
+            scheduler_tick_calls: Arc::new(AtomicUsize::new(0)),
+            scheduler_tick_blocked: Arc::new(AtomicBool::new(false)),
+            release_scheduler_tick: None,
+        });
+        let registry = super::LiveStreamRegistry::default();
+        let session_a = Arc::new(GatewaySession::new(
+            "01ARZ3NDEKTSV4RRFFQ69G5FC8"
+                .parse()
+                .unwrap_or_else(|error| unreachable!("Room A session: {error}")),
+            CapabilityBearerV1::from_bytes([0x4c; 32]),
+        ));
+        let session_b = Arc::new(GatewaySession::new(
+            "01ARZ3NDEKTSV4RRFFQ69G5FC9"
+                .parse()
+                .unwrap_or_else(|error| unreachable!("Room B session: {error}")),
+            CapabilityBearerV1::from_bytes([0x4d; 32]),
+        ));
+        let (sender_a, _receiver_a) = tokio::sync::mpsc::channel(super::LIVE_PUSH_CAPACITY);
+        let (close_a, _close_receiver_a) = tokio::sync::watch::channel(None);
+        registry
+            .register(
+                Arc::clone(&session_a),
+                "room-a".to_owned(),
+                "member".to_owned(),
+                0,
+                sender_a,
+                close_a,
+            )
+            .unwrap_or_else(|error| unreachable!("Room A registration: {error:?}"));
+        let (sender_b, mut receiver_b) = tokio::sync::mpsc::channel(super::LIVE_PUSH_CAPACITY);
+        let (close_b, _close_receiver_b) = tokio::sync::watch::channel(None);
+        registry
+            .register(
+                session_b,
+                "room-b".to_owned(),
+                "member".to_owned(),
+                0,
+                sender_b,
+                close_b,
+            )
+            .unwrap_or_else(|error| unreachable!("Room B registration: {error:?}"));
+
+        let registry_a = registry.clone();
+        let backend_a = Arc::clone(&backend);
+        let publish_a = tokio::spawn(async move {
+            super::publish_live_frames(backend_a, &registry_a, "room-a").await;
+        });
+        wait_for_test_flag(&entered_a, &release_a, "direct Room A publication").await;
+        let registry_b = registry.clone();
+        let publish_b = tokio::spawn(async move {
+            super::publish_live_frames(backend, &registry_b, "room-b").await;
+        });
+        let b_push = tokio::time::timeout(Duration::from_secs(1), receiver_b.recv())
+            .await
+            .unwrap_or_else(|error| {
+                unreachable!("Room B publication stalled behind Room A: {error}")
+            });
+        assert!(b_push.is_some(), "Room B did not receive its publication");
+        assert!(
+            !publish_a.is_finished(),
+            "Room A was not held by the blocked backend"
+        );
+        release_a.store(true, Ordering::Release);
+        publish_a
+            .await
+            .unwrap_or_else(|error| unreachable!("Room A publication task: {error}"));
+        publish_b
+            .await
+            .unwrap_or_else(|error| unreachable!("Room B publication task: {error}"));
+    }
+
+    #[tokio::test]
+    async fn scheduler_tick_keeps_room_b_live_while_room_a_backend_is_blocked() {
+        let entered_a = Arc::new(AtomicBool::new(false));
+        let release_a = Arc::new(AtomicBool::new(false));
+        let backend = Arc::new(BlockedRoomPublicationBackend {
+            room_a_entered: Arc::clone(&entered_a),
+            release_room_a: Arc::clone(&release_a),
+            scheduler_tick_calls: Arc::new(AtomicUsize::new(0)),
+            scheduler_tick_blocked: Arc::new(AtomicBool::new(false)),
+            release_scheduler_tick: None,
+        });
+        let registry = super::LiveStreamRegistry::default();
+        let session_a = Arc::new(GatewaySession::new(
+            "01ARZ3NDEKTSV4RRFFQ69G5FCB"
+                .parse()
+                .unwrap_or_else(|error| unreachable!("Room A session: {error}")),
+            CapabilityBearerV1::from_bytes([0x50; 32]),
+        ));
+        let (sender_a, _receiver_a) = tokio::sync::mpsc::channel(super::LIVE_PUSH_CAPACITY);
+        let (close_a, _close_receiver_a) = tokio::sync::watch::channel(None);
+        registry
+            .register(
+                session_a,
+                "room-a".to_owned(),
+                "member".to_owned(),
+                0,
+                sender_a,
+                close_a,
+            )
+            .unwrap_or_else(|error| unreachable!("Room A registration: {error:?}"));
+        let session_b = Arc::new(GatewaySession::new(
+            "01ARZ3NDEKTSV4RRFFQ69G5FCA"
+                .parse()
+                .unwrap_or_else(|error| unreachable!("Room B session: {error}")),
+            CapabilityBearerV1::from_bytes([0x4e; 32]),
+        ));
+        let (sender_b, mut receiver_b) = tokio::sync::mpsc::channel(super::LIVE_PUSH_CAPACITY);
+        let (close_b, _close_receiver_b) = tokio::sync::watch::channel(None);
+        registry
+            .register(
+                session_b,
+                "room-b".to_owned(),
+                "member".to_owned(),
+                0,
+                sender_b,
+                close_b,
+            )
+            .unwrap_or_else(|error| unreachable!("Room B registration: {error:?}"));
+        let scheduler = super::SchedulerRuntimeOwner::start(backend.clone(), registry)
+            .unwrap_or_else(|error| unreachable!("scheduler start: {error:?}"));
+        wait_for_test_flag(&entered_a, &release_a, "scheduler Room A publication").await;
+        let b_push = tokio::time::timeout(Duration::from_secs(2), receiver_b.recv())
+            .await
+            .unwrap_or_else(|error| {
+                unreachable!("scheduler stalled Room B behind Room A: {error}")
+            });
+        assert!(b_push.is_some(), "scheduler did not publish Room B");
+        release_a.store(true, Ordering::Release);
+        drop(scheduler);
+    }
+
+    #[tokio::test]
+    async fn scheduler_shutdown_is_bounded_when_room_publication_backend_hangs() {
+        let entered_a = Arc::new(AtomicBool::new(false));
+        let release_a = Arc::new(AtomicBool::new(false));
+        let backend = Arc::new(BlockedRoomPublicationBackend {
+            room_a_entered: Arc::clone(&entered_a),
+            release_room_a: Arc::clone(&release_a),
+            scheduler_tick_calls: Arc::new(AtomicUsize::new(0)),
+            scheduler_tick_blocked: Arc::new(AtomicBool::new(false)),
+            release_scheduler_tick: None,
+        });
+        let registry = super::LiveStreamRegistry::default();
+        let session_a = Arc::new(GatewaySession::new(
+            "01ARZ3NDEKTSV4RRFFQ69G5FCB"
+                .parse()
+                .unwrap_or_else(|error| unreachable!("Room A session: {error}")),
+            CapabilityBearerV1::from_bytes([0x4f; 32]),
+        ));
+        let (sender_a, _receiver_a) = tokio::sync::mpsc::channel(super::LIVE_PUSH_CAPACITY);
+        let (close_a, _close_receiver_a) = tokio::sync::watch::channel(None);
+        registry
+            .register(
+                session_a,
+                "room-a".to_owned(),
+                "member".to_owned(),
+                0,
+                sender_a,
+                close_a,
+            )
+            .unwrap_or_else(|error| unreachable!("Room A registration: {error:?}"));
+        let scheduler = super::SchedulerRuntimeOwner::start(backend, registry)
+            .unwrap_or_else(|error| unreachable!("scheduler start: {error:?}"));
+        wait_for_test_flag(&entered_a, &release_a, "publication shutdown Room A").await;
+
+        let started = Instant::now();
+        drop(scheduler);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "scheduler shutdown waited for a blocked provider"
+        );
+        // The blocking worker cannot be aborted by Tokio; release it after
+        // proving that scheduler ownership itself shut down within its bound.
+        release_a.store(true, Ordering::Release);
+    }
+
+    #[tokio::test]
+    async fn scheduler_shutdown_is_bounded_when_scheduler_tick_hangs() {
+        let release_tick = Arc::new(AtomicBool::new(false));
+        let tick_blocked = Arc::new(AtomicBool::new(false));
+        let backend = Arc::new(BlockedRoomPublicationBackend {
+            room_a_entered: Arc::new(AtomicBool::new(false)),
+            release_room_a: Arc::new(AtomicBool::new(true)),
+            scheduler_tick_calls: Arc::new(AtomicUsize::new(0)),
+            scheduler_tick_blocked: Arc::clone(&tick_blocked),
+            release_scheduler_tick: Some(Arc::clone(&release_tick)),
+        });
+        let scheduler =
+            super::SchedulerRuntimeOwner::start(backend, super::LiveStreamRegistry::default())
+                .unwrap_or_else(|error| unreachable!("scheduler start: {error:?}"));
+        wait_for_test_flag(&tick_blocked, &release_tick, "scheduler tick").await;
+
+        let started = Instant::now();
+        drop(scheduler);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "scheduler shutdown waited for a blocked scheduler tick"
+        );
+        // The blocking worker cannot be aborted by Tokio; release it after
+        // proving that the scheduler's bounded tick wait has exited.
+        release_tick.store(true, Ordering::Release);
     }
 
     #[tokio::test]
@@ -10528,6 +11288,218 @@ mod tests {
                 assert!(!rejected.contains("sec-websocket-protocol"));
             }
         }
+    }
+
+    fn send_masked_frame(stream: &mut TcpStream, opcode: u8, final_frame: bool, payload: &[u8]) {
+        let mut frame = Vec::with_capacity(payload.len() + 14);
+        frame.push((if final_frame { 0x80 } else { 0 }) | opcode);
+        match payload.len() {
+            0..=125 => frame.push(
+                0x80 | u8::try_from(payload.len())
+                    .unwrap_or_else(|error| unreachable!("short frame length: {error}")),
+            ),
+            126..=65_535 => {
+                frame.push(0x80 | 126);
+                frame.extend_from_slice(
+                    &u16::try_from(payload.len())
+                        .unwrap_or_else(|error| unreachable!("medium frame length: {error}"))
+                        .to_be_bytes(),
+                );
+            }
+            _ => {
+                frame.push(0x80 | 127);
+                frame.extend_from_slice(
+                    &u64::try_from(payload.len())
+                        .unwrap_or_else(|error| unreachable!("long frame length: {error}"))
+                        .to_be_bytes(),
+                );
+            }
+        }
+        let mask = [0x31, 0x42, 0x53, 0x64];
+        frame.extend_from_slice(&mask);
+        frame.extend(
+            payload
+                .iter()
+                .enumerate()
+                .map(|(index, byte)| byte ^ mask[index % mask.len()]),
+        );
+        stream
+            .write_all(&frame)
+            .unwrap_or_else(|error| unreachable!("WebSocket frame write: {error}"));
+    }
+
+    fn send_masked_frame_header(
+        stream: &mut TcpStream,
+        opcode: u8,
+        final_frame: bool,
+        payload_len: usize,
+    ) {
+        let mut frame = Vec::with_capacity(14);
+        frame.push((if final_frame { 0x80 } else { 0 }) | opcode);
+        match payload_len {
+            0..=125 => frame.push(
+                0x80 | u8::try_from(payload_len)
+                    .unwrap_or_else(|error| unreachable!("short frame length: {error}")),
+            ),
+            126..=65_535 => {
+                frame.push(0x80 | 126);
+                frame.extend_from_slice(
+                    &u16::try_from(payload_len)
+                        .unwrap_or_else(|error| unreachable!("medium frame length: {error}"))
+                        .to_be_bytes(),
+                );
+            }
+            _ => {
+                frame.push(0x80 | 127);
+                frame.extend_from_slice(
+                    &u64::try_from(payload_len)
+                        .unwrap_or_else(|error| unreachable!("long frame length: {error}"))
+                        .to_be_bytes(),
+                );
+            }
+        }
+        frame.extend_from_slice(&[0x31, 0x42, 0x53, 0x64]);
+        stream
+            .write_all(&frame)
+            .unwrap_or_else(|error| unreachable!("WebSocket frame header write: {error}"));
+    }
+
+    fn read_server_frame(stream: &mut TcpStream) {
+        let mut header = [0_u8; 2];
+        stream
+            .read_exact(&mut header)
+            .unwrap_or_else(|error| unreachable!("WebSocket welcome frame: {error}"));
+        assert_eq!(header[0] & 0x80, 0x80, "welcome frame was fragmented");
+        assert_eq!(header[0] & 0x0f, 0x1, "welcome frame was not text");
+        assert_eq!(header[1] & 0x80, 0, "server frame must not be masked");
+        let payload_len = match header[1] & 0x7f {
+            length @ 0..=125 => usize::from(length),
+            126 => {
+                let mut extended = [0_u8; 2];
+                stream
+                    .read_exact(&mut extended)
+                    .unwrap_or_else(|error| unreachable!("welcome frame length: {error}"));
+                usize::from(u16::from_be_bytes(extended))
+            }
+            127 => {
+                let mut extended = [0_u8; 8];
+                stream
+                    .read_exact(&mut extended)
+                    .unwrap_or_else(|error| unreachable!("welcome frame length: {error}"));
+                usize::try_from(u64::from_be_bytes(extended))
+                    .unwrap_or_else(|error| unreachable!("welcome frame size: {error}"))
+            }
+            _ => unreachable!("reserved WebSocket payload length"),
+        };
+        let mut payload = vec![0_u8; payload_len];
+        stream
+            .read_exact(&mut payload)
+            .unwrap_or_else(|error| unreachable!("welcome frame payload: {error}"));
+    }
+
+    fn assert_close_or_eof(stream: &mut TcpStream, context: &str) {
+        let mut response = [0_u8; 2];
+        match stream.read_exact(&mut response) {
+            Ok(()) => assert_eq!(response[0] & 0x0f, 0x8, "{context} was not rejected"),
+            Err(error) => assert!(
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+                ),
+                "{context} did not close promptly: {error}"
+            ),
+        }
+    }
+
+    fn raw_browser_socket(address: SocketAddr) -> TcpStream {
+        let mut stream = TcpStream::connect(address)
+            .unwrap_or_else(|error| unreachable!("raw WebSocket connect: {error}"));
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap_or_else(|error| unreachable!("raw WebSocket timeout: {error}"));
+        let request = format!(
+            "GET /v1/stream HTTP/1.1\r\nHost: {address}\r\nOrigin: http://127.0.0.1:5173\r\nAuthorization: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: {}\r\n\r\n",
+            auth_header()
+                .to_str()
+                .unwrap_or_else(|error| unreachable!("raw WebSocket authorization: {error}")),
+            worldstream_protocol::WEBSOCKET_SUBPROTOCOL,
+        );
+        stream
+            .write_all(request.as_bytes())
+            .unwrap_or_else(|error| unreachable!("raw WebSocket handshake: {error}"));
+        let mut response = Vec::new();
+        while !response.windows(4).any(|value| value == b"\r\n\r\n") {
+            let mut byte = [0_u8; 1];
+            stream
+                .read_exact(&mut byte)
+                .unwrap_or_else(|error| unreachable!("raw WebSocket response: {error}"));
+            response.push(byte[0]);
+        }
+        assert!(response.starts_with(b"HTTP/1.1 101 "), "{response:?}");
+
+        let hello = serde_json::json!({
+            "protocol": worldstream_protocol::PROTOCOL_VERSION,
+            "type": "client.hello",
+            "message_id": "01ARZ3NDEKTSV4RRFFQ69G5FD0",
+            "body": {
+                "client_name": "transport-regression",
+                "client_version": "test",
+                "mode": "participant",
+                "supported_protocols": [worldstream_protocol::PROTOCOL_VERSION],
+                "capabilities": worldstream_protocol::REQUIRED_CLIENT_CAPABILITIES,
+            }
+        });
+        let hello = serde_json::to_vec(&hello)
+            .unwrap_or_else(|error| unreachable!("raw client hello encoding: {error}"));
+        send_masked_frame(&mut stream, 0x1, true, &hello);
+        read_server_frame(&mut stream);
+        stream
+    }
+
+    #[tokio::test]
+    async fn websocket_rejects_binary_and_oversized_fragmented_messages_before_admission() {
+        let app = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("operator state: {error}"))
+                .with_backend(Arc::new(NestedRuntimeBackend)),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|error| unreachable!("listener: {error}"));
+        let address = listener
+            .local_addr()
+            .unwrap_or_else(|error| unreachable!("listener address: {error}"));
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+        });
+        tokio::task::spawn_blocking(move || {
+            let mut binary = raw_browser_socket(address);
+            send_masked_frame(&mut binary, 0x2, true, b"binary");
+            let mut close_header = [0_u8; 2];
+            binary
+                .read_exact(&mut close_header)
+                .unwrap_or_else(|error| unreachable!("binary rejection close frame: {error}"));
+            assert_eq!(close_header[0] & 0x0f, 0x8, "binary frame was not rejected");
+
+            let mut fragmented = raw_browser_socket(address);
+            let first = vec![b'x'; 300 * 1024];
+            let second = vec![b'x'; 300 * 1024];
+            send_masked_frame(&mut fragmented, 0x1, false, &first);
+            send_masked_frame(&mut fragmented, 0x0, false, &second);
+            assert_close_or_eof(&mut fragmented, "oversized fragmented message");
+
+            let mut oversized_frame = raw_browser_socket(address);
+            send_masked_frame_header(&mut oversized_frame, 0x1, true, 513 * 1024);
+            assert_close_or_eof(&mut oversized_frame, "oversized frame");
+        })
+        .await
+        .unwrap_or_else(|error| unreachable!("WebSocket regression task: {error}"));
+        server.abort();
+        let _ = server.await;
     }
 
     #[tokio::test]

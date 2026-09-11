@@ -103,7 +103,7 @@ release_verified_patches_status = "resolved"
 
 [migrations]
 logical_history_id = "worldstream-storage-v1"
-schema_contract_fingerprint = "blake3:a7adbaff70625c037c84e066314db5b62c14f9243d2995c1fddba7f2284dce26"
+schema_contract_fingerprint = "blake3:5dd5bac169e8cce8c6620c463e2d64ffee16ead73200559a1209ae3b2c173f8c"
 schema_contract_fingerprint_status = "implementation_verified"
 direction = "forward_only"
 backend_specific_execution = true
@@ -184,6 +184,24 @@ status = "implementation_verified"
 id = "0013-external-input-preparations-v1"
 sqlite_checksum = "blake3:2097e928196db3f2c572818b4ac87e436512df6f2e9f0cd098521a90366651f0"
 postgresql_checksum = "blake3:7ec83a157ccdcfec733ceae17e74a0133355a1325103ae1b2c1e110b6aa04013"
+status = "implementation_verified"
+
+[[migrations.entries]]
+id = "0014-observation-retention-v1"
+sqlite_checksum = "blake3:153136e4d0fff3ffee1a02c0349fec8a2c1c907b636ce3396276177518225ac6"
+postgresql_checksum = ""
+status = "implementation_verified"
+
+[[migrations.entries]]
+id = "0014-observation-reset-generation-v1"
+sqlite_checksum = ""
+postgresql_checksum = "blake3:dca72c199c348e0866a33d33e780f0f2f540cbfa3a3919ba4d596f833f418c9b"
+status = "implementation_verified"
+
+[[migrations.entries]]
+id = "0015-observation-retention-v1"
+sqlite_checksum = ""
+postgresql_checksum = "blake3:2da70b2996032fc64e6e69abdc96af587740aecf360d8ace6ad104d5aa9af524"
 status = "implementation_verified"
 
 [[migrations.entries]]

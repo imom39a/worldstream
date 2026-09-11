@@ -7282,7 +7282,7 @@ fn isolated_room_bytes_digest(
         ),
         (
             "members",
-            "SELECT jsonb_build_array(room_id, member_id, membership_bytes, frame_head, membership_generation, retained_frame_floor, last_ack_frame_seq, reset_required_through)::text FROM worldstream_members WHERE room_id = $1 ORDER BY member_id",
+            "SELECT jsonb_build_array(room_id, member_id, membership_bytes, frame_head, membership_generation, retained_frame_floor, last_ack_frame_seq, reset_required_through, reset_generation)::text FROM worldstream_members WHERE room_id = $1 ORDER BY member_id",
         ),
         (
             "timers",
@@ -7294,7 +7294,7 @@ fn isolated_room_bytes_digest(
         ),
         (
             "frames",
-            "SELECT jsonb_build_array(room_id, member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash)::text FROM worldstream_frames WHERE room_id = $1 ORDER BY member_id, frame_seq",
+            "SELECT jsonb_build_array(room_id, member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash, retained_at)::text FROM worldstream_frames WHERE room_id = $1 ORDER BY member_id, frame_seq",
         ),
         (
             "observation_consequences",
@@ -7880,7 +7880,7 @@ const DURABLE_DOMAIN_QUERIES: [(NativeRestoreDurableDomainV1, &str); 34] = [
     ),
     (
         NativeRestoreDurableDomainV1::MemberDeliveryState,
-        "SELECT jsonb_build_array(room_id, member_id, membership_bytes, frame_head, membership_generation, retained_frame_floor, last_ack_frame_seq, reset_required_through)::text FROM worldstream_members ORDER BY room_id, member_id",
+        "SELECT jsonb_build_array(room_id, member_id, membership_bytes, frame_head, membership_generation, retained_frame_floor, last_ack_frame_seq, reset_required_through, reset_generation)::text FROM worldstream_members ORDER BY room_id, member_id",
     ),
     (
         NativeRestoreDurableDomainV1::Timers,
@@ -7892,7 +7892,7 @@ const DURABLE_DOMAIN_QUERIES: [(NativeRestoreDurableDomainV1, &str); 34] = [
     ),
     (
         NativeRestoreDurableDomainV1::Frames,
-        "SELECT jsonb_build_array(room_id, member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash)::text FROM worldstream_frames ORDER BY room_id, member_id, frame_seq",
+        "SELECT jsonb_build_array(room_id, member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash, retained_at)::text FROM worldstream_frames ORDER BY room_id, member_id, frame_seq",
     ),
     (
         NativeRestoreDurableDomainV1::ObservationConsequences,
@@ -9337,6 +9337,7 @@ fn append_observation_positions_bytes(
         append_length_prefixed(bytes, position.member_id.as_bytes());
         bytes.extend_from_slice(&position.frame_head.to_be_bytes());
         bytes.extend_from_slice(&position.retained_frame_floor.to_be_bytes());
+        bytes.extend_from_slice(&position.reset_generation.to_be_bytes());
         for optional in [position.last_ack_frame_seq, position.reset_required_through] {
             match optional {
                 Some(value) => {
@@ -13817,6 +13818,7 @@ mod tests {
                 retained_frame_floor: 1,
                 last_ack_frame_seq: None,
                 reset_required_through: None,
+                reset_generation: 0,
             },
             crate::PostgresObservationPositionEvidenceV1 {
                 member_id: "member-b".to_owned(),
@@ -13824,6 +13826,7 @@ mod tests {
                 retained_frame_floor: 3,
                 last_ack_frame_seq: Some(2),
                 reset_required_through: None,
+                reset_generation: 0,
             },
         ]
     }

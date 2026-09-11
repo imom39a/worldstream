@@ -29,6 +29,9 @@ use worldstream_postgres::{PostgresAdmin, PostgresRoomStore};
 const ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const MEMBER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC0";
 const PRINCIPAL: &str = "01ARZ3NDEKTSV4RRFFQ69G5FD0";
+const SERVING_FENCE_ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
+const SERVING_FENCE_MEMBER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB1";
+const SERVING_FENCE_PRINCIPAL: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB2";
 const SEED: &str = "hex:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 
 fn parsed<T>(value: &str) -> T
@@ -45,7 +48,10 @@ fn canonical(bytes: &[u8]) -> CanonicalJsonV1 {
     CanonicalJsonV1::parse(bytes).unwrap_or_else(|error| panic!("canonical fixture: {error}"))
 }
 
-fn creation_fixture(
+fn creation_fixture_for(
+    room_id: &str,
+    member_id: &str,
+    principal_id: &str,
     initial_value: u32,
     idempotency_key: &str,
 ) -> (
@@ -57,8 +63,8 @@ fn creation_fixture(
     let registry =
         builtin_counter_registry().unwrap_or_else(|error| panic!("Counter registry: {error}"));
     let member = MembershipV1::new(
-        parsed(MEMBER),
-        parsed(PRINCIPAL),
+        parsed(member_id),
+        parsed(principal_id),
         PrincipalKindV1::Human,
         MembershipStandingV1::Enabled,
         AccessModeV1::Participant,
@@ -69,7 +75,7 @@ fn creation_fixture(
         canonical(format!(r#"{{"initial_value":{initial_value},"maximum_value":4}}"#).as_bytes());
     let genesis = registry
         .prepare_genesis_for_new_room(&PackGenesisRequestV1 {
-            room_id: parsed(ROOM),
+            room_id: parsed(room_id),
             pack_digest: counter_v2_digest(),
             configuration: configuration.clone(),
             room_seed: parsed::<RoomSeedV1>(SEED),
@@ -83,7 +89,7 @@ fn creation_fixture(
         configuration,
         vec![
             InitialMembershipProposalV1::new(
-                parsed(PRINCIPAL),
+                parsed(principal_id),
                 PrincipalKindV1::Human,
                 MembershipStandingV1::Enabled,
                 AccessModeV1::Participant,
@@ -94,17 +100,29 @@ fn creation_fixture(
     );
     let witness = PreparedAuthorityWitnessV1::mint_for_conformance(
         "postgres-fixture-authority",
-        parsed(PRINCIPAL),
+        parsed(principal_id),
         1,
         &canonical(br#"{"scope":"create_room","revoked":false}"#),
     )
     .unwrap_or_else(|error| panic!("authority: {error}"));
     let identity = AdministrationOperationIdentityV1 {
-        authenticated_principal: parsed(PRINCIPAL),
+        authenticated_principal: parsed(principal_id),
         versioned_operation_kind: worldstream_core::CREATE_ROOM_OPERATION_KIND.to_owned(),
         idempotency_key: idempotency_key.to_owned(),
     };
     (genesis, request, witness, identity)
+}
+
+fn creation_fixture(
+    initial_value: u32,
+    idempotency_key: &str,
+) -> (
+    worldstream_core::PreparedNewRoomGenesisV1,
+    RoomCreationRequestV1,
+    PreparedAuthorityWitnessV1,
+    AdministrationOperationIdentityV1,
+) {
+    creation_fixture_for(ROOM, MEMBER, PRINCIPAL, initial_value, idempotency_key)
 }
 
 fn prepared_creation(initial_value: u32, key: &str) -> PreparedRoomWriteV1 {
@@ -670,7 +688,7 @@ fn interrupted_migration_restarts_without_duplicate_history() {
 
 #[test]
 fn kernel_conformance_migration_is_reviewed_and_forward_only() {
-    assert_eq!(migration_history().len(), 12);
+    assert_eq!(migration_history().len(), 14);
     assert_eq!(
         migration_history()[2].id,
         worldstream_postgres::KERNEL_CONFORMANCE_MIGRATION_ID
@@ -703,6 +721,113 @@ fn kernel_conformance_migration_is_reviewed_and_forward_only() {
         worldstream_postgres::MIGRATION_0011_SQL
             .contains("public.worldstream_transfer_target_fence")
     );
+}
+
+#[cfg(feature = "conformance-tracer")]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn live_serving_fence_rejects_corrupt_current_materialization_and_membership() {
+    let (Some(admin_dsn), Some(runtime_dsn)) = (
+        std::env::var_os("WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN"),
+        std::env::var_os("WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN"),
+    ) else {
+        println!("LIVE_POSTGRES_SERVING_FENCE=SKIP reason=dsn_unset");
+        return;
+    };
+    let admin = PostgresAdmin::new(
+        PostgresConnectionConfig::direct_admin(admin_dsn.to_string_lossy())
+            .unwrap_or_else(|error| panic!("serving-fence admin config: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("serving-fence admin handle: {error}"));
+    admin
+        .migrate()
+        .unwrap_or_else(|error| panic!("serving-fence migration: {error}"));
+    let runtime = PostgresRoomStore::new(
+        PostgresConnectionConfig::runtime(
+            runtime_dsn.to_string_lossy(),
+            PostgresConnectionPath::Direct,
+        )
+        .unwrap_or_else(|error| panic!("serving-fence runtime config: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("serving-fence runtime handle: {error}"));
+    let (genesis, request, witness, identity) = creation_fixture_for(
+        SERVING_FENCE_ROOM,
+        SERVING_FENCE_MEMBER,
+        SERVING_FENCE_PRINCIPAL,
+        0,
+        "serving-fence-current-materialization",
+    );
+    runtime
+        .seed_conformance_authority(&witness, true)
+        .unwrap_or_else(|error| panic!("serving-fence authority seed: {error:?}"));
+    let prepared = PreparedRoomCreationV1::from_registry_genesis_for_conformance(
+        identity, &request, witness, genesis,
+    )
+    .unwrap_or_else(|error| panic!("serving-fence creation plan: {error}"));
+    assert!(matches!(
+        runtime.commit(&prepared.into()),
+        RoomCommitResolutionV1::GenesisCreated {
+            status: ResolutionStatusV1::New,
+            ..
+        }
+    ));
+    let room = parsed(SERVING_FENCE_ROOM);
+    assert!(
+        runtime
+            .current_room_serving_fence(&room)
+            .unwrap_or_else(|error| panic!("valid serving fence: {error}"))
+            .is_some()
+    );
+
+    let mut client = Client::connect(&admin_dsn.to_string_lossy(), NoTls)
+        .unwrap_or_else(|error| panic!("serving-fence admin client: {error}"));
+    let membership_bytes: Vec<u8> = client
+        .query_one(
+            "SELECT membership_bytes FROM worldstream_members WHERE room_id = $1 AND member_id = $2",
+            &[&SERVING_FENCE_ROOM, &SERVING_FENCE_MEMBER],
+        )
+        .unwrap_or_else(|error| panic!("read serving membership: {error}"))
+        .get(0);
+    client
+        .execute(
+            "UPDATE worldstream_members SET membership_bytes = '{}'::bytea WHERE room_id = $1 AND member_id = $2",
+            &[&SERVING_FENCE_ROOM, &SERVING_FENCE_MEMBER],
+        )
+        .unwrap_or_else(|error| panic!("corrupt serving membership: {error}"));
+    assert!(matches!(
+        runtime.current_room_serving_fence(&room),
+        Err(worldstream_postgres::PostgresRoomVerificationError::Corrupt { .. })
+    ));
+    client
+        .execute(
+            "UPDATE worldstream_members SET membership_bytes = $1 WHERE room_id = $2 AND member_id = $3",
+            &[&membership_bytes, &SERVING_FENCE_ROOM, &SERVING_FENCE_MEMBER],
+        )
+        .unwrap_or_else(|error| panic!("restore serving membership: {error}"));
+    let core_state_bytes: Vec<u8> = client
+        .query_one(
+            "SELECT core_state_bytes FROM worldstream_materializations WHERE room_id = $1",
+            &[&SERVING_FENCE_ROOM],
+        )
+        .unwrap_or_else(|error| panic!("read current materialization: {error}"))
+        .get(0);
+    client
+        .execute(
+            "UPDATE worldstream_materializations SET core_state_bytes = '{}'::bytea WHERE room_id = $1",
+            &[&SERVING_FENCE_ROOM],
+        )
+        .unwrap_or_else(|error| panic!("corrupt current materialization: {error}"));
+    assert!(matches!(
+        runtime.current_room_serving_fence(&room),
+        Err(worldstream_postgres::PostgresRoomVerificationError::Corrupt { .. })
+    ));
+    client
+        .execute(
+            "UPDATE worldstream_materializations SET core_state_bytes = $1 WHERE room_id = $2",
+            &[&core_state_bytes, &SERVING_FENCE_ROOM],
+        )
+        .unwrap_or_else(|error| panic!("restore current materialization: {error}"));
+    println!("LIVE_POSTGRES_SERVING_FENCE=PASS current-record+materialization+membership");
 }
 
 #[cfg(feature = "conformance-tracer")]

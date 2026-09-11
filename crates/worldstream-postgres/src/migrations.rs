@@ -41,6 +41,11 @@ pub const TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID: &str =
 /// The forward migration that durably retains the first sampled Semantic Time
 /// for one exact ExternalInput operation identity and request hash.
 pub const EXTERNAL_INPUT_PREPARATION_MIGRATION_ID: &str = "0013-external-input-preparations-v1";
+/// The forward migration that adds an operational reset epoch. It distinguishes
+/// a reset installed by one Session from a later reset at the same frame head.
+pub const OBSERVATION_RESET_GENERATION_MIGRATION_ID: &str = "0014-observation-reset-generation-v1";
+/// Adds operational retention age and bounded runtime prefix maintenance.
+pub const OBSERVATION_RETENTION_MIGRATION_ID: &str = "0015-observation-retention-v1";
 
 /// A migration body and its stable identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -112,7 +117,7 @@ pub const SCHEMA_FINGERPRINT_MATERIAL: &str = concat!(
     "worldstream_members(",
     "room_id:text:NO,member_id:text:NO,membership_bytes:bytea:NO,frame_head:bigint:NO,",
     "membership_generation:bigint:NO,retained_frame_floor:bigint:NO,last_ack_frame_seq:bigint:YES,",
-    "reset_required_through:bigint:YES);",
+    "reset_required_through:bigint:YES,reset_generation:bigint:NO);",
     "worldstream_timers(",
     "room_id:text:NO,timer_id:text:NO,generation:bigint:NO,scheduled_for:text:NO,",
     "payload_bytes:bytea:NO,state:text:NO);",
@@ -120,7 +125,7 @@ pub const SCHEMA_FINGERPRINT_MATERIAL: &str = concat!(
     "room_id:text:NO,room_seq:bigint:NO,transition_bytes:bytea:NO);",
     "worldstream_frames(",
     "room_id:text:NO,member_id:text:NO,frame_seq:bigint:NO,cause_room_seq:bigint:NO,",
-    "payload_bytes:bytea:NO,payload_hash:bytea:NO);",
+    "payload_bytes:bytea:NO,payload_hash:bytea:NO,retained_at:text:NO);",
     "worldstream_observation_consequences(",
     "room_id:text:NO,member_id:text:NO,cause_room_seq:bigint:NO,consequence_kind:text:NO,",
     "payload_bytes:bytea:YES,projection_hash:bytea:YES);",
@@ -211,7 +216,7 @@ pub fn schema_contract_fingerprint() -> Blake3DigestV1 {
 
 /// The complete ordered migration history.
 #[must_use]
-pub fn migration_history() -> [MigrationDescriptor; 12] {
+pub fn migration_history() -> [MigrationDescriptor; 14] {
     [
         MigrationDescriptor {
             version: 1,
@@ -272,6 +277,16 @@ pub fn migration_history() -> [MigrationDescriptor; 12] {
             version: 12,
             id: EXTERNAL_INPUT_PREPARATION_MIGRATION_ID,
             sql: MIGRATION_0012_SQL,
+        },
+        MigrationDescriptor {
+            version: 13,
+            id: OBSERVATION_RESET_GENERATION_MIGRATION_ID,
+            sql: MIGRATION_0013_SQL,
+        },
+        MigrationDescriptor {
+            version: 14,
+            id: OBSERVATION_RETENTION_MIGRATION_ID,
+            sql: MIGRATION_0014_SQL,
         },
     ]
 }
@@ -763,6 +778,17 @@ CREATE TRIGGER worldstream_transfer_fence_external_input_preparations
     FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
 ";
 
+/// Adds an operational monotonic epoch for reset markers. It does not alter
+/// canonical history, the durable Cursor, or frame sequence semantics.
+pub const MIGRATION_0013_SQL: &str = r"
+ALTER TABLE worldstream_members
+    ADD COLUMN reset_generation bigint NOT NULL DEFAULT 0
+    CHECK (reset_generation >= 0);
+";
+
+/// Frozen operational retention migration.
+pub const MIGRATION_0014_SQL: &str = include_str!("migrations/0015-observation-retention.sql");
+
 /// The result of checking an ordered migration prefix.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MigrationVerification {
@@ -1033,6 +1059,18 @@ mod identity_tests {
     }
 
     #[test]
+    fn observation_reset_generation_is_a_forward_operational_migration() {
+        let migration = migration_history()[12];
+        assert_eq!(migration.version, 13);
+        assert_eq!(migration.id, OBSERVATION_RESET_GENERATION_MIGRATION_ID);
+        assert!(
+            migration
+                .sql
+                .contains("ADD COLUMN reset_generation bigint NOT NULL DEFAULT 0")
+        );
+    }
+
+    #[test]
     fn transfer_lifecycle_migration_and_schema_fingerprint_are_stable() {
         let migration = migration_history()[10];
         assert_eq!(migration.id, TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID);
@@ -1042,7 +1080,7 @@ mod identity_tests {
         );
         assert_eq!(
             schema_contract_fingerprint().to_string(),
-            "blake3:a7adbaff70625c037c84e066314db5b62c14f9243d2995c1fddba7f2284dce26"
+            "blake3:5dd5bac169e8cce8c6620c463e2d64ffee16ead73200559a1209ae3b2c173f8c"
         );
     }
 }

@@ -22,6 +22,7 @@ mod authority;
 pub mod conformance;
 mod migrations;
 pub mod native_restore;
+mod retention;
 pub mod telemetry;
 mod transfer;
 
@@ -33,13 +34,15 @@ pub use migrations::{
     KERNEL_PARITY_MIGRATION_ID, LOGICAL_HISTORY_ID, MIGRATION_0002_SQL, MIGRATION_0003_SQL,
     MIGRATION_0004_SQL, MIGRATION_0005_SQL, MIGRATION_0006_SQL, MIGRATION_0007_SQL,
     MIGRATION_0008_SQL, MIGRATION_0009_SQL, MIGRATION_0010_SQL, MIGRATION_0011_SQL,
-    MIGRATION_0012_SQL, MigrationDescriptor, MigrationFailpoint, MigrationRecord,
-    MigrationVerification, MigrationVerificationError, SCHEMA_CONTRACT_ID,
-    SCHEMA_FINGERPRINT_MATERIAL, TRANSFER_PUBLICATION_MIGRATION_ID,
+    MIGRATION_0012_SQL, MIGRATION_0013_SQL, MIGRATION_0014_SQL, MigrationDescriptor,
+    MigrationFailpoint, MigrationRecord, MigrationVerification, MigrationVerificationError,
+    OBSERVATION_RESET_GENERATION_MIGRATION_ID, OBSERVATION_RETENTION_MIGRATION_ID,
+    SCHEMA_CONTRACT_ID, SCHEMA_FINGERPRINT_MATERIAL, TRANSFER_PUBLICATION_MIGRATION_ID,
     TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID, TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID,
     migration_history, schema_contract_fingerprint, verify_migration_prefix,
     verify_runtime_migration_history,
 };
+pub use retention::PostgresObservationRetentionV1;
 pub use telemetry::{
     PostgresIntegrityStatusV1, PostgresMigrationPhaseV1, PostgresRecoveryPhaseV1,
     PostgresStorageDiagnosticKindV1, PostgresTelemetryEventV1, PostgresTelemetrySink,
@@ -94,7 +97,8 @@ use worldstream_core::{
     RoomRecoveryStorageV1, RoomSequenceV1, RoomStatusV1, RunnerControlAdapterInputV1,
     RunnerControlOperationV1, StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1,
     TimerGenerationV1, TimerId, TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1,
-    commit_existing_room, prepare_activation_context, projection_hash_for_canonical_bytes,
+    VerifiedCurrentRoomMaterializationV1, ViewerAdapterInputV1, commit_existing_room,
+    prepare_activation_context, projection_hash_for_canonical_bytes,
 };
 
 #[cfg(feature = "conformance-tracer")]
@@ -109,6 +113,17 @@ const POSTGRES_MINIMUM_VERSION_NUM: u32 = 170_011;
 /// The schema contract implemented by this adapter.
 pub const POSTGRES_SCHEMA_VERSION: &str = "worldstream-postgresql-room-commit-v1";
 const MAX_ACTIVATION_LEASE_MS: u64 = 30_000;
+/// A single retained Observation read may materialize no more than this many
+/// frames. Larger ranges take a coherent Projection Reset instead of loading
+/// an unbounded backlog that the transport would reject anyway.
+pub const MAX_OBSERVATION_READ_FRAMES: usize = 256;
+/// A single retained Observation read may materialize no more than this many
+/// estimated wire bytes. Canonical JSON uses the same serializer as the wire
+/// payload; each frame also reserves fixed envelope metadata before loading
+/// its payload bytes.
+pub const MAX_OBSERVATION_READ_BYTES: usize = 4 * 1024 * 1024;
+const OBSERVATION_WIRE_OVERHEAD_BYTES: usize = 1024;
+const MAX_OBSERVATION_FRAME_WIRE_BYTES: usize = 512 * 1024;
 
 /// One native-restore capture admits at most 32 maximum encoded provider rows
 /// in aggregate. This is separate from the semantic per-object bound because
@@ -235,9 +250,9 @@ const NATIVE_ROOM_PROVIDER_READ_QUERIES_V1: &[&str] = &[
     "SELECT jsonb_build_array(room_id, core_state_bytes, activity_state_bytes)::text FROM worldstream_materializations WHERE room_id = $1 ORDER BY room_id",
     "SELECT jsonb_build_array(room_id, room_seq, transition_bytes)::text FROM worldstream_transitions WHERE room_id = $1 ORDER BY room_seq",
     "SELECT jsonb_build_array(room_id, room_seq, genesis_or_transition_hash, core_schema_version, pack_digest, core_state_hash, activity_state_hash, authoritative_state_hash, complete_head_bytes, core_state_bytes, activity_state_bytes)::text FROM worldstream_room_snapshots WHERE room_id = $1 ORDER BY room_seq",
-    "SELECT jsonb_build_array(room_id, member_id, membership_bytes, frame_head, membership_generation, retained_frame_floor, last_ack_frame_seq, reset_required_through)::text FROM worldstream_members WHERE room_id = $1 ORDER BY member_id",
+    "SELECT jsonb_build_array(room_id, member_id, membership_bytes, frame_head, membership_generation, retained_frame_floor, last_ack_frame_seq, reset_required_through, reset_generation)::text FROM worldstream_members WHERE room_id = $1 ORDER BY member_id",
     "SELECT jsonb_build_array(room_id, timer_id, generation, scheduled_for, payload_bytes, state)::text FROM worldstream_timers WHERE room_id = $1 ORDER BY timer_id, generation",
-    "SELECT jsonb_build_array(room_id, member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash)::text FROM worldstream_frames WHERE room_id = $1 ORDER BY member_id, frame_seq",
+    "SELECT jsonb_build_array(room_id, member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash, retained_at)::text FROM worldstream_frames WHERE room_id = $1 ORDER BY member_id, frame_seq",
     "SELECT jsonb_build_array(room_id, member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash)::text FROM worldstream_observation_consequences WHERE room_id = $1 ORDER BY member_id, cause_room_seq",
     "SELECT jsonb_build_array(room_id, cause_room_seq, decision_id, target_member_id, decision_bytes)::text FROM worldstream_activation_decisions WHERE room_id = $1 ORDER BY cause_room_seq, decision_id",
     "SELECT jsonb_build_array(room_id, incident_seq, generation, status, reason_code, details_bytes)::text FROM worldstream_integrity_incidents WHERE room_id = $1 ORDER BY incident_seq",
@@ -772,6 +787,7 @@ pub enum PostgresObservationDeliveryV1 {
         cursor_exclusive: u64,
         frame_head: u64,
         retained_floor: u64,
+        reset_generation: u64,
         frames: Vec<PostgresFrameEvidenceV1>,
     },
     Reset {
@@ -779,6 +795,7 @@ pub enum PostgresObservationDeliveryV1 {
         frame_head: u64,
         retained_floor: u64,
         reset_through: Option<u64>,
+        reset_generation: u64,
         projection_bytes: Vec<u8>,
     },
 }
@@ -790,6 +807,7 @@ pub struct PostgresObservationPositionsV1 {
     pub retained_frame_floor: u64,
     pub last_ack_frame_seq: Option<u64>,
     pub reset_required_through: Option<u64>,
+    pub reset_generation: u64,
 }
 
 /// Closed errors from the PostgreSQL observation delivery seam.
@@ -805,6 +823,12 @@ pub enum PostgresObservationError {
     FutureCursor,
     #[error("projection bytes are not canonical")]
     InvalidProjection,
+    #[error("the observed Room head, integrity, or Membership changed")]
+    Fenced,
+    #[error("the current authority fence no longer permits this observation read")]
+    Authority,
+    #[error("incremental observation delivery requires a fresh reset")]
+    ResetRequired,
 }
 
 /// Closed failures from the production Core-prepared existing-Room seam.
@@ -1833,7 +1857,7 @@ impl PostgresAdmin {
         }
         let member_rows = client
             .query(
-                "SELECT member_id, membership_bytes, frame_head, retained_frame_floor, last_ack_frame_seq, reset_required_through FROM worldstream_members WHERE room_id = $1 ORDER BY member_id",
+                "SELECT member_id, membership_bytes, frame_head, retained_frame_floor, last_ack_frame_seq, reset_required_through, reset_generation FROM worldstream_members WHERE room_id = $1 ORDER BY member_id",
                 &[&room_id],
             )
             .map_err(PostgresRoomVerificationError::Sql)?;
@@ -1894,6 +1918,14 @@ impl PostgresAdmin {
                     })
                 })
                 .transpose()?;
+            let reset_generation = u64::try_from(row.try_get::<_, i64>(6).map_err(|_| {
+                PostgresRoomVerificationError::Corrupt {
+                    what: "observation position",
+                }
+            })?)
+            .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                what: "observation position",
+            })?;
             if retained_frame_floor == 0
                 || last_ack_frame_seq.is_some_and(|value| value == 0 || value > frame_head)
                 || reset_required_through.is_some_and(|value| value > frame_head)
@@ -1908,6 +1940,7 @@ impl PostgresAdmin {
                 retained_frame_floor,
                 last_ack_frame_seq,
                 reset_required_through,
+                reset_generation,
             });
             canonical_membership_bytes.push((member_id, bytes));
         }
@@ -2373,6 +2406,33 @@ pub struct PostgresRoomVerification {
     pub integrity_incidents: Vec<PostgresIntegrityIncidentEvidenceV1>,
 }
 
+/// Exact lightweight serving fence read from the durable Room root and
+/// Membership frame heads. It validates a uniquely owned cached executor
+/// before use; it never reads or replays canonical history.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PostgresRoomServingFenceV1 {
+    head: CompleteHeadV1,
+    integrity: RoomIntegrityStateV1,
+    frame_heads: BTreeMap<MemberId, u64>,
+}
+
+impl PostgresRoomServingFenceV1 {
+    #[must_use]
+    pub const fn head(&self) -> &CompleteHeadV1 {
+        &self.head
+    }
+
+    #[must_use]
+    pub const fn integrity(&self) -> &RoomIntegrityStateV1 {
+        &self.integrity
+    }
+
+    #[must_use]
+    pub const fn frame_heads(&self) -> &BTreeMap<MemberId, u64> {
+        &self.frame_heads
+    }
+}
+
 impl PostgresRoomVerification {
     /// Executes the exact retained Pack revision across the complete persisted
     /// Genesis-to-Head lineage and compares the replay result with every
@@ -2450,6 +2510,7 @@ pub struct PostgresObservationPositionEvidenceV1 {
     pub retained_frame_floor: u64,
     pub last_ack_frame_seq: Option<u64>,
     pub reset_required_through: Option<u64>,
+    pub reset_generation: u64,
 }
 
 /// Exact bytes for one persisted non-frame observation consequence.
@@ -4095,6 +4156,214 @@ impl PostgresRoomStore {
         .verify_room(room_id)
     }
 
+    /// Reads the current durable Complete Head, operational integrity, and
+    /// Member frame heads in one lightweight transaction. It deliberately
+    /// avoids canonical history and payload tables; serving callers use it
+    /// only to validate a uniquely owned executor before preparing work.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bounded current materialization or membership
+    /// witnesses are unavailable, malformed, or fail integrity verification.
+    // This must retain one transaction across all current-state witnesses so a
+    // cache borrow cannot combine positions from different durable states.
+    #[allow(clippy::too_many_lines)]
+    pub fn current_room_serving_fence(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<Option<PostgresRoomServingFenceV1>, PostgresRoomVerificationError> {
+        let mut client = self
+            .connect()
+            .map_err(PostgresRoomVerificationError::Connection)?;
+        let mut tx = client
+            .transaction()
+            .map_err(PostgresRoomVerificationError::Sql)?;
+        let row = tx
+            .query_opt(
+                "SELECT head_bytes, integrity_generation, integrity_status FROM worldstream_room_roots WHERE room_id = $1 FOR SHARE",
+                &[&room_id.as_str()],
+            )
+            .map_err(PostgresRoomVerificationError::Sql)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let head_bytes: Vec<u8> =
+            row.try_get(0)
+                .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                    what: "serving head",
+                })?;
+        let head =
+            CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&head_bytes).map_err(|_| {
+                PostgresRoomVerificationError::Corrupt {
+                    what: "serving head",
+                }
+            })?;
+        if head.room_id() != room_id {
+            return Err(PostgresRoomVerificationError::Corrupt {
+                what: "serving head",
+            });
+        }
+        let generation = u64::try_from(row.try_get::<_, i64>(1).map_err(|_| {
+            PostgresRoomVerificationError::Corrupt {
+                what: "serving integrity",
+            }
+        })?)
+        .map_err(|_| PostgresRoomVerificationError::Corrupt {
+            what: "serving integrity",
+        })?;
+        let integrity_generation = IntegrityGenerationV1::new(generation).map_err(|_| {
+            PostgresRoomVerificationError::Corrupt {
+                what: "serving integrity",
+            }
+        })?;
+        let status: String =
+            row.try_get(2)
+                .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                    what: "serving integrity",
+                })?;
+        let integrity = match status.as_str() {
+            "healthy" => {
+                RoomIntegrityStateV1::new(RoomIntegrityStatusV1::Healthy, integrity_generation)
+            }
+            "faulted" => {
+                RoomIntegrityStateV1::new(RoomIntegrityStatusV1::Faulted, integrity_generation)
+            }
+            "quarantined" => {
+                RoomIntegrityStateV1::new(RoomIntegrityStatusV1::Quarantined, integrity_generation)
+            }
+            _ => {
+                return Err(PostgresRoomVerificationError::Corrupt {
+                    what: "serving integrity",
+                });
+            }
+        };
+        // Verify only the record named by the captured Head plus the current
+        // materialization. This is bounded (one Genesis/Transition row and
+        // one materialization row), yet prevents a warm executor from serving
+        // after a corrupt current Core/Activity cache has been written.
+        let current_record = if head.room_seq().get() == 0 {
+            tx.query_opt(
+                "SELECT genesis_bytes FROM worldstream_genesis WHERE room_id = $1 FOR SHARE",
+                &[&room_id.as_str()],
+            )
+            .map_err(PostgresRoomVerificationError::Sql)?
+        } else {
+            let sequence = i64::try_from(head.room_seq().get()).map_err(|_| {
+                PostgresRoomVerificationError::Corrupt {
+                    what: "serving transition",
+                }
+            })?;
+            tx.query_opt(
+                "SELECT transition_bytes FROM worldstream_transitions WHERE room_id = $1 AND room_seq = $2 FOR SHARE",
+                &[&room_id.as_str(), &sequence],
+            )
+            .map_err(PostgresRoomVerificationError::Sql)?
+        }
+        .ok_or(PostgresRoomVerificationError::Corrupt {
+            what: "serving current record",
+        })?;
+        let current_record_bytes: Vec<u8> =
+            current_record
+                .try_get(0)
+                .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                    what: "serving current record",
+                })?;
+        let materialization = tx
+            .query_opt(
+                "SELECT core_state_bytes, activity_state_bytes FROM worldstream_materializations WHERE room_id = $1 FOR SHARE",
+                &[&room_id.as_str()],
+            )
+            .map_err(PostgresRoomVerificationError::Sql)?
+            .ok_or(PostgresRoomVerificationError::Corrupt {
+                what: "serving materialization",
+            })?;
+        let core_state_bytes: Vec<u8> =
+            materialization
+                .try_get(0)
+                .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                    what: "serving materialization",
+                })?;
+        let activity_state_bytes: Vec<u8> =
+            materialization
+                .try_get(1)
+                .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                    what: "serving materialization",
+                })?;
+        let verified = VerifiedCurrentRoomMaterializationV1::verify_for_storage(
+            &head,
+            &current_record_bytes,
+            &core_state_bytes,
+            &activity_state_bytes,
+        )
+        .map_err(|_| PostgresRoomVerificationError::Corrupt {
+            what: "serving materialization",
+        })?;
+        let mut expected_memberships = verified
+            .memberships()
+            .iter()
+            .map(|materialization| {
+                (
+                    materialization.membership.member_id().clone(),
+                    materialization.canonical_membership_bytes.as_slice(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let rows = tx
+            .query(
+                "SELECT member_id, membership_bytes, frame_head FROM worldstream_members WHERE room_id = $1 ORDER BY member_id FOR SHARE",
+                &[&room_id.as_str()],
+            )
+            .map_err(PostgresRoomVerificationError::Sql)?;
+        let mut frame_heads = BTreeMap::new();
+        for row in rows {
+            let member: String =
+                row.try_get(0)
+                    .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                        what: "serving member",
+                    })?;
+            let member_id =
+                member
+                    .parse::<MemberId>()
+                    .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                        what: "serving member",
+                    })?;
+            let membership_bytes: Vec<u8> =
+                row.try_get(1)
+                    .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                        what: "serving member",
+                    })?;
+            if expected_memberships.remove(&member_id) != Some(membership_bytes.as_slice()) {
+                return Err(PostgresRoomVerificationError::Corrupt {
+                    what: "serving member",
+                });
+            }
+            let frame_head = u64::try_from(row.try_get::<_, i64>(2).map_err(|_| {
+                PostgresRoomVerificationError::Corrupt {
+                    what: "serving frame head",
+                }
+            })?)
+            .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                what: "serving frame head",
+            })?;
+            if frame_heads.insert(member_id, frame_head).is_some() {
+                return Err(PostgresRoomVerificationError::Corrupt {
+                    what: "serving member",
+                });
+            }
+        }
+        if !expected_memberships.is_empty() {
+            return Err(PostgresRoomVerificationError::Corrupt {
+                what: "serving member",
+            });
+        }
+        tx.commit().map_err(PostgresRoomVerificationError::Sql)?;
+        Ok(Some(PostgresRoomServingFenceV1 {
+            head,
+            integrity,
+            frame_heads,
+        }))
+    }
+
     /// Recovers one exact executable Core trace through the production
     /// recovery SPI. PostgreSQL supplies only verified durable bytes; Core
     /// performs replay, reduction, and the guarded recovery fence.
@@ -4162,7 +4431,8 @@ impl PostgresRoomStore {
     }
 
     /// Prepares and commits one Core-authorized Participant Action through
-    /// the production Room Commit seam.
+    /// the production Room Commit seam. This cold path recovers an exact
+    /// trace, then delegates to the serving-trace path used by the gateway.
     pub fn commit_authorized_participant_action(
         &self,
         registry: &worldstream_core::PackRegistryV1,
@@ -4189,6 +4459,35 @@ impl PostgresRoomStore {
         let frame_heads = postgres_frame_heads(&trace, &verification);
         let integrity_generation = IntegrityGenerationV1::new(verification.integrity_generation)
             .map_err(|_| PostgresRoomCommitError::Preparation)?;
+        self.commit_authorized_participant_action_from_serving_trace(
+            authority,
+            request,
+            stimulus,
+            transition_id,
+            &mut trace,
+            integrity_generation,
+            &frame_heads,
+        )
+    }
+
+    /// Commits from an adapter-owned, uniquely leased serving trace after the
+    /// adapter has compared it with [`Self::current_room_serving_fence`]. The
+    /// durable commit still rechecks the complete Head, integrity, authority,
+    /// and Membership frame-head witnesses before installation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_authorized_participant_action_from_serving_trace(
+        &self,
+        authority: ParticipantActionAuthorityV1,
+        request: &ParticipantActionRequestV1,
+        stimulus: ParticipantActionV1,
+        transition_id: worldstream_core::TransitionId,
+        trace: &mut CoreTraceV1,
+        integrity_generation: IntegrityGenerationV1,
+        frame_heads: &BTreeMap<MemberId, u64>,
+    ) -> Result<RoomCommitResolutionV1, PostgresRoomCommitError> {
+        if stimulus.exact_basis_head.room_id() != trace.head().room_id() {
+            return Err(PostgresRoomCommitError::Preparation);
+        }
         let admitted_at = stimulus.admitted_at.clone();
         let prepared = if request.based_on_room_seq() == trace.head().room_seq() {
             let prepared_transition =
@@ -4205,19 +4504,19 @@ impl PostgresRoomStore {
                 Some(prepared) => match authority {
                     ParticipantActionAuthorityV1::EnabledParticipant(authority) => {
                         PreparedRoomCommitV1::for_authorized_action(
-                            &trace,
+                            trace,
                             request,
                             prepared,
                             transition_id,
                             integrity_generation,
                             authority,
-                            &frame_heads,
+                            frame_heads,
                         )
                         .map_err(|_| PostgresRoomCommitError::Preparation)?
                     }
                     ParticipantActionAuthorityV1::StableMembershipNotEnabled(authority) => {
                         PreparedRoomCommitV1::for_authorized_stable_action_disposition(
-                            &trace,
+                            trace,
                             request,
                             admitted_at.clone(),
                             integrity_generation,
@@ -4227,7 +4526,7 @@ impl PostgresRoomStore {
                     }
                 },
                 None => PreparedRoomCommitV1::for_authorized_stable_action_disposition(
-                    &trace,
+                    trace,
                     request,
                     admitted_at,
                     integrity_generation,
@@ -4237,7 +4536,7 @@ impl PostgresRoomStore {
             }
         } else {
             PreparedRoomCommitV1::for_authorized_stable_action_disposition(
-                &trace,
+                trace,
                 request,
                 admitted_at,
                 integrity_generation,
@@ -4245,9 +4544,7 @@ impl PostgresRoomStore {
             )
             .map_err(|_| PostgresRoomCommitError::Preparation)?
         };
-        Ok(commit_existing_room(self, &mut trace, prepared)
-            .into_parts()
-            .0)
+        Ok(commit_existing_room(self, trace, prepared).into_parts().0)
     }
 
     /// Prepares and commits one exact, server-loaded Timer generation through
@@ -4699,12 +4996,105 @@ impl PostgresRoomStore {
     }
 
     /// Reads a Cursor-bounded observation suffix under the Room root and
-    /// Membership row locks. A missing retained prefix or reset witness
-    /// returns a Projection Reset carrying the caller's Core-validated bytes.
+    /// Membership row locks. This compatibility seam has no head or authority
+    /// fence; production callers must use [`Self::read_observation_at`].
     pub fn read_observation(
         &self,
         room_id: &str,
         member_id: &str,
+        after_frame_seq: Option<u64>,
+        projection: &CanonicalJsonV1,
+    ) -> Result<PostgresObservationDeliveryV1, PostgresObservationError> {
+        self.read_observation_inner(room_id, member_id, None, None, after_frame_seq, projection)
+    }
+
+    /// Captures an authorized observation barrier at exactly one verified
+    /// Complete Head and integrity generation. The adapter revalidates the
+    /// consumed member-read grant in the same transaction before reading any
+    /// frame metadata or payload bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if authorization, the captured head/integrity fence,
+    /// or the bounded delivery suffix is no longer valid.
+    // These independent inputs are the non-forgeable barrier witness. Grouping
+    // them would obscure the authority/head/integrity boundary at call sites.
+    #[allow(clippy::too_many_arguments)]
+    pub fn read_observation_at(
+        &self,
+        room_id: &str,
+        member_id: &str,
+        expected_head: &CompleteHeadV1,
+        expected_integrity_generation: u64,
+        authority: &ViewerAdapterInputV1,
+        after_frame_seq: Option<u64>,
+        projection: &CanonicalJsonV1,
+    ) -> Result<PostgresObservationDeliveryV1, PostgresObservationError> {
+        self.read_observation_inner(
+            room_id,
+            member_id,
+            Some((expected_head, expected_integrity_generation)),
+            Some(authority),
+            after_frame_seq,
+            projection,
+        )
+    }
+
+    /// Reads a bounded incremental suffix without reconstructing a Pack view.
+    /// It is used only after a Session has installed a coherent reset/retained
+    /// barrier. A pruned range, reset witness, or oversized range reports an
+    /// explicit reset requirement so callers fence live delivery and reattach.
+    pub fn read_observation_suffix_bounded(
+        &self,
+        room_id: &str,
+        member_id: &str,
+        authority: &ViewerAdapterInputV1,
+        after_frame_seq: u64,
+        installed_reset_generation: u64,
+    ) -> Result<Vec<PostgresFrameEvidenceV1>, PostgresObservationError> {
+        let mut client = self
+            .connect()
+            .map_err(PostgresObservationError::Connection)?;
+        let mut tx = client
+            .transaction()
+            .map_err(PostgresObservationError::Sql)?;
+        revalidate_observation_authority(&mut tx, authority)?;
+        let row = tx
+            .query_opt(
+                "SELECT frame_head, retained_frame_floor, reset_required_through, reset_generation FROM worldstream_members WHERE room_id = $1 AND member_id = $2 FOR SHARE",
+                &[&room_id, &member_id],
+            )
+            .map_err(PostgresObservationError::Sql)?
+            .ok_or(PostgresObservationError::Corrupt)?;
+        let frame_head = nonnegative_u64(row.get::<_, i64>(0))?;
+        let retained_floor = nonnegative_u64(row.get::<_, i64>(1))?;
+        let reset_generation = nonnegative_u64(row.get::<_, i64>(3))?;
+        if after_frame_seq > frame_head {
+            return Err(PostgresObservationError::FutureCursor);
+        }
+        if reset_generation != installed_reset_generation
+            || after_frame_seq.saturating_add(1) < retained_floor
+        {
+            return Err(PostgresObservationError::ResetRequired);
+        }
+        let frames = read_bounded_observation_frames(
+            &mut tx,
+            room_id,
+            member_id,
+            after_frame_seq,
+            frame_head,
+        )?;
+        tx.commit().map_err(PostgresObservationError::Sql)?;
+        Ok(frames)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn read_observation_inner(
+        &self,
+        room_id: &str,
+        member_id: &str,
+        expected: Option<(&CompleteHeadV1, u64)>,
+        authority: Option<&ViewerAdapterInputV1>,
         after_frame_seq: Option<u64>,
         projection: &CanonicalJsonV1,
     ) -> Result<PostgresObservationDeliveryV1, PostgresObservationError> {
@@ -4717,9 +5107,37 @@ impl PostgresRoomStore {
         let mut tx = client
             .transaction()
             .map_err(PostgresObservationError::Sql)?;
+        // Every writer acquires authority witnesses before the Room root.
+        // Preserve that order here: the authority rows stay locked through
+        // this coherent storage read, so root -> authority cannot deadlock
+        // with a committing authority -> root transaction.
+        if let Some(authority) = authority {
+            revalidate_observation_authority(&mut tx, authority)?;
+        }
+        let root = tx
+            .query_opt(
+                "SELECT head_bytes, integrity_generation, integrity_status FROM worldstream_room_roots WHERE room_id = $1 FOR SHARE",
+                &[&room_id],
+            )
+            .map_err(PostgresObservationError::Sql)?
+            .ok_or(PostgresObservationError::Fenced)?;
+        let head_bytes: Vec<u8> = root.try_get(0).map_err(PostgresObservationError::Sql)?;
+        let integrity_generation = nonnegative_u64(
+            root.try_get::<_, i64>(1)
+                .map_err(PostgresObservationError::Sql)?,
+        )?;
+        let integrity_status: String = root.try_get(2).map_err(PostgresObservationError::Sql)?;
+        if integrity_status != "healthy"
+            || expected.is_some_and(|(head, generation)| {
+                head.canonical_bytes().ok().as_deref() != Some(head_bytes.as_slice())
+                    || generation != integrity_generation
+            })
+        {
+            return Err(PostgresObservationError::Fenced);
+        }
         let row = tx
             .query_opt(
-                "SELECT frame_head, retained_frame_floor, last_ack_frame_seq, reset_required_through FROM worldstream_members WHERE room_id = $1 AND member_id = $2 FOR SHARE",
+                "SELECT frame_head, retained_frame_floor, last_ack_frame_seq, reset_required_through, reset_generation FROM worldstream_members WHERE room_id = $1 AND member_id = $2 FOR SHARE",
                 &[&room_id, &member_id],
             )
             .map_err(PostgresObservationError::Sql)?
@@ -4734,6 +5152,7 @@ impl PostgresRoomStore {
             .get::<_, Option<i64>>(3)
             .map(nonnegative_u64)
             .transpose()?;
+        let reset_generation = nonnegative_u64(row.get::<_, i64>(4))?;
         if after_frame_seq.is_some_and(|cursor| cursor > frame_head) {
             return Err(PostgresObservationError::FutureCursor);
         }
@@ -4746,34 +5165,34 @@ impl PostgresRoomStore {
                 frame_head,
                 retained_floor,
                 reset_through,
+                reset_generation,
                 projection_bytes,
             });
         }
         let after = after_frame_seq.unwrap_or_default();
-        let rows = tx
-            .query(
-                "SELECT member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash FROM worldstream_frames WHERE room_id = $1 AND member_id = $2 AND frame_seq > $3 ORDER BY frame_seq",
-                &[&room_id, &member_id, &i64::try_from(after).map_err(|_| PostgresObservationError::Corrupt)?],
-            )
-            .map_err(PostgresObservationError::Sql)?;
-        let frames = rows
-            .into_iter()
-            .map(|row| {
-                Ok(PostgresFrameEvidenceV1 {
-                    member_id: row.get(0),
-                    frame_seq: nonnegative_u64(row.get(1))?,
-                    cause_room_seq: nonnegative_u64(row.get(2))?,
-                    payload_bytes: row.get(3),
-                    payload_hash: row.get(4),
-                })
-            })
-            .collect::<Result<Vec<_>, PostgresObservationError>>()?;
+        let frames =
+            match read_bounded_observation_frames(&mut tx, room_id, member_id, after, frame_head) {
+                Ok(frames) => frames,
+                Err(PostgresObservationError::ResetRequired) => {
+                    tx.commit().map_err(PostgresObservationError::Sql)?;
+                    return Ok(PostgresObservationDeliveryV1::Reset {
+                        cursor,
+                        frame_head,
+                        retained_floor,
+                        reset_through,
+                        reset_generation,
+                        projection_bytes,
+                    });
+                }
+                Err(error) => return Err(error),
+            };
         tx.commit().map_err(PostgresObservationError::Sql)?;
         Ok(PostgresObservationDeliveryV1::Retained {
             cursor,
             cursor_exclusive: after,
             frame_head,
             retained_floor,
+            reset_generation,
             frames,
         })
     }
@@ -4817,6 +5236,14 @@ impl PostgresRoomStore {
         if through > head {
             return Err(PostgresObservationError::FutureCursor);
         }
+        // A newly acknowledged frame starts its seven-day safety window now;
+        // reconnecting with the same Cursor must not refresh that window.
+        tx.execute(
+            "UPDATE worldstream_frames SET retained_at = to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') \
+             WHERE room_id = $1 AND member_id = $2 AND frame_seq <= $3 \
+               AND frame_seq > (SELECT coalesce(last_ack_frame_seq, 0) FROM worldstream_members WHERE room_id = $1 AND member_id = $2)",
+            &[&room_id, &member_id, &through],
+        ).map_err(PostgresObservationError::Sql)?;
         tx.execute(
             "UPDATE worldstream_members \
              SET last_ack_frame_seq = CASE WHEN $3::bigint = 0 THEN last_ack_frame_seq \
@@ -4867,7 +5294,7 @@ impl PostgresRoomStore {
             .map_err(PostgresObservationError::Sql)?;
         let row = tx
             .query_one(
-                "SELECT frame_head, retained_frame_floor, last_ack_frame_seq, reset_required_through FROM worldstream_members WHERE room_id = $1 AND member_id = $2 FOR UPDATE",
+                "SELECT frame_head, retained_frame_floor, last_ack_frame_seq, reset_required_through, reset_generation FROM worldstream_members WHERE room_id = $1 AND member_id = $2 FOR UPDATE",
                 &[&room_id, &member_id],
             )
             .map_err(PostgresObservationError::Sql)?;
@@ -4876,6 +5303,7 @@ impl PostgresRoomStore {
             .get::<_, Option<i64>>(2)
             .map(nonnegative_u64)
             .transpose()?;
+        let previous_reset_generation = nonnegative_u64(row.get::<_, i64>(4))?;
         tx.execute(
             "DELETE FROM worldstream_frames WHERE room_id = $1 AND member_id = $2 AND frame_seq < $3",
             &[&room_id, &member_id, &retain],
@@ -4888,9 +5316,21 @@ impl PostgresRoomStore {
                 .map(nonnegative_u64)
                 .transpose()?
         };
+        let previous_reset = row
+            .get::<_, Option<i64>>(3)
+            .map(nonnegative_u64)
+            .transpose()?;
+        let reset_generation = if reset == previous_reset {
+            previous_reset_generation
+        } else {
+            previous_reset_generation
+                .checked_add(1)
+                .ok_or(PostgresObservationError::Corrupt)?
+        };
+        let reset_parameter = reset.map(|value| i64::try_from(value).unwrap_or(i64::MAX));
         tx.execute(
-            "UPDATE worldstream_members SET retained_frame_floor = greatest(retained_frame_floor, $3), reset_required_through = $4 WHERE room_id = $1 AND member_id = $2",
-            &[&room_id, &member_id, &retain, &reset.map(|value| i64::try_from(value).unwrap_or(i64::MAX))],
+            "UPDATE worldstream_members SET retained_frame_floor = greatest(retained_frame_floor, $3), reset_required_through = $4, reset_generation = $5 WHERE room_id = $1 AND member_id = $2",
+            &[&room_id, &member_id, &retain, &reset_parameter, &i64::try_from(reset_generation).map_err(|_| PostgresObservationError::Corrupt)?],
         )
         .map_err(PostgresObservationError::Sql)?;
         let result = PostgresObservationPositionsV1 {
@@ -4898,6 +5338,7 @@ impl PostgresRoomStore {
             retained_frame_floor: retain_from_frame_seq,
             last_ack_frame_seq: ack,
             reset_required_through: reset,
+            reset_generation,
         };
         tx.commit().map_err(PostgresObservationError::Sql)?;
         Ok(result)
@@ -7674,14 +8115,14 @@ fn persist_consequence(
             let projection_hash = view
                 .projection_hash()
                 .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?;
-            let changed = tx.execute("UPDATE worldstream_members SET reset_required_through = greatest(coalesce(reset_required_through, 0), frame_head) WHERE room_id = $1 AND member_id = $2", &[&room_id, &view.viewer().member_id().to_string()]).map_err(CommitDecision::Provider)?;
+            let changed = tx.execute("UPDATE worldstream_members SET reset_required_through = greatest(coalesce(reset_required_through, 0), frame_head), reset_generation = reset_generation + 1 WHERE room_id = $1 AND member_id = $2", &[&room_id, &view.viewer().member_id().to_string()]).map_err(CommitDecision::Provider)?;
             if changed != 1 {
                 return Err(CommitDecision::Resolution(RoomCommitResolutionV1::Fault));
             }
             tx.execute("INSERT INTO worldstream_observation_consequences(room_id, member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash) VALUES ($1, $2, $3, 'reset_required', $4, $5)", &[&room_id, &view.viewer().member_id().to_string(), &cause_room_seq, &view.canonical_bytes(), &projection_hash.as_bytes().as_slice()]).map_err(CommitDecision::Provider)?;
         }
         PreparedObservationConsequenceV1::VisibilityLost(member_id) => {
-            let changed = tx.execute("UPDATE worldstream_members SET reset_required_through = greatest(coalesce(reset_required_through, 0), frame_head) WHERE room_id = $1 AND member_id = $2", &[&room_id, &member_id.to_string()]).map_err(CommitDecision::Provider)?;
+            let changed = tx.execute("UPDATE worldstream_members SET reset_required_through = greatest(coalesce(reset_required_through, 0), frame_head), reset_generation = reset_generation + 1 WHERE room_id = $1 AND member_id = $2", &[&room_id, &member_id.to_string()]).map_err(CommitDecision::Provider)?;
             if changed != 1 {
                 return Err(CommitDecision::Resolution(RoomCommitResolutionV1::Fault));
             }
@@ -7693,6 +8134,116 @@ fn persist_consequence(
 
 fn nonnegative_u64(value: i64) -> Result<u64, PostgresObservationError> {
     u64::try_from(value).map_err(|_| PostgresObservationError::Corrupt)
+}
+
+fn revalidate_observation_authority(
+    tx: &mut Transaction<'_>,
+    authority: &ViewerAdapterInputV1,
+) -> Result<(), PostgresObservationError> {
+    let snapshot =
+        authority::load_authority_snapshot_for_adapter(tx, &authority.authority_snapshot_query())
+            .map_err(|_| PostgresObservationError::Authority)?
+            .ok_or(PostgresObservationError::Authority)?;
+    let checked_at =
+        postgres_authority_checked_at(tx).map_err(|_| PostgresObservationError::Authority)?;
+    authority
+        .revalidate_current(&snapshot, &checked_at)
+        .map_err(|_| PostgresObservationError::Authority)
+}
+
+/// Probes bounded metadata before touching `payload_bytes`, then reads exactly
+/// the complete suffix only when it fits the transport's retained-range
+/// contract. A caller that sees `ResetRequired` must issue a coherent reset;
+/// it must not treat this as a slow consumer or retry the same Cursor.
+fn read_bounded_observation_frames(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    member_id: &str,
+    after: u64,
+    captured_frame_head: u64,
+) -> Result<Vec<PostgresFrameEvidenceV1>, PostgresObservationError> {
+    if after > captured_frame_head {
+        return Err(PostgresObservationError::FutureCursor);
+    }
+    let after = i64::try_from(after).map_err(|_| PostgresObservationError::Corrupt)?;
+    let captured_frame_head =
+        i64::try_from(captured_frame_head).map_err(|_| PostgresObservationError::Corrupt)?;
+    let has_rows_beyond_head: bool = tx
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM worldstream_frames WHERE room_id = $1 AND member_id = $2 AND frame_seq > $3)",
+            &[&room_id, &member_id, &captured_frame_head],
+        )
+        .map_err(PostgresObservationError::Sql)?
+        .get(0);
+    if has_rows_beyond_head {
+        return Err(PostgresObservationError::Corrupt);
+    }
+    let metadata = tx
+        .query(
+            "SELECT frame_seq, octet_length(payload_bytes) FROM worldstream_frames WHERE room_id = $1 AND member_id = $2 AND frame_seq > $3 AND frame_seq <= $4 ORDER BY frame_seq LIMIT $5",
+            &[&room_id, &member_id, &after, &captured_frame_head, &i64::try_from(MAX_OBSERVATION_READ_FRAMES + 1).unwrap_or(i64::MAX)],
+        )
+        .map_err(PostgresObservationError::Sql)?;
+    if metadata.len() > MAX_OBSERVATION_READ_FRAMES {
+        return Err(PostgresObservationError::ResetRequired);
+    }
+    let mut expected = u64::try_from(after).map_err(|_| PostgresObservationError::Corrupt)?;
+    let mut payload_bytes = 0_usize;
+    for row in &metadata {
+        expected = expected
+            .checked_add(1)
+            .ok_or(PostgresObservationError::Corrupt)?;
+        if nonnegative_u64(row.get::<_, i64>(0))? != expected {
+            return Err(PostgresObservationError::ResetRequired);
+        }
+        let length =
+            usize::try_from(row.get::<_, i32>(1)).map_err(|_| PostgresObservationError::Corrupt)?;
+        let estimated_wire_bytes = length
+            .checked_add(OBSERVATION_WIRE_OVERHEAD_BYTES)
+            .ok_or(PostgresObservationError::ResetRequired)?;
+        if estimated_wire_bytes > MAX_OBSERVATION_FRAME_WIRE_BYTES {
+            return Err(PostgresObservationError::ResetRequired);
+        }
+        payload_bytes = payload_bytes
+            .checked_add(estimated_wire_bytes)
+            .ok_or(PostgresObservationError::ResetRequired)?;
+        if payload_bytes > MAX_OBSERVATION_READ_BYTES {
+            return Err(PostgresObservationError::ResetRequired);
+        }
+    }
+    if metadata.is_empty() {
+        return if after == captured_frame_head {
+            Ok(Vec::new())
+        } else {
+            Err(PostgresObservationError::ResetRequired)
+        };
+    }
+    if expected
+        != u64::try_from(captured_frame_head).map_err(|_| PostgresObservationError::Corrupt)?
+    {
+        return Err(PostgresObservationError::ResetRequired);
+    }
+    let through = captured_frame_head;
+    let rows = tx
+        .query(
+            "SELECT member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash FROM worldstream_frames WHERE room_id = $1 AND member_id = $2 AND frame_seq > $3 AND frame_seq <= $4 ORDER BY frame_seq",
+            &[&room_id, &member_id, &after, &through],
+        )
+        .map_err(PostgresObservationError::Sql)?;
+    if rows.len() != metadata.len() {
+        return Err(PostgresObservationError::Corrupt);
+    }
+    rows.into_iter()
+        .map(|row| {
+            Ok(PostgresFrameEvidenceV1 {
+                member_id: row.get(0),
+                frame_seq: nonnegative_u64(row.get(1))?,
+                cause_room_seq: nonnegative_u64(row.get(2))?,
+                payload_bytes: row.get(3),
+                payload_hash: row.get(4),
+            })
+        })
+        .collect()
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {
@@ -8384,6 +8935,7 @@ mod native_hydration_tests {
             retained_frame_floor: 1,
             last_ack_frame_seq: None,
             reset_required_through: None,
+            reset_generation: 0,
         }];
         assert_eq!(
             verify_replayed_frame_evidence(&empty_replay, &positions, &[]),
@@ -8441,6 +8993,7 @@ mod native_hydration_tests {
             retained_frame_floor: 1,
             last_ack_frame_seq: None,
             reset_required_through: Some(0),
+            reset_generation: 1,
         }];
         assert_eq!(
             verify_replayed_position_evidence(&empty_replay, &positions),
@@ -8456,6 +9009,7 @@ mod native_hydration_tests {
             retained_frame_floor: 4,
             last_ack_frame_seq: Some(2),
             reset_required_through: Some(5),
+            reset_generation: 1,
         };
         assert!(observation_position_relation_is_valid(
             6,
@@ -8469,6 +9023,7 @@ mod native_hydration_tests {
             retained_frame_floor: 1,
             last_ack_frame_seq: Some(5),
             reset_required_through: None,
+            reset_generation: 1,
         };
         assert!(observation_position_relation_is_valid(
             6,

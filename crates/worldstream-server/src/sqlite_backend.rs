@@ -13,6 +13,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use serde_json::{Value, json};
@@ -34,10 +35,11 @@ use worldstream_core::{
     PreparedRoomWriteV1, PresentedCapabilityV1, PrincipalAuthorityStatusV1, PrincipalKindV1,
     ReceiptSemanticInputV1, ReceiptSemanticTimeV1, ReplayProjectionKindV1, RoomAdmissionLanesV1,
     RoomCommitResolutionV1, RoomCommitStorageV1, RoomCreationIngressV1, RoomCreationRequestV1,
-    RoomId, RoomMembershipKeyV1, RoomSeedV1, RoomSequenceV1, RunnerControlOperationV1, RunnerId,
-    RunnerMembershipSetV1, SemanticResultV1, SessionErrorV1, SessionFrameV1, SessionSyncTokenV1,
-    SessionV1, StoredSemanticResultV1, TimerFiredRequestV1, TimerGenerationV1, TimerId,
-    TransitionId, authorize_core_administration_operation, authorize_participant_action_operation,
+    RoomId, RoomMembershipKeyV1, RoomSeedV1, RoomSequenceV1, RoomTraceCacheErrorV1,
+    RoomTraceCacheV1, RunnerControlOperationV1, RunnerId, RunnerMembershipSetV1, SemanticResultV1,
+    SessionErrorV1, SessionFrameV1, SessionSyncTokenV1, SessionV1, StoredSemanticResultV1,
+    TimerFiredRequestV1, TimerGenerationV1, TimerId, TransitionId,
+    authorize_core_administration_operation, authorize_participant_action_operation,
     authorize_room_creation_operation, commit_room_creation,
 };
 use worldstream_protocol::{
@@ -105,6 +107,10 @@ pub struct SqliteGatewayBackend {
     live_backup_root: Option<PathBuf>,
     timer_authority: Option<PresentedCapabilityV1>,
     last_timer_room: Mutex<Option<RoomId>>,
+    last_retention_room: Mutex<Option<RoomId>>,
+    last_retention_member: Mutex<Option<worldstream_core::MemberId>>,
+    last_retention_at: Mutex<Option<Instant>>,
+    trace_cache: RoomTraceCacheV1,
 }
 
 struct CatchingUpRoom {
@@ -143,7 +149,7 @@ impl fmt::Debug for SqliteGatewayBackend {
                 "live_backup_root",
                 &self.live_backup_root.as_ref().map(|_| "[OPAQUE]"),
             )
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -222,6 +228,10 @@ impl SqliteGatewayBackend {
             live_backup_root: None,
             timer_authority: None,
             last_timer_room: Mutex::new(None),
+            last_retention_room: Mutex::new(None),
+            last_retention_member: Mutex::new(None),
+            last_retention_at: Mutex::new(None),
+            trace_cache: RoomTraceCacheV1::default(),
         }
     }
 
@@ -233,6 +243,218 @@ impl SqliteGatewayBackend {
             | SqliteRoomSupervisorErrorV1::NotActive
             | SqliteRoomSupervisorErrorV1::Busy => BackendError::Busy,
         }
+    }
+
+    fn commit_cached_participant_action(
+        &self,
+        room_id: &RoomId,
+        authority: worldstream_core::ParticipantActionAuthorityV1,
+        request: &ParticipantActionRequestV1,
+        admitted_at: worldstream_core::ActionAdmittedAt,
+        transition_id: TransitionId,
+    ) -> Result<RoomCommitResolutionV1, BackendError> {
+        self.trace_cache
+            .with_room(room_id, |slot| {
+                let mut fence = self
+                    .store
+                    .current_room_serving_fence(room_id)
+                    .map_err(|error| map_gateway_error(&error))?
+                    .ok_or(BackendError::NotFound)?;
+                let cache_matches = slot.as_ref().is_some_and(|cached| {
+                    cached.trace().head() == fence.head() && cached.integrity() == fence.integrity()
+                });
+                if !cache_matches {
+                    *slot = None;
+                    let snapshot = self
+                        .store
+                        .gateway_room_snapshot(&self.registry, room_id)
+                        .map_err(|error| map_gateway_error(&error))?
+                        .ok_or(BackendError::NotFound)?;
+                    let (trace, integrity, _) = snapshot.into_parts();
+                    let current = self
+                        .store
+                        .current_room_serving_fence(room_id)
+                        .map_err(|error| map_gateway_error(&error))?
+                        .ok_or(BackendError::NotFound)?;
+                    if trace.head() != current.head() || integrity != *current.integrity() {
+                        return Err(BackendError::Busy);
+                    }
+                    *slot = Some(worldstream_core::CachedRoomTraceV1::new(trace, integrity));
+                    fence = current;
+                }
+                let cached = slot.as_mut().ok_or(BackendError::StorageUnavailable)?;
+                let integrity = cached.integrity().clone();
+                let resolution = self
+                    .store
+                    .commit_authorized_participant_action_from_serving_trace(
+                        authority,
+                        request,
+                        admitted_at,
+                        transition_id,
+                        cached.trace_mut(),
+                        &integrity,
+                        fence.frame_heads(),
+                    )
+                    .map_err(|error| map_participant_action_error(&error));
+                if matches!(
+                    resolution,
+                    Ok(RoomCommitResolutionV1::Reprepare
+                        | RoomCommitResolutionV1::RetryableKnownAbsent
+                        | RoomCommitResolutionV1::Fenced
+                        | RoomCommitResolutionV1::Indeterminate
+                        | RoomCommitResolutionV1::Fault)
+                        | Err(_)
+                ) {
+                    *slot = None;
+                }
+                resolution
+            })
+            .map_err(|error| match error {
+                RoomTraceCacheErrorV1::Busy | RoomTraceCacheErrorV1::Poisoned => BackendError::Busy,
+                RoomTraceCacheErrorV1::InvalidCapacity => BackendError::StorageUnavailable,
+            })?
+    }
+
+    /// Borrows the single current executor for a read that must not rebuild
+    /// canonical history. The durable serving fence is checked before every
+    /// use and after recovery before installation; callers receive only a
+    /// borrow and cannot create a second execution lane.
+    fn with_cached_current_trace<R>(
+        &self,
+        room_id: &RoomId,
+        operation: impl FnOnce(
+            &worldstream_core::CoreTraceV1,
+            &worldstream_core::RoomIntegrityStateV1,
+        ) -> Result<R, BackendError>,
+    ) -> Result<R, BackendError> {
+        // Preserve the readable-snapshot lifecycle gate: healthy Rooms must
+        // stay inside their active supervisor generation while a cached trace
+        // is borrowed; Faulted Rooms remain readable only through their
+        // verified storage fence, and quarantined Rooms fail closed.
+        let room_operation = match self
+            .store
+            .room_integrity_state(room_id)
+            .map_err(|_| BackendError::StorageUnavailable)?
+            .map(|integrity| integrity.status())
+        {
+            Some(worldstream_core::RoomIntegrityStatusV1::Quarantined) => {
+                return Err(BackendError::RoomQuarantined);
+            }
+            Some(worldstream_core::RoomIntegrityStatusV1::Faulted) => None,
+            Some(worldstream_core::RoomIntegrityStatusV1::Healthy) | None => {
+                self.ensure_verified_active(room_id)?;
+                Some(self.acquire_room_operation(room_id)?)
+            }
+        };
+        let result = self
+            .trace_cache
+            .with_room(room_id, |slot| {
+                let fence = self
+                    .store
+                    .current_room_serving_fence(room_id)
+                    .map_err(|error| map_gateway_error(&error))?
+                    .ok_or(BackendError::NotFound)?;
+                if !slot.as_ref().is_some_and(|cached| {
+                    cached.trace().head() == fence.head() && cached.integrity() == fence.integrity()
+                }) {
+                    *slot = None;
+                    let snapshot = self
+                        .store
+                        .gateway_room_snapshot(&self.registry, room_id)
+                        .map_err(|error| map_gateway_error(&error))?
+                        .ok_or(BackendError::NotFound)?;
+                    let (trace, integrity, _) = snapshot.into_parts();
+                    let current = self
+                        .store
+                        .current_room_serving_fence(room_id)
+                        .map_err(|error| map_gateway_error(&error))?
+                        .ok_or(BackendError::NotFound)?;
+                    if trace.head() != current.head() || integrity != *current.integrity() {
+                        return Err(BackendError::Busy);
+                    }
+                    *slot = Some(worldstream_core::CachedRoomTraceV1::new(trace, integrity));
+                }
+                let cached = slot.as_ref().ok_or(BackendError::StorageUnavailable)?;
+                operation(cached.trace(), cached.integrity())
+            })
+            .map_err(|error| match error {
+                RoomTraceCacheErrorV1::Busy | RoomTraceCacheErrorV1::Poisoned => BackendError::Busy,
+                RoomTraceCacheErrorV1::InvalidCapacity => BackendError::StorageUnavailable,
+            });
+        if let Some(room_operation) = room_operation {
+            room_operation
+                .publish()
+                .map_err(Self::map_supervisor_error)?;
+        }
+        result?
+    }
+
+    // Observation retention is intentionally decoupled from the timer loop's
+    // per-Room work. One five-second pass advances one Room and the store
+    // advances at most eight Memberships, so a large deployment cannot turn a
+    // scheduler tick into a full historical scan.
+    fn scheduled_observation_retention(&self, rooms: &[RoomId]) -> Result<(), BackendError> {
+        if rooms.is_empty() {
+            return Ok(());
+        }
+        {
+            let mut last = self
+                .last_retention_at
+                .lock()
+                .map_err(|_| BackendError::StorageUnavailable)?;
+            let now = Instant::now();
+            if last.is_some_and(|previous| now.duration_since(previous) < Duration::from_secs(5)) {
+                return Ok(());
+            }
+            *last = Some(now);
+        }
+        let mut room_cursor = self
+            .last_retention_room
+            .lock()
+            .map_err(|_| BackendError::StorageUnavailable)?;
+        let mut member_cursor = self
+            .last_retention_member
+            .lock()
+            .map_err(|_| BackendError::StorageUnavailable)?;
+        let room_id = if member_cursor.is_some()
+            && room_cursor
+                .as_ref()
+                .is_some_and(|current| rooms.contains(current))
+        {
+            room_cursor
+                .clone()
+                .ok_or(BackendError::StorageUnavailable)?
+        } else {
+            *member_cursor = None;
+            let index = room_cursor.as_ref().map_or(0, |previous| {
+                let next = rooms.partition_point(|room| room.as_str() <= previous.as_str());
+                if next == rooms.len() { 0 } else { next }
+            });
+            let room_id = rooms[index].clone();
+            *room_cursor = Some(room_id.clone());
+            room_id
+        };
+        drop(room_cursor);
+        if self.verified_room_lifecycle(&room_id)? == SqliteRoomRuntimeStateV1::Active {
+            let (pruned, next_member) = self
+                .store
+                .enforce_observation_retention_after(
+                    &room_id,
+                    &Self::checked_at()?,
+                    member_cursor.as_ref(),
+                )
+                .map_err(map_observation_error)?;
+            *member_cursor = next_member;
+            if pruned > 0 {
+                // Keep draining bounded pages while work remains; the
+                // five-second delay is for idle maintenance passes.
+                *self
+                    .last_retention_at
+                    .lock()
+                    .map_err(|_| BackendError::StorageUnavailable)? = None;
+            }
+        }
+        Ok(())
     }
 
     fn ensure_source_authoritative(&self) -> Result<(), BackendError> {
@@ -1431,61 +1653,52 @@ impl SqliteGatewayBackend {
     ) -> Result<ProjectionResponse, BackendError> {
         let room_id = RoomId::from_str(room_id).map_err(|_| BackendError::NotFound)?;
         let authenticated = self.authenticate(session)?;
-        let snapshot = self
-            .readable_room_snapshot(&room_id)?
-            .ok_or(BackendError::NotFound)?;
         let principal_id = authenticated.principal_id().clone();
-        let member_id = snapshot
-            .trace()
-            .core_state()
-            .memberships()
-            .values()
-            .find(|membership| {
-                membership.principal_id() == &principal_id
-                    && membership.standing() == worldstream_core::MembershipStandingV1::Enabled
-            })
-            .map(|membership| membership.member_id().clone())
-            .ok_or(BackendError::Forbidden)?;
         let presented = authenticated.into_presented();
-        self.authority()
-            .authorize_member_read(
-                &presented,
-                room_id.clone(),
-                member_id.clone(),
-                MemberReadOperationV1::CurrentProjection,
-                Self::checked_at()?,
-            )
-            .map_err(map_authority_error)?;
-
-        let trace = snapshot.trace();
-        let host = self
-            .registry
-            .load_retained(trace.head().pack_digest())
-            .map_err(|_| BackendError::InvalidResult)?
-            .host();
-        let view = host
-            .view(&worldstream_core::ViewInputV1 {
-                core: trace.core_state(),
-                activity_state: trace.activity_state(),
-                complete_head: trace.head(),
-                viewer: &viewer_for(
-                    trace
-                        .core_state()
-                        .membership(&member_id)
-                        .ok_or(BackendError::InvalidResult)?,
-                ),
-            })
-            .map_err(|_| BackendError::InvalidResult)?;
-
-        // Re-read the verified snapshot after authorization and view
-        // construction. A changed Head is not released as a stale response.
+        let (head, integrity, view) =
+            self.with_cached_current_trace(&room_id, |trace, integrity| {
+                let membership = trace
+                    .core_state()
+                    .memberships()
+                    .values()
+                    .find(|membership| {
+                        membership.principal_id() == &principal_id
+                            && membership.standing()
+                                == worldstream_core::MembershipStandingV1::Enabled
+                    })
+                    .ok_or(BackendError::Forbidden)?;
+                self.authority()
+                    .authorize_member_read(
+                        &presented,
+                        room_id.clone(),
+                        membership.member_id().clone(),
+                        MemberReadOperationV1::CurrentProjection,
+                        Self::checked_at()?,
+                    )
+                    .map_err(map_authority_error)?;
+                let host = self
+                    .registry
+                    .load_retained(trace.head().pack_digest())
+                    .map_err(|_| BackendError::InvalidResult)?
+                    .host();
+                let view = host
+                    .view(&worldstream_core::ViewInputV1 {
+                        core: trace.core_state(),
+                        activity_state: trace.activity_state(),
+                        complete_head: trace.head(),
+                        viewer: &viewer_for(membership),
+                    })
+                    .map_err(|_| BackendError::InvalidResult)?;
+                Ok((trace.head().clone(), integrity.clone(), view))
+            })?;
         let current = self
-            .readable_room_snapshot(&room_id)?
+            .store
+            .current_room_serving_fence(&room_id)
+            .map_err(|error| map_gateway_error(&error))?
             .ok_or(BackendError::NotFound)?;
-        if current.trace().head() != trace.head() || current.integrity() != snapshot.integrity() {
+        if current.head() != &head || current.integrity() != &integrity {
             return Err(BackendError::Busy);
         }
-
         let projection = projection_from_view(&view)?;
         let projection_hash = view
             .projection_hash()
@@ -1493,12 +1706,9 @@ impl SqliteGatewayBackend {
             .to_string();
         Ok(ProjectionResponse {
             room_id: room_id.to_string(),
-            room_head: room_head(trace.head()),
-            // Faulted reads are released only after exact retained-history
-            // verification; the envelope makes that operational state
-            // explicit to the caller.
-            room_health: integrity_status(snapshot.integrity().status()),
-            integrity_generation: snapshot.integrity_generation().get(),
+            room_head: room_head(&head),
+            room_health: integrity_status(integrity.status()),
+            integrity_generation: integrity.generation().get(),
             projection_schema: view.projection_schema().to_owned(),
             projection,
             projection_hash,
@@ -1512,48 +1722,41 @@ impl SqliteGatewayBackend {
         member_id: &worldstream_core::MemberId,
     ) -> Result<AttachContext, BackendError> {
         let authenticated = self.authenticate(session)?;
-        let snapshot = self
-            .readable_room_snapshot(room_id)?
-            .ok_or(BackendError::NotFound)?;
-        let membership = snapshot
-            .trace()
-            .core_state()
-            .membership(member_id)
-            .filter(|membership| {
-                membership.principal_id() == authenticated.principal_id()
-                    && membership.standing() == worldstream_core::MembershipStandingV1::Enabled
-            })
-            .ok_or(BackendError::Forbidden)?
-            .clone();
+        let principal_id = authenticated.principal_id().clone();
         let presented = authenticated.into_presented();
-        self.authority()
-            .authorize_member_read(
-                &presented,
-                room_id.clone(),
-                member_id.clone(),
-                MemberReadOperationV1::Attach,
-                Self::checked_at()?,
-            )
-            .map_err(map_authority_error)?;
-        let trace = snapshot.trace();
-        let host = self
-            .registry
-            .load_retained(trace.head().pack_digest())
-            .map_err(|_| BackendError::InvalidResult)?
-            .host();
-        let view = host
-            .view(&worldstream_core::ViewInputV1 {
-                core: trace.core_state(),
-                activity_state: trace.activity_state(),
-                complete_head: trace.head(),
-                viewer: &viewer_for(&membership),
+        let capability_id = presented.capability_id().clone();
+        self.with_cached_current_trace(room_id, |trace, integrity| {
+            let membership = trace
+                .core_state()
+                .membership(member_id)
+                .filter(|membership| {
+                    membership.principal_id() == &principal_id
+                        && membership.standing() == worldstream_core::MembershipStandingV1::Enabled
+                })
+                .ok_or(BackendError::Forbidden)?
+                .clone();
+            let host = self
+                .registry
+                .load_retained(trace.head().pack_digest())
+                .map_err(|_| BackendError::InvalidResult)?
+                .host();
+            let view = host
+                .view(&worldstream_core::ViewInputV1 {
+                    core: trace.core_state(),
+                    activity_state: trace.activity_state(),
+                    complete_head: trace.head(),
+                    viewer: &viewer_for(&membership),
+                })
+                .map_err(|_| BackendError::InvalidResult)?;
+            Ok(AttachContext {
+                head: trace.head().clone(),
+                integrity: integrity.clone(),
+                room_status: trace.core_state().room_status(),
+                view,
+                membership,
+                capability_id,
+                presented,
             })
-            .map_err(|_| BackendError::InvalidResult)?;
-        Ok(AttachContext {
-            snapshot,
-            view,
-            membership,
-            capability_id: presented.capability_id().clone(),
         })
     }
 
@@ -1584,6 +1787,7 @@ impl SqliteGatewayBackend {
                 room_id: room_id.clone(),
                 member_id: member_id.clone(),
                 baseline_frame_head: captured_session.barrier().frame_head(),
+                installed_reset_generation: captured.reset_generation(),
                 session: core_session,
                 core_token: captured_session.sync_token().clone(),
             },
@@ -2535,10 +2739,13 @@ fn map_room_operation_error(error: worldstream_core::RoomOperationIngressErrorV1
 }
 
 struct AttachContext {
-    snapshot: worldstream_sqlite::SqliteGatewayRoomSnapshotV1,
+    head: worldstream_core::CompleteHeadV1,
+    integrity: worldstream_core::RoomIntegrityStateV1,
+    room_status: worldstream_core::RoomStatusV1,
     view: worldstream_core::ValidatedPackViewV1,
     membership: worldstream_core::MembershipV1,
     capability_id: worldstream_core::CapabilityId,
+    presented: PresentedCapabilityV1,
 }
 
 impl GatewayBackend for SqliteGatewayBackend {
@@ -2709,7 +2916,6 @@ impl GatewayBackend for SqliteGatewayBackend {
         // Authentication remains the first stateful boundary: an unknown or
         // passivating Room must not be distinguishable to an unauthenticated
         // transport session.
-        let _authenticated = self.authenticate(session)?;
         let member_id = request
             .member_id
             .parse()
@@ -2718,15 +2924,7 @@ impl GatewayBackend for SqliteGatewayBackend {
         let attach_grant = self
             .authority()
             .authorize_member_read(
-                &self
-                    .store
-                    .authenticate_bearer(
-                        session
-                            .owned_bearer()
-                            .ok_or(BackendError::StorageUnavailable)?,
-                    )
-                    .map_err(|error| map_gateway_error(&error))?
-                    .into_presented(),
+                &context.presented,
                 room_id.clone(),
                 member_id.clone(),
                 MemberReadOperationV1::Attach,
@@ -2737,7 +2935,7 @@ impl GatewayBackend for SqliteGatewayBackend {
             .store
             .attach_observations(attach_grant, context.view.clone())
             .map_err(map_observation_error)?;
-        if captured.room_head() != context.snapshot.trace().head() {
+        if captured.room_head() != &context.head {
             return Err(BackendError::Busy);
         }
         // An ACK may commit while its receipt is lost. A conservative client
@@ -2753,11 +2951,11 @@ impl GatewayBackend for SqliteGatewayBackend {
             &captured,
         )?;
         let current = self
-            .readable_room_snapshot(&room_id)?
+            .store
+            .current_room_serving_fence(&room_id)
+            .map_err(|error| map_gateway_error(&error))?
             .ok_or(BackendError::NotFound)?;
-        if current.trace().head() != captured.room_head()
-            || current.integrity() != context.snapshot.integrity()
-        {
+        if current.head() != captured.room_head() || current.integrity() != &context.integrity {
             return Err(BackendError::Busy);
         }
         let (sync, reset, frames) = if request.after_frame_seq < captured.cursor() {
@@ -2767,14 +2965,13 @@ impl GatewayBackend for SqliteGatewayBackend {
                 &captured,
                 &room_id,
                 &member_id,
-                current.integrity_generation().get(),
+                current.integrity().generation().get(),
                 integrity_status(current.integrity().status()),
             )?
         };
-        let trace = current.trace();
         let retained_pack = self
             .registry
-            .load_retained(trace.head().pack_digest())
+            .load_retained(context.head.pack_digest())
             .map_err(|_| BackendError::InvalidResult)?;
         let descriptor = retained_pack.descriptor();
         Ok(AttachReply {
@@ -2785,9 +2982,9 @@ impl GatewayBackend for SqliteGatewayBackend {
                 access_mode: protocol_access_mode(context.membership.access_mode()),
                 role: context.membership.role().map(str::to_owned),
                 membership_status: membership_status(context.membership.standing()),
-                room_status: room_status(trace.core_state().room_status()),
+                room_status: room_status(context.room_status),
                 room_health: integrity_status(current.integrity().status()),
-                integrity_generation: current.integrity_generation().get(),
+                integrity_generation: current.integrity().generation().get(),
                 room_head: room_head(captured.room_head()),
                 cursor: captured.cursor(),
                 frame_head: captured.frame_head(),
@@ -2837,7 +3034,11 @@ impl GatewayBackend for SqliteGatewayBackend {
                 .map_err(map_authority_error)?;
             let frames = self
                 .store
-                .read_observation_suffix(grant, binding.baseline_frame_head)
+                .read_observation_suffix_at_reset_generation(
+                    grant,
+                    binding.baseline_frame_head,
+                    binding.installed_reset_generation,
+                )
                 .map_err(map_observation_error)?;
             let mut by_sequence = BTreeMap::new();
             for frame in frames {
@@ -2865,7 +3066,16 @@ impl GatewayBackend for SqliteGatewayBackend {
                 .collect()
         })();
         match result {
-            Ok(frames) => Ok(frames),
+            Ok(frames) => {
+                self.bindings.mark_live(
+                    session.session_id(),
+                    &capability_id,
+                    &binding.room_id,
+                    &binding.member_id,
+                    binding.installed_reset_generation,
+                )?;
+                Ok(frames)
+            }
             Err(error) => {
                 self.bindings
                     .restore(session.session_id(), &capability_id, binding)?;
@@ -2886,6 +3096,7 @@ impl GatewayBackend for SqliteGatewayBackend {
             .parse::<worldstream_core::MemberId>()
             .map_err(|_| BackendError::Rejected)?;
         let authenticated = self.authenticate(session)?;
+        let capability_id = authenticated.presented().capability_id().clone();
         let grant = self
             .authority()
             .authorize_member_read(
@@ -2896,8 +3107,18 @@ impl GatewayBackend for SqliteGatewayBackend {
                 Self::checked_at()?,
             )
             .map_err(map_authority_error)?;
+        let installed_reset_generation = self.bindings.live_reset_generation(
+            session.session_id(),
+            &capability_id,
+            &room_id,
+            &member_id,
+        )?;
         self.store
-            .read_observation_suffix(grant, after_frame_seq)
+            .read_observation_suffix_at_reset_generation(
+                grant,
+                after_frame_seq,
+                installed_reset_generation,
+            )
             .map_err(map_observation_error)?
             .into_iter()
             .map(|frame| observation_deliver(&frame, &room_id, &member_id))
@@ -2967,16 +3188,13 @@ impl GatewayBackend for SqliteGatewayBackend {
                     .reserve_action(&action_room_id, self.host_clock.as_ref())
                     .map_err(|error| map_admission_lane_error(&error))?;
                 let transition_id = next_core_id::<TransitionId>()?;
-                let resolution = self
-                    .store
-                    .commit_authorized_participant_action(
-                        &self.registry,
-                        *grant,
-                        &core_request,
-                        admission.admitted_at().clone(),
-                        transition_id,
-                    )
-                    .map_err(|error| map_participant_action_error(&error))?;
+                let resolution = self.commit_cached_participant_action(
+                    &action_room_id,
+                    *grant,
+                    &core_request,
+                    admission.admitted_at().clone(),
+                    transition_id,
+                )?;
                 operation.publish().map_err(Self::map_supervisor_error)?;
                 action_reply_from_resolution(&request, &resolution)
             }
@@ -3737,14 +3955,15 @@ impl GatewayBackend for SqliteGatewayBackend {
         self.ensure_source_authoritative()?;
         let mut rooms = self.store.room_ids().map_err(map_activation_error)?;
         if self.timer_authority.is_none() {
-            for room_id in rooms {
-                if self.verified_room_lifecycle(&room_id)? == SqliteRoomRuntimeStateV1::CatchingUp {
+            for room_id in &rooms {
+                if self.verified_room_lifecycle(room_id)? == SqliteRoomRuntimeStateV1::CatchingUp {
                     continue;
                 }
                 self.store
-                    .reclaim_activation_leases(room_id, None)
+                    .reclaim_activation_leases(room_id.clone(), None)
                     .map_err(map_activation_error)?;
             }
+            self.scheduled_observation_retention(&rooms)?;
             return Ok(Vec::new());
         }
         let mut last_timer_room = self
@@ -3757,12 +3976,12 @@ impl GatewayBackend for SqliteGatewayBackend {
         }
         let mut committed_rooms = Vec::new();
         let mut remaining = 64;
-        for room_id in rooms {
+        for room_id in &rooms {
             let mut changed = false;
             if remaining > 0 {
                 *last_timer_room = Some(room_id.clone());
                 if let Err(error) =
-                    self.scheduled_timer_slice(&room_id, &mut remaining, &mut changed)
+                    self.scheduled_timer_slice(room_id, &mut remaining, &mut changed)
                 {
                     tracing::warn!(?error, "scheduled Room timer slice deferred");
                 }
@@ -3770,11 +3989,14 @@ impl GatewayBackend for SqliteGatewayBackend {
             if changed {
                 committed_rooms.push(room_id.to_string());
             }
-            if let Ok(SqliteRoomRuntimeStateV1::Active) = self.verified_room_lifecycle(&room_id)
-                && let Err(error) = self.store.reclaim_activation_leases(room_id, None)
+            if let Ok(SqliteRoomRuntimeStateV1::Active) = self.verified_room_lifecycle(room_id)
+                && let Err(error) = self.store.reclaim_activation_leases(room_id.clone(), None)
             {
                 tracing::warn!(?error, "Room Activation maintenance deferred");
             }
+        }
+        if let Err(error) = self.scheduled_observation_retention(&rooms) {
+            tracing::warn!(?error, "Room Observation retention maintenance deferred");
         }
         Ok(committed_rooms)
     }
@@ -3811,6 +4033,7 @@ impl SessionBindings {
                 SessionBinding {
                     capability_id: capability_id.clone(),
                     sync: None,
+                    live: None,
                 },
             );
         }
@@ -3823,6 +4046,7 @@ impl SessionBindings {
         if binding.sync.is_some() {
             return Err(BackendError::StorageUnavailable);
         }
+        binding.live = None;
         binding.sync = Some(sync);
         Ok(())
     }
@@ -3882,11 +4106,66 @@ impl SessionBindings {
         binding.sync = Some(sync);
         Ok(())
     }
+
+    fn mark_live(
+        &self,
+        session_id: &worldstream_protocol::UlidString,
+        capability_id: &worldstream_core::CapabilityId,
+        room_id: &RoomId,
+        member_id: &worldstream_core::MemberId,
+        reset_generation: u64,
+    ) -> Result<(), BackendError> {
+        let mut bindings = self
+            .0
+            .lock()
+            .map_err(|_| BackendError::StorageUnavailable)?;
+        let binding = bindings
+            .get_mut(session_id)
+            .ok_or(BackendError::Forbidden)?;
+        if binding.capability_id != *capability_id || binding.sync.is_some() {
+            return Err(BackendError::Rejected);
+        }
+        binding.live = Some(LiveObservationBinding {
+            room_id: room_id.clone(),
+            member_id: member_id.clone(),
+            reset_generation,
+        });
+        Ok(())
+    }
+
+    fn live_reset_generation(
+        &self,
+        session_id: &worldstream_protocol::UlidString,
+        capability_id: &worldstream_core::CapabilityId,
+        room_id: &RoomId,
+        member_id: &worldstream_core::MemberId,
+    ) -> Result<u64, BackendError> {
+        let bindings = self
+            .0
+            .lock()
+            .map_err(|_| BackendError::StorageUnavailable)?;
+        let binding = bindings.get(session_id).ok_or(BackendError::Forbidden)?;
+        let live = binding.live.as_ref().ok_or(BackendError::Rejected)?;
+        if binding.capability_id != *capability_id
+            || live.room_id != *room_id
+            || live.member_id != *member_id
+        {
+            return Err(BackendError::Rejected);
+        }
+        Ok(live.reset_generation)
+    }
 }
 
 struct SessionBinding {
     capability_id: worldstream_core::CapabilityId,
     sync: Option<SyncBinding>,
+    live: Option<LiveObservationBinding>,
+}
+
+struct LiveObservationBinding {
+    room_id: RoomId,
+    member_id: worldstream_core::MemberId,
+    reset_generation: u64,
 }
 
 struct SyncBinding {
@@ -3894,6 +4173,7 @@ struct SyncBinding {
     room_id: RoomId,
     member_id: worldstream_core::MemberId,
     baseline_frame_head: u64,
+    installed_reset_generation: u64,
     session: SessionV1,
     core_token: SessionSyncTokenV1,
 }
@@ -3952,8 +4232,8 @@ fn protocol_cursor_recovery(
         room_id: captured.room_head().room_id().to_string(),
         member_id: context.membership.member_id().to_string(),
         room_head: room_head(captured.room_head()),
-        room_health: integrity_status(context.snapshot.integrity().status()),
-        integrity_generation: context.snapshot.integrity_generation().get(),
+        room_health: integrity_status(context.integrity.status()),
+        integrity_generation: context.integrity.generation().get(),
         baseline_frame_head: captured.frame_head(),
         reset_reason: reason.to_owned(),
         projection_schema: context.view.projection_schema().to_owned(),
@@ -4031,6 +4311,7 @@ fn reset_reason(reason: SqliteObservationResetReasonV1) -> &'static str {
     match reason {
         SqliteObservationResetReasonV1::FirstAttach => "first_attach",
         SqliteObservationResetReasonV1::RetainedRangeUnavailable => "retained_range_unavailable",
+        SqliteObservationResetReasonV1::RetainedBacklogTooLarge => "retained_backlog_too_large",
         SqliteObservationResetReasonV1::ResetMarked => "reset_marked",
     }
 }
@@ -4398,6 +4679,7 @@ fn map_observation_error(error: SqliteObservationErrorV1) -> BackendError {
             BackendError::StorageUnavailable
         }
         SqliteObservationErrorV1::CursorAhead => BackendError::Rejected,
+        SqliteObservationErrorV1::ResetRequired => BackendError::ResetRequired,
         SqliteObservationErrorV1::MembershipUnavailable => BackendError::NotFound,
         SqliteObservationErrorV1::RoomQuarantined => BackendError::RoomQuarantined,
         SqliteObservationErrorV1::WrongOperation | SqliteObservationErrorV1::StaleView => {
@@ -6378,6 +6660,7 @@ mod tests {
                 SessionBinding {
                     capability_id: first_capability,
                     sync: None,
+                    live: None,
                 },
             );
             rows.insert(
@@ -6385,6 +6668,7 @@ mod tests {
                 SessionBinding {
                     capability_id: second_capability,
                     sync: None,
+                    live: None,
                 },
             );
         }
