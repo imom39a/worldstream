@@ -156,7 +156,8 @@ async function main() {
 
 export function hostedSmokeClientAssets(repositoryRoot, assetRoot) {
   return [
-    ["agent-heist-web-v11.json", "agent-heist-web.json"],
+    ["agent-heist-web-v12.json", "agent-heist-web.json"],
+    ["agent-heist-web-v11.json", "agent-heist-web-v11.json"],
     ["agent-heist-web-v10.json", "agent-heist-web-v10.json"],
     ["agent-heist-web-v9.json", "agent-heist-web-v9.json"],
     ["agent-heist-web-v8.json", "agent-heist-web-v8.json"],

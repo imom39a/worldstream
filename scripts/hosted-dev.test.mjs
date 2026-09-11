@@ -14,6 +14,7 @@ import {
   hostedDevelopmentGatewayConfiguration,
   hostedDevelopmentPorts,
   hostedDevelopmentListingAllowlist,
+  hostedDevelopmentClientReleaseDigest,
   hostedDevelopmentLaunchHttpAccepted,
   hostedDevelopmentReadinessProbeIdentity,
   hasRetainedHostedDevelopmentSetup,
@@ -40,6 +41,22 @@ test("hosted development builds immutable browser artifacts in production mode",
     NODE_ENV: "production",
     WORLDSTREAM_DEPLOYMENT_ENVIRONMENT: "development",
   });
+});
+
+test("hosted acceptance derives its client identity from the current Listing", async () => {
+  const listing = JSON.parse(await readFile(
+    new URL("config/hosted/listings/agent-heist-0.29.0.json", repository),
+    "utf8",
+  ));
+  const release = JSON.parse(await readFile(
+    new URL("config/activity-clients/releases/agent-heist-web-v12.json", repository),
+    "utf8",
+  ));
+  assert.equal(hostedDevelopmentClientReleaseDigest(listing), release.release_digest);
+  assert.throws(
+    () => hostedDevelopmentClientReleaseDigest({ client: { release_digest: "sha256:invalid" } }),
+    /client release is invalid/u,
+  );
 });
 
 test("hosted development builds every source Activity Client selected by its local bindings", async () => {
@@ -433,6 +450,7 @@ test("local and Fly gateways retain public Listings and Fly admits the exact int
   for (const digest of localPublic) assert.ok(admitted.has(digest));
   assert.ok(admitted.has("blake3:c2e07bc3c8ff2b36a549127d1f9f6403c52dcaca45065cb5923debe705111de2"));
   assert.ok(admitted.has("blake3:d738402a5acb404dead979c21002fa02d95f4c1e89f6d4c47e617a6c6be27bc3"));
+  assert.ok(admitted.has("blake3:71eb289ce6c730fa6e8eefc9d222f9730e8a69b6cc297d43b8794b7eda35f5f9"));
   assert.ok(admitted.has("blake3:4c9a98ec044e9389b9a4e3d8a8f33a371dc6ed3991556037ada61cfba4bf718a"));
   assert.ok(admitted.has("blake3:cc1c92ebc6ba7cccc9474186ff8107cf97f6bd0ce2676c6d1a2aa203c2a62d35"));
   assert.ok(admitted.has("blake3:8be1c66c9c69a4a67800dadf8e60d66bdf8a8b9118fb3baa96b5e8cdaf272b7d"));

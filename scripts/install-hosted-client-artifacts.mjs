@@ -8,7 +8,8 @@ const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Current and retained clients remain separate immutable builds. Old Rooms
 // must never fetch changed bytes at their retained entrypoint.
 export const hostedClientArtifacts = Object.freeze([
-  Object.freeze(["Agent Heist", "agent-heist-v11", "clients/agent-heist-web/dist", "agent-heist-web-v11.json"]),
+  Object.freeze(["Agent Heist", "agent-heist-v12", "clients/agent-heist-web/dist", "agent-heist-web-v12.json"]),
+  Object.freeze(["Agent Heist", "agent-heist-v11", "config/activity-clients/artifacts/agent-heist-web-v11", "agent-heist-web-v11.json"]),
   Object.freeze(["Agent Heist", "agent-heist-v10", "config/activity-clients/artifacts/agent-heist-web-v10", "agent-heist-web-v10.json"]),
   Object.freeze(["Agent Heist", "agent-heist-v9", "config/activity-clients/artifacts/agent-heist-web-v9", "agent-heist-web-v9.json"]),
   Object.freeze(["Agent Heist", "agent-heist-v8", "config/activity-clients/artifacts/agent-heist-web-v8", "agent-heist-web-v8.json"]),

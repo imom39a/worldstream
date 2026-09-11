@@ -89,6 +89,41 @@ describe("Mission focus live participant surface", () => {
     expect(markup).toContain("At least two sealed choices must name the same plan");
   });
 
+  it("renders a privacy-safe participant commitment receipt and synchronization basis", () => {
+    const ready = state();
+    const committed: AgentHeistReadyState = {
+      ...ready,
+      roomSequence: 14,
+      projection: {
+        ...ready.projection,
+        phase: "commitment",
+        phaseGeneration: 5,
+        phaseDeadline: "2026-08-15T12:03:00Z",
+        ownCommitment: { selectedPlanId: "opaque-plan", contributeRequiredResource: false },
+      },
+      offers: [],
+    };
+    const participantMarkup = render(committed);
+    expect(participantMarkup).toContain('data-room-sequence="14"');
+    expect(participantMarkup).toContain('data-phase="commitment"');
+    expect(participantMarkup).toContain('data-phase-generation="5"');
+    expect(participantMarkup).toContain('data-phase-deadline="2026-08-15T12:03:00Z"');
+    expect(participantMarkup).toContain('<p class="own-commitment" role="status">Your choice is sealed.</p>');
+    expect(participantMarkup).not.toContain("opaque-plan");
+
+    const uncommittedMarkup = render({
+      ...committed,
+      projection: { ...committed.projection, ownCommitment: null },
+    });
+    expect(uncommittedMarkup).not.toContain("own-commitment");
+
+    const spectatorMarkup = render({
+      ...committed,
+      authorization: { accessMode: "spectator", role: null },
+    });
+    expect(spectatorMarkup).not.toContain("own-commitment");
+  });
+
   it("keeps an unsubmitted plan draft through an unrelated synchronized update", async () => {
     const ready = { ...state(), projection: { ...state().projection, phase: "negotiation" as const }, offers: [{ ...state().offers[0]!, offerId: "7:propose_plan:0", actionType: "propose_plan" as const }] };
     const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
@@ -218,6 +253,48 @@ describe("Mission focus live participant surface", () => {
       expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
       await act(async () => resolve());
       expect(host.textContent).not.toContain("Sent. Waiting for the Room to confirm the result.");
+    } finally { await act(async () => root.unmount()); host.remove(); (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = false; }
+  });
+
+  it("submits a fresh Action basis after an explicit stale reconnect", async () => {
+    const plan = { planId: "opaque-plan", proposerRole: "navigator" as const, route: "service", entryWindow: "early", requiredTool: "thermal_key", extraction: "boat", endorsements: 1, challenges: 0 };
+    const initial: AgentHeistReadyState = {
+      ...state(),
+      projection: { ...state().projection, phase: "commitment", phaseGeneration: 5, plans: [plan] },
+      offers: [{ ...state().offers[0]!, offerId: "7:commit_move:0", actionType: "commit_move" }],
+    };
+    const fresh: AgentHeistReadyState = {
+      ...initial,
+      roomSequence: 8,
+      offers: [{ ...initial.offers[0]!, offerId: "8:commit_move:0" }],
+    };
+    const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
+    const onAct = vi.fn().mockResolvedValue(undefined); const onReconnect = vi.fn().mockResolvedValue(undefined);
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const submit = async () => {
+      host.querySelector<HTMLSelectElement>('select[name="selected_plan_id"]')!.value = "opaque-plan";
+      await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    };
+    try {
+      await act(async () => root.render(<AgentHeistClientView state={initial} connection="live" onAct={onAct} onReconnect={onReconnect} />));
+      await submit();
+      expect(onAct).toHaveBeenCalledTimes(1);
+
+      await act(async () => root.render(<AgentHeistClientView state={initial} connection="disconnected"
+        message="The Room advanced. Reconnect to synchronize before acting." onAct={onAct} onReconnect={onReconnect} />));
+      expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
+      const reconnect = [...host.querySelectorAll("button")].find((button) => button.textContent === "Reconnect")!;
+      await act(async () => reconnect.click());
+      expect(onReconnect).toHaveBeenCalledTimes(1);
+      expect(onAct).toHaveBeenCalledTimes(1);
+
+      await act(async () => root.render(<AgentHeistClientView state={fresh} connection="live" onAct={onAct} onReconnect={onReconnect} />));
+      await submit();
+      expect(onAct).toHaveBeenCalledTimes(2);
+      const first = onAct.mock.calls[0]![0]; const second = onAct.mock.calls[1]![0];
+      expect(first).toMatchObject({ basedOnRoomSeq: 7, offerId: "7:commit_move:0", actionType: "commit_move" });
+      expect(second).toMatchObject({ basedOnRoomSeq: 8, offerId: "8:commit_move:0", actionType: "commit_move" });
+      expect(second.actionId).not.toBe(first.actionId);
     } finally { await act(async () => root.unmount()); host.remove(); (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = false; }
   });
 });

@@ -29,8 +29,12 @@ test("the deployed retained catalog fits the allowlist contract, including 64 re
   const allowlist = JSON.parse(line.slice(line.indexOf("=") + 1));
   assert.ok(allowlist.length > 512, "exercise the former scalar-string limit");
   assert.ok(
-    allowlist.split(",").includes("blake3:71805434c2530094d3a575336cb0a44d71b411ccb089e37f142d9764af860397"),
+    allowlist.split(",").includes("blake3:71eb289ce6c730fa6e8eefc9d222f9730e8a69b6cc297d43b8794b7eda35f5f9"),
     "the Fly Gateway must admit the current discovery Listing",
+  );
+  assert.ok(
+    allowlist.split(",").includes("blake3:d738402a5acb404dead979c21002fa02d95f4c1e89f6d4c47e617a6c6be27bc3"),
+    "the Fly Gateway must retain Listing 0.28",
   );
   assert.ok(
     allowlist.split(",").includes("blake3:4c9a98ec044e9389b9a4e3d8a8f33a371dc6ed3991556037ada61cfba4bf718a"),
@@ -111,6 +115,7 @@ test("runtime configuration fixes internal listeners and persistent children", (
   assert.equal(layout.runtimeData, "/var/lib/worldstream/runtime");
   assert.equal(layout.controllerState, "/var/lib/worldstream/studio");
   assert.equal(layout.retainedClientReleaseV8, "/opt/worldstream/hosted/agent-heist-web-v8.json");
+  assert.equal(layout.retainedClientReleaseV11, "/opt/worldstream/hosted/agent-heist-web-v11.json");
   assert.equal(layout.retainedClientReleaseV10, "/opt/worldstream/hosted/agent-heist-web-v10.json");
   assert.equal(layout.retainedClientReleaseV9, "/opt/worldstream/hosted/agent-heist-web-v9.json");
   assert.equal(layout.retainedClientRelease, "/opt/worldstream/hosted/agent-heist-web-v7.json");
@@ -151,7 +156,7 @@ test("the hosted image packages the same current client as hosted bindings", asy
   assert.match(dockerfile, /COPY packs\/midnight-archive\/releases\/0\.1\.0\/worldstream-midnight-archive-de3cd1d9fa45087b69cb107a663596305864c350f620fe4d7260e0341214d47a\.wspack \/opt\/worldstream\/hosted\/midnight-archive\.wspack/u);
 });
 
-test("Fly initialization imports current and retained Archive client identities", async (t) => {
+test("Fly initialization imports current and retained Heist and Archive client identities", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "worldstream-hosted-clients-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const generatedRoot = join(root, "generated");
@@ -161,7 +166,8 @@ test("Fly initialization imports current and retained Archive client identities"
     generatedRoot,
     clientBindings: resolve("config/activity-clients/hosted-local-bindings.json"),
     inspectorRelease: resolve("config/activity-clients/releases/inspector-web-v2.json"),
-    clientRelease: resolve("config/activity-clients/releases/agent-heist-web-v11.json"),
+    clientRelease: resolve("config/activity-clients/releases/agent-heist-web-v12.json"),
+    retainedClientReleaseV11: resolve("config/activity-clients/releases/agent-heist-web-v11.json"),
     retainedClientReleaseV10: resolve("config/activity-clients/releases/agent-heist-web-v10.json"),
     retainedClientReleaseV9: resolve("config/activity-clients/releases/agent-heist-web-v9.json"),
     retainedClientReleaseV8: resolve("config/activity-clients/releases/agent-heist-web-v8.json"),
@@ -174,8 +180,29 @@ test("Fly initialization imports current and retained Archive client identities"
   const declarationPath = await writeHostedClientImport(layout, "https://arena.example");
   const declaration = JSON.parse(await readFile(declarationPath, "utf8"));
   const bindings = JSON.parse(await readFile(declaration.bindings_file, "utf8"));
-  assert.equal(declaration.release_files.length, 10);
-  assert.equal(bindings.deployments.length, 10);
+  assert.equal(declaration.release_files.length, 11);
+  assert.equal(bindings.deployments.length, 11);
+  const heist = bindings.deployments.filter(({ client_id }) =>
+    client_id === "worldstream.agent-heist.web");
+  assert.equal(heist.length, 6);
+  assert.deepEqual(heist.map(({ release_digest }) => release_digest).sort(), [
+    "sha256:02d8cb123ba2c5b4c9b4e6b075a7eb21ce3f551cc53332e836b1690b2b4ef519",
+    "sha256:40d452a04b096d3a0952f99b877f094f90c6e4a84063d3212265b5c2b97306ee",
+    "sha256:5e6a6300c0d9b17ad2c79df29aa02cc136516447f212c222723c080545f9bdd4",
+    "sha256:6ee6747c63cf0090a7549a1c505893c49307c475d1332eb4164c1170a97645d8",
+    "sha256:5398514701e6f86c0eb3dd7f877d2b7b00283b540220aa61e7723126f4224895",
+    "sha256:e1efd39ff8da4cddaa48e87ed4333d2c16fb71dd5ad0321f1245ac0a55aad33c",
+  ].sort());
+  assert.equal(
+    heist.find(({ release_digest }) => release_digest.startsWith("sha256:02d8cb12"))
+      .surfaces[0].launch_url,
+    "https://arena.example/agent-heist-v12/hosted/",
+  );
+  assert.equal(
+    heist.find(({ release_digest }) => release_digest.startsWith("sha256:40d452a0"))
+      .surfaces[0].launch_url,
+    "https://arena.example/agent-heist-v11/hosted/",
+  );
   const archive = bindings.deployments.filter(({ client_id }) =>
     client_id === "worldstream.midnight-archive.web");
   assert.equal(archive.length, 4);

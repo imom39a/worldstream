@@ -23,6 +23,8 @@ const DEFAULT_FORMATION_TIMEOUT_MS = 150_000;
 const MAX_BROWSER_FAILURES = 8;
 const MAX_BROWSER_DIAGNOSTIC_TEXT = 240;
 const MAX_RENDERED_STALE_ACTION_ATTEMPTS = 5;
+const RENDERED_COMMITMENT_ACTION_WINDOW_MS = 30_000;
+const RENDERED_COMMITMENT_OBSERVATION_GRACE_MS = 2_000;
 const RENDERED_STALE_ROOM_MESSAGE = "The Room advanced. Reconnect to synchronize before acting.";
 
 /**
@@ -734,25 +736,96 @@ async function submitRenderedChoiceAction(page, actionLabel, name, value, timeou
 }
 
 async function ensureRenderedCurrentPlanCommitment(page, timeoutMs) {
+  const formationDeadlineMs = Date.now() + timeoutMs;
+  const initial = await readRenderedCommitmentSnapshot(page, formationDeadlineMs);
+  if (initial.ownCommitmentCount === 1) {
+    if (renderedCrewCommitmentCompleted(initial.ownCommitmentCount, initial.current)) return;
+    if (renderedHouseCommitmentMissed(initial.basis.phase, initial.current)) {
+      throw renderedHouseCommitmentDeadlineError(initial.current);
+    }
+    const deadlines = renderedCommitmentDeadlines(initial.basis.phaseDeadline);
+    await waitForRenderedCrewCommitments(page, deadlines.observationDeadlineMs);
+    return;
+  }
+
+  // Formation may legitimately spend most of Negotiation. Once the current
+  // commitment offer renders, all retries share the Pack's one absolute
+  // commitment deadline instead of multiplying the broad formation timeout.
+  await waitForRenderedActionFormBefore(page, "Seal your choice", formationDeadlineMs);
+  const commitmentWindow = (
+    await readRenderedCommitmentSnapshot(page, formationDeadlineMs)
+  ).basis;
+  if (commitmentWindow.phase !== "commitment") {
+    throw new Error("rendered Seal your choice Action was outside Commitment");
+  }
+  const deadlines = renderedCommitmentDeadlines(commitmentWindow.phaseDeadline);
+  let attemptedRoomSequence = commitmentWindow.roomSequence;
   await retryRenderedStaleAction(
-    () => submitRenderedCurrentPlanCommitmentAttempt(page, timeoutMs),
-    async () => reconnectRenderedCommitment(page, timeoutMs),
+    async (actionDeadlineMs) => {
+      const attempt = await submitRenderedCurrentPlanCommitmentAttempt(
+        page,
+        commitmentWindow,
+        actionDeadlineMs,
+        deadlines.observationDeadlineMs,
+      );
+      attemptedRoomSequence = attempt.roomSequence;
+      return attempt.outcome;
+    },
+    async (actionDeadlineMs) => reconnectRenderedCommitment(
+      page,
+      commitmentWindow,
+      attemptedRoomSequence,
+      actionDeadlineMs,
+    ),
+    { deadlineMs: deadlines.actionDeadlineMs },
   );
+  await waitForRenderedCrewCommitments(page, deadlines.observationDeadlineMs);
 }
 
-async function submitRenderedCurrentPlanCommitmentAttempt(page, timeoutMs) {
-  const form = await waitForRenderedActionForm(page, "Seal your choice", timeoutMs);
-  const commitmentBefore = await waitForRenderedHouseCommitments(page, timeoutMs);
+async function submitRenderedCurrentPlanCommitmentAttempt(
+  page,
+  commitmentWindow,
+  actionDeadlineMs,
+  observationDeadlineMs,
+) {
+  const basis = (
+    await readRenderedCommitmentSnapshot(page, actionDeadlineMs)
+  ).basis;
+  if (!renderedSameCommitmentWindow(commitmentWindow, basis)) {
+    throw new Error("rendered commitment window changed before the Navigator could act");
+  }
+  const form = await waitForRenderedActionFormBefore(
+    page,
+    "Seal your choice",
+    actionDeadlineMs,
+  );
   const plan = form.locator('select[name="selected_plan_id"]');
-  await plan.waitFor({ state: "visible", timeout: timeoutMs });
+  await plan.waitFor({
+    state: "visible",
+    timeout: remainingRenderedDeadlineMs(actionDeadlineMs, Date.now()),
+  });
   const planCount = await plan.locator('option:not([value=""])').count();
   if (planCount === 0) throw new Error("rendered current-plan control did not contain a reviewed plan");
-  await plan.selectOption({ index: 1 });
+  await plan.selectOption(
+    { index: 1 },
+    { timeout: remainingRenderedDeadlineMs(actionDeadlineMs, Date.now()) },
+  );
   const resource = form.locator('input[name="contribute_required_resource"]');
-  if (await resource.isChecked()) await resource.uncheck();
-  return submitRenderedForm(form, "Seal your choice", timeoutMs, async () => {
-    return waitForRenderedCommitmentOutcome(page, commitmentBefore, timeoutMs);
-  });
+  if (await resource.isChecked({
+    timeout: remainingRenderedDeadlineMs(actionDeadlineMs, Date.now()),
+  })) {
+    await resource.uncheck({
+      timeout: remainingRenderedDeadlineMs(actionDeadlineMs, Date.now()),
+    });
+  }
+  const outcome = await submitRenderedForm(
+    form,
+    "Seal your choice",
+    remainingRenderedDeadlineMs(actionDeadlineMs, Date.now()),
+    async () => waitForRenderedCommitmentOutcome(page, observationDeadlineMs),
+    { deadlineMs: actionDeadlineMs },
+  );
+  return Object.freeze({ outcome, roomSequence: basis.roomSequence });
 }
 
 /**
@@ -760,46 +833,69 @@ async function submitRenderedCurrentPlanCommitmentAttempt(page, timeoutMs) {
  * runtime consumes the original Action ID, so each subsequent form submit
  * creates a new client Action ID only after a visible reconnect.
  */
-export async function retryRenderedStaleAction(attempt, reconnect) {
+export async function retryRenderedStaleAction(attempt, reconnect, {
+  deadlineMs = null,
+  now = Date.now,
+} = {}) {
   for (let index = 0; index < MAX_RENDERED_STALE_ACTION_ATTEMPTS; index += 1) {
-    const outcome = await attempt();
+    if (deadlineMs !== null) remainingRenderedDeadlineMs(deadlineMs, now());
+    const outcome = await attempt(deadlineMs ?? undefined);
     if (outcome === "committed") return;
     if (outcome !== "stale") {
       throw new Error("rendered Action returned an unreviewed retry outcome");
     }
     if (index === MAX_RENDERED_STALE_ACTION_ATTEMPTS - 1) break;
-    await reconnect();
+    if (deadlineMs !== null) remainingRenderedDeadlineMs(deadlineMs, now());
+    await reconnect(deadlineMs ?? undefined);
   }
   throw new Error("rendered Action remained stale after five visible reconnect attempts");
 }
 
-async function waitForRenderedCommitmentOutcome(page, commitmentBefore, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+async function waitForRenderedCommitmentOutcome(page, observationDeadlineMs) {
+  while (Date.now() < observationDeadlineMs) {
+    const snapshot = await readRenderedCommitmentSnapshot(page, observationDeadlineMs);
+    if (snapshot.ownCommitmentCount === 1) return "committed";
     if (await hasExplicitRenderedStaleRoom(page)) return "stale";
-    const current = await readRenderedCommitmentCount(
-      page,
-      Math.max(1, deadline - Date.now()),
-    );
-    const actionCount = await renderedActionForm(page, "Seal your choice").count();
-    if (renderedCommitmentCompleted(commitmentBefore, current, actionCount)) return "committed";
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    const remainingObservationMs = Math.ceil(observationDeadlineMs - Date.now());
+    if (remainingObservationMs <= 0) break;
+    await new Promise((resolve) => setTimeout(
+      resolve,
+      Math.min(250, remainingObservationMs),
+    ));
   }
   throw new Error("rendered Seal your choice Action did not produce an authorized commitment");
 }
 
-async function waitForRenderedHouseCommitments(page, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const current = await readRenderedCommitmentCount(
-      page,
-      Math.max(1, deadline - Date.now()),
-    );
-    const actionCount = await renderedActionForm(page, "Seal your choice").count();
-    if (renderedHouseCommitmentsReady(current, actionCount)) return current;
-    await new Promise((resolve) => setTimeout(resolve, 250));
+export async function waitForRenderedCrewCommitments(page, observationDeadlineMs, {
+  now = Date.now,
+  wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+} = {}) {
+  let lastObserved = null;
+  while (now() < observationDeadlineMs) {
+    let snapshot;
+    try {
+      snapshot = await readRenderedCommitmentSnapshot(
+        page,
+        observationDeadlineMs,
+        now,
+      );
+    } catch (error) {
+      if (now() >= observationDeadlineMs) break;
+      throw error;
+    }
+    lastObserved = snapshot.current;
+    if (renderedCrewCommitmentCompleted(
+      snapshot.ownCommitmentCount,
+      snapshot.current,
+    )) return;
+    if (renderedHouseCommitmentMissed(snapshot.basis.phase, snapshot.current)) {
+      throw renderedHouseCommitmentDeadlineError(snapshot.current);
+    }
+    const remainingObservationMs = Math.ceil(observationDeadlineMs - now());
+    if (remainingObservationMs <= 0) break;
+    await wait(Math.min(250, remainingObservationMs));
   }
-  throw new Error("rendered House seats did not commit before the Navigator's bounded deadline");
+  throw renderedHouseCommitmentDeadlineError(lastObserved);
 }
 
 export async function hasExplicitRenderedStaleRoom(page) {
@@ -810,19 +906,44 @@ export async function hasExplicitRenderedStaleRoom(page) {
   return (await staleMessage.count()) > 0 && (await reconnect.count()) > 0;
 }
 
-async function reconnectRenderedCommitment(page, timeoutMs) {
+export async function reconnectRenderedCommitment(
+  page,
+  commitmentWindow,
+  rejectedRoomSequence,
+  actionDeadlineMs,
+  {
+    now = Date.now,
+    wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+  } = {},
+) {
   const reconnect = page.getByRole("button", { name: "Reconnect", exact: true });
-  await reconnect.waitFor({ timeout: timeoutMs });
-  await reconnect.click();
+  await reconnect.waitFor({
+    timeout: remainingRenderedDeadlineMs(actionDeadlineMs, now()),
+  });
+  await reconnect.click({
+    timeout: remainingRenderedDeadlineMs(actionDeadlineMs, now()),
+  });
   const form = renderedActionForm(page, "Seal your choice");
   const live = page.locator(".mission-connection").filter({
     has: page.getByText("Mission link live", { exact: true }),
   });
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  while (now() < actionDeadlineMs) {
     const action = form.locator('button[type="submit"]');
-    if (await live.count() > 0 && await form.count() > 0 && await action.isEnabled()) return;
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    const basis = (
+      await readRenderedCommitmentSnapshot(page, actionDeadlineMs, now)
+    ).basis;
+    if (!renderedSameCommitmentWindow(commitmentWindow, basis)) {
+      throw new Error("rendered reconnect left the current commitment window");
+    }
+    if (
+      renderedFreshCommitmentBasis(commitmentWindow, basis, rejectedRoomSequence)
+      && await live.count() > 0
+      && await form.count() > 0
+      && await action.isEnabled({
+        timeout: remainingRenderedDeadlineMs(actionDeadlineMs, now()),
+      })
+    ) return;
+    await wait(Math.min(250, remainingRenderedDeadlineMs(actionDeadlineMs, now())));
   }
   throw new Error("rendered reconnect did not restore a current live Seal your choice Action");
 }
@@ -833,18 +954,37 @@ async function reconnectRenderedCommitment(page, timeoutMs) {
  * receipt: a successful projection can consume and unmount that form before
  * React resolves the Action promise.
  */
-export async function submitRenderedForm(form, actionLabel, timeoutMs, postcondition) {
+export async function submitRenderedForm(
+  form,
+  actionLabel,
+  timeoutMs,
+  postcondition,
+  { deadlineMs = null, now = Date.now } = {},
+) {
   if (typeof postcondition !== "function") {
     throw new Error(`rendered ${actionLabel} Action lacks a durable postcondition`);
   }
   const action = form.locator('button[type="submit"]');
-  await action.waitFor({ state: "visible", timeout: timeoutMs });
-  const deadline = Date.now() + timeoutMs;
-  while (!(await action.isEnabled()) && Date.now() < deadline) {
+  const operationDeadlineMs = deadlineMs ?? now() + timeoutMs;
+  await action.waitFor({
+    state: "visible",
+    timeout: deadlineMs === null
+      ? timeoutMs
+      : remainingRenderedDeadlineMs(operationDeadlineMs, now()),
+  });
+  let enabled = await action.isEnabled(deadlineMs === null ? undefined : {
+    timeout: remainingRenderedDeadlineMs(operationDeadlineMs, now()),
+  });
+  while (!enabled && now() < operationDeadlineMs) {
     await new Promise((resolve) => setTimeout(resolve, 50));
+    enabled = await action.isEnabled(deadlineMs === null ? undefined : {
+      timeout: remainingRenderedDeadlineMs(operationDeadlineMs, now()),
+    });
   }
-  if (!(await action.isEnabled())) throw new Error(`rendered ${actionLabel} Action was not enabled after live admission`);
-  await action.click();
+  if (!enabled) throw new Error(`rendered ${actionLabel} Action was not enabled after live admission`);
+  await action.click(deadlineMs === null ? undefined : {
+    timeout: remainingRenderedDeadlineMs(operationDeadlineMs, now()),
+  });
   try {
     return await postcondition();
   } catch {
@@ -866,19 +1006,36 @@ export function renderedActionForm(page, actionLabel) {
 }
 
 async function waitForRenderedActionForm(page, actionLabel, timeoutMs) {
+  return waitForRenderedActionFormBefore(
+    page,
+    actionLabel,
+    Date.now() + timeoutMs,
+  );
+}
+
+async function waitForRenderedActionFormBefore(page, actionLabel, deadlineMs) {
   const form = renderedActionForm(page, actionLabel);
   const switcher = page.locator("nav.mission-moves").getByRole("button", {
     name: actionLabel,
     exact: true,
   });
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  while (Date.now() < deadlineMs) {
     if (await form.count() > 0) {
-      await form.waitFor({ state: "visible", timeout: Math.max(1, deadline - Date.now()) });
+      await form.waitFor({
+        state: "visible",
+        timeout: remainingRenderedDeadlineMs(deadlineMs, Date.now()),
+      });
       return form;
     }
-    if (await switcher.count() > 0) await switcher.click();
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (await switcher.count() > 0) {
+      await switcher.click({
+        timeout: remainingRenderedDeadlineMs(deadlineMs, Date.now()),
+      });
+    }
+    await new Promise((resolve) => setTimeout(
+      resolve,
+      Math.min(100, remainingRenderedDeadlineMs(deadlineMs, Date.now())),
+    ));
   }
   throw new Error(`rendered ${actionLabel} Action did not become available before the bounded deadline`);
 }
@@ -929,10 +1086,107 @@ export async function waitForRenderedTerminalComplete(page, timeoutMs) {
   await renderedCompletePhase(page).waitFor({ state: "visible", timeout: timeoutMs });
 }
 
-async function readRenderedCommitmentCount(page, timeoutMs) {
-  const count = page.locator(".crew-commitments strong");
-  await count.waitFor({ state: "attached", timeout: timeoutMs });
-  return parseRenderedCommitmentCount(await count.textContent());
+async function readRenderedCommitmentSnapshot(page, deadlineMs, now = Date.now) {
+  const shell = page.locator("main.mission-focus-shell");
+  const rendered = await shell.evaluate((element) => ({
+    roomSequence: element.getAttribute("data-room-sequence"),
+    phase: element.getAttribute("data-phase"),
+    phaseGeneration: element.getAttribute("data-phase-generation"),
+    phaseDeadline: element.getAttribute("data-phase-deadline"),
+    commitmentCount: element.querySelector(".crew-commitments strong")?.textContent ?? null,
+    ownCommitmentCount: element.querySelectorAll(".own-commitment").length,
+  }), undefined, {
+    timeout: remainingRenderedDeadlineMs(deadlineMs, now()),
+  });
+  const basis = parseRenderedMissionBasis(rendered);
+  const current = parseRenderedCommitmentCount(rendered.commitmentCount);
+  if (
+    !Number.isSafeInteger(rendered.ownCommitmentCount)
+    || rendered.ownCommitmentCount < 0
+    || rendered.ownCommitmentCount > 1
+  ) {
+    throw new Error("rendered participant commitment receipt was ambiguous");
+  }
+  return Object.freeze({
+    basis,
+    current,
+    ownCommitmentCount: rendered.ownCommitmentCount,
+  });
+}
+
+export function parseRenderedMissionBasis({
+  roomSequence,
+  phase,
+  phaseGeneration,
+  phaseDeadline,
+}) {
+  const parsedRoomSequence = parseRenderedNonnegativeInteger(roomSequence);
+  const parsedPhaseGeneration = parseRenderedNonnegativeInteger(phaseGeneration);
+  const parsedPhaseDeadline = typeof phaseDeadline === "string" && phaseDeadline.length > 0
+    ? phaseDeadline
+    : null;
+  if (
+    parsedRoomSequence === null
+    || parsedPhaseGeneration === null
+    || typeof phase !== "string"
+    || !/^[a-z][a-z_]*$/u.test(phase)
+    || (parsedPhaseDeadline !== null && !Number.isFinite(Date.parse(parsedPhaseDeadline)))
+  ) {
+    throw new Error("rendered mission synchronization basis is invalid");
+  }
+  return Object.freeze({
+    roomSequence: parsedRoomSequence,
+    phase,
+    phaseGeneration: parsedPhaseGeneration,
+    phaseDeadline: parsedPhaseDeadline,
+  });
+}
+
+function parseRenderedNonnegativeInteger(value) {
+  if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)$/u.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+export function renderedCommitmentDeadlines(phaseDeadline, nowMs = Date.now()) {
+  const authoritativeDeadlineMs = typeof phaseDeadline === "string"
+    ? Date.parse(phaseDeadline)
+    : Number.NaN;
+  if (!Number.isFinite(authoritativeDeadlineMs) || !Number.isFinite(nowMs)) {
+    throw new Error("rendered commitment deadline is invalid");
+  }
+  const actionDeadlineMs = Math.min(
+    authoritativeDeadlineMs,
+    nowMs + RENDERED_COMMITMENT_ACTION_WINDOW_MS,
+  );
+  if (actionDeadlineMs <= nowMs) {
+    throw new Error("rendered commitment window closed before the Navigator could act");
+  }
+  return Object.freeze({
+    actionDeadlineMs,
+    observationDeadlineMs: actionDeadlineMs + RENDERED_COMMITMENT_OBSERVATION_GRACE_MS,
+  });
+}
+
+export function remainingRenderedDeadlineMs(deadlineMs, nowMs) {
+  const remaining = Math.ceil(deadlineMs - nowMs);
+  if (!Number.isSafeInteger(remaining) || remaining <= 0) {
+    throw new Error("rendered commitment window closed before the reviewed action completed");
+  }
+  return remaining;
+}
+
+export function renderedSameCommitmentWindow(expected, current) {
+  return expected.phase === "commitment"
+    && current.phase === expected.phase
+    && current.phaseGeneration === expected.phaseGeneration
+    && current.phaseDeadline === expected.phaseDeadline;
+}
+
+export function renderedFreshCommitmentBasis(expected, current, rejectedRoomSequence) {
+  return renderedSameCommitmentWindow(expected, current)
+    && Number.isSafeInteger(rejectedRoomSequence)
+    && current.roomSequence > rejectedRoomSequence;
 }
 
 export function parseRenderedCommitmentCount(value) {
@@ -945,16 +1199,28 @@ export function parseRenderedCommitmentCount(value) {
   return Object.freeze({ current, total });
 }
 
-export function renderedHouseCommitmentsReady(current, actionCount) {
-  return current.total >= 2 && current.current === current.total - 1 && actionCount === 1;
+export function renderedCrewCommitmentCompleted(ownCommitmentCount, current) {
+  return ownCommitmentCount === 1
+    && current.total >= 2
+    && current.current === current.total;
 }
 
-export function renderedCommitmentCompleted(before, current, actionCount) {
-  return before.total >= 2 &&
-    before.current === before.total - 1 &&
-    current.total === before.total &&
-    current.current === current.total &&
-    actionCount === 0;
+export function renderedHouseCommitmentMissed(phase, current) {
+  return ["resolution", "result", "complete"].includes(phase)
+    && current.current < current.total;
+}
+
+function renderedHouseCommitmentDeadlineError(current) {
+  const detail = current === null ? "" : ` (${current.current} of ${current.total} sealed)`;
+  return new Error(
+    `rendered House seats missed the 30-second commitment deadline${detail}`,
+  );
+}
+
+export async function hasRenderedOwnCommitment(page) {
+  const count = await page.locator(".own-commitment").count();
+  if (count > 1) throw new Error("rendered participant commitment receipt was ambiguous");
+  return count === 1;
 }
 
 function humanizeRenderedValue(value) {

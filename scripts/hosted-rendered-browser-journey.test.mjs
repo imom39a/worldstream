@@ -9,16 +9,23 @@ import {
   ensureRenderedNavigatorRouteClaim,
   hasRenderedHouseEndorsement,
   hasExplicitRenderedStaleRoom,
+  hasRenderedOwnCommitment,
   launchIdFromUrl,
   localProductOrigin,
   navigatorPlanForRouteClaim,
   parseRenderedCommitmentCount,
+  parseRenderedMissionBasis,
   publicRunPath,
+  reconnectRenderedCommitment,
+  remainingRenderedDeadlineMs,
   renderedActionForm,
-  renderedCommitmentCompleted,
-  renderedHouseCommitmentsReady,
+  renderedCommitmentDeadlines,
+  renderedCrewCommitmentCompleted,
+  renderedFreshCommitmentBasis,
+  renderedHouseCommitmentMissed,
   renderedNavigatorPlan,
   renderedParticipantActionForms,
+  renderedSameCommitmentWindow,
   retryRenderedStaleAction,
   runHostedRenderedBrowserJourney,
   sameOriginBrowserResponseFailure,
@@ -28,6 +35,7 @@ import {
   verifiedMyGamesLaunch,
   waitForHouseEndorsement,
   waitForIndependentActivityClient,
+  waitForRenderedCrewCommitments,
   waitForRenderedTerminalComplete,
 } from "./hosted-rendered-browser-journey.mjs";
 
@@ -182,7 +190,7 @@ test("rendered-client bootstrap proves the current Mission Focus authorization c
     };
     const page = {
       async waitForURL(pattern, options) {
-        assert.equal(pattern.test("/agent-heist-v11/hosted/"), true);
+        assert.equal(pattern.test("/agent-heist-v12/hosted/"), true);
         observed.push(["url", options]);
       },
       getByRole(role, options) {
@@ -198,7 +206,7 @@ test("rendered-client bootstrap proves the current Mission Focus authorization c
         return card;
       },
       url() {
-        return "http://127.0.0.1:5180/agent-heist-v11/hosted/";
+        return "http://127.0.0.1:5180/agent-heist-v12/hosted/";
       },
     };
 
@@ -320,6 +328,42 @@ test("rendered Action acceptance follows a durable Projection after its form is 
     // The fake intentionally has no getByRole/status API: a committed frame
     // may already have unmounted its local form before React writes a notice.
   });
+});
+
+test("rendered Action recomputes every nested timeout from one absolute deadline", async () => {
+  let now = 1_000;
+  const observed = [];
+  const form = {
+    locator(selector) {
+      assert.equal(selector, 'button[type="submit"]');
+      return {
+        async waitFor(options) {
+          observed.push(["wait", options.timeout]);
+          now = 1_090;
+        },
+        async isEnabled(options) {
+          observed.push(["enabled", options.timeout]);
+          now = 1_120;
+          return true;
+        },
+        async click(options) {
+          observed.push(["click", options.timeout]);
+        },
+      };
+    },
+  };
+  await submitRenderedForm(
+    form,
+    "Seal your choice",
+    300,
+    async () => {},
+    { deadlineMs: 1_300, now: () => now },
+  );
+  assert.deepEqual(observed, [
+    ["wait", 300],
+    ["enabled", 210],
+    ["click", 180],
+  ]);
 });
 
 test("rendered Action acceptance requires a durable Projection postcondition", async () => {
@@ -447,35 +491,250 @@ test("rendered House endorsement is scoped to the exact Navigator plan", async (
   assert.equal(hasRenderedHouseEndorsement(["1 endorsements"]), false);
 });
 
-test("rendered commitment waits for all House seats and proves exact full completion", () => {
-  const ambiguousBefore = parseRenderedCommitmentCount("1 of 3");
-  const houseReady = parseRenderedCommitmentCount("2 of 3");
+test("rendered commitment requires the private Navigator receipt and the full crew aggregate", async () => {
+  const housePending = parseRenderedCommitmentCount("2 of 3");
   const completed = parseRenderedCommitmentCount("3 of 3");
-  assert.deepEqual(houseReady, { current: 2, total: 3 });
-  assert.equal(renderedHouseCommitmentsReady(ambiguousBefore, 1), false);
-  assert.equal(renderedHouseCommitmentsReady(houseReady, 0), false);
-  assert.equal(renderedHouseCommitmentsReady(houseReady, 1), true);
-  assert.equal(renderedCommitmentCompleted(ambiguousBefore, houseReady, 0), false);
-  assert.equal(renderedCommitmentCompleted(houseReady, completed, 1), false);
-  assert.equal(renderedCommitmentCompleted(houseReady, completed, 0), true);
-  assert.equal(renderedCommitmentCompleted(houseReady, { current: 3, total: 4 }, 0), false);
+  assert.deepEqual(housePending, { current: 2, total: 3 });
+  assert.equal(renderedCrewCommitmentCompleted(0, completed), false);
+  assert.equal(renderedCrewCommitmentCompleted(1, housePending), false);
+  assert.equal(renderedCrewCommitmentCompleted(1, completed), true);
+  assert.equal(renderedHouseCommitmentMissed("commitment", housePending), false);
+  assert.equal(renderedHouseCommitmentMissed("resolution", housePending), true);
+  assert.equal(renderedHouseCommitmentMissed("result", housePending), true);
+  assert.equal(renderedHouseCommitmentMissed("complete", completed), false);
+  assert.equal(await hasRenderedOwnCommitment({
+    locator(selector) {
+      assert.equal(selector, ".own-commitment");
+      return { async count() { return 1; } };
+    },
+  }), true);
   for (const invalid of [null, "", "2/3", "4 of 3", "1 of 0"]) {
     assert.throws(() => parseRenderedCommitmentCount(invalid), /commitment count is invalid/u);
   }
 });
 
-test("rendered commitment retries only after the explicit stale Room reconnect boundary", async () => {
-  const attempts = [];
-  let reconnects = 0;
+test("rendered commitment keeps one absolute deadline across a stale reconnect", async () => {
+  let now = 1_000;
+  const deadlines = [];
+  let attempts = 0;
   await retryRenderedStaleAction(
-    async () => {
-      attempts.push(attempts.length);
-      return attempts.length === 1 ? "stale" : "committed";
+    async (deadlineMs) => {
+      deadlines.push(["attempt", deadlineMs]);
+      now += 90;
+      attempts += 1;
+      return attempts === 1 ? "stale" : "committed";
     },
-    async () => { reconnects += 1; },
+    async (deadlineMs) => {
+      deadlines.push(["reconnect", deadlineMs]);
+      now += 90;
+    },
+    { deadlineMs: 1_300, now: () => now },
   );
-  assert.deepEqual(attempts, [0, 1]);
-  assert.equal(reconnects, 1);
+  assert.deepEqual(deadlines, [
+    ["attempt", 1_300],
+    ["reconnect", 1_300],
+    ["attempt", 1_300],
+  ]);
+
+  let expiredNow = 2_000;
+  let reconnects = 0;
+  await assert.rejects(
+    () => retryRenderedStaleAction(
+      async (deadlineMs) => {
+        assert.equal(deadlineMs, 2_100);
+        expiredNow = 2_100;
+        return "stale";
+      },
+      async () => { reconnects += 1; },
+      { deadlineMs: 2_100, now: () => expiredNow },
+    ),
+    /commitment window closed/u,
+  );
+  assert.equal(reconnects, 0);
+});
+
+test("rendered commitment derives a bounded window from the authoritative phase deadline", () => {
+  const deadlines = renderedCommitmentDeadlines("1970-01-01T00:00:21.000Z", 1_000);
+  assert.deepEqual(deadlines, { actionDeadlineMs: 21_000, observationDeadlineMs: 23_000 });
+  const capped = renderedCommitmentDeadlines("1970-01-01T00:02:00.000Z", 1_000);
+  assert.deepEqual(capped, { actionDeadlineMs: 31_000, observationDeadlineMs: 33_000 });
+  assert.equal(remainingRenderedDeadlineMs(capped.actionDeadlineMs, 1_125), 29_875);
+  assert.throws(
+    () => remainingRenderedDeadlineMs(capped.actionDeadlineMs, capped.actionDeadlineMs),
+    /commitment window closed/u,
+  );
+  assert.throws(
+    () => renderedCommitmentDeadlines("not-a-deadline", 1_000),
+    /commitment deadline is invalid/u,
+  );
+});
+
+test("rendered House timeout retains the last exact aggregate without a final locator read", async () => {
+  let now = 1_000;
+  let snapshotReads = 0;
+  const page = {
+    locator(selector) {
+      assert.equal(selector, "main.mission-focus-shell");
+      return {
+        async evaluate(_callback, _argument, options) {
+          snapshotReads += 1;
+          assert.deepEqual(options, { timeout: 100 });
+          return {
+            roomSequence: "8",
+            phase: "commitment",
+            phaseGeneration: "5",
+            phaseDeadline: "1970-01-01T00:00:01.100Z",
+            commitmentCount: "2 of 3",
+            ownCommitmentCount: 1,
+          };
+        },
+      };
+    },
+  };
+  await assert.rejects(
+    () => waitForRenderedCrewCommitments(page, 1_100, {
+      now: () => now,
+      wait: async () => { now = 1_100; },
+    }),
+    /House seats missed the 30-second commitment deadline \(2 of 3 sealed\)/u,
+  );
+  assert.equal(snapshotReads, 1);
+});
+
+test("rendered House completion cannot mix a stale aggregate with a newer resolution basis", async () => {
+  let now = 1_000;
+  const snapshots = [{
+    roomSequence: "8",
+    phase: "commitment",
+    phaseGeneration: "5",
+    phaseDeadline: "1970-01-01T00:00:01.100Z",
+    commitmentCount: "2 of 3",
+    ownCommitmentCount: 1,
+  }, {
+    roomSequence: "9",
+    phase: "resolution",
+    phaseGeneration: "6",
+    phaseDeadline: "1970-01-01T00:00:01.101Z",
+    commitmentCount: "3 of 3",
+    ownCommitmentCount: 1,
+  }];
+  let snapshotReads = 0;
+  const page = {
+    locator(selector) {
+      assert.equal(selector, "main.mission-focus-shell");
+      return {
+        async evaluate() {
+          const snapshot = snapshots[snapshotReads];
+          snapshotReads += 1;
+          return snapshot;
+        },
+      };
+    },
+  };
+  await waitForRenderedCrewCommitments(page, 1_100, {
+    now: () => now,
+    wait: async () => { now += 25; },
+  });
+  assert.equal(snapshotReads, 2);
+});
+
+test("rendered reconnect requires a newer Room basis in the same commitment window", () => {
+  const expected = parseRenderedMissionBasis({
+    roomSequence: "7",
+    phase: "commitment",
+    phaseGeneration: "5",
+    phaseDeadline: "2026-08-15T12:03:00Z",
+  });
+  const fresh = { ...expected, roomSequence: 8 };
+  assert.equal(renderedSameCommitmentWindow(expected, fresh), true);
+  assert.equal(renderedFreshCommitmentBasis(expected, expected, 7), false);
+  assert.equal(renderedFreshCommitmentBasis(expected, fresh, 7), true);
+  assert.equal(renderedFreshCommitmentBasis(expected, { ...fresh, phase: "resolution" }, 7), false);
+  assert.equal(renderedFreshCommitmentBasis(expected, { ...fresh, phaseGeneration: 6 }, 7), false);
+  assert.equal(renderedFreshCommitmentBasis(expected, { ...fresh, phaseDeadline: "2026-08-15T12:03:01Z" }, 7), false);
+  assert.throws(
+    () => parseRenderedMissionBasis({ roomSequence: "07", phase: "commitment", phaseGeneration: "5", phaseDeadline: null }),
+    /synchronization basis is invalid/u,
+  );
+});
+
+test("rendered reconnect recomputes waits against the original absolute deadline", async () => {
+  let now = 1_000;
+  const observed = [];
+  const expected = parseRenderedMissionBasis({
+    roomSequence: "7",
+    phase: "commitment",
+    phaseGeneration: "5",
+    phaseDeadline: "2026-08-15T12:03:00Z",
+  });
+  const action = {
+    async isEnabled(options) {
+      observed.push(["enabled", options.timeout]);
+      return true;
+    },
+  };
+  const form = {
+    async count() { return 1; },
+    locator(selector) {
+      assert.equal(selector, 'button[type="submit"]');
+      return action;
+    },
+  };
+  const reconnect = {
+    async waitFor(options) {
+      observed.push(["wait", options.timeout]);
+      now = 1_050;
+    },
+    async click(options) {
+      observed.push(["click", options.timeout]);
+      now = 1_100;
+    },
+  };
+  const page = {
+    getByRole(role) {
+      return role === "button" ? reconnect : {};
+    },
+    getByText() { return {}; },
+    locator(selector) {
+      if (selector === "main.mission-focus-shell") return {
+        async evaluate(_callback, _argument, options) {
+          observed.push(["snapshot", options.timeout]);
+          now = 1_150;
+          return {
+            roomSequence: "8",
+            phase: "commitment",
+            phaseGeneration: "5",
+            phaseDeadline: "2026-08-15T12:03:00Z",
+            commitmentCount: "2 of 3",
+            ownCommitmentCount: 1,
+          };
+        },
+      };
+      if (selector === ".mission-connection") return {
+        filter() { return { async count() { return 1; } }; },
+      };
+      assert.equal(selector, "section#mission-action");
+      return {
+        filter() {
+          return {
+            locator(innerSelector) {
+              assert.equal(innerSelector, "form.mission-action-surface");
+              return form;
+            },
+          };
+        },
+      };
+    },
+  };
+  await reconnectRenderedCommitment(page, expected, 7, 1_300, {
+    now: () => now,
+  });
+  assert.deepEqual(observed, [
+    ["wait", 300],
+    ["click", 250],
+    ["snapshot", 200],
+    ["enabled", 150],
+  ]);
 });
 
 test("rendered stale Room boundary requires both the exact message and Reconnect control", async () => {

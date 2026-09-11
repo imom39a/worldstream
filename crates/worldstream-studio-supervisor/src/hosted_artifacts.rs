@@ -41,6 +41,7 @@ pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAge
         include_bytes!("../../../config/hosted/listings/agent-heist-0.26.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.27.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.28.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.29.0.json"),
     ];
     const HOUSE_AGENTS: &[&[u8]] = &[
         include_bytes!("../../../config/hosted/house-agents/mira-1.json"),

@@ -18,7 +18,7 @@ a developer who wants to operate a local kernel installation.
 Use this path if you want to play Agent Heist. You do not need to install this
 repository, supply a model key, or operate WorldStream.
 
-First time? Open [guided practice](https://worldstream-demos.vercel.app/agent-heist-v11/practice/).
+First time? Open [guided practice](https://worldstream-demos.vercel.app/agent-heist-v12/practice/).
 It teaches the current rules with a scripted crew. There is no timer, sign-in,
 live Room, or AI charge. Open your dossier, share the clue, choose four plan
 cards, then seal your choice. The debrief explains each point.

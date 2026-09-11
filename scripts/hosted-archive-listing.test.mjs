@@ -63,7 +63,7 @@ test("the internal candidate advances only to exact Archive Listing 0.4", async 
 });
 
 for (const [client, version, predecessor] of [
-  ["agent-heist", "0.28.0", "0.27.0"],
+  ["agent-heist", "0.29.0", "0.28.0"],
   ["midnight-archive", "0.4.0", "0.3.0"],
 ]) {
   test(`${client} ${version} seeds only the exact client successor and preserves its activity contract`, async () => {

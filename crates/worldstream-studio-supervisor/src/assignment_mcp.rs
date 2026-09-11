@@ -2857,12 +2857,7 @@ impl AssignmentMcpServerV1 {
             "precondition": precondition,
             "payload": arguments.payload,
         }))?;
-        if result.get("status").and_then(Value::as_str) != Some("accepted") {
-            return Err(AssignmentMcpErrorV1::ActionUnoffered);
-        }
-        if let Some(highest) = self.highest_delivered {
-            self.acknowledge(serde_json::json!({"through_frame_seq": highest}))?;
-        }
+        self.finish_managed_action_submission(&result)?;
         self.begin_managed_completion(&operation_id, ManagedAgentActivationDispositionV1::Handled)?;
         let completion = self.complete_activation(serde_json::json!({
             "activation_cursor": activation_cursor,
@@ -2878,6 +2873,23 @@ impl AssignmentMcpServerV1 {
             "action": result,
             "completion": completion,
         }))
+    }
+
+    /// A model-selected Action proves that this turn consumed its delivered
+    /// observations even when a competing transition makes the Action stale.
+    /// Advance the durable Cursor before the host closes that Activation so a
+    /// fresh Activation does not replay the same full projections.
+    fn finish_managed_action_submission(
+        &mut self,
+        result: &Value,
+    ) -> Result<(), AssignmentMcpErrorV1> {
+        if let Some(highest) = self.highest_delivered {
+            self.acknowledge(serde_json::json!({"through_frame_seq": highest}))?;
+        }
+        if result.get("status").and_then(Value::as_str) != Some("accepted") {
+            return Err(AssignmentMcpErrorV1::ActionUnoffered);
+        }
+        Ok(())
     }
 }
 
@@ -3360,21 +3372,62 @@ fn bounded_label(value: &str) -> bool {
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
-    use std::{fs, time::Duration};
+    use std::{
+        fs,
+        sync::{Arc, Mutex, PoisonError},
+        time::Duration,
+    };
 
     use super::{
-        AssignedMembershipGatewayErrorV1, AssignmentMcpErrorV1,
-        FixedDaemonAssignedMembershipGatewayV1, StreamContinuityV1, managed_completion_disposition,
-        pending_managed_activation_matches, reconciled_managed_completion_disposition,
-        update_action_offers,
+        AssignedMembershipAuthorityV1, AssignedMembershipGatewayErrorV1,
+        AssignedMembershipGatewayV1, AssignmentMcpContextV1, AssignmentMcpErrorV1,
+        AssignmentMcpServerV1, FixedDaemonAssignedMembershipGatewayV1, ManagedTurnV1,
+        MembershipStreamSnapshotV1, StaticAssignmentLeaseV1, StreamContinuityV1,
+        managed_completion_disposition, pending_managed_activation_matches,
+        reconciled_managed_completion_disposition, update_action_offers,
     };
     use crate::{
+        assignment_mcp_actions::{
+            AssignmentMcpActionRefreshReasonV1, AssignmentMcpActionSubmitResultV1,
+        },
         managed_activation_status::ManagedActivationStatusStoreV1,
         managed_agent_host::ManagedAgentActivationDispositionV1,
     };
     use serde_json::json;
     use tempfile::tempdir;
-    use worldstream_protocol::ActionOffer;
+    use worldstream_protocol::{ActionOffer, PackReference, RoomHead, SealedCapabilityBearerV1};
+
+    const TEST_ASSIGNMENT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
+    const TEST_ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+    const TEST_MEMBER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+    const TEST_BEARER: &str =
+        "wsb1:abababababababababababababababababababababababababababababababab";
+
+    #[derive(Clone, Default)]
+    struct RecordingManagedAckGateway {
+        acknowledgements: Arc<Mutex<Vec<u64>>>,
+    }
+
+    impl AssignedMembershipGatewayV1 for RecordingManagedAckGateway {
+        fn synchronize(
+            &self,
+            _authority: &AssignedMembershipAuthorityV1,
+        ) -> Result<MembershipStreamSnapshotV1, AssignedMembershipGatewayErrorV1> {
+            Err(AssignedMembershipGatewayErrorV1::Unavailable)
+        }
+
+        fn acknowledge(
+            &self,
+            _authority: &AssignedMembershipAuthorityV1,
+            through_frame_seq: u64,
+        ) -> Result<u64, AssignedMembershipGatewayErrorV1> {
+            self.acknowledgements
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(through_frame_seq);
+            Ok(through_frame_seq)
+        }
+    }
 
     #[test]
     fn retained_frames_keep_or_replace_only_exact_canonical_action_offers() {
@@ -3395,6 +3448,76 @@ mod tests {
                 &json!({"action_offers":[{"action_type":"unsafe"}]})
             ),
             Err(AssignedMembershipGatewayErrorV1::InvalidData),
+        );
+    }
+
+    #[test]
+    fn stale_managed_action_advances_processed_cursor_before_replacement_turn() {
+        let gateway = RecordingManagedAckGateway::default();
+        let acknowledgements = Arc::clone(&gateway.acknowledgements);
+        let authority = AssignedMembershipAuthorityV1::new(
+            TEST_ASSIGNMENT,
+            "counter-agent",
+            "r1",
+            "counter",
+            "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+            TEST_ROOM,
+            TEST_MEMBER,
+            SealedCapabilityBearerV1::parse(TEST_BEARER.to_owned())
+                .unwrap_or_else(|error| panic!("sealed bearer: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("assignment authority: {error:?}"));
+        let mut server = AssignmentMcpServerV1::open(AssignmentMcpContextV1 {
+            authority,
+            gateway: Arc::new(gateway),
+            lease: Arc::new(StaticAssignmentLeaseV1),
+            actions: None,
+            activations: None,
+            managed_activation_status: None,
+        });
+        server.current = Some(managed_cursor_snapshot(6, 8));
+        server.highest_delivered = Some(8);
+        server.managed_turn = Some(ManagedTurnV1 {
+            operation_id: "01ARZ3NDEKTSV4RRFFQ69G5FB1".to_owned(),
+            activation_cursor: 1,
+            lease_generation: 1,
+            context_hash: "blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                .to_owned(),
+        });
+
+        let stale_result =
+            serde_json::to_value(AssignmentMcpActionSubmitResultV1::RefreshRequired {
+                operation_id: "01ARZ3NDEKTSV4RRFFQ69G5FB1".to_owned(),
+                reason: AssignmentMcpActionRefreshReasonV1::StaleHead,
+                current_room_seq: 8,
+                current_head_hash: Some(
+                    "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_owned(),
+                ),
+                requires_new_operation_id: true,
+                next_action: "observe_list_then_submit_new_operation",
+            })
+            .unwrap_or_else(|error| panic!("stale Action result: {error}"));
+        let result = server.finish_managed_action_submission(&stale_result);
+
+        assert_eq!(result, Err(AssignmentMcpErrorV1::ActionUnoffered));
+        assert_eq!(
+            acknowledgements
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_slice(),
+            &[8]
+        );
+        assert_eq!(
+            server
+                .current_materialized_view()
+                .and_then(|snapshot| snapshot.cursor),
+            Some(8),
+            "the replacement Activation must resume after the stale turn's processed frames"
+        );
+        assert!(
+            server.managed_turn.is_some(),
+            "the host still owns closing the stale Activation as failed"
         );
     }
 
@@ -3516,6 +3639,42 @@ mod tests {
             action_type: action_type.to_owned(),
             payload_schema_digest: format!("blake3:{}", "a".repeat(64)),
             eligibility_window: None,
+        }
+    }
+
+    fn managed_cursor_snapshot(cursor: u64, frame_head: u64) -> MembershipStreamSnapshotV1 {
+        const PACK_DIGEST: &str =
+            "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        MembershipStreamSnapshotV1 {
+            room_head: RoomHead {
+                room_id: TEST_ROOM.to_owned(),
+                room_seq: 7,
+                genesis_or_transition_hash:
+                    "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                        .to_owned(),
+                core_schema_version: "worldstream/core/v1".to_owned(),
+                pack_digest: PACK_DIGEST.to_owned(),
+                core_state_hash:
+                    "blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                        .to_owned(),
+                activity_state_hash:
+                    "blake3:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                        .to_owned(),
+                authoritative_state_hash:
+                    "blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                        .to_owned(),
+            },
+            pack: PackReference {
+                id: "counter".to_owned(),
+                version: "2.0.0".to_owned(),
+                digest: PACK_DIGEST.to_owned(),
+            },
+            cursor: Some(cursor),
+            frame_head,
+            retained_floor: 1,
+            current_action_offers: Vec::new(),
+            projection_reset: None,
+            observations: Vec::new(),
         }
     }
 }

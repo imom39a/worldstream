@@ -67,6 +67,47 @@ test("the Vercel product build installs the exact reviewed Midnight Archive v14 
   }
 });
 
+test("the Vercel product build installs Agent Heist v12 and retains immutable v11", async () => {
+  assert.deepEqual(
+    hostedClientArtifacts.filter(([label]) => label === "Agent Heist").map(([, path]) => path),
+    [
+      "agent-heist-v12", "agent-heist-v11", "agent-heist-v10", "agent-heist-v9",
+      "agent-heist-v8", "agent-heist-v7", "agent-heist-v6", "agent-heist-v5",
+      "agent-heist-v4", "agent-heist-v3", "agent-heist-v2",
+    ],
+  );
+  const current = hostedClientArtifacts.find(([, path]) => path === "agent-heist-v12");
+  const retained = hostedClientArtifacts.find(([, path]) => path === "agent-heist-v11");
+  assert.deepEqual(current, [
+    "Agent Heist",
+    "agent-heist-v12",
+    "clients/agent-heist-web/dist",
+    "agent-heist-web-v12.json",
+  ]);
+  assert.deepEqual(retained, [
+    "Agent Heist",
+    "agent-heist-v11",
+    "config/activity-clients/artifacts/agent-heist-web-v11",
+    "agent-heist-web-v11.json",
+  ]);
+
+  const currentRelease = await manifest("config/activity-clients/releases/agent-heist-web-v12.json");
+  const retainedRelease = await manifest("config/activity-clients/releases/agent-heist-web-v11.json");
+  assert.equal(currentRelease.release_digest, "sha256:02d8cb123ba2c5b4c9b4e6b075a7eb21ce3f551cc53332e836b1690b2b4ef519");
+  assert.equal(currentRelease.artifacts[0]?.digest, "sha256:904712cf839e686d214961ac9fc4109d8e74289b28567c174164c82ee60507c1");
+  assert.ok(currentRelease.surfaces.some(({ entrypoint }) => entrypoint === "/agent-heist-v12/hosted/"));
+  assert.equal(retainedRelease.artifacts[0]?.digest, "sha256:ce7c86d24832158536df90384d140ae5aec6482eb654ab70c1551effc9e62093");
+
+  const output = await mkdtemp(resolve(tmpdir(), "worldstream-vercel-heist-clients-"));
+  try {
+    await installHostedClientArtifacts({ destinationRoot: output, artifacts: [current, retained] });
+    assert.equal(await activityClientBuildDigest(resolve(output, "agent-heist-v12")), currentRelease.artifacts[0].digest);
+    assert.equal(await activityClientBuildDigest(resolve(output, "agent-heist-v11")), retainedRelease.artifacts[0].digest);
+  } finally {
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
 test("the retired client path reaches the BFF 404 instead of a new artifact or SPA", async () => {
   const configuration = await manifest("web/demos/vercel.json");
   const retired = configuration.rewrites.find(({ source }) => source === "/agent-heist/:path*");

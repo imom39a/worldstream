@@ -10,16 +10,19 @@ const browser = await chromium.launch({ headless: true, ...await localBrowserOpt
 try {
   await verifyInitialTicketRecovery();
   if ((await fetch(`${host.origin}/agent-heist/`)).status !== 404) throw new Error("unavailable retained Heist path must not serve replacement bytes");
-  await verifySurface("Agent Heist current local", "/agent-heist-v11/", "Agent Heist · WorldStream Activity Client", async (page) => {
+  await verifySurface("Agent Heist current local", "/agent-heist-v12/", "Agent Heist · WorldStream Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Re-enter your mission" }).waitFor();
     const body = await page.locator("body").innerText();
     reject(body, /Canal Shift|route_service|Recorded fixture|Fixture mode/i, "Heist live client exposed recorded data");
   });
-  await verifySurface("Agent Heist current hosted", "/agent-heist-v11/hosted/", "Agent Heist · Hosted Activity Client", async (page) => {
+  await verifySurface("Agent Heist current hosted", "/agent-heist-v12/hosted/", "Agent Heist · Hosted Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Unable to enter this Run" }).waitFor();
   }, true);
+  await verifySurface("Agent Heist retained v11", "/agent-heist-v11/", "Agent Heist · WorldStream Activity Client", async (page) => {
+    await page.getByRole("heading", { name: "Re-enter your mission" }).waitFor();
+  });
   await verifySurface("Agent Heist retained v10", "/agent-heist-v10/", "Agent Heist · WorldStream Activity Client", async (page) => {
-    await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
+    await page.getByRole("heading", { name: "Re-enter your mission" }).waitFor();
   });
   await verifySurface("Agent Heist retained v8", "/agent-heist-v8/", "Agent Heist · WorldStream Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
@@ -175,7 +178,7 @@ async function verifyInitialTicketRecovery() {
     return fulfill(route, 500, {});
   });
   try {
-    await page.goto(`${host.origin}/agent-heist-v11/hosted/#handoff=wsh1:${"ab".repeat(32)}`, { waitUntil: "networkidle" });
+    await page.goto(`${host.origin}/agent-heist-v12/hosted/#handoff=wsh1:${"ab".repeat(32)}`, { waitUntil: "networkidle" });
     await page.getByRole("button", { name: "Reconnect", exact: true }).waitFor();
     if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)) throw new Error("initial recovery screen overflows the mobile viewport");
     if (page.url().includes("#handoff")) throw new Error("initial handoff was retained in the URL");

@@ -196,17 +196,19 @@ cookies, handoffs, tickets, or raw response bodies in a bug report.
 
 ### Successor and deployment gate
 
-Client v11 is the current immutable successor. It adds retryable `room_busy`
-synchronization within the attempt deadline; v10 remains retained:
+Client v12 is the current immutable successor. It adds a participant-private
+sealed-commitment acknowledgement and keeps stale-action reconnect recovery
+inside one absolute Pack action deadline. Client v11 remains retained:
 
-- Release: `sha256:40d452a04b096d3a0952f99b877f094f90c6e4a84063d3212265b5c2b97306ee`.
-- Build: `sha256:ce7c86d24832158536df90384d140ae5aec6482eb654ab70c1551effc9e62093`.
-- Listing 0.28: `blake3:d738402a5acb404dead979c21002fa02d95f4c1e89f6d4c47e617a6c6be27bc3`.
-- Existing v10/v9 bytes, Listings 0.27/0.26, Pack 0.5, projectors, House identities and
+- Release: `sha256:02d8cb123ba2c5b4c9b4e6b075a7eb21ce3f551cc53332e836b1690b2b4ef519`.
+- Build: `sha256:904712cf839e686d214961ac9fc4109d8e74289b28567c174164c82ee60507c1`.
+- Listing 0.29: `blake3:71eb289ce6c730fa6e8eefc9d222f9730e8a69b6cc297d43b8794b7eda35f5f9`.
+- Retained v11 release: `sha256:40d452a04b096d3a0952f99b877f094f90c6e4a84063d3212265b5c2b97306ee`.
+- Existing v11/v10/v9 bytes, Listings 0.28/0.27/0.26, Pack 0.5, projectors, House identities and
   budgets remain unchanged. New bindings are eligible explicit choices; they
   do not overwrite an existing Host default.
 
-`supabase/catalog/agent-heist-0.28.0.sql` inserts only the exact immutable
+`supabase/catalog/agent-heist-0.29.0.sql` inserts only the exact immutable
 Listing metadata. It is not a schema migration and grants no Host approval.
 The successor seed uses the same exact-document conflict check as its predecessor.
 Local seed configuration and `hosted:dev` include this data-only seed. This
@@ -217,8 +219,8 @@ Production activation must be coordinated with the active appliance release:
 1. Finish native regression checks and the appliance smoke on a clean combined
    commit. Do not deploy either partially tested candidate.
 2. Preserve current operational history. No reset is needed for this change.
-3. Package v11 plus retained v10/v9/v8/v7 releases in the Fly image. Import their
-   exact approved client declarations. Add Listing 0.28 to the allowlist while
+3. Package v12 plus retained v11/v10/v9/v8/v7 releases in the Fly image. Import their
+   exact approved client declarations. Add Listing 0.29 to the allowlist while
    retaining previously admitted Listings.
 4. Apply the one data-only catalog file with stop-on-error; verify its exact
    digest/document and client correspondence.
@@ -230,7 +232,7 @@ Production activation must be coordinated with the active appliance release:
    do not deliberately break production or spend LLM credits for that test.
 7. Record actual production deployment identities and acceptance separately.
 
-The browser regression drives the real built v11 client with an injected
+The browser regression drives the real built v12 client with an injected
 initial ticket 503. It checks one handoff redemption, retained-session retry,
 one fresh ticket request, no Action or fixture state, and re-entry guidance
 after session expiry. This is not proof that the original intermittent Fly

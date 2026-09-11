@@ -116,7 +116,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .private-clue-list span { color: #b8b5ea; font-size: 9px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; }
 .private-clue-list strong { color: #f0efff; font-size: 13px; text-transform: capitalize; }
 .private-clue-list code { color: #79e9e1; font-size: 10px; overflow-wrap: anywhere; }
-.own-commitment { display: grid; gap: 6px; margin-top: 10px; padding: 12px; border: 1px solid #39776b; border-radius: 6px; background: #15332f; }
+.own-commitment { display: grid; gap: 6px; margin: 10px 0 16px; padding: 12px; border: 1px solid #39776b; border-radius: 6px; color: #dff6eb; background: #15332f; font-weight: 700; }
 .own-commitment span, .incoming-exchanges small { color: #8eb0aa; font-size: 9px; text-transform: uppercase; }
 .own-commitment strong { color: #d8fff5; font-size: 12px; }
 .own-commitment small { color: #a8c9c2; font-size: 9px; }

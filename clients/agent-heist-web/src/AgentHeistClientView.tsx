@@ -63,7 +63,11 @@ function MissionFocus({ state, connection, message, actionsEnabled, agentAssist,
   const active = state.offers.find((offer) => offer.actionType === requested) ?? preferredOffer(state);
   const stale = requested !== null && !state.offers.some((offer) => offer.actionType === requested);
   const copy = phaseCopy(state, active?.actionType ?? null);
-  return <main className="heist-live-shell mission-focus-shell">
+  return <main className="heist-live-shell mission-focus-shell"
+    data-room-sequence={state.roomSequence}
+    data-phase={state.projection.phase}
+    data-phase-generation={state.projection.phaseGeneration}
+    data-phase-deadline={state.projection.phaseDeadline ?? undefined}>
     <a className="heist-skip-link" href="#mission-action">Skip to current mission action</a>
     <header className="mission-focus-header"><div><span className="eyebrow">Cooperative planning operation</span><h1>Agent <em>Heist</em></h1></div>
       <div className="mission-hud"><span className={`connection-chip connection-${connection}`}>{connectionLabel(connection)}</span><span className="mission-clock"><small>Phase time</small><PhaseCountdown key={`${state.projection.phaseGeneration}:${state.projection.phaseDeadline}:${connection}`} deadline={state.projection.phaseDeadline} connected={connection === "live"} /></span></div>
@@ -75,6 +79,7 @@ function MissionFocus({ state, connection, message, actionsEnabled, agentAssist,
       <ol className="mission-progress" aria-label="Mission progress">{(["briefing", "negotiation", "commitment", "result"] as const).map((phase, index) => <li key={phase} className={phaseState(state.projection.phase, phase)} aria-current={state.projection.phase === phase ? "step" : undefined}><span>{String(index + 1).padStart(2, "0")}</span>{humanize(phase)}</li>)}</ol>
       {state.projection.outcome === null ? null : <OutcomeDebrief state={state} />}
       <section className="mission-action" id="mission-action" aria-live="polite"><div className="mission-section-heading"><span>Your move</span><h3>{active === undefined ? "Wait for the crew" : actionTitle(active.actionType)}</h3></div>
+        {state.authorization.accessMode === "participant" && state.projection.ownCommitment !== null ? <p className="own-commitment" role="status">Your choice is sealed.</p> : null}
         {stale ? <p className="action-stale">That move is no longer offered at the current mission moment. Your unsubmitted draft was not sent.</p> : null}
         {active === undefined ? <NoAction phase={state.projection.phase} /> : <MissionAction key={`${state.pack.digest}:${state.authorization.role}:${state.projection.phase}:${active.actionType}`} offer={active} state={state} enabled={actionsEnabled} onAct={onAct} />}
       </section>

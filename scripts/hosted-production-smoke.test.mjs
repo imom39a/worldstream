@@ -14,8 +14,12 @@ import {
 test("the production smoke installs current and retained Heist and Archive runtime clients", () => {
   assert.deepEqual(hostedSmokeClientAssets("/repo", "/assets"), [
     {
-      source: "/repo/config/activity-clients/releases/agent-heist-web-v11.json",
+      source: "/repo/config/activity-clients/releases/agent-heist-web-v12.json",
       destination: "/assets/agent-heist-web.json",
+    },
+    {
+      source: "/repo/config/activity-clients/releases/agent-heist-web-v11.json",
+      destination: "/assets/agent-heist-web-v11.json",
     },
     {
       source: "/repo/config/activity-clients/releases/agent-heist-web-v10.json",

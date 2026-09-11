@@ -15,9 +15,13 @@ describe("hosted local Activity Client routing", () => {
       "/agent-heist-v4",
       "/agent-heist-v5",
       "/agent-heist-v6",
+      "/agent-heist-v11",
+      "/agent-heist-v12",
     ]));
     expect(hostedLocalClientProxy("http://127.0.0.1:5173", bindings)).toMatchObject({
       "/agent-heist-v6": { target: "http://127.0.0.1:5173", changeOrigin: true },
+      "/agent-heist-v11": { target: "http://127.0.0.1:5173", changeOrigin: true },
+      "/agent-heist-v12": { target: "http://127.0.0.1:5173", changeOrigin: true },
     });
   });
 

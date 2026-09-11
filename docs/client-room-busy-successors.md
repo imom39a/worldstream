@@ -12,6 +12,9 @@ lockfile. Only the client release and Listing version/client reference advance;
 Pack, Room configuration, House Agent, Result Projector and roster identities
 remain the same as each predecessor.
 
+Agent Heist v11 and Listing 0.28.0 are now retained predecessors. The current
+source release is documented in [Agent Heist commitment receipt successor](heist-commitment-receipt-successor.md).
+
 ## agent-heist client v11 / Listing 0.28.0
 
 - Build tree: `sha256:ce7c86d24832158536df90384d140ae5aec6482eb654ab70c1551effc9e62093`.
@@ -46,8 +49,8 @@ verified the frozen predecessor trees:
 Those trees, predecessor release/evidence documents, Listings 0.27.0 and 0.3.0,
 and all previous bindings remain exact. Both local and Vercel artifact hosts
 serve the frozen predecessor bytes at their original paths. Archive v14 is
-also frozen under `config/activity-clients/artifacts/`; Heist v11 is rebuilt
-from current source and checked against its release digest during installation.
+also frozen under `config/activity-clients/artifacts/`; Heist v11 is retained
+there too and checked against its release digest during installation.
 New bindings are eligible explicit choices, so importing them does not replace
 an existing Host default. Hosted Listings require their exact new release.
 

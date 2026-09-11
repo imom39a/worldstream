@@ -6,7 +6,8 @@ import { activityClientBuildDigest } from "./activity-client-identities.mjs";
 
 const workspace = resolve(fileURLToPath(new URL("..", import.meta.url)));
 export const activityClientMounts = Object.freeze([
-  Object.freeze({ prefix: "/agent-heist-v11/", root: resolve(workspace, "clients/agent-heist-web/dist") }),
+  Object.freeze({ prefix: "/agent-heist-v12/", root: resolve(workspace, "clients/agent-heist-web/dist") }),
+  Object.freeze({ prefix: "/agent-heist-v11/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v11") }),
   Object.freeze({ prefix: "/agent-heist-v10/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v10") }),
   Object.freeze({ prefix: "/agent-heist-v9/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v9") }),
   Object.freeze({ prefix: "/agent-heist-v8/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v8") }),

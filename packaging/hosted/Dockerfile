@@ -57,7 +57,8 @@ COPY --from=builder /out/worldstream-hosted-artifact-digest /usr/local/bin/world
 COPY --from=builder /out/managed-agent-host.blake3 /opt/worldstream/hosted/managed-agent-host.blake3
 COPY scripts/hosted-runtime.mjs /opt/worldstream/hosted/hosted-runtime.mjs
 COPY scripts/hosted-volume-capture.mjs /opt/worldstream/hosted/hosted-volume-capture.mjs
-COPY config/activity-clients/releases/agent-heist-web-v11.json /opt/worldstream/hosted/agent-heist-web.json
+COPY config/activity-clients/releases/agent-heist-web-v12.json /opt/worldstream/hosted/agent-heist-web.json
+COPY config/activity-clients/releases/agent-heist-web-v11.json /opt/worldstream/hosted/agent-heist-web-v11.json
 COPY config/activity-clients/releases/agent-heist-web-v10.json /opt/worldstream/hosted/agent-heist-web-v10.json
 COPY config/activity-clients/releases/agent-heist-web-v9.json /opt/worldstream/hosted/agent-heist-web-v9.json
 COPY config/activity-clients/releases/agent-heist-web-v8.json /opt/worldstream/hosted/agent-heist-web-v8.json

@@ -131,6 +131,19 @@
           "launch_url": "http://127.0.0.1:5180/midnight-archive-v14/hosted/"
         }
       ]
+    },
+    {
+      "schema": "worldstream/client-deployment/v1",
+      "deployment_id": "hosted-agent-heist-web-v12-02d8cb12",
+      "client_id": "worldstream.agent-heist.web",
+      "release_digest": "sha256:02d8cb123ba2c5b4c9b4e6b075a7eb21ce3f551cc53332e836b1690b2b4ef519",
+      "trust_level": "externally_trusted",
+      "surfaces": [
+        {
+          "surface_id": "heist-hosted-web",
+          "launch_url": "http://127.0.0.1:5180/agent-heist-v12/hosted/"
+        }
+      ]
     }
   ],
   "bindings": [
@@ -438,6 +451,40 @@
       ],
       "deployment_id": "hosted-midnight-archive-web-v14-2040145d",
       "surface_id": "midnight-archive-hosted-web",
+      "preference": "eligible"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "hosted-agent-heist-0-5-v12-02d8cb12-participant",
+      "pack": {
+        "id": "worldstream.agent-heist",
+        "version": "0.5.0",
+        "digest": "blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "participant",
+      "roles": [
+        "navigator",
+        "insider",
+        "broker"
+      ],
+      "deployment_id": "hosted-agent-heist-web-v12-02d8cb12",
+      "surface_id": "heist-hosted-web",
+      "preference": "eligible"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "hosted-agent-heist-0-5-v12-02d8cb12-spectator",
+      "pack": {
+        "id": "worldstream.agent-heist",
+        "version": "0.5.0",
+        "digest": "blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "spectator",
+      "roles": [],
+      "deployment_id": "hosted-agent-heist-web-v12-02d8cb12",
+      "surface_id": "heist-hosted-web",
       "preference": "eligible"
     }
   ],

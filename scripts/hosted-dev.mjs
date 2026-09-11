@@ -62,8 +62,9 @@ const HOSTED_NATIVE_BINARY_NAMES = [
 ];
 export const HOSTED_LOCAL_RECONCILIATION_SECRET =
   "worldstream-local-reconciliation-secret-000000000000";
-const LISTING_DIGEST = "blake3:d738402a5acb404dead979c21002fa02d95f4c1e89f6d4c47e617a6c6be27bc3";
+const LISTING_DIGEST = "blake3:71eb289ce6c730fa6e8eefc9d222f9730e8a69b6cc297d43b8794b7eda35f5f9";
 const RETAINED_LISTING_DIGESTS = [
+  "blake3:d738402a5acb404dead979c21002fa02d95f4c1e89f6d4c47e617a6c6be27bc3",
   "blake3:cc1c92ebc6ba7cccc9474186ff8107cf97f6bd0ce2676c6d1a2aa203c2a62d35",
   "blake3:c2e07bc3c8ff2b36a549127d1f9f6403c52dcaca45065cb5923debe705111de2",
   "blake3:30ee53ed1ad230586f0f0ac20b3da442093c76bed568b3b7021b043800e240fe",
@@ -95,6 +96,17 @@ const RETAINED_LISTING_DIGESTS = [
 
 export function hostedDevelopmentListingAllowlist(internalCandidates = []) {
   return [LISTING_DIGEST, ...RETAINED_LISTING_DIGESTS, ...internalCandidates].join(",");
+}
+
+export function hostedDevelopmentClientReleaseDigest(listingValue) {
+  const value = requiredJsonString(
+    listingValue?.client?.release_digest,
+    "hosted development Listing client release",
+  );
+  if (!/^sha256:[0-9a-f]{64}$/u.test(value)) {
+    throw new Error("hosted development Listing client release is invalid");
+  }
+  return value;
 }
 
 export function hostedLocalSmokeIdempotencyKey(listingDigest = LISTING_DIGEST) {
@@ -812,7 +824,7 @@ async function ensureDevelopmentProviderSecret(path) {
 
 async function seedSupabase(supabase, environment) {
   const databaseUrl = requiredSupabase(supabase, "DB_URL");
-  await run("psql", [databaseUrl, "-q", "-v", "ON_ERROR_STOP=1", "-f", "supabase/seed.sql", "-f", "supabase/catalog/agent-heist-0.27.0.sql", "-f", "supabase/catalog/agent-heist-0.28.0.sql", "-f", "supabase/catalog/midnight-archive-0.4.0.sql"], {
+  await run("psql", [databaseUrl, "-q", "-v", "ON_ERROR_STOP=1", "-f", "supabase/seed.sql", "-f", "supabase/catalog/agent-heist-0.27.0.sql", "-f", "supabase/catalog/agent-heist-0.28.0.sql", "-f", "supabase/catalog/agent-heist-0.29.0.sql", "-f", "supabase/catalog/midnight-archive-0.4.0.sql"], {
     capture: true,
     sensitive: true,
     environment,
@@ -1008,7 +1020,7 @@ async function hostedClientDeclaration(stateDirectory, stateRoot) {
 
   const template = await readRegularJson(join(configuration, "hosted-local-bindings.json"));
   const currentHeist = await readRegularJson(
-    join(configuration, "releases", "agent-heist-web-v11.json"),
+    join(configuration, "releases", "agent-heist-web-v12.json"),
   );
   const retainedHeist = await readRegularJson(
     join(configuration, "releases", "agent-heist-web-v7.json"),
@@ -1056,6 +1068,7 @@ async function hostedClientDeclaration(stateDirectory, stateRoot) {
         resolve(configuration, "releases", "agent-heist-web-v8.json"),
         resolve(configuration, "releases", "agent-heist-web-v9.json"),
         resolve(configuration, "releases", "agent-heist-web-v10.json"),
+        resolve(configuration, "releases", "agent-heist-web-v11.json"),
         resolve(configuration, "releases", "midnight-archive-web-v13.json"),
         resolve(configuration, "releases", "midnight-archive-web-v12.json"),
         resolve(configuration, "releases", "midnight-archive-web-v10.json"),
@@ -1166,7 +1179,7 @@ async function assertLoopbackPortAvailable(portNumber, host, message, allowUnsup
 
 async function compatibleAgentHeistAlreadyRunning(portNumber, internalCandidates = [], browserStreamOrigin) {
   try {
-    const response = await fetch(`http://127.0.0.1:${portNumber}/agent-heist-v11/hosted/`, {
+    const response = await fetch(`http://127.0.0.1:${portNumber}/agent-heist-v12/hosted/`, {
       signal: AbortSignal.timeout(1_000),
     });
     if (response.status !== 200) return false;
@@ -1236,7 +1249,7 @@ async function readiness(ports, ctl, children) {
     waitForHttp("product", `http://127.0.0.1:${ports.product}/`, 200, children),
     waitForHttp(
       "same-origin Agent Heist",
-      `http://127.0.0.1:${ports.product}/agent-heist-v11/hosted/`,
+      `http://127.0.0.1:${ports.product}/agent-heist-v12/hosted/`,
       200,
       children,
     ),
@@ -1444,7 +1457,7 @@ async function verifyDevelopmentFlow(ports) {
     [
       "fixtures/hosted-contract/valid/agent-heist-launch-request.json",
       "fixtures/hosted-contract/valid/agent-heist-frozen-roster.json",
-      "config/hosted/listings/agent-heist-0.28.0.json",
+      "config/hosted/listings/agent-heist-0.29.0.json",
     ].map(async (path) => JSON.parse(await readFile(join(REPOSITORY_ROOT, path), "utf8"))),
   );
   const frozenLaunchRequest = {
@@ -1645,6 +1658,10 @@ async function verifyCanonicalLocalCandidate({
     "evidence",
     `hosted-local-${commit.slice(0, 12)}-${recordedAt.replaceAll(/[:.]/gu, "-")}.json`,
   );
+  const listingValue = JSON.parse(await readFile(
+    join(REPOSITORY_ROOT, "config/hosted/listings/agent-heist-0.29.0.json"),
+    "utf8",
+  ));
   const evidencePath = await writeHostedAcceptanceEvidence(selectedOutput, {
     schema: HOSTED_ACCEPTANCE_SCHEMA,
     candidate_kind: "local",
@@ -1657,8 +1674,7 @@ async function verifyCanonicalLocalCandidate({
       schema_head: schemaHead,
       listing_revision_digest: LISTING_DIGEST,
       pack_digest: "blake3:56449d0830d1137d69b1b7c11ed25e8f0d9b7188d40e8290c58e5a2caff2bef9",
-      client_release_digest:
-        "sha256:6ee6747c63cf0090a7549a1c505893c49307c475d1332eb4164c1170a97645d8",
+      client_release_digest: hostedDevelopmentClientReleaseDigest(listingValue),
       projector_digest:
         "blake3:3344a8af68f9fe2ce32a7c12b40d439cd4d1ee9e75e8d45c0cce07e2f2b827fb",
     },
@@ -1710,7 +1726,7 @@ function printReady(ports, supabase) {
       "",
       "WorldStream hosted development stack is ready.",
       `Product:        http://127.0.0.1:${ports.product}/`,
-      `Agent Heist:    http://127.0.0.1:${ports.product}/agent-heist-v11/hosted/`,
+      `Agent Heist:    http://127.0.0.1:${ports.product}/agent-heist-v12/hosted/`,
       `Hosted Gateway: ${hostedDevelopmentGatewayConfiguration().browserStreamUrl}/`,
       `Supabase API:   ${requiredSupabase(supabase, "API_URL")}`,
       `Runtime:        127.0.0.1:${ports.runtime} (loopback only)`,
