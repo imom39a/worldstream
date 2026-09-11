@@ -1861,6 +1861,15 @@ impl CoreTraceV1 {
         &self.transitions
     }
 
+    /// A live adapter owns durable history and receipt resolution in storage.
+    /// Keep only the current execution basis between cache borrows, as for
+    /// the bounded historical replay accumulator. This never changes Head,
+    /// Pack provenance, Timer state, or canonical storage.
+    pub(crate) fn discard_persisted_history(&mut self) {
+        self.transitions = Vec::new();
+        self.administration_results.clear();
+    }
+
     /// Returns exact persisted Genesis bytes.
     ///
     /// # Errors
@@ -3875,6 +3884,56 @@ mod registry_replay_tests {
             .advance(continuation)
             .unwrap_or_else(|error| unreachable!("v1 continuation: {error}"));
         assert_eq!(restored.head().room_seq().get(), 2);
+    }
+
+    #[test]
+    fn cached_executor_discards_history_without_losing_its_execution_basis() {
+        let registry = builtin_counter_registry()
+            .unwrap_or_else(|error| unreachable!("Counter registry: {error}"));
+        let mut trace = retained_trace(&registry, counter_v1_digest());
+        trace
+            .advance(increment(
+                &trace,
+                "01ARZ3NDEKTSV4RRFFQ69G5FC3",
+                "2026-08-15T12:00:01Z",
+            ))
+            .unwrap_or_else(|error| unreachable!("increment: {error}"));
+        let head = trace.head().clone();
+        let cache = crate::RoomTraceCacheV1::default();
+        let integrity = RoomIntegrityStateV1::new(
+            RoomIntegrityStatusV1::Healthy,
+            crate::IntegrityGenerationV1::new(1)
+                .unwrap_or_else(|error| unreachable!("integrity generation: {error}")),
+        );
+        cache
+            .with_room(&parsed(ROOM), |slot| {
+                *slot = Some(crate::CachedRoomTraceV1::new(trace, integrity));
+                let cached = slot
+                    .as_mut()
+                    .unwrap_or_else(|| unreachable!("installed trace"));
+                assert!(cached.trace().transitions().is_empty());
+                assert_eq!(cached.trace().head(), &head);
+                let next = increment(
+                    cached.trace(),
+                    "01ARZ3NDEKTSV4RRFFQ69G5FC4",
+                    "2026-08-15T12:00:02Z",
+                );
+                cached
+                    .trace_mut()
+                    .advance(next)
+                    .unwrap_or_else(|error| unreachable!("continuation: {error}"));
+                assert_eq!(cached.trace().head().room_seq().get(), 2);
+            })
+            .unwrap_or_else(|error| unreachable!("cache borrow: {error}"));
+        cache
+            .with_room(&parsed(ROOM), |slot| {
+                let cached = slot
+                    .as_ref()
+                    .unwrap_or_else(|| unreachable!("retained trace"));
+                assert!(cached.trace().transitions().is_empty());
+                assert_eq!(cached.trace().head().room_seq().get(), 2);
+            })
+            .unwrap_or_else(|error| unreachable!("cache borrow: {error}"));
     }
 
     #[test]

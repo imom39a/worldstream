@@ -2570,7 +2570,7 @@ mod tests {
                 migration_contract: MigrationContractV1 {
                     logical_history_id: "worldstream-storage-v1".to_owned(),
                     schema_contract_fingerprint: DigestV1::parse(
-                        "a7adbaff70625c037c84e066314db5b62c14f9243d2995c1fddba7f2284dce26"
+                        "5dd5bac169e8cce8c6620c463e2d64ffee16ead73200559a1209ae3b2c173f8c"
                             .to_owned(),
                     )?,
                     records: migrations,

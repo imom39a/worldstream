@@ -53,7 +53,7 @@ pub enum MigrationVerificationError {
 
 /// Returns the complete ordered `SQLite` forward migration history.
 #[must_use]
-pub fn migration_history() -> [MigrationDescriptor; 12] {
+pub fn migration_history() -> [MigrationDescriptor; 13] {
     [
         MigrationDescriptor {
             version: 1,
@@ -114,6 +114,11 @@ pub fn migration_history() -> [MigrationDescriptor; 12] {
             version: 12,
             id: super::EXTERNAL_INPUT_PREPARATION_MIGRATION_ID,
             sql: super::EXTERNAL_INPUT_PREPARATION_MIGRATION_SCHEMA,
+        },
+        MigrationDescriptor {
+            version: 13,
+            id: super::OBSERVATION_RETENTION_MIGRATION_ID,
+            sql: super::OBSERVATION_RETENTION_MIGRATION_SCHEMA,
         },
     ]
 }

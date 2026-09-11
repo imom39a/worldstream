@@ -81,6 +81,7 @@ const REQUIRED_MIGRATIONS: &[&str] = &[
     "0011-transfer-lifecycle-and-resource-identity-v1",
     "0012-transfer-backup-file-identity-v1",
     "0013-external-input-preparations-v1",
+    "0014-observation-retention-v1",
 ];
 const REQUIRED_MIGRATION_CHECKSUMS: &[&str] = &[
     "blake3:dd07208c71d7165b93861883b25411b1e7c33a6be36fc2be28a638e1ab5cd763",
@@ -95,6 +96,7 @@ const REQUIRED_MIGRATION_CHECKSUMS: &[&str] = &[
     "blake3:cd0fe750ca3ba68d2dad7254a60dddb887912d40db270e5562a19b3b3cced0a3",
     "blake3:4605547211cde35f16fecf1d156b91d9ca24c39fc24b9fe875f29dcb491965b9",
     "blake3:2097e928196db3f2c572818b4ac87e436512df6f2e9f0cd098521a90366651f0",
+    "blake3:153136e4d0fff3ffee1a02c0349fec8a2c1c907b636ce3396276177518225ac6",
 ];
 
 /// The `SQLite` engine selected by the workspace's bundled rusqlite build.
@@ -2392,7 +2394,7 @@ fn verify_operational_rows(
     let mut member_ids = BTreeSet::new();
     let mut live_principals = BTreeSet::new();
     for row in table_rows(evidence, "room_members") {
-        let valid = row.values.len() == 13
+        let valid = row.values.len() == 14
             && text_value(&row.values, 0).is_some_and(|room_id| {
                 let member_id = text_value(&row.values, 1);
                 let principal_id = text_value(&row.values, 2);
@@ -2406,6 +2408,7 @@ fn verify_operational_rows(
                 let retained_frame_floor = integer_value(&row.values, 10);
                 let last_ack_frame_seq = integer_value_or_null(&row.values, 11);
                 let reset_required_through = integer_value_or_null(&row.values, 12);
+                let reset_generation = integer_value(&row.values, 13);
                 let key = (room_id.to_owned(), member_id.unwrap_or_default().to_owned());
                 room_exists(room_id)
                     && member_id.is_some_and(|value| !value.is_empty())
@@ -2430,6 +2433,8 @@ fn verify_operational_rows(
                             frame_head.is_some_and(|head| value >= 0 && value <= head)
                         })
                     })
+                    && reset_generation
+                        .is_some_and(|value| (0..=9_007_199_254_740_991).contains(&value))
                     && member_ids.insert(key.clone())
                     && (standing == Some("departed")
                         || live_principals.insert((
@@ -2488,13 +2493,14 @@ fn verify_operational_rows(
     if let Some(rows) = evidence.tables.get("observation_frames") {
         counts.frame_count = rows.len();
         for row in rows {
-            let valid = row.values.len() == 6
+            let valid = row.values.len() == 7
                 && text_value(&row.values, 0).is_some_and(|room_id| {
                     let member_id = text_value(&row.values, 1);
                     let frame_seq = integer_value(&row.values, 2);
                     let cause_seq = integer_value(&row.values, 3);
                     let payload_hash = text_value(&row.values, 4);
                     let payload = blob_value(&row.values, 5);
+                    let retained_at = text_value(&row.values, 6);
                     let identity = (
                         room_id.to_owned(),
                         member_id.unwrap_or_default().to_owned(),
@@ -2512,6 +2518,7 @@ fn verify_operational_rows(
                         && frame_ids.insert(identity)
                         && payload_hash.and_then(|value| DigestV1::parse(value.to_owned()).ok())
                             == expected_hash
+                        && retained_at.is_some_and(|value| !value.is_empty())
                         && frame_seq.is_some_and(|value| {
                             member_heads
                                 .get(&(
@@ -5047,9 +5054,9 @@ mod tests {
                  authoritative_state_hash TEXT);\
                  CREATE TABLE room_materializations(room_id TEXT, core_state_bytes BLOB, activity_state_bytes BLOB);\
                  CREATE TABLE room_integrity(room_id TEXT, status TEXT, generation INTEGER);\
-                 CREATE TABLE room_members(room_id TEXT, member_id TEXT, principal_id TEXT, principal_kind TEXT, standing TEXT, access_mode TEXT, role TEXT, membership_bytes BLOB, frame_head INTEGER, membership_generation INTEGER, retained_frame_floor INTEGER, last_ack_frame_seq INTEGER, reset_required_through INTEGER);\
+                 CREATE TABLE room_members(room_id TEXT, member_id TEXT, principal_id TEXT, principal_kind TEXT, standing TEXT, access_mode TEXT, role TEXT, membership_bytes BLOB, frame_head INTEGER, membership_generation INTEGER, retained_frame_floor INTEGER, last_ack_frame_seq INTEGER, reset_required_through INTEGER, reset_generation INTEGER);\
                  CREATE TABLE timers(room_id TEXT, timer_id TEXT, generation INTEGER, scheduled_for TEXT, payload_bytes BLOB, state TEXT);\
-                 CREATE TABLE observation_frames(room_id TEXT, member_id TEXT, frame_seq INTEGER, cause_room_seq INTEGER, payload_hash TEXT, payload_bytes BLOB);\
+                 CREATE TABLE observation_frames(room_id TEXT, member_id TEXT, frame_seq INTEGER, cause_room_seq INTEGER, payload_hash TEXT, payload_bytes BLOB, retained_at TEXT);\
                  CREATE TABLE observation_consequences(room_id TEXT, member_id TEXT, cause_room_seq INTEGER, consequence_kind TEXT, payload_bytes BLOB, projection_hash TEXT);\
                  CREATE TABLE activation_decisions(room_id TEXT, cause_room_seq INTEGER, decision_id TEXT, target_member_id TEXT, decision_bytes BLOB);\
                  CREATE TABLE activation_intents(activation_id TEXT, room_id TEXT, cause_room_seq INTEGER, decision_id TEXT, target_member_id TEXT, reason_code TEXT, deduplication_key TEXT, priority INTEGER, semantic_deadline TEXT, policy_revision INTEGER, state TEXT, intent_generation INTEGER, lease_generation INTEGER, runner_id TEXT, claim_id TEXT, lease_until TEXT, context_hash BLOB, context_bytes BLOB, context_retired INTEGER);\
@@ -5088,7 +5095,8 @@ mod tests {
                  (9, '0010-transfer-recovery-completeness-v1', 'blake3:e0a4033bba6de7949af577a9e75b4d1994df61b250f27f013f3c3667afe862b1'),\
                  (10, '0011-transfer-lifecycle-and-resource-identity-v1', 'blake3:cd0fe750ca3ba68d2dad7254a60dddb887912d40db270e5562a19b3b3cced0a3'),\
                  (11, '0012-transfer-backup-file-identity-v1', 'blake3:4605547211cde35f16fecf1d156b91d9ca24c39fc24b9fe875f29dcb491965b9'),\
-                 (12, '0013-external-input-preparations-v1', 'blake3:2097e928196db3f2c572818b4ac87e436512df6f2e9f0cd098521a90366651f0');\
+                 (12, '0013-external-input-preparations-v1', 'blake3:2097e928196db3f2c572818b4ac87e436512df6f2e9f0cd098521a90366651f0'),\
+                 (13, '0014-observation-retention-v1', 'blake3:153136e4d0fff3ffee1a02c0349fec8a2c1c907b636ce3396276177518225ac6');\
                  INSERT INTO canonical_export_metadata VALUES (1, 'deployment/fixture', 7);",
             )
             .map_err(|_| NativeSqliteError::NativeOperationFailed { operation: "fixture" })?;
@@ -5363,7 +5371,7 @@ mod tests {
         let frame_hash = DigestV1::hash(frame_payload).as_str().to_owned();
         connection
             .execute(
-                "INSERT INTO room_members VALUES (?1, ?2, 'principal-1', 'human', 'enabled', 'spectator', NULL, ?3, 1, 1, 1, NULL, NULL)",
+                "INSERT INTO room_members VALUES (?1, ?2, 'principal-1', 'human', 'enabled', 'spectator', NULL, ?3, 1, 1, 1, NULL, NULL, 0)",
                 params![room_id, member_id, b"membership".as_slice()],
             )
             .map_err(|_| NativeSqliteError::NativeOperationFailed {
@@ -5379,7 +5387,7 @@ mod tests {
             })?;
         connection
             .execute(
-                "INSERT INTO observation_frames VALUES (?1, ?2, 1, 1, ?3, ?4)",
+                "INSERT INTO observation_frames VALUES (?1, ?2, 1, 1, ?3, ?4, '2026-08-15T12:00:00Z')",
                 params![room_id, member_id, frame_hash, frame_payload.as_slice()],
             )
             .map_err(|_| NativeSqliteError::NativeOperationFailed {
@@ -5487,7 +5495,7 @@ mod tests {
             migration_contract: MigrationContractV1 {
                 logical_history_id: "worldstream-storage-v1".to_owned(),
                 schema_contract_fingerprint: DigestV1::parse(
-                    "a7adbaff70625c037c84e066314db5b62c14f9243d2995c1fddba7f2284dce26".to_owned(),
+                    "5dd5bac169e8cce8c6620c463e2d64ffee16ead73200559a1209ae3b2c173f8c".to_owned(),
                 )
                 .unwrap(),
                 records,
@@ -5592,7 +5600,9 @@ mod tests {
     }
 
     fn trusted_counter_v2_executor_bytes() -> Vec<u8> {
-        let source = include_bytes!("../../worldstream-core/src/counter.rs");
+        let source = include_bytes!(
+            "../../worldstream-core/src/retained_executor_artifacts/counter-v1-v2.rs"
+        );
         let mut artifact = b"worldstream/counter-executor-source/v1\0".to_vec();
         artifact.extend_from_slice(b"2.0.0");
         artifact.push(0);
@@ -6078,7 +6088,7 @@ mod tests {
         assert!(TransitionV1::from_canonical_bytes(&records[1].bytes).is_ok());
         assert_eq!(evidence.newest_valid_snapshots.len(), 1);
         assert_eq!(evidence.storage_epoch, Some(7));
-        assert_eq!(evidence.migration_metadata.as_ref().map(Vec::len), Some(12));
+        assert_eq!(evidence.migration_metadata.as_ref().map(Vec::len), Some(13));
         assert_eq!(evidence.pack_metadata, None);
         assert_eq!(evidence.resource_metadata, None);
         let _ = fs::remove_file(path);
@@ -6246,7 +6256,7 @@ mod tests {
             .map_err(|_| NativeSqliteError::NativeOperationFailed { operation: "open" })?;
         connection
             .execute(
-                "INSERT INTO room_members VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FAV', 'blob-member', 'principal-blob', 'human', 'enabled', 'spectator', NULL, ?1, 0, 1, 1, NULL, NULL)",
+                "INSERT INTO room_members VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FAV', 'blob-member', 'principal-blob', 'human', 'enabled', 'spectator', NULL, ?1, 0, 1, 1, NULL, NULL, 0)",
                 params![vec![0_u8, 255, 1, 128]],
             )
             .map_err(|_| NativeSqliteError::NativeOperationFailed { operation: "fixture" })?;
@@ -6313,7 +6323,7 @@ mod tests {
         let path = create_fixture("restore-evidence-absent-metadata")?;
         let evidence = extract_restore_evidence(&path, NativeSqliteLimits::default())?;
         assert_eq!(evidence.storage_epoch, Some(7));
-        assert_eq!(evidence.migration_metadata.as_ref().map(Vec::len), Some(12));
+        assert_eq!(evidence.migration_metadata.as_ref().map(Vec::len), Some(13));
         assert!(evidence.pack_metadata.is_none());
         assert!(evidence.resource_metadata.is_none());
         let readiness = assess_restore_readiness(&evidence);
@@ -6889,7 +6899,7 @@ mod tests {
             .map_err(|_| NativeSqliteError::NativeOperationFailed { operation: "open" })?;
         connection
             .execute(
-                "INSERT INTO room_members VALUES (?1, 'member-2', 'principal-1', 'human', 'enabled', 'spectator', 'unexpected-role', x'01', 0, 1, 1, NULL, NULL)",
+                "INSERT INTO room_members VALUES (?1, 'member-2', 'principal-1', 'human', 'enabled', 'spectator', 'unexpected-role', x'01', 0, 1, 1, NULL, NULL, 0)",
                 params!["01ARZ3NDEKTSV4RRFFQ69G5FAV"],
             )
             .map_err(|_| NativeSqliteError::NativeOperationFailed { operation: "test" })?;

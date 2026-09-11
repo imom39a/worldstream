@@ -40,6 +40,7 @@ mod primitives;
 mod reducer;
 mod registry;
 mod room_commit;
+mod room_trace_cache;
 mod semantic_time;
 mod session;
 mod trace;
@@ -188,6 +189,7 @@ pub use room_commit::{
     authorize_room_creation_operation, commit_existing_room, commit_room_creation,
     external_input_request_hash, resolve_authorized_room_operation_for_adapter,
 };
+pub use room_trace_cache::{CachedRoomTraceV1, RoomTraceCacheErrorV1, RoomTraceCacheV1};
 pub use semantic_time::{
     ActionLaneReservationV1, ActionRoomAdmissionV1, AdmissionLaneClassV1, AdmissionLaneErrorV1,
     HostClockErrorV1, HostClockSampleV1, HostClockV1, LaneReservationV1, MonotonicHostClockV1,

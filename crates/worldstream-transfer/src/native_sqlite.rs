@@ -42,9 +42,9 @@ const TABLES: &[(&str, usize)] = &[
     ("activation_intents", 19),
     ("activation_operation_receipts", 9),
     ("observation_consequences", 6),
-    ("observation_frames", 6),
+    ("observation_frames", 7),
     ("room_integrity", 3),
-    ("room_members", 13),
+    ("room_members", 14),
     ("semantic_receipts", 12),
     ("external_input_preparations", 3),
     ("timers", 6),
@@ -1242,6 +1242,7 @@ fn validate_relations(
                 let retained_frame_floor = integer(&row.values, 10, row.table)?;
                 let last_ack = optional_integer(&row.values, 11, row.table)?;
                 let reset_required = optional_integer(&row.values, 12, row.table)?;
+                let reset_generation = integer(&row.values, 13, row.table)?;
                 let access_mode = text(&row.values, 5, row.table)?;
                 let role = optional_text(&row.values, 6, row.table)?;
                 if !matches!(text(&row.values, 3, row.table)?, "human" | "agent")
@@ -1257,6 +1258,7 @@ fn validate_relations(
                     || retained_frame_floor <= 0
                     || last_ack.is_some_and(|value| value <= 0)
                     || reset_required.is_some_and(|value| value < 0)
+                    || !(0..=9_007_199_254_740_991).contains(&reset_generation)
                 {
                     return Err(NativeSqliteTransferError::InvalidRow {
                         table: row.table,
@@ -1283,6 +1285,9 @@ fn validate_relations(
                 let cause = integer(&row.values, 3, row.table)?;
                 if cause <= 0 {
                     return invalid(row.table, "frame causal sequence");
+                }
+                if text(&row.values, 6, row.table)?.is_empty() {
+                    return invalid(row.table, "frame retained timestamp");
                 }
                 if !isolated {
                     let hash = parse_digest(text(&row.values, 4, row.table)?)?;
@@ -2123,6 +2128,7 @@ mod tests {
                     Value::Integer(1),
                     Value::Null,
                     Value::Null,
+                    Value::Integer(0),
                 ],
             )],
         );
@@ -2151,6 +2157,7 @@ mod tests {
                     Value::Integer(1),
                     Value::Text(frame_hash),
                     Value::Blob(payload),
+                    Value::Text("2026-08-24T12:00:00Z".to_owned()),
                 ],
             )],
         );
