@@ -2,7 +2,7 @@
 
 use std::{
     fs,
-    io::Cursor,
+    io::{Cursor, Write as _},
     net::TcpListener,
     sync::{Arc, Mutex, PoisonError},
     thread,
@@ -19,6 +19,7 @@ use worldstream_protocol::{
     ActivityPackCatalogRevisionSummary, ActivityPackCatalogSchema, PackReference, Projection,
     RoomHead, SealedCapabilityBearerV1,
 };
+use worldstream_runtime::create_owner_only_file;
 use worldstream_studio_supervisor::activity_packs::{
     ActivityPackProxyErrorV1, DaemonActivityPackSource,
 };
@@ -704,6 +705,105 @@ fn production_gateway_binds_typed_handshake_role_reset_and_projection_integrity(
         .unwrap_or_else(|error| panic!("wrong-role fixture thread: {error:?}"));
 }
 
+#[test]
+fn production_gateway_refreshes_a_caught_up_live_offer_with_an_authoritative_reset() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| panic!("fixture listener: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("fixture address: {error}"));
+    let fixture = thread::spawn(move || {
+        serve_caught_up_fixture(&listener, 8);
+        serve_reset_fixture_at(&listener, 8, Some(8), Some(Value::Null));
+    });
+    let directory = tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+    let continuity_root = directory.path().join("continuity");
+    let gateway = FixedDaemonAssignedMembershipGatewayV1::open(
+        address,
+        Duration::from_secs(2),
+        &continuity_root,
+    )
+    .unwrap_or_else(|error| panic!("production gateway: {error:?}"));
+    write_live_offer_continuity(&continuity_root, 8);
+
+    let snapshot = gateway
+        .synchronize(&fake_authority())
+        .unwrap_or_else(|error| panic!("production synchronize: {error:?}"));
+
+    assert_eq!(snapshot.frame_head, 8);
+    assert!(
+        snapshot.projection_reset.is_some(),
+        "a stateless managed turn with a live offer needs current authoritative projection material"
+    );
+    assert_eq!(
+        snapshot
+            .projection_reset
+            .as_ref()
+            .map(|reset| reset.reset_reason.as_str()),
+        Some("client_cursor_behind"),
+    );
+    assert_eq!(snapshot.action_offers()[0].action_type, "increment");
+    fixture
+        .join()
+        .unwrap_or_else(|error| panic!("fixture thread: {error:?}"));
+}
+
+#[test]
+fn production_gateway_rejects_a_projection_refresh_that_regresses_its_cursor() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| panic!("fixture listener: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("fixture address: {error}"));
+    let fixture = thread::spawn(move || {
+        serve_caught_up_fixture(&listener, 8);
+        serve_reset_fixture_at(&listener, 8, Some(7), Some(Value::Null));
+    });
+    let directory = tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+    let continuity_root = directory.path().join("continuity");
+    let gateway = FixedDaemonAssignedMembershipGatewayV1::open(
+        address,
+        Duration::from_secs(2),
+        &continuity_root,
+    )
+    .unwrap_or_else(|error| panic!("production gateway: {error:?}"));
+    write_live_offer_continuity(&continuity_root, 8);
+
+    assert_eq!(
+        gateway.synchronize(&fake_authority()),
+        Err(AssignedMembershipGatewayErrorV1::InvalidData),
+    );
+    fixture
+        .join()
+        .unwrap_or_else(|error| panic!("fixture thread: {error:?}"));
+}
+
+fn write_live_offer_continuity(root: &std::path::Path, cursor: u64) {
+    let mut continuity = create_owner_only_file(&root.join(format!("{ASSIGNMENT}.json")))
+        .unwrap_or_else(|error| panic!("continuity file: {error:?}"));
+    continuity
+        .write_all(
+            json!({
+                "schema":"worldstream/assignment-mcp-continuity/v1",
+                "assignment_id":ASSIGNMENT,
+                "continuity":{
+                    "cursor":cursor,
+                    "current_action_offers":[{
+                        "domain":"worldstream/action-offer/v1",
+                        "action_type":"increment",
+                        "payload_schema_digest":digest('a'),
+                        "eligibility_window":null
+                    }],
+                    "initialized":true,
+                    "pending_ack":null
+                }
+            })
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap_or_else(|error| panic!("write continuity: {error}"));
+}
+
 fn fake_authority() -> AssignedMembershipAuthorityV1 {
     AssignedMembershipAuthorityV1::new(
         ASSIGNMENT,
@@ -721,6 +821,22 @@ fn fake_authority() -> AssignedMembershipAuthorityV1 {
 
 fn serve_reset_fixture(listener: &TcpListener, wrong_role: bool) {
     serve_reset_fixture_with_heartbeat(listener, wrong_role, None);
+}
+
+fn serve_reset_fixture_at(
+    listener: &TcpListener,
+    frame_head: u64,
+    cursor: Option<u64>,
+    expected_after_frame_seq: Option<Value>,
+) {
+    serve_reset_fixture_session(
+        listener,
+        false,
+        None,
+        frame_head,
+        cursor,
+        expected_after_frame_seq,
+    );
 }
 
 #[test]
@@ -761,32 +877,23 @@ fn serve_reset_fixture_with_heartbeat(
     wrong_role: bool,
     heartbeat: Option<Value>,
 ) {
-    let (stream, _) = listener
-        .accept()
-        .unwrap_or_else(|error| panic!("accept fixture: {error}"));
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap_or_else(|error| panic!("fixture read timeout: {error}"));
-    let mut socket = accept_hdr(stream, authorize_fixture_handshake)
-        .unwrap_or_else(|error| panic!("fixture handshake: {error}"));
-    let _hello = socket
-        .read()
-        .unwrap_or_else(|error| panic!("read hello: {error}"));
-    send_fixture(
-        &mut socket,
-        "server.welcome",
-        &json!({
-            "session_id":"01ARZ3NDEKTSV4RRFFQ69G5FAZ",
-            "selected_protocol":worldstream_protocol::PROTOCOL_VERSION,
-            "server_version":"fixture",
-            "heartbeat_interval_ms":1000,
-            "maximum_message_bytes":worldstream_protocol::MAX_MESSAGE_BYTES,
-            "authenticated_principal":{"principal_id":"01ARZ3NDEKTSV4RRFFQ69G5FAY","kind":"agent"}
-        }),
-    );
-    let _attach = socket
-        .read()
-        .unwrap_or_else(|error| panic!("read attach: {error}"));
+    serve_reset_fixture_session(listener, wrong_role, heartbeat, 0, None, None);
+}
+
+fn serve_reset_fixture_session(
+    listener: &TcpListener,
+    wrong_role: bool,
+    heartbeat: Option<Value>,
+    frame_head: u64,
+    cursor: Option<u64>,
+    expected_after_frame_seq: Option<Value>,
+) {
+    let mut socket = accept_membership_fixture_session(listener, expected_after_frame_seq);
+    let reset_reason = if cursor.is_some() {
+        "client_cursor_behind"
+    } else {
+        "first_attach"
+    };
     let projection = Projection {
         core: json!({"membership":{"status":"enabled"}}),
         activity: json!({"value":7}),
@@ -822,9 +929,9 @@ fn serve_reset_fixture_with_heartbeat(
             "room_id":ROOM,"member_id":MEMBER,"principal_kind":"agent","access_mode":"participant",
             "role":if wrong_role { "other" } else { "counter" },"membership_status":"enabled",
             "room_status":"active","room_health":"healthy","integrity_generation":1,
-            "room_head":fixture_head(),"cursor":null,"frame_head":0,"retained_floor":0,
+            "room_head":fixture_head(),"cursor":cursor,"frame_head":frame_head,"retained_floor":0,
             "sync_token":"fixture-sync-token",
-            "sync":{"kind":"projection_reset","baseline_frame_head":0,"reason":"first_attach"},
+            "sync":{"kind":"projection_reset","baseline_frame_head":frame_head,"reason":reset_reason},
             "pack":{"id":"worldstream.counter","version":"1.0.0","digest":digest('2')}
         }),
     );
@@ -836,7 +943,7 @@ fn serve_reset_fixture_with_heartbeat(
         "projection.reset",
         &json!({
             "room_id":ROOM,"member_id":MEMBER,"room_head":fixture_head(),"room_health":"healthy",
-            "integrity_generation":1,"baseline_frame_head":0,"reset_reason":"first_attach",
+            "integrity_generation":1,"baseline_frame_head":frame_head,"reset_reason":reset_reason,
             "projection_schema":"agent-heist/projection/v1",
             "projection":projection,"projection_hash":projection_hash
         }),
@@ -852,8 +959,75 @@ fn serve_reset_fixture_with_heartbeat(
     send_fixture(
         &mut socket,
         "room.sync_acked",
-        &json!({"through_frame_head":0}),
+        &json!({"through_frame_head":frame_head}),
     );
+}
+
+fn serve_caught_up_fixture(listener: &TcpListener, frame_head: u64) {
+    let mut socket = accept_membership_fixture_session(listener, Some(json!(frame_head)));
+    send_fixture(
+        &mut socket,
+        "room.attached",
+        &json!({
+            "room_id":ROOM,"member_id":MEMBER,"principal_kind":"agent","access_mode":"participant",
+            "role":"counter","membership_status":"enabled","room_status":"active",
+            "room_health":"healthy","integrity_generation":1,"room_head":fixture_head(),
+            "cursor":frame_head,"frame_head":frame_head,"retained_floor":0,
+            "sync_token":"fixture-caught-up-token",
+            "sync":{"kind":"retained_frames","cursor_exclusive":frame_head,"through_frame_head":frame_head},
+            "pack":{"id":"worldstream.counter","version":"1.0.0","digest":digest('2')}
+        }),
+    );
+    let _sync_ack = socket
+        .read()
+        .unwrap_or_else(|error| panic!("read caught-up sync ACK: {error}"));
+    send_fixture(
+        &mut socket,
+        "room.sync_acked",
+        &json!({"through_frame_head":frame_head}),
+    );
+}
+
+fn accept_membership_fixture_session(
+    listener: &TcpListener,
+    expected_after_frame_seq: Option<Value>,
+) -> tungstenite::WebSocket<std::net::TcpStream> {
+    let (stream, _) = listener
+        .accept()
+        .unwrap_or_else(|error| panic!("accept fixture: {error}"));
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap_or_else(|error| panic!("fixture read timeout: {error}"));
+    let mut socket = accept_hdr(stream, authorize_fixture_handshake)
+        .unwrap_or_else(|error| panic!("fixture handshake: {error}"));
+    let _hello = socket
+        .read()
+        .unwrap_or_else(|error| panic!("read hello: {error}"));
+    send_fixture(
+        &mut socket,
+        "server.welcome",
+        &json!({
+            "session_id":"01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+            "selected_protocol":worldstream_protocol::PROTOCOL_VERSION,
+            "server_version":"fixture",
+            "heartbeat_interval_ms":1000,
+            "maximum_message_bytes":worldstream_protocol::MAX_MESSAGE_BYTES,
+            "authenticated_principal":{"principal_id":"01ARZ3NDEKTSV4RRFFQ69G5FAY","kind":"agent"}
+        }),
+    );
+    let attach = socket
+        .read()
+        .unwrap_or_else(|error| panic!("read attach: {error}"));
+    if let Some(expected) = expected_after_frame_seq {
+        let attach: Value = serde_json::from_str(
+            attach
+                .to_text()
+                .unwrap_or_else(|error| panic!("attach text: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("attach JSON: {error}"));
+        assert_eq!(attach["body"]["after_frame_seq"], expected,);
+    }
+    socket
 }
 
 fn serve_membership_heartbeat(

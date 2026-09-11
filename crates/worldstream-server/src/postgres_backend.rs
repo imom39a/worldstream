@@ -1438,11 +1438,17 @@ impl PostgresGatewayBackend {
                     &canonical,
                 )
                 .map_err(map_observation_error)?;
+            let (delivery, recovery_reason) =
+                recover_attach_cursor(delivery, request.after_frame_seq, &canonical)?;
             let (sync, reset, frames, frame_head, retained_floor, cursor, reset_generation) =
-                Self::protocol_delivery(&delivery, &room_id, &member_id, trace, fence.integrity())?;
-            if request.after_frame_seq != cursor {
-                return Err(BackendError::Rejected);
-            }
+                Self::protocol_delivery(
+                    &delivery,
+                    recovery_reason,
+                    &room_id,
+                    &member_id,
+                    trace,
+                    fence.integrity(),
+                )?;
             let capability = self.authenticate(session)?;
             let token = next_ulid_string()?;
             let mut core_session = SessionV1::new(crate::MAX_OUTBOUND_FRAME_BURST)
@@ -2749,6 +2755,7 @@ struct SyncBinding {
 impl PostgresGatewayBackend {
     fn protocol_delivery(
         delivery: &PostgresObservationDeliveryV1,
+        recovery_reason: Option<&str>,
         room_id: &RoomId,
         member_id: &worldstream_core::MemberId,
         trace: &worldstream_core::CoreTraceV1,
@@ -2791,7 +2798,9 @@ impl PostgresGatewayBackend {
                     worldstream_core::projection_hash_for_canonical_bytes(projection_bytes)
                         .map_err(|_| BackendError::InvalidResult)?
                         .to_string();
-                let reset_reason = if cursor.is_none() {
+                let reset_reason = if let Some(reason) = recovery_reason {
+                    reason
+                } else if cursor.is_none() {
                     "first_attach"
                 } else if reset_through.is_some() {
                     "reset_marked"
@@ -2824,6 +2833,47 @@ impl PostgresGatewayBackend {
             }
         }
     }
+}
+
+fn recover_attach_cursor(
+    delivery: PostgresObservationDeliveryV1,
+    requested_cursor: Option<u64>,
+    current_projection: &CanonicalJsonV1,
+) -> Result<(PostgresObservationDeliveryV1, Option<&'static str>), BackendError> {
+    let cursor = match &delivery {
+        PostgresObservationDeliveryV1::Retained { cursor, .. }
+        | PostgresObservationDeliveryV1::Reset { cursor, .. } => *cursor,
+    };
+    // A lost ACK receipt permits a conservative client Cursor, but never a
+    // client assertion of progress beyond the durable Membership Cursor.
+    if requested_cursor > cursor {
+        return Err(BackendError::Rejected);
+    }
+    let recovery_reason = (requested_cursor < cursor).then_some("client_cursor_behind");
+    if recovery_reason.is_some()
+        && let PostgresObservationDeliveryV1::Retained {
+            cursor,
+            frame_head,
+            retained_floor,
+            reset_generation,
+            ..
+        } = delivery
+    {
+        return Ok((
+            PostgresObservationDeliveryV1::Reset {
+                cursor,
+                frame_head,
+                retained_floor,
+                reset_through: None,
+                reset_generation,
+                projection_bytes: current_projection
+                    .to_bytes()
+                    .map_err(|_| BackendError::InvalidResult)?,
+            },
+            recovery_reason,
+        ));
+    }
+    Ok((delivery, recovery_reason))
 }
 
 fn viewer_for(membership: &MembershipV1) -> PackViewerV1 {
@@ -3650,7 +3700,7 @@ mod tests {
         ActionReply, ActionSubmit, AttachReply, BackendError, GatewayBackend, GatewaySession,
         MAX_DSN_BYTES, MemberCapabilityIssueRequest, ObservationAck, PostgresGatewayBackend,
         RoomAttach, RoomSyncAck, creation_time, map_admission_lane_error,
-        projection_schema_from_canonical_bytes, read_postgres_dsn,
+        projection_schema_from_canonical_bytes, read_postgres_dsn, recover_attach_cursor,
     };
     use worldstream_core::{
         AdmissionLaneErrorV1, AuthorityBootstrapV1, AuthorityCheckedAt, AuthorityV1,
@@ -3659,7 +3709,8 @@ mod tests {
         counter_v2_digest,
     };
     use worldstream_postgres::{
-        PostgresConnectionConfig, PostgresConnectionPath, PostgresRoomStore,
+        PostgresConnectionConfig, PostgresConnectionPath, PostgresObservationDeliveryV1,
+        PostgresRoomStore,
     };
     use worldstream_protocol::{
         AccessMode, BearerWireV1, CreateMember, CreateRoomRequest, LobbyLaunchRequest,
@@ -3668,6 +3719,79 @@ mod tests {
         RunnerCapabilityProvisionRequestV1,
     };
     use worldstream_runtime::SecretSource;
+
+    #[test]
+    fn conservative_attach_cursor_installs_current_projection_without_advancing_cursor() {
+        let projection = worldstream_core::CanonicalJsonV1::parse(
+            br#"{"action_offers":[],"authorized_core":{},"projection":{"value":7},"projection_schema":"counter/projection/v1"}"#,
+        )
+        .unwrap_or_else(|error| panic!("current projection: {error:?}"));
+        let retained = PostgresObservationDeliveryV1::Retained {
+            cursor: Some(8),
+            cursor_exclusive: 7,
+            frame_head: 9,
+            retained_floor: 1,
+            reset_generation: 3,
+            frames: Vec::new(),
+        };
+        let expected = PostgresObservationDeliveryV1::Reset {
+            cursor: Some(8),
+            frame_head: 9,
+            retained_floor: 1,
+            reset_through: None,
+            reset_generation: 3,
+            projection_bytes: projection
+                .to_bytes()
+                .unwrap_or_else(|error| panic!("projection bytes: {error:?}")),
+        };
+        for requested in [None, Some(7)] {
+            assert_eq!(
+                recover_attach_cursor(retained.clone(), requested, &projection)
+                    .unwrap_or_else(|error| panic!("conservative recovery: {error:?}")),
+                (expected.clone(), Some("client_cursor_behind")),
+            );
+        }
+        // The storage reader already selects a reset for a missing client Cursor.
+        assert_eq!(
+            recover_attach_cursor(expected.clone(), None, &projection)
+                .unwrap_or_else(|error| panic!("missing cursor recovery: {error:?}")),
+            (expected.clone(), Some("client_cursor_behind")),
+        );
+        let mut first_attach = expected;
+        if let PostgresObservationDeliveryV1::Reset { cursor, .. } = &mut first_attach {
+            *cursor = None;
+        }
+        assert_eq!(
+            recover_attach_cursor(first_attach.clone(), None, &projection)
+                .unwrap_or_else(|error| panic!("first attach: {error:?}")),
+            (first_attach, None),
+        );
+    }
+
+    #[test]
+    fn attach_cursor_rejects_unacknowledged_progress_even_below_frame_head() {
+        let projection = worldstream_core::CanonicalJsonV1::parse(b"{}")
+            .unwrap_or_else(|error| panic!("projection fixture: {error:?}"));
+        let retained = PostgresObservationDeliveryV1::Retained {
+            cursor: Some(8),
+            cursor_exclusive: 8,
+            frame_head: 10,
+            retained_floor: 1,
+            reset_generation: 3,
+            frames: Vec::new(),
+        };
+        assert_eq!(
+            recover_attach_cursor(retained.clone(), Some(8), &projection)
+                .unwrap_or_else(|error| panic!("exact cursor: {error:?}")),
+            (retained.clone(), None),
+        );
+        for requested in [9, 11] {
+            assert!(matches!(
+                recover_attach_cursor(retained.clone(), Some(requested), &projection),
+                Err(BackendError::Rejected)
+            ));
+        }
+    }
 
     #[test]
     fn reset_uses_descriptor_projection_schema_from_exact_view() {
@@ -4280,6 +4404,19 @@ mod tests {
                 },
             )
             .unwrap_or_else(|error| unreachable!("attach: {error:?}"));
+        assert_eq!(attached.attached.cursor, None);
+        assert!(matches!(
+            &attached.attached.sync,
+            worldstream_protocol::SyncBranch::ProjectionReset { reason, .. }
+                if reason == "first_attach"
+        ));
+        assert_eq!(
+            attached
+                .reset
+                .as_ref()
+                .map(|reset| reset.reset_reason.as_str()),
+            Some("first_attach")
+        );
         let baseline = attached.attached.frame_head;
         let frames = backend
             .sync_ack(
@@ -4431,6 +4568,60 @@ mod tests {
             )
             .unwrap_or_else(|error| unreachable!("cursor resync: {error:?}"));
         assert!(reattach_frames.is_empty());
+
+        for after_frame_seq in [None, Some(frame_seq.saturating_sub(1))] {
+            let recovered = backend
+                .attach(
+                    &member,
+                    RoomAttach {
+                        room_id: room_id.clone(),
+                        member_id: member_id.clone(),
+                        after_frame_seq,
+                    },
+                )
+                .unwrap_or_else(|error| panic!("conservative cursor attach: {error:?}"));
+            assert_eq!(recovered.attached.cursor, Some(frame_seq));
+            assert_eq!(recovered.attached.room_head, reattached.attached.room_head);
+            assert!(matches!(
+                &recovered.attached.sync,
+                worldstream_protocol::SyncBranch::ProjectionReset {
+                    baseline_frame_head,
+                    reason,
+                } if *baseline_frame_head == frame_seq && reason == "client_cursor_behind"
+            ));
+            assert!(recovered.frames.is_empty());
+            let reset = recovered
+                .reset
+                .unwrap_or_else(|| panic!("conservative attach requires current Projection"));
+            assert_eq!(reset.baseline_frame_head, frame_seq);
+            assert_eq!(reset.room_head, recovered.attached.room_head);
+            assert_eq!(reset.reset_reason, "client_cursor_behind");
+            assert!(
+                backend
+                    .sync_ack(
+                        &member,
+                        RoomSyncAck {
+                            room_id: room_id.clone(),
+                            member_id: member_id.clone(),
+                            through_frame_head: frame_seq,
+                            sync_token: recovered.attached.sync_token,
+                        },
+                    )
+                    .unwrap_or_else(|error| panic!("conservative cursor sync: {error:?}"))
+                    .is_empty()
+            );
+        }
+        assert!(matches!(
+            backend.attach(
+                &member,
+                RoomAttach {
+                    room_id: room_id.clone(),
+                    member_id: member_id.clone(),
+                    after_frame_seq: Some(frame_seq.saturating_add(1)),
+                },
+            ),
+            Err(BackendError::Rejected)
+        ));
 
         let stale_action = ActionSubmit {
             room_id: room_id.clone(),

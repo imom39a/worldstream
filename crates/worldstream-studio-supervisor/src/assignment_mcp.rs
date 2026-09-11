@@ -1637,6 +1637,39 @@ impl FixedDaemonAssignedMembershipGatewayV1 {
         })
     }
 
+    fn refresh_caught_up_snapshot(
+        &self,
+        authority: &AssignedMembershipAuthorityV1,
+        continuity_initialized: bool,
+        snapshot: MembershipStreamSnapshotV1,
+    ) -> Result<MembershipStreamSnapshotV1, AssignedMembershipGatewayErrorV1> {
+        if !continuity_initialized
+            || snapshot.current_action_offers.is_empty()
+            || snapshot.projection_reset.is_some()
+            || !snapshot.observations.is_empty()
+        {
+            return Ok(snapshot);
+        }
+
+        let prior_frame_head = snapshot.frame_head;
+        let prior_cursor = snapshot.cursor;
+        let prior_room_head = snapshot.room_head;
+        let refreshed = self.attach_and_sync(authority, None, &[], false)?;
+        let reset = refreshed
+            .projection_reset
+            .as_ref()
+            .ok_or(AssignedMembershipGatewayErrorV1::InvalidData)?;
+        if reset.baseline_frame_head < prior_frame_head
+            || refreshed.cursor < prior_cursor
+            || refreshed.room_head.room_seq < prior_room_head.room_seq
+            || (refreshed.room_head.room_seq == prior_room_head.room_seq
+                && refreshed.room_head != prior_room_head)
+        {
+            return Err(AssignedMembershipGatewayErrorV1::InvalidData);
+        }
+        Ok(refreshed)
+    }
+
     fn acknowledge_on_synced_session(
         &self,
         authority: &AssignedMembershipAuthorityV1,
@@ -1859,6 +1892,8 @@ impl AssignedMembershipGatewayV1 for FixedDaemonAssignedMembershipGatewayV1 {
                 retained.initialized,
             ) {
                 Ok(snapshot) => {
+                    let snapshot =
+                        self.refresh_caught_up_snapshot(authority, retained.initialized, snapshot)?;
                     self.persist_continuity(
                         authority.assignment_id(),
                         StreamContinuityV1 {
