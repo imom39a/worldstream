@@ -25,6 +25,8 @@ import {
 import { strict as assert } from "node:assert";
 import { test } from "vitest";
 
+import { collectHouseWaitDiagnostic } from "./hosted-acceptance-diagnostics.js";
+
 import { createDevelopmentPlatformBff, DEVELOPMENT_IDENTITY_MODE } from "./bff.js";
 import { HttpHostedBrowserSessionClient } from "./browser-sessions.js";
 import { HttpHostedFormationGateway } from "./hosted-formation.js";
@@ -343,12 +345,7 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
       plan,
       ACTION_IDS[2],
     );
-    await waitForHeist(
-      creatorController,
-      creatorLive,
-      (state) => state.projection.plans.length === 1 &&
-        (state.projection.plans[0]?.endorsements ?? 0) > 0,
-    );
+    await waitForHouseEndorsement(creatorController, creatorLive);
     console.info("Hosted acceptance: the House Agent endorsed the human proposal.");
 
     const frameBeforeRestart = creatorController.state.lastAcknowledgedFrameSeq ?? 0;
@@ -873,6 +870,7 @@ async function readProviderMetrics(origin: string): Promise<{
 }> {
   const metrics = await readJsonResponse(
     await fetch(`${origin}/development/metrics`, {
+      signal: AbortSignal.timeout(5_000),
       headers: { authorization: `Bearer ${required("WORLDSTREAM_DEVELOPMENT_OPENROUTER_KEY")}` },
     }),
     [200],
@@ -1102,12 +1100,7 @@ async function runHouseBackedMatch(options: {
     plan,
     matchActionId(matchNumber, 2),
   );
-  await waitForHeist(
-    creatorController,
-    creatorLive,
-    (state) => state.projection.plans.length === 1 &&
-      (state.projection.plans[0]?.endorsements ?? 0) > 0,
-  );
+  await waitForHouseEndorsement(creatorController, creatorLive);
   await waitForOffer(agentController, agentLive, "commit_move", 120_000);
   const brokerDecision = await webMcp.read();
   const availableMoves = arrayField(brokerDecision, "available_moves");
@@ -1837,6 +1830,29 @@ test("acceptance cleanup closes every session even after operation and cleanup f
   }), (error) => error === expected);
   assert.deepEqual(closed, [1, 2]);
 });
+
+async function waitForHouseEndorsement(
+  controller: Pick<HostedLiveSessionController, "state" | "waitFor">,
+  read: () => AgentHeistLiveState,
+): Promise<void> {
+  try {
+    await waitForHeist(controller, read, (state) => state.projection.plans.length === 1 &&
+      (state.projection.plans[0]?.endorsements ?? 0) > 0);
+  } catch (error) {
+    // Failure-only, closed-shape local evidence. Never serialize the source
+    // snapshot, retained records, provider body, identifiers, or caught errors.
+    const state = read();
+    const diagnostic = await collectHouseWaitDiagnostic({
+      sessionStatus: controller.state.status,
+      phase: state.kind === "ready" ? state.projection.phase : null,
+      plans: state.kind === "ready" ? state.projection.plans : [],
+      stateDirectory: required("WORLDSTREAM_ACCEPTANCE_STATE_DIR"),
+      providerMetrics: () => readProviderMetrics(required("WORLDSTREAM_ACCEPTANCE_FAKE_PROVIDER_ORIGIN")),
+    });
+    console.info(`Hosted acceptance House wait diagnostic: ${JSON.stringify(diagnostic)}`);
+    throw error;
+  }
+}
 
 async function waitForHeist(
   controller: Pick<HostedLiveSessionController, "state" | "waitFor">,
