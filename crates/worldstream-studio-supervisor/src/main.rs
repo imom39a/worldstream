@@ -66,6 +66,9 @@ use worldstream_studio_supervisor::{
 
 /// Multi-step participant operations have a separate budget from health probes.
 const PARTICIPANT_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+// Three safe membership reads, one ticket/rotation and one race-cleanup revoke
+// cost at most 5 * 4s + 750ms retry backoff, below the Gateway's 25s budget.
+const HOSTED_BROWSER_RUNTIME_REQUEST_TIMEOUT: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -633,7 +636,10 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
                 Duration::from_mins(1),
                 512,
                 task_setup.clone(),
-                participant_gateway,
+                FixedDaemonParticipantConsoleGatewayV1::new(
+                    args.daemon,
+                    HOSTED_BROWSER_RUNTIME_REQUEST_TIMEOUT,
+                ),
                 client_bindings.clone(),
             )
             .map_err(|_| anyhow::anyhow!("hosted Browser Activity Sessions are unavailable"))?;

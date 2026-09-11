@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
 import { describe, it, vi } from "vitest";
 
 import {
@@ -49,6 +50,33 @@ function client(fetchImplementation: typeof fetch): HttpHostedBrowserSessionClie
 }
 
 describe("hosted Browser Activity Session service client", () => {
+  it("contains Runtime retry, mutation and cleanup budgets inside the Gateway and BFF", async () => {
+    const supervisor = readFileSync(new URL("../../../crates/worldstream-studio-supervisor/src/main.rs", import.meta.url), "utf8");
+    const broker = readFileSync(new URL("../../../crates/worldstream-studio-supervisor/src/hosted_browser_sessions.rs", import.meta.url), "utf8");
+    const gateway = readFileSync(new URL("../../../crates/worldstream-hosted-gateway/src/main.rs", import.meta.url), "utf8");
+    const runtimeMs = Number(/HOSTED_BROWSER_RUNTIME_REQUEST_TIMEOUT: Duration = Duration::from_secs\((\d+)\)/u.exec(supervisor)?.[1]) * 1_000;
+    const gatewayMs = Number(/HOST_ADAPTER_OPERATION_TIMEOUT: Duration = Duration::from_secs\((\d+)\)/u.exec(gateway)?.[1]) * 1_000;
+    const retries = /const TRANSIENT_GATEWAY_RETRY_DELAYS[^=]*=\s*\[([^;]+)\];/u.exec(broker)?.[1] ?? "";
+    const retryMs = [...retries.matchAll(/Duration::from_millis\((\d+)\)/gu)].map((match) => Number(match[1]));
+    assert.equal(retryMs.length, 2);
+    const worstCaseMs = (retryMs.length + 1 + 2) * runtimeMs + retryMs.reduce((sum, ms) => sum + ms, 0);
+    assert.ok(gatewayMs - worstCaseMs >= 4_000, "reserve Controller processing and transport margin");
+    assert.match(supervisor, /HostedBrowserSessionBrokerV1::new\([\s\S]*?FixedDaemonParticipantConsoleGatewayV1::new\(\s*args.daemon,\s*HOSTED_BROWSER_RUNTIME_REQUEST_TIMEOUT,/u);
+    assert.match(supervisor, /PARTICIPANT_OPERATION_TIMEOUT: Duration = Duration::from_secs\(30\)/u);
+
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    try {
+      await client(vi.fn().mockResolvedValue(Response.json({
+        schema: "worldstream/hosted-browser-session-status/v1",
+        state: "usable",
+      }))).sessionStatus(SESSION);
+      const bffMs = timeout.mock.calls.at(-1)?.[0] ?? 0;
+      assert.ok(bffMs - gatewayMs >= 5_000, "BFF must wait for the Gateway result");
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
   it("admits only an exact account-controlled external-agent participant", async () => {
     const observed: Record<string, unknown>[] = [];
     const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

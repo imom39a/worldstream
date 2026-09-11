@@ -361,6 +361,47 @@ pub struct FixedDaemonParticipantConsoleGatewayV1 {
     timeout: Duration,
 }
 
+// Native HTTP calls share one wall-clock budget across connect, writes and
+// every response read. Per-socket idle timeouts alone reset after each byte.
+struct DeadlineHttpStream {
+    stream: TcpStream,
+    deadline: Instant,
+}
+
+impl DeadlineHttpStream {
+    fn connect(address: SocketAddr, timeout: Duration) -> std::io::Result<Self> {
+        let deadline = Instant::now() + timeout;
+        let stream = TcpStream::connect_timeout(&address, timeout)?;
+        Ok(Self { stream, deadline })
+    }
+
+    fn remaining(&self) -> std::io::Result<Duration> {
+        self.deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| std::io::ErrorKind::TimedOut.into())
+    }
+}
+
+impl std::io::Read for DeadlineHttpStream {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.stream.set_read_timeout(Some(self.remaining()?))?;
+        self.stream.read(bytes)
+    }
+}
+
+impl std::io::Write for DeadlineHttpStream {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.stream.set_write_timeout(Some(self.remaining()?))?;
+        self.stream.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.set_write_timeout(Some(self.remaining()?))?;
+        self.stream.flush()
+    }
+}
+
 impl FixedDaemonParticipantConsoleGatewayV1 {
     #[must_use]
     pub const fn new(address: SocketAddr, timeout: Duration) -> Self {
@@ -435,7 +476,7 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
             self.address,
             authority.bearer().as_str(),
         ));
-        let mut stream = TcpStream::connect_timeout(&self.address, self.timeout)
+        let mut stream = DeadlineHttpStream::connect(self.address, self.timeout)
             .inspect_err(|error| {
                 session_diagnostic::io(Detail::Connect, error.kind());
                 #[cfg(debug_assertions)]
@@ -445,9 +486,7 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
             })
             .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
         stream
-            .set_read_timeout(Some(self.timeout))
-            .and_then(|()| stream.set_write_timeout(Some(self.timeout)))
-            .and_then(|()| stream.write_all(request.as_bytes()))
+            .write_all(request.as_bytes())
             .inspect_err(|error| {
                 session_diagnostic::io(Detail::Write, error.kind());
                 #[cfg(debug_assertions)]
@@ -538,13 +577,8 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
             std::str::from_utf8(&canonical)
                 .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?,
         ));
-        let mut stream = TcpStream::connect_timeout(&self.address, self.timeout)
+        let mut stream = DeadlineHttpStream::connect(self.address, self.timeout)
             .inspect_err(|error| session_diagnostic::io(Detail::Connect, error.kind()))
-            .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
-        stream
-            .set_read_timeout(Some(self.timeout))
-            .and_then(|()| stream.set_write_timeout(Some(self.timeout)))
-            .inspect_err(|error| session_diagnostic::io(Detail::Write, error.kind()))
             .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
         stream
             .write_all(request.as_bytes())
@@ -2811,6 +2845,37 @@ mod transport_error_tests {
     use super::*;
 
     type ClientHandshake = tungstenite::handshake::client::ClientHandshake<TcpStream>;
+
+    #[test]
+    fn native_http_progress_does_not_renew_the_request_deadline() {
+        use std::{net::TcpListener, thread};
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listen");
+        let address = listener.local_addr().expect("address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            // Every byte arrives within the old idle timeout, but the complete
+            // response exceeds the one request budget.
+            for _ in 0..10 {
+                if stream.write_all(b"x").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let mut stream =
+            DeadlineHttpStream::connect(address, Duration::from_millis(200)).expect("connect");
+        let mut response = Vec::new();
+        let error = stream
+            .read_to_end(&mut response)
+            .expect_err("absolute deadline");
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ));
+        assert!(response.len() < 10);
+        drop(stream);
+        server.join().expect("server");
+    }
 
     #[test]
     fn handshake_transport_failure_is_reconnectable_not_authority_invalid() {

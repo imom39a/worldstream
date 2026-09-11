@@ -112,7 +112,9 @@ export class HttpHostedBrowserSessionClient implements HostedBrowserSessionClien
     ) {
       throw new HostedBrowserSessionRejectedError("invalid_browser_session_configuration");
     }
-    const timeoutMs = input.timeoutMs ?? 5_000;
+    // The Fly Controller hop owns a 25s budget, including bounded Runtime
+    // membership retries. Let it return its result before aborting the BFF hop.
+    const timeoutMs = input.timeoutMs ?? 30_000;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000) {
       throw new HostedBrowserSessionRejectedError("invalid_browser_session_timeout");
     }
