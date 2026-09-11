@@ -254,6 +254,87 @@ async function openResetSession(
 }
 
 describe("HostedLiveSessionController", () => {
+  it("gives overlapping start and reconnect only one retry owner and discards the superseded ticket", async () => {
+    vi.useFakeTimers();
+    const setup = fixture();
+    try {
+      let releaseFirstTicket!: (ticket: { ticket: string; expiresInMs: number }) => void;
+      setup.authority.issueStreamTicket.mockImplementationOnce(() => new Promise((resolve) => {
+        releaseFirstTicket = resolve;
+      }));
+      let startSettled = false;
+      const starting = setup.controller.start({ kind: "retained", status: USABLE })
+        .finally(() => { startSettled = true; });
+      await vi.advanceTimersByTimeAsync(0);
+      const reconnecting = setup.controller.reconnect();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(startSettled).toBe(true);
+      expect(setup.sockets).toHaveLength(1);
+      const busy = setup.sockets[0] as FakeSocket;
+      busy.open();
+      busy.receive(welcome());
+      busy.receive(envelope("error", { code: "room_busy", message: "busy", retryable: true }));
+      releaseFirstTicket({ ticket: `wst1:${"ef".repeat(32)}`, expiresInMs: 15_000 });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(setup.authority.issueStreamTicket).toHaveBeenCalledTimes(3);
+      expect(setup.sockets).toHaveLength(2);
+      const recovered = setup.sockets[1] as FakeSocket;
+      recovered.open();
+      recovered.receive(welcome());
+      recovered.receive(attached({ kind: "projection_reset", baseline_frame_head: 9, reason: "retention_gap" }));
+      recovered.receive(reset());
+      const sync = sentMessages(recovered).find((message) => message.type === "room.sync_ack");
+      recovered.receive(envelope("room.sync_acked", { through_frame_head: 9 }, String(sync?.message_id)));
+      await expect(reconnecting).resolves.toMatchObject({ status: "live", synchronized: true });
+      await starting;
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(setup.authority.issueStreamTicket).toHaveBeenCalledTimes(3);
+      expect(setup.sockets).toHaveLength(2);
+      expect(recovered.closed).toBe(false);
+    } finally {
+      setup.controller.close();
+      vi.useRealTimers();
+    }
+  });
+  it.each(["synchronization", "backoff"])("stops a superseded %s wait before the newer stream retries", async (stage) => {
+    vi.useFakeTimers();
+    const setup = fixture();
+    try {
+      let startSettled = false;
+      const starting = setup.controller.start({ kind: "retained", status: USABLE })
+        .finally(() => { startSettled = true; });
+      await vi.advanceTimersByTimeAsync(0);
+      const first = setup.sockets[0] as FakeSocket;
+      first.open();
+      first.receive(welcome());
+      if (stage === "backoff") {
+        first.receive(envelope("error", { code: "room_busy", message: "busy", retryable: true }));
+      }
+      await vi.advanceTimersByTimeAsync(50);
+      expect(startSettled).toBe(false);
+      const reconnecting = setup.controller.reconnect();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(startSettled).toBe(true);
+      expect(first.closed).toBe(true);
+      const newer = setup.sockets[1] as FakeSocket;
+      newer.open();
+      newer.receive(welcome());
+      newer.receive(envelope("error", { code: "room_busy", message: "busy", retryable: true }));
+      await vi.advanceTimersByTimeAsync(99);
+      expect(setup.authority.issueStreamTicket).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(setup.authority.issueStreamTicket).toHaveBeenCalledTimes(3);
+      expect(setup.sockets).toHaveLength(3);
+      setup.controller.close();
+      await expect(reconnecting).resolves.toMatchObject({ status: "closed" });
+      await starting;
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(setup.authority.issueStreamTicket).toHaveBeenCalledTimes(3);
+    } finally {
+      setup.controller.close();
+      vi.useRealTimers();
+    }
+  });
   it("retries a retryable pre-sync room_busy with a fresh ticket before completing reconnect", async () => {
     const setup = fixture();
     const first = await openResetSession(setup);

@@ -130,6 +130,12 @@ interface PendingObservationAck {
   readonly through: number;
 }
 
+interface ConnectionAttemptResult {
+  readonly generation: number;
+  readonly synchronizationBusy: boolean;
+  readonly snapshot: HostedLiveSessionSnapshot;
+}
+
 export interface HostedLiveWaitOptions {
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
@@ -170,7 +176,6 @@ export class HostedLiveSessionController {
   private lastInboundAt = 0;
   private activeWaiters = 0;
   private welcomed = false;
-  private synchronizationBusy = false;
 
   constructor(options: HostedLiveSessionControllerOptions) {
     this.streamUrl = exactHostedStreamUrl(options.streamUrl);
@@ -399,16 +404,17 @@ export class HostedLiveSessionController {
     const deadline = Date.now() + this.connectTimeoutMs;
     let retryDelayMs = 100;
     while (true) {
-      const result = await this.connectStreamAttempt(deadline);
-      const generation = this.generation;
-      if (!this.synchronizationBusy || result.status !== "disconnected") return result;
+      const { snapshot, generation, synchronizationBusy } = await this.connectStreamAttempt(deadline);
+      if (this.generation !== generation) return this.current;
+      if (!synchronizationBusy || snapshot.status !== "disconnected") return snapshot;
       const remainingMs = deadline - Date.now();
-      if (remainingMs <= retryDelayMs) return result;
+      if (remainingMs <= retryDelayMs) return snapshot;
       // room_busy is an explicit retryable concurrency fence. Restart only
       // pre-Live synchronization, within the original connection deadline.
       // Never reuse a consumed ticket, handoff, or replay a domain Action.
       try {
-        await this.waitFor((state) => state.status === "closed" || state.status === "setup_required", {
+        await this.waitFor((state) => this.generation !== generation ||
+          state.status === "closed" || state.status === "setup_required", {
           timeoutMs: retryDelayMs,
         });
         return this.current;
@@ -420,10 +426,13 @@ export class HostedLiveSessionController {
     }
   }
 
-  private async connectStreamAttempt(deadline: number): Promise<HostedLiveSessionSnapshot> {
+  private async connectStreamAttempt(deadline: number): Promise<ConnectionAttemptResult> {
     const generation = this.generation + 1;
     this.generation = generation;
-    this.synchronizationBusy = false;
+    let synchronizationBusy = false;
+    const result = (snapshot: HostedLiveSessionSnapshot): ConnectionAttemptResult => ({
+      generation, synchronizationBusy, snapshot,
+    });
     this.clearHeartbeat();
     this.closeSocket();
     this.sync = null;
@@ -447,7 +456,8 @@ export class HostedLiveSessionController {
       const ticketWait = new AbortController();
       const admission = await Promise.race([
         this.authority.issueStreamTicket(this.current.lastAcknowledgedFrameSeq),
-        this.waitFor((state) => state.status === "closed" || state.status === "setup_required", {
+        this.waitFor((state) => this.generation !== generation ||
+          state.status === "closed" || state.status === "setup_required", {
           timeoutMs: Math.max(1, deadline - Date.now()),
           signal: ticketWait.signal,
         }).then(() => { throw new Error("Realtime admission was interrupted."); }),
@@ -485,7 +495,7 @@ export class HostedLiveSessionController {
       };
       socket.onmessage = (event) => {
         if (this.generation !== generation) return;
-        this.handleInbound(event.data);
+        synchronizationBusy = this.handleInbound(event.data);
       };
       socket.onerror = () => {
         if (this.generation === generation) {
@@ -501,29 +511,30 @@ export class HostedLiveSessionController {
           this.failConnection("Realtime connection closed. Reconnect to continue.");
         }
       };
-      return await this.waitFor(
+      return result(await this.waitFor(
         (snapshot) =>
+          this.generation !== generation ||
           snapshot.status === "live" ||
           snapshot.status === "disconnected" ||
           snapshot.status === "setup_required" ||
           snapshot.status === "closed",
         { timeoutMs: Math.max(1, deadline - Date.now()) },
-      );
+      ));
     } catch (error) {
       ticketValue = "";
-      if (this.generation !== generation) return this.current;
+      if (this.generation !== generation) return result(this.current);
       if (error instanceof ActivityClientHandoffError) {
-        return this.applyAuthorityError(error);
+        return result(this.applyAuthorityError(error));
       }
       this.failConnection("Realtime connection could not be established.");
-      return this.current;
+      return result(this.current);
     }
   }
 
-  private handleInbound(raw: unknown): void {
+  private handleInbound(raw: unknown): boolean {
     if (typeof raw !== "string") {
       this.failConnection("Realtime protocol rejected a non-text frame.");
-      return;
+      return false;
     }
     try {
       const message = decodeMessage(raw);
@@ -558,10 +569,10 @@ export class HostedLiveSessionController {
           break;
         case "error": {
           const error = record(message.body);
-          this.synchronizationBusy = this.current.status === "synchronizing" &&
+          const synchronizationBusy = this.current.status === "synchronizing" &&
             error.code === "room_busy" && error.retryable === true;
           this.failConnection("WorldStream rejected the realtime operation.");
-          break;
+          return synchronizationBusy;
         }
         default:
           break;
@@ -569,6 +580,7 @@ export class HostedLiveSessionController {
     } catch {
       this.failConnection("Realtime protocol validation failed.");
     }
+    return false;
   }
 
   private handleWelcome(message: ProtocolMessage): void {
