@@ -242,7 +242,8 @@ Local verification on September 10:
 - Demos: 46 tests; Heist Client: 57; retained-session SDK: 15.
 - Hosted platform: 178 passed, one integration-gated test skipped.
 - Packaging/workspace checks: 71 passed, two Linux-image-only checks skipped.
-- Native session diagnostics: two tests; hosted browser broker: ten tests;
+- Native session diagnostics: five tests plus one ignored subprocess helper;
+  hosted browser broker: ten tests;
   participant handoff: 23 tests; Gateway boundary: 31 tests. The handoff fixture also checks real HTTP
   rate-limit and timeout events without leaking its synthetic authority or body.
 - Real Chromium recovery checks, including phone-width overflow checks, passed.
