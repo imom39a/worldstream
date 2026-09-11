@@ -370,11 +370,17 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     ]);
     assert.equal(creatorReadmitted.state, "usable");
     assert.equal(agentReadmitted.state, "usable");
-    await Promise.all([
+    // Settle every readmission before cleanup closes any controller. Otherwise
+    // one failed spectator can manufacture participant ticket/stream failures
+    // and hide whether those independent re-entries actually succeeded.
+    const reconnects = await Promise.allSettled([
       reconnectForAcceptance(creatorController, "creator", () => creatorHttpFailures.at(-1)),
       reconnectForAcceptance(agentController, "external_agent", () => agentHttpFailures.at(-1)),
       reconnectForAcceptance(publicController, "public_spectator"),
     ]);
+    const reconnectFailures = reconnects.flatMap((result) => result.status === "rejected"
+      ? [result.reason instanceof Error ? result.reason.message : "Unclassified re-entry failure"] : []);
+    assert.equal(reconnectFailures.length, 0, reconnectFailures.join("; "));
     await Promise.all([
       waitForHeist(creatorController, creatorLive, () => true),
       waitForHeist(agentController, agentLive, () => true),

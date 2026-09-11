@@ -508,6 +508,7 @@ impl FixedHostAdapterBackend {
             "/api/v1/hosted-browser-sessions:status" => Some("status"),
             "/api/v1/hosted-browser-sessions:logout" => Some("logout"),
             "/api/v1/hosted-browser-sessions:stream-ticket" => Some("stream_ticket"),
+            "/api/v1/hosted-public-streams:ticket" => Some("public_stream_ticket"),
             _ => None,
         };
         if let Some(operation) = operation {
@@ -2403,10 +2404,25 @@ async fn relay_public_projection_stream(
     ticket: Zeroizing<String>,
     _permit: BrowserConnectionPermit,
 ) {
-    if relay_public_projection_stream_inner(&mut browser, runtime_upstream, origin, ticket)
-        .await
-        .is_err()
+    let started = Instant::now();
+    let mut stage = "runtime_connect";
+    if relay_public_projection_stream_inner(
+        &mut browser,
+        runtime_upstream,
+        origin,
+        ticket,
+        &mut stage,
+    )
+    .await
+    .is_err()
     {
+        // Fixed stage labels only: never emit routing, authority, frames, or
+        // Runtime error text through the public relay diagnostic.
+        tracing::warn!(
+            stage,
+            elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "hosted public relay unavailable"
+        );
         close_public_stream(&mut browser).await;
     }
 }
@@ -2417,6 +2433,7 @@ async fn relay_public_projection_stream_inner(
     runtime_upstream: SocketAddr,
     origin: String,
     ticket: Zeroizing<String>,
+    stage: &mut &'static str,
 ) -> Result<(), ()> {
     let stream = tokio::net::TcpStream::connect(runtime_upstream)
         .await
@@ -2433,6 +2450,7 @@ async fn relay_public_projection_stream_inner(
         .header("Upgrade", "websocket")
         .body(())
         .map_err(|_| ())?;
+    *stage = "runtime_upgrade";
     let (mut runtime, response) = client_async(request, stream).await.map_err(|_| ())?;
     let selected = response
         .headers()
@@ -2450,6 +2468,7 @@ async fn relay_public_projection_stream_inner(
     .map_err(|_| ())?;
     drop(ticket);
 
+    *stage = "runtime_welcome";
     let welcome = read_runtime_body::<ServerWelcome>(&mut runtime, "server.welcome").await?;
     if welcome.selected_protocol != PROTOCOL_VERSION
         || welcome.maximum_message_bytes == 0
@@ -2458,6 +2477,7 @@ async fn relay_public_projection_stream_inner(
     {
         return Err(());
     }
+    *stage = "runtime_attach";
     let attached = read_runtime_body::<RoomAttached>(&mut runtime, "room.attached").await?;
     let (baseline_frame_head, sync_token) = match &attached.sync {
         SyncBranch::ProjectionReset {
@@ -2477,6 +2497,7 @@ async fn relay_public_projection_stream_inner(
     {
         return Err(());
     }
+    *stage = "runtime_reset";
     let reset = read_runtime_body::<ProjectionReset>(&mut runtime, "projection.reset").await?;
     if reset.room_id != attached.room_id
         || reset.member_id != attached.member_id
@@ -2488,6 +2509,7 @@ async fn relay_public_projection_stream_inner(
     {
         return Err(());
     }
+    *stage = "public_reset";
     let frame = projection_reset_frame(&attached.pack, &reset)?;
     send_public_frame(browser, &frame).await?;
     send_runtime_request(
@@ -2500,6 +2522,7 @@ async fn relay_public_projection_stream_inner(
     )
     .await?;
 
+    *stage = "live_delivery";
     let mut public_head = public_head(&reset.room_head);
     let mut last_frame_seq = baseline_frame_head;
     let mut heartbeat = tokio::time::interval(PUBLIC_STREAM_HEARTBEAT);
@@ -2570,9 +2593,24 @@ async fn read_runtime_body<T: serde::de::DeserializeOwned>(
         .map_err(|_| ())?;
     let envelope = decode_runtime_message(message)?;
     if envelope.message_type != expected_type {
+        if envelope.message_type == "error"
+            && let Some(code) = public_runtime_rejection_code(envelope.body)
+        {
+            tracing::warn!(?code, "hosted public relay Runtime rejection");
+        }
         return Err(());
     }
     serde_json::from_value(envelope.body).map_err(|_| ())
+}
+
+// The diagnostic sink accepts only a closed protocol enum, never arbitrary
+// Runtime messages or detail fields.
+fn public_runtime_rejection_code(
+    body: serde_json::Value,
+) -> Option<worldstream_protocol::ErrorCode> {
+    serde_json::from_value::<worldstream_protocol::ProtocolErrorBody>(body)
+        .ok()
+        .map(|error| error.code)
 }
 
 fn decode_runtime_message(
@@ -3112,6 +3150,24 @@ mod tests {
         genesis_result, house_runner_retirement_result, read_service_result, service_result,
     };
     use axum::http::StatusCode;
+
+    #[test]
+    fn public_runtime_diagnostic_discards_text_and_rejects_unknown_codes() {
+        let error = serde_json::json!({
+            "code": "room_busy", "retryable": true,
+            "message": "private authority value",
+            "details": { "ticket": "private ticket value" }
+        });
+        let code = super::public_runtime_rejection_code(error.clone());
+        assert_eq!(code, Some(worldstream_protocol::ErrorCode::RoomBusy));
+        assert_eq!(
+            serde_json::to_string(&code).expect("closed diagnostic code"),
+            "\"room_busy\""
+        );
+        let mut unknown = error;
+        unknown["code"] = serde_json::json!("private arbitrary code");
+        assert_eq!(super::public_runtime_rejection_code(unknown), None);
+    }
 
     #[test]
     fn browser_connection_capacity_is_bounded_and_released() {

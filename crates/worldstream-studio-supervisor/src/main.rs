@@ -650,8 +650,9 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
                 vault.clone(),
                 FixedDaemonParticipantConsoleGatewayV1::new(
                     args.daemon,
-                    participant_operation_timeout,
-                ),
+                    HOSTED_BROWSER_RUNTIME_REQUEST_TIMEOUT,
+                )
+                .with_absolute_http_deadline(),
                 &client_origin,
             )
             .map_err(|_| anyhow::anyhow!("hosted Public Projection relay is unavailable"))?;

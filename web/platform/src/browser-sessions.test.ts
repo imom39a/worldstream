@@ -66,6 +66,7 @@ describe("hosted Browser Activity Session service client", () => {
     assert.ok(gatewayMs - worstCaseMs >= 4_000, "reserve Controller processing and transport margin");
     assert.match(gateway, /FixedHostAdapterBackend::new\(\s*upstream,[\s\S]*?HOST_ADAPTER_OPERATION_TIMEOUT,\s*\)/u);
     assert.match(supervisor, /HostedBrowserSessionBrokerV1::new\([\s\S]*?FixedDaemonParticipantConsoleGatewayV1::new\(\s*args.daemon,\s*HOSTED_BROWSER_RUNTIME_REQUEST_TIMEOUT,\s*\)\s*\.with_absolute_http_deadline\(\)/u);
+    assert.match(supervisor, /HostedPublicStreamBrokerV1::open\([\s\S]*?FixedDaemonParticipantConsoleGatewayV1::new\(\s*args.daemon,\s*HOSTED_BROWSER_RUNTIME_REQUEST_TIMEOUT,\s*\)\s*\.with_absolute_http_deadline\(\)/u);
     assert.match(supervisor, /PARTICIPANT_OPERATION_TIMEOUT: Duration = Duration::from_secs\(30\)/u);
 
     const timeout = vi.spyOn(AbortSignal, "timeout");
