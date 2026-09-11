@@ -84,6 +84,7 @@ const MAX_BROWSER_CONNECTIONS: usize = 256;
 const MAX_BROWSER_CONNECTIONS_PER_PEER: usize = 8;
 const BROWSER_ADMISSION_CLOSE_REASON: &str = "browser authorization failed";
 const PUBLIC_STREAM_CLOSE_REASON: &str = "public stream unavailable";
+const PUBLIC_STREAM_MAX_BUSY_RETRIES: usize = 4;
 const PUBLIC_STREAM_HEARTBEAT: Duration = Duration::from_secs(15);
 const PUBLIC_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 const ACTIVITY_AVAILABILITY_REQUEST_SCHEMA_V1: &str =
@@ -2420,10 +2421,14 @@ async fn public_stream(
         schema: "worldstream/hosted-public-stream-ticket-request/v1".to_owned(),
         public_run_id,
     };
-    let ticket = tokio::task::spawn_blocking(move || backend.issue_public_stream_ticket(&lookup))
-        .await
-        .map_err(|_| HostedGatewayError::Unavailable)
-        .and_then(|result| result);
+    let initial_backend = Arc::clone(&backend);
+    let initial_lookup = lookup.clone();
+    let ticket = tokio::task::spawn_blocking(move || {
+        initial_backend.issue_public_stream_ticket(&initial_lookup)
+    })
+    .await
+    .map_err(|_| HostedGatewayError::Unavailable)
+    .and_then(|result| result);
     let Ok(ticket) = ticket else {
         return safe_error(StatusCode::NOT_FOUND, "public_stream_unavailable");
     };
@@ -2434,7 +2439,15 @@ async fn public_stream(
         .max_frame_size(MAX_BROWSER_MESSAGE_BYTES)
         .protocols([PUBLIC_PROJECTION_WEBSOCKET_SUBPROTOCOL])
         .on_upgrade(move |socket| {
-            relay_public_projection_stream(socket, proxy.runtime_upstream, origin, ticket, permit)
+            relay_public_projection_stream(
+                socket,
+                proxy.runtime_upstream,
+                origin,
+                ticket,
+                backend,
+                lookup,
+                permit,
+            )
         })
         .into_response()
 }
@@ -2443,21 +2456,50 @@ async fn relay_public_projection_stream(
     mut browser: WebSocket,
     runtime_upstream: SocketAddr,
     origin: String,
-    ticket: Zeroizing<String>,
+    initial_ticket: Zeroizing<String>,
+    backend: Arc<dyn HostedGatewayBackend>,
+    lookup: HostedPublicStreamTicketRequestV1,
     _permit: BrowserConnectionPermit,
 ) {
-    let started = Instant::now();
-    let mut stage = "runtime_connect";
-    if relay_public_projection_stream_inner(
-        &mut browser,
-        runtime_upstream,
-        origin,
-        ticket,
-        &mut stage,
-    )
-    .await
-    .is_err()
-    {
+    let deadline = Instant::now() + BROWSER_TICKET_TIMEOUT;
+    let mut ticket = initial_ticket;
+    let mut retry_delay = Duration::from_millis(100);
+    let mut busy_retries = 0_usize;
+    loop {
+        let started = Instant::now();
+        let mut stage = "runtime_connect";
+        let mut retryable_busy = false;
+        let result = relay_public_projection_stream_inner(
+            &mut browser,
+            runtime_upstream,
+            &origin,
+            ticket,
+            &mut stage,
+            &mut retryable_busy,
+            deadline,
+        )
+        .await;
+        if result.is_ok() {
+            return;
+        }
+        if retryable_busy
+            && busy_retries < PUBLIC_STREAM_MAX_BUSY_RETRIES
+            && deadline.saturating_duration_since(Instant::now()) > retry_delay
+        {
+            // A Runtime room_busy response is an explicit pre-Reset
+            // concurrency fence. Keep the anonymous browser connection open,
+            // but obtain a fresh one-use ticket for every bounded retry.
+            tokio::time::sleep(retry_delay).await;
+            if let Ok(fresh_ticket) =
+                issue_fresh_public_stream_ticket(Arc::clone(&backend), lookup.clone(), deadline)
+                    .await
+            {
+                ticket = fresh_ticket;
+                busy_retries += 1;
+                retry_delay = retry_delay.saturating_mul(2).min(Duration::from_secs(1));
+                continue;
+            }
+        }
         // Fixed stage labels only: never emit routing, authority, frames, or
         // Runtime error text through the public relay diagnostic.
         tracing::warn!(
@@ -2466,20 +2508,47 @@ async fn relay_public_projection_stream(
             "hosted public relay unavailable"
         );
         close_public_stream(&mut browser).await;
+        return;
     }
+}
+
+async fn issue_fresh_public_stream_ticket(
+    backend: Arc<dyn HostedGatewayBackend>,
+    lookup: HostedPublicStreamTicketRequestV1,
+    deadline: Instant,
+) -> Result<Zeroizing<String>, ()> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(());
+    }
+    let response = tokio::time::timeout(
+        remaining,
+        tokio::task::spawn_blocking(move || backend.issue_public_stream_ticket(&lookup)),
+    )
+    .await
+    .map_err(|_| ())?
+    .map_err(|_| ())?
+    .map_err(|_| ())?;
+    Ok(Zeroizing::new(response.ticket))
 }
 
 #[allow(clippy::too_many_lines)]
 async fn relay_public_projection_stream_inner(
     browser: &mut WebSocket,
     runtime_upstream: SocketAddr,
-    origin: String,
+    origin: &str,
     ticket: Zeroizing<String>,
     stage: &mut &'static str,
+    retryable_busy: &mut bool,
+    deadline: Instant,
 ) -> Result<(), ()> {
-    let stream = tokio::net::TcpStream::connect(runtime_upstream)
-        .await
-        .map_err(|_| ())?;
+    let stream = tokio::time::timeout(
+        public_stream_attach_time_remaining(deadline)?,
+        tokio::net::TcpStream::connect(runtime_upstream),
+    )
+    .await
+    .map_err(|_| ())?
+    .map_err(|_| ())?;
     let request = upstream_http::Request::builder()
         .method("GET")
         .uri(format!("ws://{runtime_upstream}/v1/hosted/browser-stream"))
@@ -2493,7 +2562,13 @@ async fn relay_public_projection_stream_inner(
         .body(())
         .map_err(|_| ())?;
     *stage = "runtime_upgrade";
-    let (mut runtime, response) = client_async(request, stream).await.map_err(|_| ())?;
+    let (mut runtime, response) = tokio::time::timeout(
+        public_stream_attach_time_remaining(deadline)?,
+        client_async(request, stream),
+    )
+    .await
+    .map_err(|_| ())?
+    .map_err(|_| ())?;
     let selected = response
         .headers()
         .get("sec-websocket-protocol")
@@ -2502,7 +2577,7 @@ async fn relay_public_projection_stream_inner(
         return Err(());
     }
     tokio::time::timeout(
-        BROWSER_PROXY_SEND_TIMEOUT,
+        BROWSER_PROXY_SEND_TIMEOUT.min(public_stream_attach_time_remaining(deadline)?),
         runtime.send(UpstreamMessage::Text(ticket.to_string().into())),
     )
     .await
@@ -2511,7 +2586,13 @@ async fn relay_public_projection_stream_inner(
     drop(ticket);
 
     *stage = "runtime_welcome";
-    let welcome = read_runtime_body::<ServerWelcome>(&mut runtime, "server.welcome").await?;
+    let welcome = read_runtime_body::<ServerWelcome>(
+        &mut runtime,
+        "server.welcome",
+        retryable_busy,
+        deadline,
+    )
+    .await?;
     if welcome.selected_protocol != PROTOCOL_VERSION
         || welcome.maximum_message_bytes == 0
         || welcome.maximum_message_bytes > MAX_BROWSER_MESSAGE_BYTES
@@ -2520,7 +2601,9 @@ async fn relay_public_projection_stream_inner(
         return Err(());
     }
     *stage = "runtime_attach";
-    let attached = read_runtime_body::<RoomAttached>(&mut runtime, "room.attached").await?;
+    let attached =
+        read_runtime_body::<RoomAttached>(&mut runtime, "room.attached", retryable_busy, deadline)
+            .await?;
     let (baseline_frame_head, sync_token) = match &attached.sync {
         SyncBranch::ProjectionReset {
             baseline_frame_head,
@@ -2540,7 +2623,13 @@ async fn relay_public_projection_stream_inner(
         return Err(());
     }
     *stage = "runtime_reset";
-    let reset = read_runtime_body::<ProjectionReset>(&mut runtime, "projection.reset").await?;
+    let reset = read_runtime_body::<ProjectionReset>(
+        &mut runtime,
+        "projection.reset",
+        retryable_busy,
+        deadline,
+    )
+    .await?;
     if reset.room_id != attached.room_id
         || reset.member_id != attached.member_id
         || reset.room_head.room_id != attached.room_id
@@ -2627,32 +2716,49 @@ async fn relay_public_projection_stream_inner(
 async fn read_runtime_body<T: serde::de::DeserializeOwned>(
     runtime: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     expected_type: &str,
+    retryable_busy: &mut bool,
+    deadline: Instant,
 ) -> Result<T, ()> {
-    let message = tokio::time::timeout(BROWSER_TICKET_TIMEOUT, runtime.next())
-        .await
-        .map_err(|_| ())?
-        .ok_or(())?
-        .map_err(|_| ())?;
+    let message = tokio::time::timeout(
+        public_stream_attach_time_remaining(deadline)?,
+        runtime.next(),
+    )
+    .await
+    .map_err(|_| ())?
+    .ok_or(())?
+    .map_err(|_| ())?;
     let envelope = decode_runtime_message(message)?;
     if envelope.message_type != expected_type {
         if envelope.message_type == "error"
-            && let Some(code) = public_runtime_rejection_code(envelope.body)
+            && let Some(error) = public_runtime_rejection(envelope.body)
         {
-            tracing::warn!(?code, "hosted public relay Runtime rejection");
+            tracing::warn!(code = ?error.code, "hosted public relay Runtime rejection");
+            *retryable_busy =
+                error.code == worldstream_protocol::ErrorCode::RoomBusy && error.retryable;
         }
         return Err(());
     }
     serde_json::from_value(envelope.body).map_err(|_| ())
 }
 
+fn public_stream_attach_time_remaining(deadline: Instant) -> Result<Duration, ()> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    (!remaining.is_zero()).then_some(remaining).ok_or(())
+}
+
 // The diagnostic sink accepts only a closed protocol enum, never arbitrary
 // Runtime messages or detail fields.
+#[cfg(test)]
 fn public_runtime_rejection_code(
     body: serde_json::Value,
 ) -> Option<worldstream_protocol::ErrorCode> {
-    serde_json::from_value::<worldstream_protocol::ProtocolErrorBody>(body)
-        .ok()
-        .map(|error| error.code)
+    public_runtime_rejection(body).map(|error| error.code)
+}
+
+fn public_runtime_rejection(
+    body: serde_json::Value,
+) -> Option<worldstream_protocol::ProtocolErrorBody> {
+    serde_json::from_value::<worldstream_protocol::ProtocolErrorBody>(body).ok()
 }
 
 fn decode_runtime_message(

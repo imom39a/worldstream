@@ -1,7 +1,7 @@
 #![allow(clippy::expect_used)]
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
     io::{BufRead as _, BufReader, Read as _, Write as _},
     net::{SocketAddr, TcpListener, TcpStream},
     sync::{Arc, Mutex, PoisonError, mpsc},
@@ -207,6 +207,7 @@ struct Backend {
     browser_stream_tickets: Arc<Mutex<Vec<HostedBrowserStreamTicketRequestV1>>>,
     public_relay_binds: Arc<Mutex<Vec<HostedPublicRelayBindRequestV1>>>,
     public_stream_lookups: Arc<Mutex<Vec<HostedPublicStreamTicketRequestV1>>>,
+    public_stream_ticket_values: Arc<Mutex<VecDeque<String>>>,
     missing_evidence: bool,
     missing_genesis: bool,
     missing_house_retirement: bool,
@@ -455,9 +456,15 @@ impl HostedGatewayBackend for Backend {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(request.clone());
+        let ticket = self
+            .public_stream_ticket_values
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop_front()
+            .unwrap_or_else(|| format!("wst1:{}", "c".repeat(64)));
         Ok(HostedBrowserStreamTicketResponseV1 {
             schema: "worldstream/hosted-browser-stream-ticket-response/v1".to_owned(),
-            ticket: format!("wst1:{}", "c".repeat(64)),
+            ticket,
             expires_in_ms: 15_000,
         })
     }
@@ -1546,8 +1553,40 @@ async fn public_browser_stream_proxies_first_frame_ticket_and_live_frames_only_t
     let _ = gateway.await;
 }
 
-#[allow(clippy::result_large_err, clippy::too_many_lines)]
-async fn serve_public_projection_fixture(stream: tokio::net::TcpStream) {
+fn public_runtime_envelope(message_type: &str, body: Value) -> TungsteniteMessage {
+    TungsteniteMessage::Text(
+        json!({
+            "protocol": "0.1",
+            "type": message_type,
+            "message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+            "body": body
+        })
+        .to_string()
+        .into(),
+    )
+}
+
+fn public_runtime_welcome() -> TungsteniteMessage {
+    public_runtime_envelope(
+        "server.welcome",
+        json!({
+            "session_id": "01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+            "selected_protocol": "0.1",
+            "server_version": "fixture",
+            "heartbeat_interval_ms": 30000,
+            "maximum_message_bytes": 524_288,
+            "authenticated_principal": {
+                "principal_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+                "kind": "agent"
+            }
+        }),
+    )
+}
+
+async fn accept_public_projection_runtime_fixture(
+    stream: tokio::net::TcpStream,
+    expected_ticket: &str,
+) -> tokio_tungstenite::WebSocketStream<tokio::net::TcpStream> {
     let mut socket = accept_hdr_async(
         stream,
         |request: &WebSocketRequest, mut response: WebSocketResponse| {
@@ -1563,8 +1602,17 @@ async fn serve_public_projection_fixture(stream: tokio::net::TcpStream) {
     .expect("runtime handshake");
     assert_eq!(
         socket.next().await.expect("ticket").expect("ticket frame"),
-        TungsteniteMessage::Text(format!("wst1:{}", "c".repeat(64)).into())
+        TungsteniteMessage::Text(expected_ticket.to_owned().into())
     );
+    socket
+}
+
+#[allow(clippy::result_large_err, clippy::too_many_lines)]
+async fn serve_public_projection_fixture_with_ticket(
+    stream: tokio::net::TcpStream,
+    expected_ticket: &str,
+) {
+    let mut socket = accept_public_projection_runtime_fixture(stream, expected_ticket).await;
     let room_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     let member_id = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
     let digest = |value: char| format!("blake3:{}", value.to_string().repeat(64));
@@ -1578,37 +1626,12 @@ async fn serve_public_projection_fixture(stream: tokio::net::TcpStream) {
         "activity_state_hash": digest('4'),
         "authoritative_state_hash": digest('5')
     });
-    let envelope = |message_type: &str, body: Value| {
-        TungsteniteMessage::Text(
-            json!({
-                "protocol": "0.1",
-                "type": message_type,
-                "message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAY",
-                "body": body
-            })
-            .to_string()
-            .into(),
-        )
-    };
     socket
-        .send(envelope(
-            "server.welcome",
-            json!({
-                "session_id": "01ARZ3NDEKTSV4RRFFQ69G5FAZ",
-                "selected_protocol": "0.1",
-                "server_version": "fixture",
-                "heartbeat_interval_ms": 30000,
-                "maximum_message_bytes": 524_288,
-                "authenticated_principal": {
-                    "principal_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
-                    "kind": "agent"
-                }
-            }),
-        ))
+        .send(public_runtime_welcome())
         .await
         .expect("welcome");
     socket
-        .send(envelope(
+        .send(public_runtime_envelope(
             "room.attached",
             json!({
                 "room_id": room_id,
@@ -1640,7 +1663,7 @@ async fn serve_public_projection_fixture(stream: tokio::net::TcpStream) {
         .await
         .expect("attached");
     socket
-        .send(envelope(
+        .send(public_runtime_envelope(
             "projection.reset",
             json!({
                 "room_id": room_id,
@@ -1681,14 +1704,14 @@ async fn serve_public_projection_fixture(stream: tokio::net::TcpStream) {
     assert_eq!(sync_ack["type"], "room.sync_ack");
     assert!(sync_ack["body"].get("room_id").is_none());
     socket
-        .send(envelope(
+        .send(public_runtime_envelope(
             "room.sync_acked",
             json!({"through_frame_head": 0}),
         ))
         .await
         .expect("sync receipt");
     socket
-        .send(envelope(
+        .send(public_runtime_envelope(
             "observation.deliver",
             json!({
                 "room_id": room_id,
@@ -1714,6 +1737,37 @@ async fn serve_public_projection_fixture(stream: tokio::net::TcpStream) {
             "public viewers must not consume the shared relay Cursor"
         );
     }
+}
+
+async fn serve_public_projection_fixture(stream: tokio::net::TcpStream) {
+    let ticket = format!("wst1:{}", "c".repeat(64));
+    serve_public_projection_fixture_with_ticket(stream, &ticket).await;
+}
+
+async fn serve_public_projection_rejection_fixture(
+    stream: tokio::net::TcpStream,
+    expected_ticket: &str,
+    code: &str,
+    retryable: bool,
+) {
+    let mut socket = accept_public_projection_runtime_fixture(stream, expected_ticket).await;
+    socket
+        .send(public_runtime_welcome())
+        .await
+        .expect("welcome");
+    socket
+        .send(public_runtime_envelope(
+            "error",
+            json!({
+                "code": code,
+                "message": "safe fixture rejection",
+                "retryable": retryable,
+                "details": null
+            }),
+        ))
+        .await
+        .expect("Runtime rejection");
+    socket.close(None).await.expect("close Runtime fixture");
 }
 
 fn read_public_projection_fixture(gateway_address: SocketAddr) {
@@ -1762,6 +1816,221 @@ fn read_public_projection_fixture(gateway_address: SocketAddr) {
         }
     }
     socket.close(None).expect("close public stream");
+}
+
+fn read_public_projection_rejection_fixture(gateway_address: SocketAddr) {
+    let stream = TcpStream::connect(gateway_address).expect("browser connection");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("browser read timeout");
+    let mut request =
+        "ws://arena.example/v1/hosted/public-runs/0123456789abcdef0123456789abcdef/stream"
+            .into_client_request()
+            .expect("browser request");
+    request
+        .headers_mut()
+        .insert("origin", "https://arena.example".parse().expect("origin"));
+    request.headers_mut().insert(
+        "sec-websocket-protocol",
+        "worldstream.public-projection.v1"
+            .parse()
+            .expect("protocol"),
+    );
+    let (mut socket, _) =
+        tokio_tungstenite::tungstenite::client(request, stream).expect("gateway handshake");
+    let close = socket.read().expect("public close");
+    let TungsteniteMessage::Close(Some(close)) = close else {
+        panic!("expected public close, received {close:?}");
+    };
+    assert_eq!(u16::from(close.code), 1008);
+    assert_eq!(close.reason, "public stream unavailable");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::result_large_err)]
+async fn public_stream_retries_pre_reset_room_busy_with_a_fresh_ticket() {
+    let runtime_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("runtime listener");
+    let runtime_address = runtime_listener.local_addr().expect("runtime address");
+    let first_ticket = format!("wst1:{}", "c".repeat(64));
+    let second_ticket = format!("wst1:{}", "d".repeat(64));
+    assert_ne!(first_ticket, second_ticket);
+    let runtime_first_ticket = first_ticket.clone();
+    let runtime_second_ticket = second_ticket.clone();
+    let runtime = tokio::spawn(async move {
+        let (first, _) = runtime_listener
+            .accept()
+            .await
+            .expect("first runtime connection");
+        serve_public_projection_rejection_fixture(first, &runtime_first_ticket, "room_busy", true)
+            .await;
+        let (second, _) = runtime_listener
+            .accept()
+            .await
+            .expect("second runtime connection");
+        serve_public_projection_fixture_with_ticket(second, &runtime_second_ticket).await;
+    });
+
+    let backend = Backend::default();
+    backend
+        .public_stream_ticket_values
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .extend([first_ticket, second_ticket]);
+    let app = hosted_gateway_router(
+        browser_stream_config_with_runtime(runtime_address),
+        backend.clone(),
+    );
+    let gateway_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("gateway listener");
+    let gateway_address = gateway_listener.local_addr().expect("gateway address");
+    let gateway = tokio::spawn(async move {
+        axum::serve(
+            gateway_listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+    });
+
+    tokio::task::spawn_blocking(move || read_public_projection_fixture(gateway_address))
+        .await
+        .expect("browser task");
+    runtime.await.expect("runtime task");
+    assert_eq!(
+        backend
+            .public_stream_lookups
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len(),
+        2
+    );
+    gateway.abort();
+    let _ = gateway.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::result_large_err)]
+async fn public_stream_does_not_retry_non_retryable_room_busy() {
+    let runtime_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("runtime listener");
+    let runtime_address = runtime_listener.local_addr().expect("runtime address");
+    let ticket = format!("wst1:{}", "c".repeat(64));
+    let runtime_ticket = ticket.clone();
+    let runtime = tokio::spawn(async move {
+        let (stream, _) = runtime_listener.accept().await.expect("runtime connection");
+        serve_public_projection_rejection_fixture(stream, &runtime_ticket, "room_busy", false)
+            .await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), runtime_listener.accept())
+                .await
+                .is_err(),
+            "non-retryable RoomBusy must not open another Runtime connection"
+        );
+    });
+
+    let backend = Backend::default();
+    backend
+        .public_stream_ticket_values
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push_back(ticket);
+    let app = hosted_gateway_router(
+        browser_stream_config_with_runtime(runtime_address),
+        backend.clone(),
+    );
+    let gateway_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("gateway listener");
+    let gateway_address = gateway_listener.local_addr().expect("gateway address");
+    let gateway = tokio::spawn(async move {
+        axum::serve(
+            gateway_listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+    });
+
+    tokio::task::spawn_blocking(move || read_public_projection_rejection_fixture(gateway_address))
+        .await
+        .expect("browser task");
+    runtime.await.expect("runtime task");
+    assert_eq!(
+        backend
+            .public_stream_lookups
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len(),
+        1
+    );
+    gateway.abort();
+    let _ = gateway.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::result_large_err)]
+async fn public_stream_bounds_pre_reset_room_busy_retries() {
+    let runtime_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("runtime listener");
+    let runtime_address = runtime_listener.local_addr().expect("runtime address");
+    let tickets = ['c', 'd', 'e', 'f', '0']
+        .into_iter()
+        .map(|marker| format!("wst1:{}", marker.to_string().repeat(64)))
+        .collect::<Vec<_>>();
+    let runtime_tickets = tickets.clone();
+    let runtime = tokio::spawn(async move {
+        for expected_ticket in runtime_tickets {
+            let (stream, _) = runtime_listener.accept().await.expect("runtime connection");
+            serve_public_projection_rejection_fixture(stream, &expected_ticket, "room_busy", true)
+                .await;
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), runtime_listener.accept())
+                .await
+                .is_err(),
+            "the bounded retry budget must not open a sixth Runtime connection"
+        );
+    });
+
+    let backend = Backend::default();
+    backend
+        .public_stream_ticket_values
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .extend(tickets);
+    let app = hosted_gateway_router(
+        browser_stream_config_with_runtime(runtime_address),
+        backend.clone(),
+    );
+    let gateway_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("gateway listener");
+    let gateway_address = gateway_listener.local_addr().expect("gateway address");
+    let gateway = tokio::spawn(async move {
+        axum::serve(
+            gateway_listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+    });
+
+    tokio::task::spawn_blocking(move || read_public_projection_rejection_fixture(gateway_address))
+        .await
+        .expect("browser task");
+    runtime.await.expect("runtime task");
+    assert_eq!(
+        backend
+            .public_stream_lookups
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len(),
+        5
+    );
+    gateway.abort();
+    let _ = gateway.await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
