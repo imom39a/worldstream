@@ -119,7 +119,7 @@ test("background reconciliation uses the injected reviewed catalog for Genesis r
         return Response.json({ schema: "worldstream/hosted-genesis-evidence/v1" });
       }
       if (url.pathname === "/v1/hosted/evidence") return Response.json({
-        ...body, schema: "worldstream/hosted-launch-status/v1", stage: "launched", room_setup_complete: true,
+        ...body, schema: "worldstream/hosted-launch-status/v1", stage: "launched", room_setup_complete: true, lobby_launch_committed: true, retryable: true, terminal_before_genesis: false,
       });
       if (url.pathname === "/v1/hosted/abandon-prestart") {
         assert.equal(body.room_setup_operation_id, operation(prestartLaunch));

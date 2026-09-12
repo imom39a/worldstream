@@ -53,7 +53,7 @@ export interface HostedLaunch {
   readonly expires_at: string;
   readonly can_manage: boolean;
   readonly fill_mode: "people_only" | "house_agents";
-  readonly recovery_state: "not_started" | "genesis_not_proven" | "genesis_recorded_repairing" | "entry_ready" | "closing";
+  readonly recovery_state: "not_started" | "genesis_not_proven" | "genesis_recorded_repairing" | "waiting_for_readiness" | "retrying_start" | "host_attention" | "entry_ready" | "closing";
   readonly available_actions: readonly (
     | "start"
     | "cancel_setup"
@@ -78,6 +78,23 @@ export interface HostedLaunch {
   } | null;
   readonly retry_after_seconds?: number | null;
 }
+
+const HOSTED_LAUNCH_STATES = [
+  "collecting", "provisioning", "reconciling", "run_created", "closing", "closed_by_creator",
+  "cancelled", "expired", "failed_pre_genesis", "abandoned_prestart",
+] as const;
+const HOSTED_RECOVERY_STATES = [
+  "not_started", "genesis_not_proven", "genesis_recorded_repairing", "waiting_for_readiness",
+  "retrying_start", "host_attention", "entry_ready", "closing",
+] as const;
+const HOSTED_LAUNCH_ACTIONS = [
+  "start", "cancel_setup", "stop_setup", "end_activity", "finish_closing",
+] as const;
+const HOSTED_SEAT_STATUSES = ["open", "yours", "claimed", "house"] as const;
+const HOSTED_PARTICIPATION_KINDS = ["human", "external_agent", "house_agent"] as const;
+const HOSTED_HOUSE_FILL_STATES = [
+  "claim_window_open", "reserving", "assignments_complete", "failed_pre_genesis",
+] as const;
 
 export interface MyGamesIndex {
   readonly version: "platform_my_games.v1";
@@ -291,7 +308,7 @@ export async function createLaunch(
     readonly idempotencyKey: string;
   },
 ): Promise<HostedLaunch> {
-  return mutateLaunch("/api/launches", csrf, {
+  return mutateHostedLaunch("/api/launches", csrf, {
     ...(input.rosterOption === undefined ? {} : { roster_option: input.rosterOption }),
     listing_slug: input.listingSlug,
     creator_access: input.creatorAccess,
@@ -306,7 +323,7 @@ export async function claimInvitation(
   token: string,
   participation: "human" | "external_agent",
 ): Promise<HostedLaunch> {
-  return mutateLaunch("/api/invitations/claim", csrf, {
+  return mutateHostedLaunch("/api/invitations/claim", csrf, {
     invitation_token: token,
     participation,
   });
@@ -317,7 +334,15 @@ export async function launchMutation(
   launchId: string,
   action: "start" | "close",
 ): Promise<HostedLaunch | { readonly closed: true }> {
-  return mutateLaunch(`/api/launches/${encodeURIComponent(launchId)}/${action}`, csrf, {});
+  const value = await mutateLaunch<Record<string, unknown>>(
+    `/api/launches/${encodeURIComponent(launchId)}/${action}`,
+    csrf,
+    {},
+  );
+  const launch = decodeHostedLaunch(value);
+  if (launch !== null) return launch;
+  if (action === "close" && value.closed === true) return { closed: true };
+  throw new Error("request_unavailable");
 }
 
 export async function seatMutation(
@@ -326,11 +351,17 @@ export async function seatMutation(
   seatKey: string,
   action: "invitation" | "release" | "reset",
 ): Promise<HostedLaunch | { readonly invitation_token: string; readonly expires_at: string }> {
-  return mutateLaunch(
+  const value = await mutateLaunch<Record<string, unknown>>(
     `/api/launches/${encodeURIComponent(launchId)}/seats/${encodeURIComponent(seatKey)}/${action}`,
     csrf,
     {},
   );
+  const launch = decodeHostedLaunch(value);
+  if (launch !== null) return launch;
+  if (action === "invitation" && nonEmptyString(value.invitation_token) && nonEmptyString(value.expires_at)) {
+    return { invitation_token: value.invitation_token, expires_at: value.expires_at };
+  }
+  throw new Error("request_unavailable");
 }
 
 export async function enterRun(
@@ -372,10 +403,18 @@ export function githubSignIn(returnTarget: "/" | "/join" | "/my-games"): void {
 async function requestLaunch(path: string, signal?: AbortSignal): Promise<HostedLaunch> {
   const response = await fetch(path, { credentials: "same-origin", signal });
   const value = await safeJson(response);
-  if (!response.ok || value.version !== "hosted_launch.v1") {
+  const launch = decodeHostedLaunch(value);
+  if (!response.ok || launch === null) {
     throw new Error(errorCode(value) ?? "launch_unavailable");
   }
-  return value as unknown as HostedLaunch;
+  return launch;
+}
+
+async function mutateHostedLaunch(path: string, csrf: string, body: unknown): Promise<HostedLaunch> {
+  const value = await mutateLaunch<Record<string, unknown>>(path, csrf, body);
+  const launch = decodeHostedLaunch(value);
+  if (launch === null) throw new Error("request_unavailable");
+  return launch;
 }
 
 async function mutateLaunch<T>(path: string, csrf: string, body: unknown): Promise<T> {
@@ -406,6 +445,73 @@ async function safeJson(response: Response): Promise<Record<string, unknown>> {
   } catch {
     return {};
   }
+}
+
+function decodeHostedLaunch(value: Record<string, unknown>): HostedLaunch | null {
+  if (
+    value.version !== "hosted_launch.v1" ||
+    !nonEmptyString(value.launch_id) ||
+    !nonEmptyString(value.activity_slug) ||
+    !nonEmptyString(value.activity_title) ||
+    !oneOf(value.state, HOSTED_LAUNCH_STATES) ||
+    !nonEmptyString(value.expires_at) ||
+    typeof value.can_manage !== "boolean" ||
+    !oneOf(value.fill_mode, ["people_only", "house_agents"] as const) ||
+    !oneOf(value.recovery_state, HOSTED_RECOVERY_STATES) ||
+    !Array.isArray(value.available_actions) ||
+    !value.available_actions.every((action) => oneOf(action, HOSTED_LAUNCH_ACTIONS)) ||
+    !validHouseFill(value.house_fill) ||
+    !Array.isArray(value.seats) ||
+    !value.seats.every(validHostedSeat) ||
+    !validHostedRun(value.run) ||
+    !validRetryDelay(value.retry_after_seconds)
+  ) return null;
+  return value as unknown as HostedLaunch;
+}
+
+function validHouseFill(value: unknown): boolean {
+  if (value === null) return true;
+  if (!recordValue(value)) return false;
+  return oneOf(value.state, HOSTED_HOUSE_FILL_STATES) &&
+    nonEmptyString(value.claim_window_closes_at) &&
+    (value.failure_code === null || typeof value.failure_code === "string");
+}
+
+function validHostedSeat(value: unknown): boolean {
+  if (!recordValue(value)) return false;
+  return nonEmptyString(value.seat_key) &&
+    nonEmptyString(value.label) &&
+    typeof value.required === "boolean" &&
+    oneOf(value.status, HOSTED_SEAT_STATUSES) &&
+    (value.participation === null || oneOf(value.participation, HOSTED_PARTICIPATION_KINDS)) &&
+    (value.house_display_name === undefined || nonEmptyString(value.house_display_name));
+}
+
+function validHostedRun(value: unknown): boolean {
+  if (value === null) return true;
+  if (!recordValue(value) || !Array.isArray(value.entries)) return false;
+  return nonEmptyString(value.run_id) &&
+    (value.public_id === null || nonEmptyString(value.public_id)) &&
+    typeof value.can_enter === "boolean" &&
+    value.entries.every((entry) => recordValue(entry) && nonEmptyString(entry.label) &&
+      (entry.entry_selector === null || nonEmptyString(entry.entry_selector)));
+}
+
+function validRetryDelay(value: unknown): boolean {
+  return value === undefined || value === null ||
+    (typeof value === "number" && Number.isFinite(value) && value > 0);
+}
+
+function recordValue(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function oneOf<const T extends readonly string[]>(value: unknown, options: T): value is T[number] {
+  return typeof value === "string" && options.includes(value as T[number]);
 }
 
 function errorCode(value: Record<string, unknown>): string | null {

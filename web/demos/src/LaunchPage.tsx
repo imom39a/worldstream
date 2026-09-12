@@ -13,18 +13,28 @@ import {
 import { friendlyError } from "./CatalogPage";
 import { SiteFooter, SiteHeader, type Navigate } from "./siteChrome";
 
+export const START_RETRY_MAX_ATTEMPTS = 20;
+const START_RETRY_MAX_DURATION_MS = 60_000;
+const START_RETRY_MIN_DELAY_MS = 2_000;
+
 export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavigate: Navigate }) {
   const { session } = usePlatformSession();
   const [launch, setLaunch] = useState<HostedLaunch | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "unavailable">("loading");
   const [busy, setBusy] = useState<string | null>(null);
   const [startRequested, setStartRequested] = useState(false);
+  const [readinessSyncRequested, setReadinessSyncRequested] = useState(false);
+  const [readinessSyncUrl, setReadinessSyncUrl] = useState<string | null>(null);
+  const [startRetryCount, setStartRetryCount] = useState(0);
+  const [startRetryStartedAt, setStartRetryStartedAt] = useState<number | null>(null);
   const [countdownNow, setCountdownNow] = useState(() => Date.now());
   const [invitation, setInvitation] = useState<{ seat: string; url: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshAttempt, setRefreshAttempt] = useState(0);
   const authenticatedCsrf = session.state === "authenticated" ? session.csrf : null;
   const launchState = launch?.state ?? null;
+  const recoveryState = launch?.recovery_state ?? null;
+  const retryAfterSeconds = launch?.retry_after_seconds ?? null;
   const houseFillState = launch?.house_fill?.state ?? null;
   const claimWindowClosesAt = houseFillState === "claim_window_open"
     ? launch?.house_fill?.claim_window_closes_at ?? null
@@ -36,6 +46,10 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
     setError(null);
     setInvitation(null);
     setStartRequested(false);
+    setReadinessSyncRequested(false);
+    setReadinessSyncUrl(null);
+    setStartRetryCount(0);
+    setStartRetryStartedAt(null);
   }, [launchId, authenticatedCsrf]);
 
   useEffect(() => {
@@ -49,6 +63,13 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
         const value = await readLaunch(launchId, controller.signal);
         if (disposed) return;
         setLaunch(value);
+        if (value.state === "run_created" && value.recovery_state === "entry_ready") {
+          setStartRequested(false);
+          setReadinessSyncRequested(false);
+          setReadinessSyncUrl(null);
+          setStartRetryCount(0);
+          setStartRetryStartedAt(null);
+        }
         setState("ready");
         if (isTerminalLaunchState(value.state)) return;
       } catch (cause) {
@@ -73,19 +94,98 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
       authenticatedCsrf === null ||
       launchState === null ||
       isTerminalLaunchState(launchState) ||
+      (recoveryState === "waiting_for_readiness" && !readinessSyncRequested) ||
       busy === "start"
     ) return undefined;
+    const boundedStartRetry = recoveryState === "retrying_start" ||
+      (recoveryState === "waiting_for_readiness" && readinessSyncRequested) ||
+      (retryAfterSeconds !== null && houseFillState !== "claim_window_open");
+    const exhaustedMessage = recoveryState === "waiting_for_readiness"
+      ? "The Host is still waiting for browser readiness. Start activity again to retry this same room."
+      : "The Host is still completing Activity Start. Start activity again to retry this same room.";
+    if (boundedStartRetry && startRetryCount >= START_RETRY_MAX_ATTEMPTS) {
+      setStartRequested(false);
+      if (recoveryState === "waiting_for_readiness") setReadinessSyncRequested(false);
+      setError(exhaustedMessage);
+      return undefined;
+    }
+    if (
+      boundedStartRetry &&
+      startRetryStartedAt !== null &&
+      Date.now() - startRetryStartedAt >= START_RETRY_MAX_DURATION_MS
+    ) {
+      setStartRequested(false);
+      if (recoveryState === "waiting_for_readiness") setReadinessSyncRequested(false);
+      setError(exhaustedMessage);
+      return undefined;
+    }
     const claimDeadline = claimWindowClosesAt === null ? Number.NaN : Date.parse(claimWindowClosesAt);
     const untilClaimDeadline = claimDeadline - Date.now();
-    const delay = houseFillState === "claim_window_open"
+    const retryAfterMilliseconds = typeof retryAfterSeconds === "number"
+      && Number.isFinite(retryAfterSeconds)
+      && retryAfterSeconds > 0
+      ? retryAfterSeconds * 1_000
+      : START_RETRY_MIN_DELAY_MS;
+    const delay = recoveryState === "waiting_for_readiness"
+      ? Math.max(START_RETRY_MIN_DELAY_MS, retryAfterMilliseconds)
+      : houseFillState === "claim_window_open"
       ? (Number.isFinite(untilClaimDeadline) && untilClaimDeadline > 0 ? untilClaimDeadline : 1_000)
-      : 50;
+      : retryAfterSeconds === null ? 50 : retryAfterMilliseconds;
     const timer = window.setTimeout(() => {
+      if (
+        boundedStartRetry && (
+        startRetryCount >= START_RETRY_MAX_ATTEMPTS ||
+        (startRetryStartedAt !== null && Date.now() - startRetryStartedAt >= START_RETRY_MAX_DURATION_MS)
+        )
+      ) {
+        setStartRequested(false);
+        if (recoveryState === "waiting_for_readiness") setReadinessSyncRequested(false);
+        setError(exhaustedMessage);
+        return;
+      }
       setBusy("start");
       void launchMutation(authenticatedCsrf, launchId, "start")
         .then((value) => {
           if ("version" in value) setLaunch(value);
-          if ("version" in value && value.state === "run_created") setStartRequested(false);
+          if (
+            "version" in value &&
+            value.state === "run_created" &&
+            value.recovery_state === "entry_ready"
+          ) {
+            setStartRequested(false);
+            setReadinessSyncRequested(false);
+            setReadinessSyncUrl(null);
+            setStartRetryCount(0);
+            setStartRetryStartedAt(null);
+          } else if ("version" in value &&
+            (isTerminalLaunchState(value.state) || value.recovery_state === "host_attention")) {
+            setStartRequested(false);
+            setStartRetryCount(0);
+            setStartRetryStartedAt(null);
+          } else if ("version" in value) {
+            // Force a new retry cycle even when the retained DTO's state is
+            // unchanged (for example, while waiting for a fresh browser ack).
+            const nextBoundedRetry = value.recovery_state === "retrying_start" ||
+              (value.recovery_state === "waiting_for_readiness" && readinessSyncRequested) ||
+              (value.retry_after_seconds != null && value.house_fill?.state !== "claim_window_open");
+            if (nextBoundedRetry) {
+              if (startRetryStartedAt === null) setStartRetryStartedAt(Date.now());
+              const nextAttempt = startRetryCount + 1;
+              setStartRetryCount(nextAttempt);
+              if (nextAttempt >= START_RETRY_MAX_ATTEMPTS) {
+                setStartRequested(false);
+                if (value.recovery_state === "waiting_for_readiness") {
+                  setReadinessSyncRequested(false);
+                }
+                setError(value.recovery_state === "waiting_for_readiness"
+                  ? "The Host is still waiting for browser readiness. Start activity again to retry this same room."
+                  : "The Host is still completing Activity Start. Start activity again to retry this same room.");
+              }
+            } else {
+              setStartRetryCount(0);
+              setStartRetryStartedAt(null);
+            }
+          }
           setBusy(null);
         })
         .catch((cause) => {
@@ -95,7 +195,7 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
         });
     }, delay);
     return () => window.clearTimeout(timer);
-  }, [authenticatedCsrf, busy, claimWindowClosesAt, houseFillState, launchId, launchState, startRequested]);
+  }, [authenticatedCsrf, busy, claimWindowClosesAt, houseFillState, launchId, launchState, readinessSyncRequested, recoveryState, retryAfterSeconds, startRequested, startRetryCount, startRetryStartedAt]);
 
   useEffect(() => {
     if (claimWindowClosesAt === null) return undefined;
@@ -125,6 +225,13 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
 
   const start = () => {
     setError(null);
+    setStartRetryCount(0);
+    setStartRetryStartedAt(
+      recoveryState === "retrying_start" ||
+      (retryAfterSeconds !== null && houseFillState !== "claim_window_open")
+        ? Date.now()
+        : null,
+    );
     setStartRequested(true);
   };
 
@@ -145,6 +252,7 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
   const setupLocked = startRequested || busy !== null;
   const actions = launch.available_actions ?? [];
   const mayStart = actions.includes("start");
+  const waitingForReadiness = launch.recovery_state === "waiting_for_readiness";
   const closeAction = actions.find((action) => action !== "start") ?? null;
   const claimSecondsRemaining = claimWindowClosesAt === null
     ? null
@@ -206,18 +314,56 @@ export function LaunchPage({ launchId, onNavigate }: { launchId: string; onNavig
           {launch.run !== null && launch.run.can_enter ? (
             <div className="entry-actions">
               {launch.run.entries.filter((entry) => entry.entry_selector !== null).map((entry) => (
-                <button key={entry.entry_selector} type="button" onClick={() => {
+                <button key={entry.entry_selector} type="button" disabled={
+                  busy !== null || (waitingForReadiness && readinessSyncRequested)
+                } onClick={() => {
                   if (session.state !== "authenticated" || entry.entry_selector === null) return;
                   setBusy("enter");
-                  void enterRun(session.csrf, launch.run!.run_id, entry.entry_selector)
-                    .then((url) => window.location.assign(url))
+                  void openRunEntry({
+                    csrf: session.csrf,
+                    runId: launch.run!.run_id,
+                    entrySelector: entry.entry_selector,
+                    preserveWaitingRoom: waitingForReadiness,
+                  })
+                    .then(({ url, openedInNewTab }) => {
+                      if (waitingForReadiness) {
+                        setReadinessSyncUrl(openedInNewTab ? null : url);
+                        setReadinessSyncRequested(openedInNewTab);
+                        if (openedInNewTab) {
+                          setStartRetryCount(0);
+                          setStartRetryStartedAt(Date.now());
+                          setStartRequested(true);
+                        } else {
+                          setError("Open the activity link below once to sync this browser. This room will retry Start automatically.");
+                        }
+                      } else {
+                        window.location.assign(url);
+                      }
+                    })
                     .catch((cause) => {
                       setError(friendlyError(cause));
-                      setBusy(null);
-                    });
-                }}>{busy === "enter" ? "Opening activity…" : `Enter ${entry.label}`}</button>
+                    })
+                    .finally(() => setBusy(null));
+                }}>{busy === "enter" ? "Opening activity…" : waitingForReadiness ? `Open ${entry.label} to sync` : `Enter ${entry.label}`}</button>
               ))}
             </div>
+          ) : null}
+          {waitingForReadiness && readinessSyncUrl !== null ? (
+            <p className="form-help" role="status">
+              <a
+                href={readinessSyncUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => {
+                  setError(null);
+                  setReadinessSyncUrl(null);
+                  setReadinessSyncRequested(true);
+                  setStartRetryCount(0);
+                  setStartRetryStartedAt(Date.now());
+                  setStartRequested(true);
+                }}
+              >Open the activity to sync this browser</a>. The waiting room will retry the same Start request until Activity Start is committed.
+            </p>
           ) : null}
           {mayStart ? (
             <button className="start-room" type="button" disabled={setupLocked} onClick={start}>
@@ -295,6 +441,15 @@ export function stateDetail(launch: HostedLaunch): string {
   if (launch.recovery_state === "genesis_not_proven") {
     return "WorldStream is checking the original setup. It will not create a replacement room.";
   }
+  if (launch.recovery_state === "waiting_for_readiness") {
+    return "Open the activity once to sync this browser. The waiting room will retry the same Start request when the Host is ready.";
+  }
+  if (launch.recovery_state === "retrying_start") {
+    return "The Host is completing Activity Start for this same room. Retrying Start is safe and will not create another room.";
+  }
+  if (launch.recovery_state === "host_attention") {
+    return "The Host could not complete Activity Start. End this activity to release its retained room, then start a new one.";
+  }
   if (launch.state === "provisioning") return "The exact roster is frozen. The Host is creating one room.";
   if (launch.state === "reconciling") return "The Host is ready. The platform is confirming the exact Run.";
   if (launch.house_fill?.state === "claim_window_open") return "People can claim open seats until the claim window ends. Reviewed House Agents then fill them.";
@@ -345,4 +500,47 @@ function seatStatus(seat: HostedLaunchSeat): string {
   if (seat.status === "house") return `House Agent · ${seat.house_display_name ?? "Reviewed agent"}`;
   const kind = seat.participation === "external_agent" ? "External agent" : "Person";
   return seat.status === "yours" ? `Your seat · ${kind}` : `Claimed · ${kind}`;
+}
+
+async function openRunEntry(input: {
+  readonly csrf: string;
+  readonly runId: string;
+  readonly entrySelector: string;
+  readonly preserveWaitingRoom: boolean;
+}): Promise<{ readonly url: string; readonly openedInNewTab: boolean }> {
+  // Reserve a tab synchronously while this click still has browser activation. The
+  // handoff itself is issued by the authenticated endpoint after the reservation.
+  // If a browser blocks the tab, the rendered link below remains usable on mobile.
+  const reservedWindow = input.preserveWaitingRoom ? reserveWindow() : null;
+  try {
+    const url = await enterRun(input.csrf, input.runId, input.entrySelector);
+    if (reservedWindow !== null) {
+      try {
+        reservedWindow.location.replace(url);
+        return { url, openedInNewTab: true };
+      } catch {
+        reservedWindow.close();
+      }
+    }
+    return { url, openedInNewTab: false };
+  } catch (cause) {
+    reservedWindow?.close();
+    throw cause;
+  }
+}
+
+function reserveWindow(): Window | null {
+  try {
+    const reserved = window.open("about:blank", "_blank");
+    if (reserved === null) return null;
+    try {
+      reserved.opener = null;
+    } catch {
+      reserved.close();
+      return null;
+    }
+    return reserved;
+  } catch {
+    return null;
+  }
 }

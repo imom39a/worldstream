@@ -33,6 +33,7 @@ import type {
   HostedFormationData,
   HostedFormationGateway,
   HostedLaunchMaterial,
+  HostedLaunchStatus,
 } from "./hosted-formation.js";
 import { AGENT_HEIST_LISTING_DIGEST, MIDNIGHT_ARCHIVE_LISTING_DIGEST } from "./hosted-catalog.js";
 import { withPlatformDiagnostics } from "./diagnostics.js";
@@ -479,6 +480,156 @@ test("My games is account-scoped, preserves the reviewed result route, and rejec
     headers: { cookie: `__Host-worldstream-session=${signedIn.sessionCookie}` },
   }));
   assert.equal(erased.status, 401);
+});
+
+async function pendingLaunchHarness() {
+  const launchId = "20000000-0000-4000-8000-000000000002";
+  const runId = "30000000-0000-4000-8000-000000000002";
+  let state = "provisioning";
+  let genesisRecorded = false;
+  const host = {
+    clientFresh: false,
+    activityStarted: false,
+    stage: "waiting_for_readiness" as HostedLaunchStatus["state"],
+    retryable: true,
+    nextLaunchReadStatus: null as HostedLaunchStatus | null,
+    readStatusOverride: null as HostedLaunchStatus | null,
+  };
+  const submissions: unknown[] = [];
+  const material = (): HostedLaunchMaterial => ({
+    launchRequestId: launchId,
+    listingRevisionDigest: MIDNIGHT_ARCHIVE_LISTING_DIGEST,
+    state,
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    launchInputs: { roster_option: "solo" },
+    houseFillChoice: "disabled",
+    creatorAccessChoice: "seat",
+    creatorSeatId: "lead",
+    hostInstallationId: "fly-primary",
+    roomSetupOperationId: `launch-${launchId.replaceAll("-", "")}`,
+    rosterFrozen: true,
+    hostMutationStarted: true,
+    claims: [{ seatId: "lead", displayName: "Lead", participationKind: "account_human", principalReference: "seat:lead" }],
+    houseAssignments: [],
+  });
+  const hostedData = {
+    readLaunchRequest: async () => ({ ...material(), canManage: true, seats: [] }),
+    readHostedLaunchMaterial: async () => material(),
+    readHostedRecoveryMaterial: async () => material(),
+    readHouseFill: async () => null,
+    readGenesisReconciliation: async () => ({
+      launchState: state, runId: genesisRecorded ? runId : null,
+      reconciliationState: "ready", needsGenesisPull: false,
+    }),
+    recordGenesis: async () => {
+      genesisRecorded = true;
+      state = "run_created";
+      return { runId, reconciliationState: "ready" };
+    },
+    readOwnedRun: async () => ({
+      runId, publicId: null, reconciliationState: "ready", canEnter: true,
+      memberships: [{ purpose: "participant", seatId: "lead", entrySelector: "opaque-entry" }],
+    }),
+    readPublicRelayBindingCandidate: async () => null,
+  } as unknown as HostedFormationData;
+  const status = (): HostedLaunchStatus => ({ state: host.activityStarted ? "launched" : host.stage,
+    roomSetupComplete: true, lobbyLaunchCommitted: host.activityStarted, retryable: host.retryable, terminalBeforeGenesis: false });
+  const hostedGateway = {
+    readGenesisEvidence: async () => ({ schema: "worldstream/hosted-genesis-evidence/v1" }),
+    readStatus: async () => host.readStatusOverride ?? status(),
+    launch: async (request: unknown) => {
+      submissions.push(request);
+      host.activityStarted ||= host.clientFresh;
+      const reply = status();
+      host.readStatusOverride = host.nextLaunchReadStatus;
+      return reply;
+    },
+  } as unknown as HostedFormationGateway;
+  const { bff } = harness(undefined, undefined, undefined, {
+    hostedFormationData: hostedData,
+    hostedFormationGateway: hostedGateway,
+    hostedFormationHostInstallationId: "fly-primary",
+  });
+  const signedIn = await signIn(bff);
+  const csrfValue = await csrf(bff, signedIn.sessionCookie);
+  const start = () => bff.fetch(mutation(`/api/launches/${launchId}/start`, signedIn.sessionCookie, csrfValue));
+  return { start, host, submissions, runId };
+}
+
+test("signed launch retry keeps pre-start Room entry and completes only after Activity Start", async () => {
+  const { start, host, submissions, runId } = await pendingLaunchHarness();
+  const pending = await start();
+  assert.equal(pending.status, 202);
+  const waiting = await pending.json() as Record<string, any>;
+  assert.equal(waiting.state, "reconciling");
+  assert.equal(waiting.recovery_state, "waiting_for_readiness");
+  assert.ok(waiting.available_actions.includes("start"));
+  assert.equal(waiting.run.can_enter, true);
+  assert.equal(waiting.run.run_id, runId);
+  assert.equal(waiting.run.entries[0].entry_selector, "opaque-entry");
+  assert.equal(host.activityStarted, false);
+
+  host.clientFresh = true; // Controller delivery acknowledgement from the attached human client.
+  const completed = await start();
+  assert.equal(completed.status, 200);
+  const ready = await completed.json() as Record<string, any>;
+  assert.equal(ready.state, "run_created");
+  assert.equal(ready.recovery_state, "entry_ready");
+  assert.equal(ready.available_actions.includes("start"), false);
+  assert.equal(ready.run.run_id, runId);
+  assert.deepEqual(submissions[1], submissions[0]);
+  assert.equal(submissions.length, 2);
+});
+
+test("launching and retryable attention retry the retained start without browser-sync guidance", async () => {
+  for (const stage of ["launching", "needs_attention"] as const) {
+    const { start, host, submissions, runId } = await pendingLaunchHarness();
+    host.stage = stage;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await start();
+      assert.equal(response.status, 202);
+      const body = await response.json() as Record<string, any>;
+      assert.equal(body.recovery_state, "retrying_start");
+      assert.equal(body.retry_after_seconds, 2);
+      assert.ok(body.available_actions.includes("start"));
+      assert.equal(body.run.run_id, runId);
+    }
+    assert.equal(submissions.length, 2);
+    assert.deepEqual(submissions[1], submissions[0]);
+  }
+});
+
+test("nonretryable post-Genesis attention retains entry and closure without Start", async () => {
+  const { start, host, submissions } = await pendingLaunchHarness();
+  host.stage = "needs_attention";
+  host.retryable = false;
+  const response = await start();
+  assert.equal(response.status, 202);
+  const body = await response.json() as Record<string, any>;
+  assert.equal(body.recovery_state, "host_attention");
+  assert.equal(body.retry_after_seconds, null);
+  assert.equal(body.run.can_enter, true);
+  assert.deepEqual(body.available_actions, ["end_activity"]);
+  assert.equal(submissions.length, 0);
+});
+
+test("Start HTTP status and delay use the final snapshot when Host observations disagree", async () => {
+  for (const committedInReply of [false, true]) {
+    const { start, host } = await pendingLaunchHarness();
+    host.clientFresh = committedInReply;
+    host.nextLaunchReadStatus = {
+      state: committedInReply ? "waiting_for_readiness" : "launched",
+      roomSetupComplete: true,
+      lobbyLaunchCommitted: !committedInReply,
+      retryable: true,
+      terminalBeforeGenesis: false,
+    };
+    const response = await start();
+    const body = await response.json() as Record<string, any>;
+    assert.equal(body.state, committedInReply ? "reconciling" : "run_created");
+    assert.equal(response.status, committedInReply ? 202 : 200);
+    assert.equal(body.retry_after_seconds, committedInReply ? 2 : null);
+  }
 });
 
 test("creator close uses the same evidence-backed lane before and after Host mutation", async () => {

@@ -230,9 +230,17 @@ export interface HostedFormationData {
   readOwnedRun(accountId: string, runId: string): Promise<OwnedRunRecord | null>;
 }
 
+const HOSTED_LAUNCH_STAGES = [
+  "bound", "creating_room", "provisioning", "waiting_for_readiness", "launching", "launched", "needs_attention",
+] as const;
+export type HostedLaunchStage = typeof HOSTED_LAUNCH_STAGES[number];
+
 export interface HostedLaunchStatus {
-  readonly state: string;
+  readonly state: HostedLaunchStage;
   readonly roomSetupComplete: boolean;
+  readonly lobbyLaunchCommitted: boolean;
+  readonly retryable: boolean;
+  readonly terminalBeforeGenesis: boolean;
 }
 
 export interface HostedFormationGateway {
@@ -339,13 +347,17 @@ export class HostedFormationCoordinator {
     }
 
     const status = await this.gateway.launch(documents.gatewayLaunchRequest);
-    return this.recordObservedGenesis(launchRequestId, documents, status);
+    return this.settleLaunchStatus(material, documents, status);
   }
 
   /** Repairs prior consent only. It cannot freeze a roster or authorize a launch. */
   async recover(launchRequestId: string): Promise<FormationAdvanceResult | null> {
     const material = await this.data.readHostedRecoveryMaterial(launchRequestId);
-    return material === null || material.state === "closing" ? null : this.resume(material);
+    return material === null || [
+      "closing", "closed_by_creator", "cancelled", "expired", "failed_pre_genesis", "abandoned_prestart",
+    ].includes(material.state)
+      ? null
+      : this.resume(material);
   }
 
   /**
@@ -423,9 +435,9 @@ export class HostedFormationCoordinator {
 
   /**
    * The narrow pre-Genesis closure for a retained setup operation that the
-   * Host proves absent. It is reachable only from `resume` after an exact
-   * read 404 and exact replay rejection; this method itself never uses time
-   * or a browser request as proof of absence.
+   * Host proves absent. An exact missing-operation/replay conflict or terminal
+   * pre-Genesis status may request this fence; neither status, time nor a browser
+   * request is itself proof authorizing capacity release.
    */
   async abandonProvisioning(
     material: HostedLaunchMaterial,
@@ -446,8 +458,8 @@ export class HostedFormationCoordinator {
       // Genesis again and retain this launch for ordinary reconciliation.
       if (error instanceof HostedFormationConflictError) {
         return this.recordObservedGenesis(material.launchRequestId, documents, {
-          state: "reconciling",
-          roomSetupComplete: false,
+          state: "provisioning",
+          roomSetupComplete: false, lobbyLaunchCommitted: false, retryable: true, terminalBeforeGenesis: false,
         });
       }
       throw error;
@@ -467,13 +479,27 @@ export class HostedFormationCoordinator {
   }
 
   async entryReady(launchRequestId: string): Promise<boolean> {
+    return (await this.launchReadiness(launchRequestId)).entryReady;
+  }
+
+  /** Attachment can precede Activity Start: the human client must synchronize first. */
+  async launchReadiness(launchRequestId: string): Promise<{
+    entryReady: boolean;
+    activityStarted: boolean;
+    hostStatus: HostedLaunchStatus | null;
+  }> {
+    const unavailable = { entryReady: false, activityStarted: false, hostStatus: null };
     const material = await this.data.readHostedRecoveryMaterial(launchRequestId);
-    if (material === null) return false;
+    if (material === null) return unavailable;
     const documents = this.recoveryDocuments(material);
     const reconciliation = await this.data.readGenesisReconciliation(launchRequestId);
-    if (reconciliation?.reconciliationState !== "ready" || reconciliation.runId === null) return false;
     try {
-      return (await this.gateway.readStatus(documents.evidenceRequest)).roomSetupComplete;
+      const status = await this.gateway.readStatus(documents.evidenceRequest);
+      return {
+        entryReady: reconciliation?.reconciliationState === "ready" && reconciliation.runId !== null && status.roomSetupComplete,
+        activityStarted: status.roomSetupComplete && status.lobbyLaunchCommitted,
+        hostStatus: status,
+      };
     } catch (error) {
       // Entry is disabled until a fresh authorized status confirms it. A
       // temporary Host outage is not proof that the frozen Room is absent and
@@ -481,7 +507,7 @@ export class HostedFormationCoordinator {
       if (
         error instanceof HostedFormationUnavailableError ||
         error instanceof HostedFormationNotFoundError
-      ) return false;
+      ) return unavailable;
       throw error;
     }
   }
@@ -506,8 +532,8 @@ export class HostedFormationCoordinator {
     }
     // Observe Genesis before any repair. A lost capability reply must not hide
     // an existing Room from platform correspondence.
-    const observed = await this.recordObservedGenesis(material.launchRequestId, documents, {
-      state: "reconciling", roomSetupComplete: false,
+    await this.recordObservedGenesis(material.launchRequestId, documents, {
+      state: "provisioning", roomSetupComplete: false, lobbyLaunchCommitted: false, retryable: true, terminalBeforeGenesis: false,
     });
     let status: HostedLaunchStatus;
     let exactStatusWasMissing = false;
@@ -516,13 +542,16 @@ export class HostedFormationCoordinator {
     } catch (error) {
       if (!(error instanceof HostedFormationNotFoundError)) throw error;
       exactStatusWasMissing = true;
-      status = { state: "provisioning", roomSetupComplete: false };
+      status = { state: "provisioning", roomSetupComplete: false, lobbyLaunchCommitted: false, retryable: true, terminalBeforeGenesis: false };
     }
     // Genesis and Membership creation do not imply that every House process
     // has started. Resume the same frozen launch while its Lobby is waiting;
     // the Host retains process identities, allowances and the launch input.
     // Human entry remains available so synchronization can satisfy readiness.
-    if (!status.roomSetupComplete || status.state === "waiting_for_readiness") {
+    if (status.terminalBeforeGenesis) {
+      return this.settleLaunchStatus(material, documents, status);
+    }
+    if (!status.lobbyLaunchCommitted && status.retryable) {
       try {
         status = await this.gateway.launch(documents.gatewayLaunchRequest);
       } catch (error) {
@@ -549,13 +578,29 @@ export class HostedFormationCoordinator {
           }
           // A second Genesis observation also closes the small interval in
           // which the exact operation became visible after the first pull.
-          return this.recordObservedGenesis(material.launchRequestId, documents, status);
+          return this.settleLaunchStatus(material, documents, status);
         }
         throw error;
       }
     }
-    if (!status.roomSetupComplete) return observed;
-    return this.recordObservedGenesis(material.launchRequestId, documents, status);
+    return this.settleLaunchStatus(material, documents, status);
+  }
+
+  private async settleLaunchStatus(
+    material: HostedLaunchMaterial,
+    documents: ReturnType<typeof deriveFrozenDocuments>,
+    status: HostedLaunchStatus,
+  ): Promise<FormationAdvanceResult> {
+    const observed = await this.recordObservedGenesis(material.launchRequestId, documents, status);
+    if (status.terminalBeforeGenesis && observed.runId === null) {
+      // A status flag permits asking for the same durable fence, not releasing
+      // capacity. Recheck Genesis correspondence and require signed Host evidence.
+      const current = await this.data.readHostedRecoveryMaterial(material.launchRequestId);
+      if (current === null) throw new HostedFormationRejectedError("launch_recovery_not_authorized");
+      return this.abandonProvisioning(current, documents,
+        await this.data.readGenesisReconciliation(material.launchRequestId));
+    }
+    return observed;
   }
 
   private async recordObservedGenesis(
@@ -581,10 +626,16 @@ export class HostedFormationCoordinator {
         sha256(evidenceBytes),
       );
       if (recorded === null || recorded.reconciliationState !== "ready") throw new HostedFormationRejectedError();
+      // Genesis retains the Run even if the Host is still waiting for a
+      // synchronized client. Only the Host's committed Activity Start completes
+      // launch orchestration; setup alone must not stop the normal start retry.
       if (!status.roomSetupComplete) {
         return { state: "reconciling", retryAfterSeconds: 2, runId: recorded.runId };
       }
       await this.ensurePublicRelayBinding(recorded.runId);
+      if (!status.lobbyLaunchCommitted) {
+        return { state: "reconciling", retryAfterSeconds: 2, runId: recorded.runId };
+      }
       return {
         state: "run_created",
         retryAfterSeconds: null,
@@ -796,13 +847,23 @@ export class HttpHostedFormationGateway implements HostedFormationGateway {
       response.schema !== "worldstream/hosted-launch-status/v1" ||
       response.launch_request_digest !== request.launch_request_digest ||
       response.room_setup_operation_id !== request.room_setup_operation_id ||
-      typeof response.room_setup_complete !== "boolean"
+      typeof response.room_setup_complete !== "boolean" ||
+      typeof response.lobby_launch_committed !== "boolean" ||
+      typeof response.retryable !== "boolean" ||
+      typeof response.terminal_before_genesis !== "boolean" ||
+      !HOSTED_LAUNCH_STAGES.includes(response.stage as HostedLaunchStage) ||
+      (response.terminal_before_genesis && (response.stage !== "needs_attention" || response.retryable || response.lobby_launch_committed)) ||
+      response.lobby_launch_committed !== (response.stage === "launched") ||
+      (response.lobby_launch_committed && !response.room_setup_complete)
     ) {
       throw new HostedFormationUnavailableError("invalid_gateway_response");
     }
     return {
-      state: requiredString(response.stage),
+      state: response.stage as HostedLaunchStage,
       roomSetupComplete: response.room_setup_complete,
+      lobbyLaunchCommitted: response.lobby_launch_committed,
+      retryable: response.retryable,
+      terminalBeforeGenesis: response.terminal_before_genesis,
     };
   }
 

@@ -24,6 +24,7 @@ import {
   type FormationLaunchRecord,
   type HostedFormationData,
   type HostedFormationGateway,
+  type HostedLaunchStatus,
   type HouseFillRecord,
   type OwnedRunRecord,
 } from "./hosted-formation.js";
@@ -815,13 +816,10 @@ async function mutateHostedLaunch(
       if (launch !== null && resolveReviewedActivity(dependencies, launch.listingRevisionDigest)?.public.clientPath === null) {
         return privateError(409, "launch_client_unavailable");
       }
-      const advanced = await formation.advance(admitted.account.accountId, route.launchId);
+      await formation.advance(admitted.account.accountId, route.launchId);
       const snapshot = await launchSnapshot(data, admitted.account.accountId, route.launchId, formation, dependencies);
       if (snapshot === null) return temporarilyUnavailable();
-      return privateJson(advanced.state === "run_created" ? 200 : 202, {
-        ...snapshot,
-        retry_after_seconds: advanced.retryAfterSeconds,
-      });
+      return privateJson(snapshot.state === "run_created" ? 200 : 202, snapshot);
     }
     if (route.action === "close") {
       const launch = await data.readLaunchRequest(admitted.account.accountId, route.launchId);
@@ -886,12 +884,15 @@ async function launchSnapshot(
   let run = reconciliation?.runId === null || reconciliation?.runId === undefined
     ? null
     : await data.readOwnedRun(accountId, reconciliation.runId);
-  const entryReady = !["closing", "closed_by_creator"].includes(launch.state) &&
-    run !== null && formation !== undefined && await formation.entryReady(launchId);
+  const readiness = ["provisioning", "reconciling", "run_created"].includes(launch.state) &&
+    formation !== undefined
+    ? await formation.launchReadiness(launchId)
+    : { entryReady: false, activityStarted: false, hostStatus: null };
+  const { entryReady, activityStarted, hostStatus } = readiness;
   if (run !== null && !entryReady) {
     run = { ...run, canEnter: false, memberships: [] };
   }
-  return safeLaunchProjection(launch, house, reconciliation?.needsGenesisPull === true, run, entryReady, dependencies);
+  return safeLaunchProjection(launch, house, reconciliation?.needsGenesisPull === true, run, entryReady, activityStarted, hostStatus, dependencies);
 }
 
 function safeLaunchProjection(
@@ -900,15 +901,25 @@ function safeLaunchProjection(
   reconciling: boolean,
   run: OwnedRunRecord | null,
   entryReady: boolean,
+  activityStarted: boolean,
+  hostStatus: HostedLaunchStatus | null,
   dependencies: Pick<BffDependencies, "reviewedActivities">,
 ): Record<string, unknown> {
   const reviewed = resolveReviewedActivity(dependencies, launch.listingRevisionDigest);
+  const startRetryable = !activityStarted && (hostStatus === null ||
+    (hostStatus.retryable && !hostStatus.terminalBeforeGenesis));
+  const hostRecoveryState = hostStatus?.terminalBeforeGenesis ||
+      (hostStatus?.state === "needs_attention" && !hostStatus.retryable)
+    ? "host_attention"
+    : hostStatus?.retryable && ["launching", "needs_attention"].includes(hostStatus.state)
+      ? "retrying_start"
+      : null;
   const state = launch.state === "collecting_roster"
     ? "collecting"
     : launch.state === "closing" || launch.state === "closed_by_creator"
       ? launch.state
     : launch.state === "run_created"
-      ? run?.canEnter ? "run_created" : "reconciling"
+      ? run?.canEnter && activityStarted ? "run_created" : "reconciling"
       : ["cancelled", "expired", "failed_pre_genesis", "abandoned_prestart"].includes(launch.state)
         ? launch.state
         : reconciling
@@ -935,7 +946,7 @@ function safeLaunchProjection(
         ? ["finish_closing"]
         : ["collecting_roster", "provisioning", "reconciling", "run_created"].includes(launch.state)
           ? [
-              ...(["collecting_roster", "provisioning", "reconciling"].includes(launch.state)
+              ...(launch.state === "collecting_roster" || startRetryable
                 ? ["start"]
                 : []),
               launch.state === "collecting_roster"
@@ -950,11 +961,14 @@ function safeLaunchProjection(
       ? "closing"
       : ["collecting_roster", "cancelled", "expired", "failed_pre_genesis", "abandoned_prestart", "closed_by_creator"].includes(launch.state)
       ? "not_started"
-      : run === null
+      : hostRecoveryState ?? (run === null
         ? "genesis_not_proven"
-        : entryReady
+        : activityStarted && entryReady
           ? "entry_ready"
-          : "genesis_recorded_repairing",
+          : entryReady && hostStatus?.state === "waiting_for_readiness"
+            ? "waiting_for_readiness"
+            : "genesis_recorded_repairing"),
+    retry_after_seconds: ["provisioning", "reconciling"].includes(state) && startRetryable ? 2 : null,
     seats: launch.seats.map((seat) => {
       const houseAssignment = house?.assignments.find(
         ({ seatId }) => seatId === seat.seatId,

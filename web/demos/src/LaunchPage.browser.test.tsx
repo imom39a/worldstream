@@ -25,7 +25,7 @@ vi.mock("./siteChrome", () => ({
   SiteFooter: () => <footer>Platform footer</footer>,
 }));
 
-import { LaunchPage } from "./LaunchPage";
+import { LaunchPage, START_RETRY_MAX_ATTEMPTS } from "./LaunchPage";
 
 const launch = {
   version: "hosted_launch.v1", launch_id: "10000000-0000-4000-8000-000000000001",
@@ -196,6 +196,217 @@ it("keeps waiting-room controls stable and shows the House-fill countdown while 
   expect(button("Release seat")?.disabled).toBe(true);
   expect(button("Cancel setup")?.disabled).toBe(true);
   await act(async () => root.unmount());
+});
+
+it("attaches the retained client before retrying the same pending Start", async () => {
+  vi.useFakeTimers();
+  const pending = {
+    ...launch,
+    state: "reconciling",
+    recovery_state: "waiting_for_readiness",
+    available_actions: ["start"],
+    retry_after_seconds: 2,
+    run: {
+      run_id: "20000000-0000-4000-8000-000000000002",
+      public_id: null,
+      can_enter: true,
+      entries: [{ label: "Navigator", entry_selector: "entry-selector" }],
+    },
+  } as const;
+  const committed = {
+    ...pending,
+    state: "run_created",
+    recovery_state: "entry_ready",
+    available_actions: [],
+  } as const;
+  const syncUrl = "https://arena.example/midnight-archive/hosted/#handoff=wsh1:handoff";
+  const reserved = { location: { replace: vi.fn() }, close: vi.fn() };
+  const openSpy = vi.spyOn(window, "open").mockImplementation(() => reserved as unknown as Window);
+  mocks.readLaunch.mockResolvedValue(pending);
+  mocks.enterRun.mockResolvedValue(syncUrl);
+  mocks.launchMutation.mockResolvedValueOnce(pending).mockResolvedValueOnce(committed);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      root.render(<LaunchPage launchId={launch.launch_id} onNavigate={vi.fn()} />);
+      await Promise.resolve();
+    });
+
+    const button = (label: string) => [...container.querySelectorAll("button")]
+      .find((candidate) => candidate.textContent === label) as HTMLButtonElement | undefined;
+    expect(button("Open Navigator to sync")?.disabled).toBe(false);
+
+    await act(async () => button("Open Navigator to sync")?.click());
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(mocks.enterRun).toHaveBeenCalledWith("csrf", pending.run.run_id, "entry-selector");
+    expect(openSpy).toHaveBeenCalledWith("about:blank", "_blank");
+    expect(reserved.location.replace).toHaveBeenCalledWith(syncUrl);
+    expect((reserved as { opener?: Window | null }).opener).toBeNull();
+    expect(container.textContent).not.toContain("Open the activity to sync this browser");
+    expect(container.querySelector('a[href*="#handoff="]')).toBeNull();
+    expect(container.textContent).toContain("retry the same Start request");
+    expect(button("Open Navigator to sync")?.disabled).toBe(true);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_999); });
+    expect(mocks.launchMutation).toHaveBeenCalledTimes(0);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(mocks.launchMutation).toHaveBeenNthCalledWith(1, "csrf", launch.launch_id, "start");
+    expect(container.textContent).toContain("Starting safely");
+
+    for (let attempt = 0; attempt < 3 && mocks.launchMutation.mock.calls.length < 2; attempt += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    }
+    expect(mocks.launchMutation).toHaveBeenNthCalledWith(2, "csrf", launch.launch_id, "start");
+    expect(container.textContent).toContain("Your activity is ready");
+    expect(container.textContent).not.toContain("Start activity");
+    expect(container.textContent).toContain("Enter Navigator");
+  } finally {
+    openSpy.mockRestore();
+    await act(async () => root.unmount());
+  }
+});
+
+it("keeps a visible sync link when the browser blocks the readiness tab", async () => {
+  vi.useFakeTimers();
+  const pending = {
+    ...launch,
+    state: "reconciling",
+    recovery_state: "waiting_for_readiness",
+    available_actions: ["start"],
+    run: {
+      run_id: "20000000-0000-4000-8000-000000000002",
+      public_id: null,
+      can_enter: true,
+      entries: [{ label: "Navigator", entry_selector: "entry-selector" }],
+    },
+  } as const;
+  const syncUrl = "https://arena.example/midnight-archive/hosted/#handoff=wsh1:blocked";
+  const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+  mocks.readLaunch.mockResolvedValue(pending);
+  mocks.enterRun.mockResolvedValue(syncUrl);
+  mocks.launchMutation.mockResolvedValue(pending);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      root.render(<LaunchPage launchId={launch.launch_id} onNavigate={vi.fn()} />);
+      await Promise.resolve();
+    });
+    const button = (label: string) => [...container.querySelectorAll("button")]
+      .find((candidate) => candidate.textContent === label) as HTMLButtonElement | undefined;
+    await act(async () => button("Start activity")?.click());
+    await act(async () => button("Open Navigator to sync")?.click());
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const link = [...container.querySelectorAll("a")]
+      .find((candidate) => candidate.textContent?.includes("Open the activity to sync this browser")) as HTMLAnchorElement | undefined;
+    expect(openSpy).toHaveBeenCalledWith("about:blank", "_blank");
+    expect(link?.href).toBe(syncUrl);
+    expect(container.textContent).toContain("Open the activity link below once");
+    expect(mocks.launchMutation).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(mocks.launchMutation).not.toHaveBeenCalled();
+    await act(async () => link?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })));
+    expect(container.querySelector('a[href*="#handoff="]')).toBeNull();
+    expect(button("Open Navigator to sync")?.disabled).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(mocks.launchMutation).toHaveBeenCalledTimes(1);
+  } finally {
+    openSpy.mockRestore();
+    await act(async () => root.unmount());
+  }
+});
+
+it("bounds generic platform-directed Start retries and restores the retained action", async () => {
+  vi.useFakeTimers();
+  const provisioning = {
+    ...launch,
+    state: "provisioning",
+    recovery_state: "genesis_not_proven",
+    available_actions: ["start", "stop_setup"],
+    retry_after_seconds: 2,
+  } as const;
+  mocks.readLaunch.mockResolvedValue(provisioning);
+  mocks.launchMutation.mockResolvedValue(provisioning);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      root.render(<LaunchPage launchId={launch.launch_id} onNavigate={vi.fn()} />);
+      await Promise.resolve();
+    });
+    const button = (label: string) => [...container.querySelectorAll("button")]
+      .find((candidate) => candidate.textContent === label) as HTMLButtonElement | undefined;
+    await act(async () => button("Start activity")?.click());
+
+    for (let attempt = 0; attempt < START_RETRY_MAX_ATTEMPTS; attempt += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    }
+    expect(mocks.launchMutation).toHaveBeenCalledTimes(START_RETRY_MAX_ATTEMPTS);
+    expect(container.textContent).toContain("Start activity again to retry this same room");
+    expect(button("Start activity")?.disabled).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+    expect(mocks.launchMutation).toHaveBeenCalledTimes(START_RETRY_MAX_ATTEMPTS);
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+it("stops pending readiness retries and restores the retained Start action", async () => {
+  vi.useFakeTimers();
+  const pending = {
+    ...launch,
+    state: "reconciling",
+    recovery_state: "waiting_for_readiness",
+    available_actions: ["start"],
+    retry_after_seconds: 2,
+    run: {
+      run_id: "20000000-0000-4000-8000-000000000002",
+      public_id: null,
+      can_enter: true,
+      entries: [{ label: "Navigator", entry_selector: "entry-selector" }],
+    },
+  } as const;
+  const reserved = { location: { replace: vi.fn() }, close: vi.fn() };
+  const openSpy = vi.spyOn(window, "open").mockReturnValue(reserved as unknown as Window);
+  mocks.readLaunch.mockResolvedValue(pending);
+  mocks.enterRun.mockResolvedValue("https://arena.example/midnight-archive/hosted/#handoff=wsh1:bounded");
+  mocks.launchMutation.mockResolvedValue(pending);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      root.render(<LaunchPage launchId={launch.launch_id} onNavigate={vi.fn()} />);
+      await Promise.resolve();
+    });
+    const button = (label: string) => [...container.querySelectorAll("button")]
+      .find((candidate) => candidate.textContent === label) as HTMLButtonElement | undefined;
+    await act(async () => button("Start activity")?.click());
+    await act(async () => button("Open Navigator to sync")?.click());
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    for (let attempt = 0; attempt < START_RETRY_MAX_ATTEMPTS; attempt += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    }
+    expect(mocks.launchMutation).toHaveBeenCalledTimes(START_RETRY_MAX_ATTEMPTS);
+    expect(container.textContent).toContain("Start activity again to retry this same room");
+    expect(button("Start activity")?.disabled).toBe(false);
+    expect(button("Open Navigator to sync")?.disabled).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+    expect(mocks.launchMutation).toHaveBeenCalledTimes(START_RETRY_MAX_ATTEMPTS);
+  } finally {
+    openSpy.mockRestore();
+    await act(async () => root.unmount());
+  }
 });
 
 it("re-reads a timed-out close as the same recoverable closing operation", async () => {

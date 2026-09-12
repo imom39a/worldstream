@@ -316,11 +316,11 @@ class RosterGateway implements HostedFormationGateway {
 
   async launch(request: CanonicalObject) {
     this.launches.push(structuredClone(request));
-    return { state: this.roomSetupComplete ? "launched" : "waiting_for_readiness", roomSetupComplete: this.roomSetupComplete };
+    return { state: this.roomSetupComplete ? "launched" as const : "waiting_for_readiness" as const, roomSetupComplete: this.roomSetupComplete, lobbyLaunchCommitted: this.roomSetupComplete, retryable: true, terminalBeforeGenesis: false };
   }
 
   async readStatus() {
-    return { state: this.roomSetupComplete ? "launched" : "waiting_for_readiness", roomSetupComplete: this.roomSetupComplete };
+    return { state: this.roomSetupComplete ? "launched" as const : "waiting_for_readiness" as const, roomSetupComplete: this.roomSetupComplete, lobbyLaunchCommitted: this.roomSetupComplete, retryable: true, terminalBeforeGenesis: false };
   }
 
   async readGenesisEvidence(request: CanonicalObject): Promise<CanonicalObject> {

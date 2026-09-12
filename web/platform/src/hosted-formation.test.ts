@@ -15,6 +15,7 @@ import {
   type GenesisReconciliation,
   type HostedFormationData,
   type HostedFormationGateway,
+  type HostedLaunchStatus,
   type HostedLaunchMaterial,
   type HouseFillChoice,
   type HouseFillRecord,
@@ -401,19 +402,19 @@ class RecordingGateway implements HostedFormationGateway {
   provisioningAbandonments: CanonicalObject[] = [];
   launchClosures: CanonicalObject[] = [];
   roomSetupComplete = true;
-  observedState = "launched";
+  observedState: HostedLaunchStatus["state"] = "launched";
 
   async reserveHouseRunner(_request: CanonicalObject): Promise<CanonicalObject> {
     throw new Error("unused");
   }
 
-  async launch(request: CanonicalObject) {
+  async launch(request: CanonicalObject): Promise<HostedLaunchStatus> {
     this.launches.push(request);
-    return { state: "launched", roomSetupComplete: this.roomSetupComplete };
+    return { state: "launched", roomSetupComplete: this.roomSetupComplete, lobbyLaunchCommitted: this.roomSetupComplete, retryable: true, terminalBeforeGenesis: false };
   }
 
-  async readStatus(_request: CanonicalObject) {
-    return { state: this.observedState, roomSetupComplete: this.roomSetupComplete };
+  async readStatus(_request: CanonicalObject): Promise<HostedLaunchStatus> {
+    return { state: this.observedState, roomSetupComplete: this.roomSetupComplete, lobbyLaunchCommitted: this.roomSetupComplete && this.observedState === "launched", retryable: this.observedState !== "needs_attention", terminalBeforeGenesis: false };
   }
 
   async closeLaunch(request: CanonicalObject): Promise<CanonicalObject> {
@@ -619,6 +620,49 @@ test("post-Genesis provisioning retries the same setup before offering Run entry
   assert.equal(data.runId, RUN_ID);
 });
 
+test("NotReady retains Genesis and human attachment until the same launch commits Activity Start", async () => {
+  const data = new HumanFormationData();
+  const gateway = new RecordingGateway();
+  let clientFresh = false;
+  let activityStartCommits = 0;
+  gateway.observedState = "waiting_for_readiness";
+  gateway.launch = async (request) => {
+    gateway.launches.push(request);
+    if (clientFresh && gateway.observedState !== "launched") {
+      activityStartCommits += 1;
+      gateway.observedState = "launched";
+    }
+    return { state: gateway.observedState, roomSetupComplete: true, lobbyLaunchCommitted: gateway.observedState === "launched", retryable: true, terminalBeforeGenesis: false };
+  };
+  const coordinator = new HostedFormationCoordinator(data, gateway, "hosted-preview-1");
+
+  assert.deepEqual(await coordinator.advance(ACCOUNT_ID, LAUNCH_ID), {
+    state: "reconciling", retryAfterSeconds: 2, runId: RUN_ID,
+  });
+  assert.equal(data.material.state, "run_created"); // Genesis correspondence remains durable.
+  assert.equal(gateway.publicBindings.length, 1); // Publish the retained pre-start relay before clients attach.
+  assert.deepEqual(await coordinator.launchReadiness(LAUNCH_ID), {
+    entryReady: true, activityStarted: false, hostStatus: await gateway.readStatus({}),
+  });
+  assert.equal((await coordinator.recover(LAUNCH_ID))?.state, "reconciling");
+  assert.equal(activityStartCommits, 0);
+
+  clientFresh = true;
+  assert.deepEqual(await coordinator.advance(ACCOUNT_ID, LAUNCH_ID), {
+    state: "run_created", retryAfterSeconds: null, runId: RUN_ID,
+  });
+  assert.deepEqual(await coordinator.launchReadiness(LAUNCH_ID), {
+    entryReady: true, activityStarted: true, hostStatus: await gateway.readStatus({}),
+  });
+  assert.equal((await coordinator.recover(LAUNCH_ID))?.state, "run_created");
+  assert.equal(activityStartCommits, 1);
+  assert.equal(data.freezeCalls, 1);
+  assert.equal(data.authorizeCalls, 1);
+  assert.equal(data.runId, RUN_ID);
+  assert.equal(gateway.launches.length, 3);
+  for (const request of gateway.launches) assert.deepEqual(request, gateway.launches[0]);
+});
+
 test("post-Genesis abandonment uses one exact Host operation and remains restart-idempotent", async () => {
   const data = new HumanFormationData();
   const gateway = new RecordingGateway();
@@ -653,6 +697,7 @@ test("abandoned pre-start Run is terminal and cannot resume Host mutation", asyn
       error.name === "HostedFormationRejectedError" &&
       error.message === "launch_unavailable",
   );
+  assert.equal(await coordinator.recover(LAUNCH_ID), null);
   assert.equal(gateway.launches.length, launchCount);
   assert.equal(gateway.publicBindings.length, bindingCount);
   assert.equal(data.prestartAbandonmentRecords, 1);
@@ -687,7 +732,7 @@ test("a created Lobby still resumes its original startup while waiting for readi
   assert.equal(data.authorizeCalls, 1);
   // Do not block the human entry needed to make the Lobby ready.
   assert.equal(await coordinator.entryReady(LAUNCH_ID), true);
-  for (const state of ["launched", "needs_attention"]) {
+  for (const state of ["launched", "needs_attention"] as const) {
     gateway.observedState = state;
     await coordinator.recover(LAUNCH_ID);
     assert.equal(gateway.launches.length, 2);
@@ -717,20 +762,118 @@ test("the HTTP formation boundary requires an explicit setup-complete flag", asy
       baseUrl: "http://127.0.0.1:8080",
       serviceAuthority: "test-service-authority-with-at-least-32-characters",
       fetchImplementation: async () => new Response(JSON.stringify({
-        schema: "worldstream/hosted-launch-status/v1",
+        schema: "worldstream/hosted-launch-status/v1", retryable: true, terminal_before_genesis: false,
         ...request,
         stage: "provisioning",
         room_setup_complete: complete,
+        lobby_launch_committed: false,
       })),
     });
     if (typeof complete === "boolean") {
       assert.deepEqual(await gateway.launch(request), {
-        state: "provisioning", roomSetupComplete: complete,
+        state: "provisioning", roomSetupComplete: complete, lobbyLaunchCommitted: false, retryable: true, terminalBeforeGenesis: false,
       });
     } else {
       await assert.rejects(() => gateway.launch(request), /invalid_gateway_response/u);
     }
   }
+});
+
+test("the HTTP formation boundary requires Host Activity Start commitment independently of setup", async () => {
+  const request = {
+    launch_request_digest: `sha256:${"1".repeat(64)}`,
+    room_setup_operation_id: "retained-operation",
+  };
+  for (const committed of [false, true, undefined, "true"]) {
+    const gateway = new HttpHostedFormationGateway({
+      baseUrl: "http://127.0.0.1:8080",
+      serviceAuthority: "test-service-authority-with-at-least-32-characters",
+      fetchImplementation: async () => Response.json({
+        schema: "worldstream/hosted-launch-status/v1", retryable: true, terminal_before_genesis: false,
+        ...request,
+        stage: committed === true ? "launched" : "waiting_for_readiness",
+        room_setup_complete: true,
+        lobby_launch_committed: committed,
+      }),
+    });
+    if (typeof committed === "boolean") {
+      assert.deepEqual(await gateway.readStatus(request), {
+        state: committed ? "launched" : "waiting_for_readiness", roomSetupComplete: true, lobbyLaunchCommitted: committed, retryable: true, terminalBeforeGenesis: false,
+      });
+    } else {
+      await assert.rejects(() => gateway.readStatus(request), /invalid_gateway_response/u);
+    }
+  }
+});
+
+test("the HTTP formation boundary rejects contradictory Activity Start status", async () => {
+  const request = { launch_request_digest: `sha256:${"1".repeat(64)}`, room_setup_operation_id: "retained-operation" };
+  for (const inconsistent of [
+    { stage: "launched", room_setup_complete: true, lobby_launch_committed: false },
+    { stage: "waiting_for_readiness", room_setup_complete: true, lobby_launch_committed: true },
+    { stage: "launched", room_setup_complete: false, lobby_launch_committed: true },
+    { stage: "unknown_stage", room_setup_complete: true, lobby_launch_committed: false },
+    { stage: "needs_attention", room_setup_complete: false, lobby_launch_committed: false, retryable: undefined },
+    { stage: "needs_attention", room_setup_complete: false, lobby_launch_committed: false, terminal_before_genesis: undefined },
+    { stage: "needs_attention", room_setup_complete: false, lobby_launch_committed: false, terminal_before_genesis: true, retryable: true },
+    { stage: "waiting_for_readiness", room_setup_complete: true, lobby_launch_committed: false, terminal_before_genesis: true, retryable: false },
+  ]) {
+    const gateway = new HttpHostedFormationGateway({
+      baseUrl: "http://127.0.0.1:8080",
+      serviceAuthority: "test-service-authority-with-at-least-32-characters",
+      fetchImplementation: async () => Response.json({ schema: "worldstream/hosted-launch-status/v1", retryable: true, terminal_before_genesis: false, ...request, ...inconsistent }),
+    });
+    await assert.rejects(() => gateway.readStatus(request), /invalid_gateway_response/u);
+  }
+});
+
+test("terminal-before-Genesis status retains capacity until the same Host fence is recorded", async () => {
+  const data = new HumanFormationData();
+  const gateway = new RecordingGateway();
+  const terminal: HostedLaunchStatus = {
+    state: "needs_attention", roomSetupComplete: false, lobbyLaunchCommitted: false,
+    retryable: false, terminalBeforeGenesis: true,
+  };
+  gateway.launch = async (request) => { gateway.launches.push(request); return terminal; };
+  gateway.readStatus = async () => terminal;
+  gateway.readGenesisEvidence = async () => { throw new HostedFormationUnavailableError(); };
+  const fence = gateway.abandonProvisioning.bind(gateway);
+  gateway.abandonProvisioning = async () => { throw new HostedFormationUnavailableError(); };
+  const coordinator = new HostedFormationCoordinator(data, gateway, "hosted-preview-1");
+
+  await assert.rejects(() => coordinator.advance(ACCOUNT_ID, LAUNCH_ID), HostedFormationUnavailableError);
+  assert.equal(data.material.state, "provisioning");
+  assert.equal(data.provisioningAbandonmentRecords, 0);
+  assert.equal(data.runId, null);
+  assert.equal(gateway.launches.length, 1);
+
+  gateway.abandonProvisioning = fence;
+  assert.deepEqual(await coordinator.recover(LAUNCH_ID), {
+    state: "failed_pre_genesis", retryAfterSeconds: null, runId: null,
+  });
+  assert.equal(data.provisioningAbandonmentRecords, 1);
+  assert.equal(gateway.launches.length, 1);
+  assert.equal(gateway.provisioningAbandonments[0]?.room_setup_operation_id, gateway.launches[0]?.room_setup_operation_id);
+  assert.equal(data.freezeCalls, 1);
+  assert.equal(data.authorizeCalls, 1);
+});
+
+test("terminal status cannot abandon a Room whose Genesis is observed", async () => {
+  const data = new HumanFormationData();
+  const gateway = new RecordingGateway();
+  const coordinator = new HostedFormationCoordinator(data, gateway, "hosted-preview-1");
+  await coordinator.advance(ACCOUNT_ID, LAUNCH_ID);
+  gateway.readStatus = async () => ({
+    state: "needs_attention", roomSetupComplete: true, lobbyLaunchCommitted: false,
+    retryable: false, terminalBeforeGenesis: true,
+  });
+  assert.deepEqual(await coordinator.recover(LAUNCH_ID), {
+    state: "reconciling", retryAfterSeconds: 2, runId: RUN_ID,
+  });
+  assert.equal(data.runId, RUN_ID);
+  assert.equal(data.provisioningAbandonmentRecords, 0);
+  assert.equal(gateway.provisioningAbandonments.length, 0);
+  assert.equal(gateway.launches.length, 1);
 });
 
 test("the HTTP formation boundary reads exact activity availability without mutation", async () => {
@@ -852,11 +995,11 @@ test("a replay conflict that finds the exact operation remains reconcilable", as
         evidenceReads += 1;
         if (evidenceReads === 1) return new Response(null, { status: 404 });
         return Response.json({
-          schema: "worldstream/hosted-launch-status/v1",
+          schema: "worldstream/hosted-launch-status/v1", retryable: true, terminal_before_genesis: false,
           launch_request_digest: body.launch_request_digest,
           room_setup_operation_id: body.room_setup_operation_id,
           stage: "provisioning",
-          room_setup_complete: false,
+          room_setup_complete: false, lobby_launch_committed: false,
         });
       }
       if (path.endsWith("/launch")) return new Response(null, { status: 409 });
@@ -994,9 +1137,9 @@ test("a lost first Host request is recovered with the original authorization and
       if (path.endsWith("/launch")) {
         launches.push(body);
         if (unavailable) { unavailable = false; return new Response(null, { status: 503 }); }
-        return Response.json({ schema: "worldstream/hosted-launch-status/v1",
+        return Response.json({ schema: "worldstream/hosted-launch-status/v1", retryable: true, terminal_before_genesis: false,
           launch_request_digest: body.launch_request_digest, room_setup_operation_id: body.room_setup_operation_id,
-          stage: "launched", room_setup_complete: true });
+          stage: "launched", room_setup_complete: true, lobby_launch_committed: true });
       }
       if (launches.length < 2) return new Response(null, { status: 404 });
       if (path.endsWith("/genesis-evidence")) return Response.json(await recorder.readGenesisEvidence(body));
