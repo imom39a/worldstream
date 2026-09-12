@@ -26,6 +26,7 @@ const MAX_RENDERED_STALE_ACTION_ATTEMPTS = 5;
 const RENDERED_COMMITMENT_ACTION_WINDOW_MS = 30_000;
 const RENDERED_COMMITMENT_OBSERVATION_GRACE_MS = 2_000;
 const RENDERED_STALE_ROOM_MESSAGE = "The Room advanced. Reconnect to synchronize before acting.";
+const RENDERED_AGENT_HEIST_CLIENT_PATH = "/agent-heist-v12/hosted/";
 
 /**
  * Runs one browser-visible, House-filled local activity.  The local fake
@@ -57,74 +58,97 @@ export async function runHostedRenderedBrowserJourney({
 
   try {
     participantContext = await browser.newContext();
-    const participant = await participantContext.newPage();
-    collectBrowserFailures(participant, failures, "participant");
+    // The waiting room must stay open while its client is attached in a
+    // separate tab. Activity Start deliberately waits for that client-side
+    // synchronization, so the popup becomes the participant game surface.
+    const waitingRoom = await participantContext.newPage();
+    collectBrowserFailures(waitingRoom, failures, "waiting-room");
+    let participant = waitingRoom;
 
-    await participant.goto(origin, { waitUntil: "domcontentloaded" });
-    await participant.getByRole("heading", { name: /Pick your world/i }).waitFor({
+    await waitingRoom.goto(origin, { waitUntil: "domcontentloaded" });
+    await waitingRoom.getByRole("heading", { name: /Pick your world/i }).waitFor({
       timeout: timeouts.action,
     });
-    await participant.getByText("Sign in to start", { exact: true }).waitFor({
+    await waitingRoom.getByText("Sign in to start", { exact: true }).waitFor({
       timeout: timeouts.action,
     });
 
     // Catalog and identity are intentionally visible.  The only local
     // substitute is named on the button; production OAuth is never simulated.
-    await participant.getByRole("button", { name: /Enter activity/i }).click();
-    await participant.getByRole("dialog").waitFor({ timeout: timeouts.action });
-    await participant.getByRole("button", {
+    await waitingRoom.getByRole("button", { name: /Enter activity/i }).click();
+    await waitingRoom.getByRole("dialog").waitFor({ timeout: timeouts.action });
+    await waitingRoom.getByRole("button", {
       name: "Use visible local-development sign-in",
     }).click();
-    await participant.getByText("Signed in", { exact: true }).waitFor({
+    await waitingRoom.getByText("Signed in", { exact: true }).waitFor({
       timeout: timeouts.action,
     });
 
     let launchId;
     let runCapture;
     if (retainedLaunchId === null) {
-      const launchDialog = participant.getByRole("dialog");
+      const launchDialog = waitingRoom.getByRole("dialog");
       await assertChecked(launchDialog.locator('input[name="seat"][value="seat-1"]'), "Navigator seat");
       await assertChecked(launchDialog.locator('input[name="fill"]:checked'), "House Agent fill mode");
       await launchDialog.getByRole("button", { name: "Create waiting room" }).click();
-      await participant.waitForURL(/\/launches\/[0-9a-f-]{36}\/?$/u, { timeout: timeouts.action });
-      launchId = launchIdFromUrl(participant.url());
-      runCapture = capturePublicRunId(participant, origin, launchId);
+      await waitingRoom.waitForURL(/\/launches\/[0-9a-f-]{36}\/?$/u, { timeout: timeouts.action });
+      launchId = launchIdFromUrl(waitingRoom.url());
+      runCapture = capturePublicRunId(waitingRoom, origin, launchId);
 
-      await participant.getByRole("heading", { name: "Gather your crew" }).waitFor({
+      await waitingRoom.getByRole("heading", { name: "Gather your crew" }).waitFor({
         timeout: timeouts.action,
       });
       // Issuing an invite proves the invite/roster surface without leaking its
       // opaque capability into evidence or attempting an unsupported local
       // multi-account impersonation.
-      await participant.getByRole("button", { name: "Copy invite" }).first().click();
-      const invitation = participant.locator('input[aria-label$="invitation URL"]');
+      await waitingRoom.getByRole("button", { name: "Copy invite" }).first().click();
+      const invitation = waitingRoom.locator('input[aria-label$="invitation URL"]');
       await invitation.first().waitFor({ timeout: timeouts.action });
       const invitationUrl = await invitation.first().inputValue();
       if (!/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):[0-9]{1,5}\/join#invite=[0-9a-f]{64}$/u.test(invitationUrl)) {
         throw new Error("rendered waiting-room invitation did not have the reviewed local shape");
       }
-      await participant.getByRole("heading", { name: "Room roster" }).waitFor({ timeout: timeouts.action });
+      await waitingRoom.getByRole("heading", { name: "Room roster" }).waitFor({ timeout: timeouts.action });
 
-      await participant.getByRole("button", { name: "Start activity" }).click();
-      await participant.getByRole("heading", { name: "Your activity is ready" }).waitFor({
-        timeout: timeouts.formation,
+      await waitingRoom.getByRole("button", { name: "Start activity" }).click();
+      participant = await attachRenderedNavigatorBeforeStart({
+        waitingRoom,
+        productOrigin: origin,
+        actionTimeoutMs: timeouts.action,
+        formationTimeoutMs: timeouts.formation,
+        failures,
       });
     } else {
       // A prior local acceptance can be interrupted after Genesis. Re-enter
       // that exact owner-authorized Launch instead of creating another live
       // Run or releasing the retained one without terminal evidence.
       launchId = retainedLaunchId;
-      runCapture = capturePublicRunId(participant, origin, launchId);
-      await participant.goto(`${origin}/launches/${launchId}`, { waitUntil: "domcontentloaded" });
-      await participant.getByRole("heading", { name: "Your activity is ready" }).waitFor({
-        timeout: timeouts.formation,
+      runCapture = capturePublicRunId(waitingRoom, origin, launchId);
+      await waitingRoom.goto(`${origin}/launches/${launchId}`, { waitUntil: "domcontentloaded" });
+      participant = await resumeRetainedRenderedNavigator({
+        waitingRoom,
+        productOrigin: origin,
+        actionTimeoutMs: timeouts.action,
+        formationTimeoutMs: timeouts.formation,
+        failures,
       });
     }
     const runIdentity = await runCapture.wait(timeouts.action);
     const publicId = runIdentity.publicId;
 
-    await participant.getByRole("button", { name: /^Enter Navigator$/ }).click();
-    await waitForIndependentActivityClient(participant, timeouts.action, "Navigator participant", failures);
+    // A fresh or pre-start retained journey has already redeemed one handoff
+    // in the popup above. A post-start retained journey can use the ordinary
+    // single-page re-entry path.
+    if (participant === waitingRoom) {
+      await participant.getByRole("button", { name: /^Enter Navigator$/ }).click();
+      await waitForIndependentActivityClient(
+        participant,
+        timeouts.action,
+        "Navigator participant",
+        failures,
+        origin,
+      );
+    }
     const routeClaim = await ensureRenderedNavigatorRouteClaim(participant, timeouts.action);
     await ensureRenderedPublishedRouteClaim(participant, routeClaim, timeouts.action);
     const navigatorPlan = navigatorPlanForRouteClaim(routeClaim);
@@ -141,7 +165,13 @@ export async function runHostedRenderedBrowserJourney({
     await participant.getByRole("button", { name: "Return to game" }).click();
     await participant.waitForURL(new RegExp(`/launches/${launchId}/?$`, "u"), { timeout: timeouts.action });
     await participant.getByRole("button", { name: /^Enter Navigator$/ }).click();
-    await waitForIndependentActivityClient(participant, timeouts.action, "Navigator participant", failures);
+    await waitForIndependentActivityClient(
+      participant,
+      timeouts.action,
+      "Navigator participant",
+      failures,
+      origin,
+    );
 
     // A fresh context is the anonymous browser.  It has neither the platform
     // sign-in cookie nor a Browser Activity Session from the participant.
@@ -153,7 +183,13 @@ export async function runHostedRenderedBrowserJourney({
       name: "Open the reviewed Activity Client",
     }).waitFor({ timeout: timeouts.action });
     await spectator.getByRole("link", { name: "Watch live Run" }).click();
-    await waitForIndependentActivityClient(spectator, timeouts.action, "Spectator view", failures);
+    await waitForIndependentActivityClient(
+      spectator,
+      timeouts.action,
+      "Spectator view",
+      failures,
+      origin,
+    );
     const participantActionForms = await renderedParticipantActionForms(spectator).count();
     if (participantActionForms !== 0) {
       throw new Error("anonymous spectator client rendered participant Action controls");
@@ -292,6 +328,7 @@ export async function runHostedRenderedRetainedRecovery({
       timeouts.action,
       "Navigator participant",
       failures,
+      origin,
     );
     await waitForRenderedTerminalComplete(participant, timeouts.formation);
 
@@ -579,9 +616,99 @@ function captureVerifiedMyGamesLaunch(page, origin, launchId) {
   };
 }
 
-export async function waitForIndependentActivityClient(page, timeoutMs, expectedRole, failures) {
+/**
+ * A new launch reaches a retained Room before its Activity Client has
+ * synchronized. The product preserves the waiting room and opens the client
+ * in a one-use popup; the popup is the one authority-bearing participant
+ * surface for the rest of this journey.
+ */
+export async function attachRenderedNavigatorBeforeStart({
+  waitingRoom,
+  productOrigin,
+  actionTimeoutMs,
+  formationTimeoutMs,
+  failures,
+}) {
+  const openNavigator = waitingRoom.getByRole("button", { name: "Open Navigator to sync" });
+  await openNavigator.waitFor({ timeout: formationTimeoutMs });
+  const [participant] = await Promise.all([
+    waitingRoom.waitForEvent("popup", { timeout: actionTimeoutMs }),
+    openNavigator.click(),
+  ]);
+  collectBrowserFailures(participant, failures, "participant");
+  await waitForIndependentActivityClient(
+    participant,
+    actionTimeoutMs,
+    "Navigator participant",
+    failures,
+    productOrigin,
+  );
+  await waitForRenderedParticipantLive(participant, actionTimeoutMs);
+  await waitingRoom.getByRole("heading", { name: "Your activity is ready" }).waitFor({
+    timeout: formationTimeoutMs,
+  });
+  return participant;
+}
+
+/**
+ * A retained rendered journey may resume either before or after Activity
+ * Start. Wait for the first usable owner entry action, synchronize it when
+ * the Host is still waiting for readiness, and otherwise leave ordinary
+ * post-start entry to the caller.
+ */
+export async function resumeRetainedRenderedNavigator({
+  waitingRoom,
+  productOrigin,
+  actionTimeoutMs,
+  formationTimeoutMs,
+  failures,
+}) {
+  const entryAction = waitingRoom.getByRole("button", {
+    name: /^(?:Start activity|Open Navigator to sync|Enter Navigator)$/u,
+  }).first();
+  await entryAction.waitFor({ timeout: formationTimeoutMs });
+  const label = (await entryAction.innerText()).trim();
+  if (label === "Start activity") {
+    await entryAction.click();
+  }
+  if (label === "Start activity" || label === "Open Navigator to sync") {
+    return attachRenderedNavigatorBeforeStart({
+      waitingRoom,
+      productOrigin,
+      actionTimeoutMs,
+      formationTimeoutMs,
+      failures,
+    });
+  }
+  if (label !== "Enter Navigator") {
+    throw new Error("rendered retained Launch exposed an unknown Navigator entry action");
+  }
+  await waitingRoom.getByRole("heading", { name: "Your activity is ready" }).waitFor({
+    timeout: actionTimeoutMs,
+  });
+  return waitingRoom;
+}
+
+async function waitForRenderedParticipantLive(page, timeoutMs) {
+  await page.locator("div.mission-connection").getByText("Mission link live", {
+    exact: true,
+  }).waitFor({ timeout: timeoutMs });
+}
+
+export async function waitForIndependentActivityClient(
+  page,
+  timeoutMs,
+  expectedRole,
+  failures,
+  productOrigin,
+) {
   try {
-    await page.waitForURL(/\/agent-heist-v[0-9]+\/hosted\//u, { timeout: timeoutMs });
+    const expectedOrigin = localProductOrigin(productOrigin);
+    await page.waitForURL(
+      (url) => url.origin === expectedOrigin
+        && url.pathname === RENDERED_AGENT_HEIST_CLIENT_PATH,
+      { timeout: timeoutMs },
+    );
     await page.getByRole("heading", { name: "Agent Heist" }).waitFor({ timeout: timeoutMs });
     const authorization = expectedRole === "Navigator participant"
       ? {
@@ -605,6 +732,9 @@ export async function waitForIndependentActivityClient(page, timeoutMs, expected
       name: authorization.heading,
       exact: true,
     }).waitFor({ timeout: timeoutMs });
+    if (!isReviewedRenderedActivityClientUrl(page.url(), expectedOrigin, expectedRole)) {
+      throw new Error("rendered Activity Client URL did not match its reviewed launch context");
+    }
   } catch (error) {
     const heading = await page.locator("main h1").first().textContent().catch(() => null);
     throw new Error(activityClientBootstrapDiagnostic({
@@ -615,6 +745,40 @@ export async function waitForIndependentActivityClient(page, timeoutMs, expected
       cause: safeBrowserError(error),
     }));
   }
+}
+
+/**
+ * Accepts only the two query shapes produced by the platform for the current
+ * immutable Activity Client. The participant handoff itself must already be
+ * scrubbed from the fragment before the authorization surface is accepted.
+ */
+export function isReviewedRenderedActivityClientUrl(value, expectedOrigin, expectedRole) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (
+    url.origin !== expectedOrigin ||
+    url.pathname !== RENDERED_AGENT_HEIST_CLIENT_PATH ||
+    url.hash !== ""
+  ) return false;
+  const params = url.searchParams;
+  if (expectedRole === "Navigator participant") {
+    return params.size === 1 &&
+      params.getAll("platform_return").length === 1 &&
+      params.get("platform_return") === "/";
+  }
+  if (expectedRole !== "Spectator view") return false;
+  const publicId = params.get("public_run");
+  return typeof publicId === "string" && /^[0-9a-f]{32}$/u.test(publicId) &&
+    params.size === 3 &&
+    params.getAll("public_run").length === 1 &&
+    params.getAll("platform_return").length === 1 &&
+    params.getAll("platform_result").length === 1 &&
+    params.get("platform_return") === "/" &&
+    params.get("platform_result") === `/runs/${publicId}`;
 }
 
 /**
@@ -678,9 +842,14 @@ function safeBrowserDiagnosticText(value) {
 export async function ensureRenderedNavigatorRouteClaim(page, timeoutMs) {
   const existing = await renderedRouteClaim(page);
   if (existing !== null) return existing;
-  await submitRenderedChoiceAction(page, "Open a dossier", "clue_id", "route", timeoutMs, async () => {
-    await renderedRouteClaim(page, timeoutMs);
-  });
+  await submitRenderedChoiceAction(
+    page,
+    "Open a dossier",
+    "clue_id",
+    "route",
+    timeoutMs,
+    async () => (await renderedRouteClaim(page)) !== null,
+  );
   const routeClaim = await renderedRouteClaim(page, timeoutMs);
   if (routeClaim === null) throw new Error("rendered Open a dossier Action did not install an authorized Route claim");
   return routeClaim;
@@ -702,37 +871,123 @@ async function renderedRouteClaim(page, timeoutMs) {
 
 async function ensureRenderedPublishedRouteClaim(page, routeClaim, timeoutMs) {
   if (await hasRenderedPublishedRouteClaim(page, routeClaim)) return;
-  await submitRenderedChoiceAction(page, "Share intel", "clue_id", "route", timeoutMs, async () => {
-    await waitForRenderedPublishedRouteClaim(page, routeClaim, timeoutMs);
-  });
+  await submitRenderedChoiceAction(
+    page,
+    "Share intel",
+    "clue_id",
+    "route",
+    timeoutMs,
+    async () => hasRenderedPublishedRouteClaim(page, routeClaim),
+  );
 }
 
 async function ensureRenderedNavigatorPlan(page, plan, timeoutMs) {
   if (await hasRenderedNavigatorPlan(page, plan)) return;
-  const form = await waitForRenderedActionForm(page, "Build a plan", timeoutMs);
-  for (const [label, value] of [
-    ["Route", plan.route],
-    ["When to enter", plan.entry_window],
-    ["Equipment", plan.required_tool],
-    ["Extraction", plan.extraction],
-  ]) {
-    await form.getByRole("tab").filter({ hasText: label }).click();
-    const choices = form.getByRole("radiogroup", { name: label, exact: true });
-    await choices.locator('button[role="radio"]').filter({
-      has: page.getByText(humanizeRenderedValue(value), { exact: true }),
-    }).click();
-  }
-  await submitRenderedForm(form, "Build a plan", timeoutMs, async () => {
-    await waitForRenderedNavigatorPlan(page, plan, timeoutMs);
-  });
+  await submitRenderedRecoverableAction(
+    page,
+    "Build a plan",
+    timeoutMs,
+    async (form, deadlineMs) => {
+      for (const [label, value] of [
+        ["Route", plan.route],
+        ["When to enter", plan.entry_window],
+        ["Equipment", plan.required_tool],
+        ["Extraction", plan.extraction],
+      ]) {
+        await form.getByRole("tab").filter({ hasText: label }).click({
+          timeout: remainingRenderedActionDeadlineMs(deadlineMs, Date.now()),
+        });
+        const choices = form.getByRole("radiogroup", { name: label, exact: true });
+        await choices.locator('button[role="radio"]').filter({
+          has: page.getByText(humanizeRenderedValue(value), { exact: true }),
+        }).click({
+          timeout: remainingRenderedActionDeadlineMs(deadlineMs, Date.now()),
+        });
+      }
+    },
+    async () => hasRenderedNavigatorPlan(page, plan),
+  );
 }
 
 async function submitRenderedChoiceAction(page, actionLabel, name, value, timeoutMs, postcondition) {
-  const form = await waitForRenderedActionForm(page, actionLabel, timeoutMs);
-  const choice = form.locator(`select[name="${name}"]`);
-  await choice.waitFor({ state: "visible", timeout: timeoutMs });
-  await choice.selectOption(value);
-  await submitRenderedForm(form, actionLabel, timeoutMs, postcondition);
+  await submitRenderedRecoverableAction(
+    page,
+    actionLabel,
+    timeoutMs,
+    async (form, deadlineMs) => {
+      const choice = form.locator(`select[name="${name}"]`);
+      await choice.waitFor({
+        state: "visible",
+        timeout: remainingRenderedActionDeadlineMs(deadlineMs, Date.now()),
+      });
+      await choice.selectOption(value, {
+        timeout: remainingRenderedActionDeadlineMs(deadlineMs, Date.now()),
+      });
+    },
+    postcondition,
+  );
+}
+
+/**
+ * Concurrent House work may advance the Room through a private transition
+ * without changing this participant's Projection. The authoritative stale
+ * rejection consumes its Action ID. Retry only after the visible reconnect
+ * installs a higher synchronized Room basis and a fresh form; every click
+ * therefore creates a new Action ID from current reviewed choices.
+ */
+export async function submitRenderedRecoverableAction(
+  page,
+  actionLabel,
+  timeoutMs,
+  prepare,
+  postcondition,
+  { now = Date.now, wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)) } = {},
+) {
+  const deadlineMs = now() + timeoutMs;
+  let attemptedRoomSequence = null;
+  await retryRenderedStaleAction(
+    async () => {
+      if (await postcondition()) return "committed";
+      const basis = await readRenderedMissionBasis(page, deadlineMs, now);
+      attemptedRoomSequence = basis.roomSequence;
+      const form = await waitForRenderedActionFormBefore(page, actionLabel, deadlineMs, now, wait);
+      await prepare(form, deadlineMs);
+      return submitRenderedForm(
+        form,
+        actionLabel,
+        remainingRenderedActionDeadlineMs(deadlineMs, now()),
+        async () => waitForRenderedActionOutcome(
+          page,
+          postcondition,
+          deadlineMs,
+          { now, wait },
+        ),
+        { deadlineMs, now },
+      );
+    },
+    async () => reconnectRenderedAction(
+      page,
+      actionLabel,
+      attemptedRoomSequence,
+      deadlineMs,
+      { now, wait },
+    ),
+    { deadlineMs, now },
+  );
+}
+
+export async function waitForRenderedActionOutcome(
+  page,
+  postcondition,
+  deadlineMs,
+  { now = Date.now, wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)) } = {},
+) {
+  while (now() < deadlineMs) {
+    if (await postcondition()) return "committed";
+    if (await hasExplicitRenderedStaleRoom(page)) return "stale";
+    await wait(Math.min(100, remainingRenderedActionDeadlineMs(deadlineMs, now())));
+  }
+  throw new Error("rendered Action did not produce an authorized Projection before its deadline");
 }
 
 async function ensureRenderedCurrentPlanCommitment(page, timeoutMs) {
@@ -948,6 +1203,47 @@ export async function reconnectRenderedCommitment(
   throw new Error("rendered reconnect did not restore a current live Seal your choice Action");
 }
 
+export async function reconnectRenderedAction(
+  page,
+  actionLabel,
+  rejectedRoomSequence,
+  actionDeadlineMs,
+  {
+    now = Date.now,
+    wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+  } = {},
+) {
+  if (!Number.isSafeInteger(rejectedRoomSequence) || rejectedRoomSequence < 0) {
+    throw new Error("rendered stale Action has no exact rejected Room basis");
+  }
+  const reconnect = page.getByRole("button", { name: "Reconnect", exact: true });
+  await reconnect.waitFor({
+    timeout: remainingRenderedActionDeadlineMs(actionDeadlineMs, now()),
+  });
+  await reconnect.click({
+    timeout: remainingRenderedActionDeadlineMs(actionDeadlineMs, now()),
+  });
+  const live = page.locator(".mission-connection").filter({
+    has: page.getByText("Mission link live", { exact: true }),
+  });
+  while (now() < actionDeadlineMs) {
+    const basis = await readRenderedMissionBasis(page, actionDeadlineMs, now);
+    const form = renderedActionForm(page, actionLabel);
+    if (
+      basis.roomSequence > rejectedRoomSequence
+      && await live.count() > 0
+      && await form.count() > 0
+    ) {
+      const action = form.locator('button[type="submit"]');
+      if (await action.isEnabled({
+        timeout: remainingRenderedActionDeadlineMs(actionDeadlineMs, now()),
+      })) return;
+    }
+    await wait(Math.min(100, remainingRenderedActionDeadlineMs(actionDeadlineMs, now())));
+  }
+  throw new Error(`rendered reconnect did not restore a fresh live ${actionLabel} Action`);
+}
+
 /**
  * Clicks a reviewed Action then proves its committed outcome from a durable
  * authorized Projection/result condition. A form-local status is not a
@@ -1013,29 +1309,32 @@ async function waitForRenderedActionForm(page, actionLabel, timeoutMs) {
   );
 }
 
-async function waitForRenderedActionFormBefore(page, actionLabel, deadlineMs) {
+async function waitForRenderedActionFormBefore(
+  page,
+  actionLabel,
+  deadlineMs,
+  now = Date.now,
+  wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+) {
   const form = renderedActionForm(page, actionLabel);
   const switcher = page.locator("nav.mission-moves").getByRole("button", {
     name: actionLabel,
     exact: true,
   });
-  while (Date.now() < deadlineMs) {
+  while (now() < deadlineMs) {
     if (await form.count() > 0) {
       await form.waitFor({
         state: "visible",
-        timeout: remainingRenderedDeadlineMs(deadlineMs, Date.now()),
+        timeout: remainingRenderedActionDeadlineMs(deadlineMs, now()),
       });
       return form;
     }
     if (await switcher.count() > 0) {
       await switcher.click({
-        timeout: remainingRenderedDeadlineMs(deadlineMs, Date.now()),
+        timeout: remainingRenderedActionDeadlineMs(deadlineMs, now()),
       });
     }
-    await new Promise((resolve) => setTimeout(
-      resolve,
-      Math.min(100, remainingRenderedDeadlineMs(deadlineMs, Date.now())),
-    ));
+    await wait(Math.min(100, remainingRenderedActionDeadlineMs(deadlineMs, now())));
   }
   throw new Error(`rendered ${actionLabel} Action did not become available before the bounded deadline`);
 }
@@ -1114,6 +1413,19 @@ async function readRenderedCommitmentSnapshot(page, deadlineMs, now = Date.now) 
   });
 }
 
+async function readRenderedMissionBasis(page, deadlineMs, now = Date.now) {
+  const shell = page.locator("main.mission-focus-shell");
+  const rendered = await shell.evaluate((element) => ({
+    roomSequence: element.getAttribute("data-room-sequence"),
+    phase: element.getAttribute("data-phase"),
+    phaseGeneration: element.getAttribute("data-phase-generation"),
+    phaseDeadline: element.getAttribute("data-phase-deadline"),
+  }), undefined, {
+    timeout: remainingRenderedActionDeadlineMs(deadlineMs, now()),
+  });
+  return parseRenderedMissionBasis(rendered);
+}
+
 export function parseRenderedMissionBasis({
   roomSequence,
   phase,
@@ -1169,9 +1481,17 @@ export function renderedCommitmentDeadlines(phaseDeadline, nowMs = Date.now()) {
 }
 
 export function remainingRenderedDeadlineMs(deadlineMs, nowMs) {
+  return remainingRenderedDeadline(deadlineMs, nowMs, "commitment window");
+}
+
+export function remainingRenderedActionDeadlineMs(deadlineMs, nowMs) {
+  return remainingRenderedDeadline(deadlineMs, nowMs, "Action deadline");
+}
+
+function remainingRenderedDeadline(deadlineMs, nowMs, label) {
   const remaining = Math.ceil(deadlineMs - nowMs);
   if (!Number.isSafeInteger(remaining) || remaining <= 0) {
-    throw new Error("rendered commitment window closed before the reviewed action completed");
+    throw new Error(`rendered ${label} closed before the reviewed action completed`);
   }
   return remaining;
 }

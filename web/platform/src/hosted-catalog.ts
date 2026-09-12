@@ -7,12 +7,16 @@ import {
 
 import {
   midnightArchiveListingBase64,
+  retainedMidnightArchiveListing04Base64,
   retainedMidnightArchiveListing03Base64,
   retainedMidnightArchiveListing02Base64,
   retainedMidnightArchiveListing01Base64,
   midnightArchiveMiraBase64,
+  retainedMidnightArchiveMira1Base64,
   midnightArchiveJonahBase64,
+  retainedMidnightArchiveJonah1Base64,
   agentHeistListingBase64,
+  retainedAgentHeistListing029Base64,
   retainedAgentHeistListing028Base64,
   retainedAgentHeistListing027Base64,
   retainedAgentHeistListing026Base64,
@@ -32,6 +36,7 @@ import {
   retainedAgentHeistListing012Base64,
   retainedAgentHeistListing011Base64,
   cooperativePlannerBase64,
+  retainedCooperativePlanner17Base64,
   retainedCooperativePlanner16Base64,
   retainedCooperativePlanner15Base64,
   retainedCooperativePlanner14Base64,
@@ -64,6 +69,7 @@ import {
   retainedSkepticalAuditor4Base64,
   retainedSkepticalAuditor1Base64,
   skepticalAuditorBase64,
+  retainedSkepticalAuditor16Base64,
   retainedSkepticalAuditor15Base64,
   retainedSkepticalAuditor14Base64,
   retainedSkepticalAuditor13Base64,
@@ -76,9 +82,9 @@ import {
 } from "./hosted-artifacts.generated.js";
 
 export const AGENT_HEIST_LISTING_DIGEST =
-  "blake3:71eb289ce6c730fa6e8eefc9d222f9730e8a69b6cc297d43b8794b7eda35f5f9";
+  "blake3:aa91d73f85c13c43490a0d34820085931c23b00eb0dc87ceb83dda10b4a62781";
 export const MIDNIGHT_ARCHIVE_LISTING_DIGEST =
-  "blake3:4c9a98ec044e9389b9a4e3d8a8f33a371dc6ed3991556037ada61cfba4bf718a";
+  "blake3:b2a69e00c4c617b97dce75a0a5f3d0b5278d116284774400cd4ba1720e77e573";
 
 export interface PublicHostedActivity {
   readonly slug: string;
@@ -139,6 +145,8 @@ const retainedHouseAgents = new Map([
   // after discovery advances to a newer Listing.
   readHouseAgentRevision(decode(cooperativePlannerBase64)),
   readHouseAgentRevision(decode(skepticalAuditorBase64)),
+  readHouseAgentRevision(decode(retainedCooperativePlanner17Base64)),
+  readHouseAgentRevision(decode(retainedSkepticalAuditor16Base64)),
   readHouseAgentRevision(decode(retainedCooperativePlanner16Base64)),
   readHouseAgentRevision(decode(retainedSkepticalAuditor15Base64)),
   readHouseAgentRevision(decode(retainedCooperativePlanner15Base64)),
@@ -212,13 +220,13 @@ const reviewedAgentHeist = Object.freeze({
 
 // Discovery selects only the current revision. Retained formation and results
 // must continue resolving the exact revision accepted before this deployment.
-const retainedAgentHeist = [retainedAgentHeistListing028Base64, retainedAgentHeistListing027Base64, retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64, retainedAgentHeistListing04Base64, retainedAgentHeistListing05Base64, retainedAgentHeistListing06Base64, retainedAgentHeistListing07Base64, retainedAgentHeistListing08Base64, retainedAgentHeistListing09Base64, retainedAgentHeistListing010Base64, retainedAgentHeistListing011Base64, retainedAgentHeistListing012Base64, retainedAgentHeistListing013Base64, retainedAgentHeistListing014Base64, retainedAgentHeistListing015Base64, retainedAgentHeistListing016Base64, retainedAgentHeistListing017Base64, retainedAgentHeistListing018Base64, retainedAgentHeistListing019Base64, retainedAgentHeistListing020Base64, retainedAgentHeistListing021Base64, retainedAgentHeistListing022Base64, retainedAgentHeistListing023Base64, retainedAgentHeistListing024Base64, retainedAgentHeistListing025Base64, retainedAgentHeistListing026Base64]
+const retainedAgentHeist = [retainedAgentHeistListing029Base64, retainedAgentHeistListing028Base64, retainedAgentHeistListing027Base64, retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64, retainedAgentHeistListing04Base64, retainedAgentHeistListing05Base64, retainedAgentHeistListing06Base64, retainedAgentHeistListing07Base64, retainedAgentHeistListing08Base64, retainedAgentHeistListing09Base64, retainedAgentHeistListing010Base64, retainedAgentHeistListing011Base64, retainedAgentHeistListing012Base64, retainedAgentHeistListing013Base64, retainedAgentHeistListing014Base64, retainedAgentHeistListing015Base64, retainedAgentHeistListing016Base64, retainedAgentHeistListing017Base64, retainedAgentHeistListing018Base64, retainedAgentHeistListing019Base64, retainedAgentHeistListing020Base64, retainedAgentHeistListing021Base64, retainedAgentHeistListing022Base64, retainedAgentHeistListing023Base64, retainedAgentHeistListing024Base64, retainedAgentHeistListing025Base64, retainedAgentHeistListing026Base64]
   .map((bytes): ReviewedHostedActivity => {
     const retainedListing = readListingRevision(decode(bytes));
     const houseFillAvailable = retainedListing.value.seats.some(
       (seat) => seat.allowed_house_agent_revisions.length > 0,
     );
-    const retainedClientPath = bytes === retainedAgentHeistListing028Base64 ? "/agent-heist-v11/hosted/" : bytes === retainedAgentHeistListing027Base64 ? "/agent-heist-v10/hosted/" : bytes === retainedAgentHeistListing026Base64 ? "/agent-heist-v9/hosted/" : bytes === retainedAgentHeistListing025Base64 ? "/agent-heist-v8/hosted/" : bytes === retainedAgentHeistListing024Base64 ? "/agent-heist-v7/hosted/" : bytes === retainedAgentHeistListing014Base64 || bytes === retainedAgentHeistListing019Base64 || bytes === retainedAgentHeistListing020Base64 || bytes === retainedAgentHeistListing021Base64 || bytes === retainedAgentHeistListing022Base64 || bytes === retainedAgentHeistListing023Base64 ? "/agent-heist-v6/hosted/" : bytes === retainedAgentHeistListing012Base64 || bytes === retainedAgentHeistListing013Base64 ? "/agent-heist-v5/hosted/" : (bytes === retainedAgentHeistListing07Base64 || bytes === retainedAgentHeistListing08Base64 || bytes === retainedAgentHeistListing09Base64 || bytes === retainedAgentHeistListing010Base64 || bytes === retainedAgentHeistListing011Base64) ? "/agent-heist-v4/hosted/" : bytes === retainedAgentHeistListing05Base64 || bytes === retainedAgentHeistListing06Base64
+    const retainedClientPath = bytes === retainedAgentHeistListing029Base64 ? "/agent-heist-v12/hosted/" : bytes === retainedAgentHeistListing028Base64 ? "/agent-heist-v11/hosted/" : bytes === retainedAgentHeistListing027Base64 ? "/agent-heist-v10/hosted/" : bytes === retainedAgentHeistListing026Base64 ? "/agent-heist-v9/hosted/" : bytes === retainedAgentHeistListing025Base64 ? "/agent-heist-v8/hosted/" : bytes === retainedAgentHeistListing024Base64 ? "/agent-heist-v7/hosted/" : bytes === retainedAgentHeistListing014Base64 || bytes === retainedAgentHeistListing019Base64 || bytes === retainedAgentHeistListing020Base64 || bytes === retainedAgentHeistListing021Base64 || bytes === retainedAgentHeistListing022Base64 || bytes === retainedAgentHeistListing023Base64 ? "/agent-heist-v6/hosted/" : bytes === retainedAgentHeistListing012Base64 || bytes === retainedAgentHeistListing013Base64 ? "/agent-heist-v5/hosted/" : (bytes === retainedAgentHeistListing07Base64 || bytes === retainedAgentHeistListing08Base64 || bytes === retainedAgentHeistListing09Base64 || bytes === retainedAgentHeistListing010Base64 || bytes === retainedAgentHeistListing011Base64) ? "/agent-heist-v4/hosted/" : bytes === retainedAgentHeistListing05Base64 || bytes === retainedAgentHeistListing06Base64
       ? "/agent-heist-v3/hosted/"
       : bytes === retainedAgentHeistListing04Base64 ? "/agent-heist-v2/hosted/" : null;
     return Object.freeze({
@@ -233,7 +241,7 @@ const retainedAgentHeist = [retainedAgentHeistListing028Base64, retainedAgentHei
           ? "Retained revision with its original client"
           : "This retained revision requires its original client artifact, which is not hosted here.",
         clientPath: retainedClientPath,
-        publicViewerClientPath: bytes === retainedAgentHeistListing028Base64 ? "/agent-heist-v11/hosted/" : bytes === retainedAgentHeistListing027Base64 ? "/agent-heist-v10/hosted/" : bytes === retainedAgentHeistListing026Base64 ? "/agent-heist-v9/hosted/" : bytes === retainedAgentHeistListing025Base64
+        publicViewerClientPath: bytes === retainedAgentHeistListing029Base64 ? "/agent-heist-v12/hosted/" : bytes === retainedAgentHeistListing028Base64 ? "/agent-heist-v11/hosted/" : bytes === retainedAgentHeistListing027Base64 ? "/agent-heist-v10/hosted/" : bytes === retainedAgentHeistListing026Base64 ? "/agent-heist-v9/hosted/" : bytes === retainedAgentHeistListing025Base64
           ? "/agent-heist-v8/hosted/"
           : bytes === retainedAgentHeistListing024Base64
           ? "/agent-heist-v7/hosted/"
@@ -287,15 +295,19 @@ const reviewedMidnightArchive: ReviewedHostedActivity = Object.freeze({
   }),
 });
 const retainedMidnightArchive = [
+  { bytes: retainedMidnightArchiveListing04Base64, clientPath: "/midnight-archive-v14/hosted/" },
   { bytes: retainedMidnightArchiveListing03Base64, clientPath: "/midnight-archive-v13/hosted/" },
   { bytes: retainedMidnightArchiveListing02Base64, clientPath: "/midnight-archive-v12/hosted/" },
   { bytes: retainedMidnightArchiveListing01Base64, clientPath: "/midnight-archive-v10/hosted/" },
 ].map(({ bytes, clientPath }): ReviewedHostedActivity => {
   const retainedListing = readListingRevision(decode(bytes));
-  if (bytes === retainedMidnightArchiveListing03Base64) {
+  if (bytes === retainedMidnightArchiveListing03Base64 || bytes === retainedMidnightArchiveListing04Base64) {
     return Object.freeze({
       ...reviewedMidnightArchive,
       listing: retainedListing,
+      houseAgents: new Map([retainedMidnightArchiveMira1Base64, retainedMidnightArchiveJonah1Base64]
+        .map((bytes) => readHouseAgentRevision(decode(bytes)))
+        .map((revision) => [revision.digest, revision])),
       public: Object.freeze({ ...reviewedMidnightArchive.public, clientPath }),
     });
   }

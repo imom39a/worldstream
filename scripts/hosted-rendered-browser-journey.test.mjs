@@ -4,12 +4,14 @@ import test from "node:test";
 import {
   HOSTED_RENDERED_BROWSER_JOURNEY_SCHEMA,
   activityClientBootstrapDiagnostic,
+  attachRenderedNavigatorBeforeStart,
   browserConsoleFailure,
   browserRequestFailure,
   ensureRenderedNavigatorRouteClaim,
   hasRenderedHouseEndorsement,
   hasExplicitRenderedStaleRoom,
   hasRenderedOwnCommitment,
+  isReviewedRenderedActivityClientUrl,
   launchIdFromUrl,
   localProductOrigin,
   navigatorPlanForRouteClaim,
@@ -17,7 +19,9 @@ import {
   parseRenderedMissionBasis,
   publicRunPath,
   reconnectRenderedCommitment,
+  remainingRenderedActionDeadlineMs,
   remainingRenderedDeadlineMs,
+  resumeRetainedRenderedNavigator,
   renderedActionForm,
   renderedCommitmentDeadlines,
   renderedCrewCommitmentCompleted,
@@ -30,11 +34,13 @@ import {
   runHostedRenderedBrowserJourney,
   sameOriginBrowserResponseFailure,
   submitRenderedForm,
+  submitRenderedRecoverableAction,
   validateLaunchId,
   validateTimeouts,
   verifiedMyGamesLaunch,
   waitForHouseEndorsement,
   waitForIndependentActivityClient,
+  waitForRenderedActionOutcome,
   waitForRenderedCrewCommitments,
   waitForRenderedTerminalComplete,
 } from "./hosted-rendered-browser-journey.mjs";
@@ -162,12 +168,14 @@ test("rendered-client bootstrap proves the current Mission Focus authorization c
       selector: "section.role-card.role-navigator",
       label: "Your role",
       heading: "Navigator",
+      clientUrl: "http://127.0.0.1:5180/agent-heist-v12/hosted/?platform_return=%2F",
     },
     {
       diagnosticRole: "Spectator view",
       selector: "section.role-card.spectator-card",
       label: "Public spectator view",
       heading: "Follow the crew",
+      clientUrl: `http://127.0.0.1:5180/agent-heist-v12/hosted/?public_run=${"a".repeat(32)}&platform_return=%2F&platform_result=%2Fruns%2F${"a".repeat(32)}`,
     },
   ]) {
     const observed = [];
@@ -189,8 +197,8 @@ test("rendered-client bootstrap proves the current Mission Focus authorization c
       },
     };
     const page = {
-      async waitForURL(pattern, options) {
-        assert.equal(pattern.test("/agent-heist-v12/hosted/"), true);
+      async waitForURL(predicate, options) {
+        assert.equal(predicate(new URL(expected.clientUrl)), true);
         observed.push(["url", options]);
       },
       getByRole(role, options) {
@@ -206,7 +214,7 @@ test("rendered-client bootstrap proves the current Mission Focus authorization c
         return card;
       },
       url() {
-        return "http://127.0.0.1:5180/agent-heist-v12/hosted/";
+        return expected.clientUrl;
       },
     };
 
@@ -215,6 +223,7 @@ test("rendered-client bootstrap proves the current Mission Focus authorization c
       1_000,
       expected.diagnosticRole,
       [],
+      "http://127.0.0.1:5180",
     );
     assert.deepEqual(observed, [
       ["url", { timeout: 1_000 }],
@@ -223,6 +232,315 @@ test("rendered-client bootstrap proves the current Mission Focus authorization c
       ["authorization-heading", { timeout: 1_000 }],
     ]);
   }
+});
+
+test("rendered-client bootstrap rejects a lookalike origin or retained client route", async () => {
+  const ready = () => ({ async waitFor() {} });
+  const roleCard = {
+    getByText() { return ready(); },
+    getByRole() { return ready(); },
+  };
+  for (const unexpectedUrl of [
+    "https://lookalike.invalid/agent-heist-v12/hosted/?platform_return=%2F",
+    "http://127.0.0.1:5180/agent-heist-v11/hosted/?platform_return=%2F",
+    "http://127.0.0.1:5180/agent-heist-v12/hosted/?platform_return=%2F&unexpected=true",
+  ]) {
+    const page = {
+      async waitForURL(matcher) {
+        const matched = typeof matcher === "function"
+          ? matcher(new URL(unexpectedUrl))
+          : matcher.test(unexpectedUrl);
+        if (!matched) throw new Error("URL wait did not match");
+      },
+      getByRole() { return ready(); },
+      locator(selector) {
+        if (selector === "main h1") return { first() { return { async textContent() { return "Agent Heist"; } }; } };
+        return roleCard;
+      },
+      url() { return unexpectedUrl; },
+    };
+    await assert.rejects(
+      () => waitForIndependentActivityClient(
+        page,
+        1_000,
+        "Navigator participant",
+        [],
+        "http://127.0.0.1:5180",
+      ),
+      /independent Activity Client bootstrap did not become ready/u,
+    );
+  }
+});
+
+test("rendered-client bootstrap accepts only platform-issued participant and spectator queries", () => {
+  const origin = "http://127.0.0.1:5180";
+  const publicId = "a".repeat(32);
+  assert.equal(isReviewedRenderedActivityClientUrl(
+    `${origin}/agent-heist-v12/hosted/?platform_return=%2F`,
+    origin,
+    "Navigator participant",
+  ), true);
+  assert.equal(isReviewedRenderedActivityClientUrl(
+    `${origin}/agent-heist-v12/hosted/?public_run=${publicId}&platform_return=%2F&platform_result=%2Fruns%2F${publicId}`,
+    origin,
+    "Spectator view",
+  ), true);
+  for (const invalid of [
+    `${origin}/agent-heist-v12/hosted/`,
+    `${origin}/agent-heist-v12/hosted/?platform_return=%2F&unexpected=true`,
+    `${origin}/agent-heist-v12/hosted/?platform_return=%2F#handoff=wsh1:${"b".repeat(64)}`,
+    `${origin}/agent-heist-v12/hosted/?public_run=${publicId}&platform_return=%2F&platform_result=%2Fruns%2F${"c".repeat(32)}`,
+  ]) {
+    assert.equal(isReviewedRenderedActivityClientUrl(invalid, origin, "Navigator participant"), false);
+    assert.equal(isReviewedRenderedActivityClientUrl(invalid, origin, "Spectator view"), false);
+  }
+});
+
+test("rendered launch reuses the readiness popup for gameplay before waiting-room Start commits", async () => {
+  const observed = [];
+  const ready = (name) => ({
+    async waitFor(options) {
+      observed.push([name, options]);
+    },
+  });
+  const roleCard = {
+    getByText(value, options) {
+      assert.equal(value, "Your role");
+      assert.deepEqual(options, { exact: true });
+      return ready("navigator-label");
+    },
+    getByRole(role, options) {
+      assert.equal(role, "heading");
+      assert.deepEqual(options, { name: "Navigator", exact: true });
+      return ready("navigator-heading");
+    },
+  };
+  const popup = {
+    on(event) { observed.push(["popup-listener", event]); },
+    async waitForURL(predicate, options) {
+      assert.equal(predicate(new URL("http://127.0.0.1:5180/agent-heist-v12/hosted/?platform_return=%2F")), true);
+      observed.push(["popup-url", options]);
+    },
+    getByRole(role, options) {
+      assert.equal(role, "heading");
+      assert.deepEqual(options, { name: "Agent Heist" });
+      return ready("popup-heading");
+    },
+    locator(selector) {
+      if (selector === "div.mission-connection") {
+        return {
+          getByText(value, options) {
+            assert.equal(value, "Mission link live");
+            assert.deepEqual(options, { exact: true });
+            return ready("participant-live");
+          },
+        };
+      }
+      assert.equal(selector, "section.role-card.role-navigator");
+      return roleCard;
+    },
+    url() { return "http://127.0.0.1:5180/agent-heist-v12/hosted/?platform_return=%2F"; },
+  };
+  const openNavigator = {
+    first() { return this; },
+    async waitFor(options) { observed.push(["open-visible", options]); },
+    async click() { observed.push(["open-click"]); },
+  };
+  const waitingRoom = {
+    async waitForEvent(event, options) {
+      assert.equal(event, "popup");
+      observed.push(["wait-popup", options]);
+      return popup;
+    },
+    getByRole(role, options) {
+      if (role === "button") {
+        assert.deepEqual(options, { name: "Open Navigator to sync" });
+        return openNavigator;
+      }
+      assert.equal(role, "heading");
+      assert.deepEqual(options, { name: "Your activity is ready" });
+      return ready("waiting-room-ready");
+    },
+  };
+
+  const participant = await attachRenderedNavigatorBeforeStart({
+    waitingRoom,
+    productOrigin: "http://127.0.0.1:5180",
+    actionTimeoutMs: 1_000,
+    formationTimeoutMs: 2_000,
+    failures: [],
+  });
+
+  assert.equal(participant, popup);
+  assert.deepEqual(observed, [
+    ["open-visible", { timeout: 2_000 }],
+    ["wait-popup", { timeout: 1_000 }],
+    ["open-click"],
+    ["popup-listener", "pageerror"],
+    ["popup-listener", "console"],
+    ["popup-listener", "requestfailed"],
+    ["popup-listener", "response"],
+    ["popup-url", { timeout: 1_000 }],
+    ["popup-heading", { timeout: 1_000 }],
+    ["navigator-label", { timeout: 1_000 }],
+    ["navigator-heading", { timeout: 1_000 }],
+    ["participant-live", { timeout: 1_000 }],
+    ["waiting-room-ready", { timeout: 2_000 }],
+  ]);
+});
+
+test("retained rendered recovery synchronizes a pre-start Navigator", async () => {
+  const observed = [];
+  const ready = (name) => ({
+    async waitFor(options) { observed.push([name, options]); },
+  });
+  const popup = {
+    on(event) { observed.push(["popup-listener", event]); },
+    async waitForURL(_pattern, options) { observed.push(["popup-url", options]); },
+    getByRole(role, options) {
+      assert.equal(role, "heading");
+      assert.deepEqual(options, { name: "Agent Heist" });
+      return ready("popup-heading");
+    },
+    locator(selector) {
+      if (selector === "div.mission-connection") {
+        return { getByText: () => ready("participant-live") };
+      }
+      assert.equal(selector, "section.role-card.role-navigator");
+      return {
+        getByText: () => ready("navigator-label"),
+        getByRole: () => ready("navigator-heading"),
+      };
+    },
+    url() { return "http://127.0.0.1:5180/agent-heist-v12/hosted/?platform_return=%2F"; },
+  };
+  const openNavigator = {
+    first() { return this; },
+    async waitFor(options) { observed.push(["open-visible", options]); },
+    async innerText() { return "Open Navigator to sync"; },
+    async click() { observed.push(["open-click"]); },
+  };
+  let lookup = 0;
+  const waitingRoom = {
+    async waitForEvent(_event, options) {
+      observed.push(["wait-popup", options]);
+      return popup;
+    },
+    getByRole(role, options) {
+      if (role === "button") {
+        lookup += 1;
+        assert.match(String(options.name), /Open Navigator to sync/u);
+        return openNavigator;
+      }
+      return ready("waiting-room-ready");
+    },
+  };
+
+  const participant = await resumeRetainedRenderedNavigator({
+    waitingRoom,
+    productOrigin: "http://127.0.0.1:5180",
+    actionTimeoutMs: 1_000,
+    formationTimeoutMs: 2_000,
+    failures: [],
+  });
+
+  assert.equal(participant, popup);
+  assert.equal(lookup, 2);
+  assert.deepEqual(observed.filter(([name]) => name === "open-visible"), [
+    ["open-visible", { timeout: 2_000 }],
+    ["open-visible", { timeout: 2_000 }],
+  ]);
+  assert.deepEqual(observed.filter(([name]) => name === "waiting-room-ready"), [
+    ["waiting-room-ready", { timeout: 2_000 }],
+  ]);
+});
+
+test("retained rendered recovery preserves ordinary post-start entry", async () => {
+  const observed = [];
+  const entryAction = {
+    first() { return this; },
+    async waitFor(options) { observed.push(["entry-visible", options]); },
+    async innerText() { return "Enter Navigator"; },
+  };
+  const waitingRoom = {
+    getByRole(role) {
+      return role === "button"
+        ? entryAction
+        : { async waitFor(options) { observed.push(["ready-heading", options]); } };
+    },
+  };
+
+  const participant = await resumeRetainedRenderedNavigator({
+    waitingRoom,
+    productOrigin: "http://127.0.0.1:5180",
+    actionTimeoutMs: 1_000,
+    formationTimeoutMs: 2_000,
+    failures: [],
+  });
+
+  assert.equal(participant, waitingRoom);
+  assert.deepEqual(observed, [
+    ["entry-visible", { timeout: 2_000 }],
+    ["ready-heading", { timeout: 1_000 }],
+  ]);
+});
+
+test("retained rendered recovery retries Start before synchronizing its Navigator", async () => {
+  const observed = [];
+  const popup = {
+    on(event) { observed.push(["popup-listener", event]); },
+    async waitForURL(_pattern, options) { observed.push(["popup-url", options]); },
+    getByRole() { return { async waitFor(options) { observed.push(["popup-heading", options]); } }; },
+    locator(selector) {
+      if (selector === "div.mission-connection") {
+        return { getByText: () => ({ async waitFor(options) { observed.push(["participant-live", options]); } }) };
+      }
+      return {
+        getByText: () => ({ async waitFor(options) { observed.push(["navigator-label", options]); } }),
+        getByRole: () => ({ async waitFor(options) { observed.push(["navigator-heading", options]); } }),
+      };
+    },
+    url() { return "http://127.0.0.1:5180/agent-heist-v12/hosted/?platform_return=%2F"; },
+  };
+  const startAction = {
+    first() { return this; },
+    async waitFor(options) { observed.push(["start-visible", options]); },
+    async innerText() { return "Start activity"; },
+    async click() { observed.push(["start-click"]); },
+  };
+  const openAction = {
+    async waitFor(options) { observed.push(["open-visible", options]); },
+    async click() { observed.push(["open-click"]); },
+  };
+  const waitingRoom = {
+    async waitForEvent(_event, options) {
+      observed.push(["wait-popup", options]);
+      return popup;
+    },
+    getByRole(role, options) {
+      if (role === "heading") {
+        return { async waitFor(waitOptions) { observed.push(["ready-heading", waitOptions]); } };
+      }
+      return String(options.name).includes("Start activity") ? startAction : openAction;
+    },
+  };
+
+  const participant = await resumeRetainedRenderedNavigator({
+    waitingRoom,
+    productOrigin: "http://127.0.0.1:5180",
+    actionTimeoutMs: 1_000,
+    formationTimeoutMs: 2_000,
+    failures: [],
+  });
+
+  assert.equal(participant, popup);
+  assert.deepEqual(observed.slice(0, 5), [
+    ["start-visible", { timeout: 2_000 }],
+    ["start-click"],
+    ["open-visible", { timeout: 2_000 }],
+    ["wait-popup", { timeout: 1_000 }],
+    ["open-click"],
+  ]);
 });
 
 test("rendered journey scopes actions and spectator checks to the Mission Focus surface", () => {
@@ -388,6 +706,139 @@ test("rendered Action acceptance fails closed when no durable Projection arrives
       throw new Error("transport rejected");
     }),
     /did not produce its durable authorized Projection\/result postcondition/u,
+  );
+});
+
+test("rendered exact-head Action reconnects visibly and refills a fresh form after an explicit stale rejection", async () => {
+  let roomSequence = 7;
+  let stale = false;
+  let live = true;
+  let committed = false;
+  let submits = 0;
+  let reconnects = 0;
+  let preparations = 0;
+  const action = {
+    async waitFor() {},
+    async isEnabled() { return live; },
+    async click() {
+      submits += 1;
+      if (submits === 1) {
+        stale = true;
+        live = false;
+      } else {
+        committed = true;
+      }
+    },
+  };
+  const form = {
+    async count() { return 1; },
+    async waitFor() {},
+    locator(selector) {
+      assert.equal(selector, 'button[type="submit"]');
+      return action;
+    },
+  };
+  const page = {
+    getByText(value) { return { value }; },
+    getByRole(role, options) {
+      if (role === "heading") return { value: options.name };
+      assert.equal(role, "button");
+      assert.deepEqual(options, { name: "Reconnect", exact: true });
+      return {
+        async count() { return stale ? 1 : 0; },
+        async waitFor() { assert.equal(stale, true); },
+        async click() {
+          reconnects += 1;
+          stale = false;
+          live = true;
+          roomSequence = 8;
+        },
+      };
+    },
+    locator(selector) {
+      if (selector === "main.mission-focus-shell") return {
+        async evaluate() {
+          return {
+            roomSequence: String(roomSequence),
+            phase: "briefing",
+            phaseGeneration: "1",
+            phaseDeadline: "2026-09-12T12:01:00Z",
+          };
+        },
+      };
+      if (selector === ".mission-connection") return {
+        filter({ has }) {
+          return {
+            async count() {
+              return has.value === "Mission link live"
+                ? Number(live)
+                : Number(stale);
+            },
+          };
+        },
+      };
+      if (selector === "nav.mission-moves") return {
+        getByRole() { return { async count() { return 0; } }; },
+      };
+      assert.equal(selector, "section#mission-action");
+      return {
+        filter() {
+          return {
+            locator(innerSelector) {
+              assert.equal(innerSelector, "form.mission-action-surface");
+              return form;
+            },
+          };
+        },
+      };
+    },
+  };
+  await submitRenderedRecoverableAction(
+    page,
+    "Open a dossier",
+    1_000,
+    async (current) => {
+      assert.equal(current, form);
+      preparations += 1;
+    },
+    async () => committed,
+  );
+  assert.deepEqual({ submits, reconnects, preparations, roomSequence }, {
+    submits: 2,
+    reconnects: 1,
+    preparations: 2,
+    roomSequence: 8,
+  });
+});
+
+test("rendered Action outcome accepts only a durable result or the explicit stale boundary", async () => {
+  let now = 1_000;
+  let committed = false;
+  const stalePage = {
+    locator(selector) {
+      assert.equal(selector, ".mission-connection");
+      return { filter() { return { async count() { return 1; } }; } };
+    },
+    getByText() { return {}; },
+    getByRole() { return { async count() { return 1; } }; },
+  };
+  assert.equal(await waitForRenderedActionOutcome(
+    stalePage,
+    async () => committed,
+    1_200,
+    { now: () => now, wait: async () => { now += 10; } },
+  ), "stale");
+  committed = true;
+  assert.equal(await waitForRenderedActionOutcome(
+    stalePage,
+    async () => committed,
+    1_200,
+    { now: () => now, wait: async () => { now += 10; } },
+  ), "committed");
+  assert.equal(remainingRenderedActionDeadlineMs(1_200, 1_050), 150);
+  assert.throws(
+    () => remainingRenderedActionDeadlineMs(1_200, 1_200),
+    /Action deadline closed/u,
   );
 });
 

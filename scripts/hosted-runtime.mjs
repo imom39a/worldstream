@@ -149,7 +149,7 @@ export function renderHouseRunnerTemplate(executable, digest) {
   return {
     schema: "worldstream/runner-template/v1",
     template_id: "openrouter-house",
-    revision: "16",
+    revision: "17",
     display_name: "Hosted OpenRouter House Agent",
     executable: { path: executable, blake3: digest },
     compatibility: [{
@@ -161,7 +161,7 @@ export function renderHouseRunnerTemplate(executable, digest) {
     non_secret_environment: { WORLDSTREAM_RUNNER_MODE: "hosted-house" },
     secret_environment: [],
     // Instance IDs are unique across retained immutable template revisions.
-    instances: [{ instance_id: "hosted-house-r16-01", health_address: "127.0.0.1:9606" }],
+    instances: [{ instance_id: "hosted-house-r17-01", health_address: "127.0.0.1:9607" }],
   };
 }
 
@@ -179,7 +179,7 @@ export function renderArchiveHouseRunnerTemplate(executable, digest) {
   return {
     schema: "worldstream/runner-template/v1",
     template_id: "openrouter-house-archive",
-    revision: "1",
+    revision: "2",
     display_name: "Midnight Archive House Companions",
     executable: { path: executable, blake3: digest },
     compatibility: [{
@@ -191,8 +191,8 @@ export function renderArchiveHouseRunnerTemplate(executable, digest) {
     non_secret_environment: { WORLDSTREAM_RUNNER_MODE: "hosted-house" },
     secret_environment: [],
     instances: [{
-      instance_id: "hosted-archive-house-01",
-      health_address: "127.0.0.1:9608",
+      instance_id: "hosted-archive-house-r2-01",
+      health_address: "127.0.0.1:9609",
     }],
   };
 }
@@ -559,12 +559,12 @@ export function renderHouseAgentProfiles() {
   const hostContract = {
     kind: "managed_house_openrouter",
     host_contract_revision: "1",
-    runner_template: { template_id: "openrouter-house", revision: "16" },
+    runner_template: { template_id: "openrouter-house", revision: "17" },
   };
   const cooperative = {
     schema: "worldstream/studio-agent-profile-publish/v2",
     profile_id: "house-cooperative-planner",
-    revision: "17",
+    revision: "18",
     display_name: "Cooperative Planner",
     non_secret_configuration: {},
     host_contract: hostContract,
@@ -573,7 +573,7 @@ export function renderHouseAgentProfiles() {
   const skeptical = {
     schema: "worldstream/studio-agent-profile-publish/v2",
     profile_id: "house-skeptical-auditor",
-    revision: "16",
+    revision: "17",
     display_name: "Skeptical Auditor",
     non_secret_configuration: {},
     host_contract: hostContract,
@@ -587,12 +587,12 @@ export function renderArchiveHouseAgentProfiles() {
   const hostContract = {
     kind: "managed_house_openrouter",
     host_contract_revision: "1",
-    runner_template: { template_id: "openrouter-house-archive", revision: "1" },
+    runner_template: { template_id: "openrouter-house-archive", revision: "2" },
   };
   const mira = {
     schema: "worldstream/studio-agent-profile-publish/v2",
     profile_id: "house-midnight-archive-mira",
-    revision: "1",
+    revision: "2",
     display_name: "Mira — Evidence Specialist",
     non_secret_configuration: {},
     host_contract: hostContract,
@@ -601,7 +601,7 @@ export function renderArchiveHouseAgentProfiles() {
   const jonah = {
     schema: "worldstream/studio-agent-profile-publish/v2",
     profile_id: "house-midnight-archive-jonah",
-    revision: "1",
+    revision: "2",
     display_name: "Jonah — Service Specialist",
     non_secret_configuration: {},
     host_contract: hostContract,

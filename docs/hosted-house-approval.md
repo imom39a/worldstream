@@ -8,16 +8,16 @@ Keep launches and House calls closed until the final checks pass.
 The versioned formation installation identity must be identical in three
 places: the Fly appliance, the Vercel BFF environment, and each active House
 approval. Rotate all three together when an image needs fresh approvals. The
-current identity is `fly-primary-r3`. The Supabase platform operating row named
+current identity is `fly-primary-r4`. The Supabase platform operating row named
 `fly-primary` is a separate singleton admission gate and must remain available
 for launches; it is not the versioned formation identity.
 
-The current candidate Listing is Agent Heist `0.24.0`. Its two House strategies are
-Cooperative Planner `17` and Skeptical Auditor `16`. Both use the exact Granite
+The current candidate Listing is Agent Heist `0.30.0`. Its two House strategies are
+Cooperative Planner `18` and Skeptical Auditor `17`. Both use the exact Granite
 model and DeepInfra provider route declared in their immutable files. Their
 instructions differ; this is a two-strategy exhibition, not a comparison of two
-models. This candidate pins the schema-safe Pack `0.5.0`, v7 Activity Client,
-result projector `0.5.0`, and Runner Template `16`. The Pack gives each Heist
+models. This candidate pins the schema-safe Pack `0.5.0`, v12 Activity Client,
+result projector `0.5.0`, and Runner Template `17`. The Pack gives each Heist
 action its own closed payload schema, so an empty model action is rejected before
 it can reach the reducer. The provider route and hard allowances are unchanged.
 Check the deployment record before treating the candidate as installed or approved.
@@ -54,13 +54,14 @@ live gameplay. The draft 0.11.0 metadata was corrected before its first hosted
 publication; the unqualified image from commit `2419456` must not be deployed.
 
 Retain Listing `0.23.0`, Planner `16`, Auditor `15`, and Runner Template `15`
-unchanged for their historical assignments. The current `0.24.0` successor uses
-Planner `17`, Auditor `16`, and Runner Template `16` at
-`hosted-house-r16-01` on port `9606`. It explicitly disables
-the Granite route's default reasoning so the short Action JSON does not exhaust
-the fixed completion allowance. It is a new immutable candidate with the
-schema-safe Pack contract, not a replacement for the retained r15 bytes or their
-approvals.
+unchanged for historical assignments. Listing `0.24.0` and its client successors
+through `0.29.0` retain Planner `17`, Auditor `16`, and Runner Template `16`
+(`hosted-house-r16-01`, port `9606`). Current Listing `0.30.0` selects Planner
+`18`, Auditor `17`, and Runner Template `17` (`hosted-house-r17-01`, port `9607`).
+Archive Listing `0.5.0` selects Mira `2`, Jonah `2`, and the separate Archive
+Runner Template `2` (`hosted-archive-house-r2-01`, port `9609`). Its predecessor
+`0.4.0` retains both revision-1 companions and Archive Runner Template `1`.
+No predecessor executable, profile, House revision, or approval is rebound.
 
 ## What this evidence means
 
@@ -111,9 +112,12 @@ generated SDK build.
    /usr/local/bin/worldstreamctl --config /run/worldstream/worldstream.toml init \
      --state-dir /var/lib/worldstream/studio \
      --runner-template /run/worldstream/generated/openrouter-house-runner.json \
+     --runner-template /run/worldstream/generated/openrouter-house-archive-runner.json \
      --provider-declaration /run/worldstream/generated/openrouter-provider.json \
      --agent-profile /run/worldstream/generated/cooperative-planner.json \
      --agent-profile /run/worldstream/generated/skeptical-auditor.json \
+     --agent-profile /run/worldstream/generated/midnight-archive-mira.json \
+     --agent-profile /run/worldstream/generated/midnight-archive-jonah.json \
      --preview --json
    ```
 
@@ -124,15 +128,18 @@ generated SDK build.
 3. Capture these records from that same installation into a private local
    directory. Preserve their relative layout beneath a `studio` directory:
 
+   - `agent-profiles/revisions/<hex profile ID>/3138.json` for
+     `house-cooperative-planner` revision `18`;
    - `agent-profiles/revisions/<hex profile ID>/3137.json` for
-     `house-cooperative-planner` revision `17`;
-   - `agent-profiles/revisions/<hex profile ID>/3136.json` for
-     `house-skeptical-auditor` revision `16`;
-   - `runner-templates/installed/openrouter-house--16.json`;
+     `house-skeptical-auditor` revision `17`;
+   - `agent-profiles/revisions/<hex profile ID>/32.json` for each of
+     `house-midnight-archive-mira` and `house-midnight-archive-jonah` revision `2`;
+   - `runner-templates/installed/openrouter-house--17.json`;
+   - `runner-templates/installed/openrouter-house-archive--2.json`;
    - `model-provider-credentials/installed/hosted-openrouter.json`.
 
    Profile path components are the lowercase hexadecimal encoding of UTF-8;
-   `3137` encodes revision `17`; `3136` encodes revision `16`. Capture the binary
+   `3138` encodes revision `18`; `3137` encodes revision `17`. Capture the binary
    from the installed Runner Template's exact `executable.path` separately.
    Current installations use the persistent content-addressed path
    `/var/lib/worldstream/retained-runner-executables/blake3-<exact digest>/worldstream-managed-agent-host`;
@@ -157,12 +164,14 @@ node scripts/hosted-house-approval.mjs \
   --controller-state /private/tmp/worldstream-approval-capture/studio \
   --runner-binary /private/tmp/worldstream-approval-capture/worldstream-managed-agent-host \
   --import-receipt /private/tmp/worldstream-approval-capture/import-apply.json \
-  --installation-id fly-primary \
+  --installation-id fly-primary-r4 \
   --credential-id hosted-openrouter \
   --source-revision '<actual deployed Git commit>' \
   --image-digest 'sha256:<actual deployed image digest>' \
-  --house-revision config/hosted/house-agents/cooperative-planner-17.json \
-  --house-revision config/hosted/house-agents/skeptical-auditor-16.json \
+  --house-revision config/hosted/house-agents/cooperative-planner-18.json \
+  --house-revision config/hosted/house-agents/skeptical-auditor-17.json \
+  --house-revision config/hosted/house-agents/mira-2.json \
+  --house-revision config/hosted/house-agents/jonah-2.json \
   --output-dir /private/tmp/worldstream-approval-capture/approval
 ```
 

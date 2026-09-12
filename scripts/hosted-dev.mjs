@@ -62,8 +62,10 @@ const HOSTED_NATIVE_BINARY_NAMES = [
 ];
 export const HOSTED_LOCAL_RECONCILIATION_SECRET =
   "worldstream-local-reconciliation-secret-000000000000";
-const LISTING_DIGEST = "blake3:71eb289ce6c730fa6e8eefc9d222f9730e8a69b6cc297d43b8794b7eda35f5f9";
+const LISTING_DIGEST = "blake3:aa91d73f85c13c43490a0d34820085931c23b00eb0dc87ceb83dda10b4a62781";
 const RETAINED_LISTING_DIGESTS = [
+  "blake3:71eb289ce6c730fa6e8eefc9d222f9730e8a69b6cc297d43b8794b7eda35f5f9",
+  "blake3:4c9a98ec044e9389b9a4e3d8a8f33a371dc6ed3991556037ada61cfba4bf718a",
   "blake3:d738402a5acb404dead979c21002fa02d95f4c1e89f6d4c47e617a6c6be27bc3",
   "blake3:cc1c92ebc6ba7cccc9474186ff8107cf97f6bd0ce2676c6d1a2aa203c2a62d35",
   "blake3:c2e07bc3c8ff2b36a549127d1f9f6403c52dcaca45065cb5923debe705111de2",
@@ -824,7 +826,7 @@ async function ensureDevelopmentProviderSecret(path) {
 
 async function seedSupabase(supabase, environment) {
   const databaseUrl = requiredSupabase(supabase, "DB_URL");
-  await run("psql", [databaseUrl, "-q", "-v", "ON_ERROR_STOP=1", "-f", "supabase/seed.sql", "-f", "supabase/catalog/agent-heist-0.27.0.sql", "-f", "supabase/catalog/agent-heist-0.28.0.sql", "-f", "supabase/catalog/agent-heist-0.29.0.sql", "-f", "supabase/catalog/midnight-archive-0.4.0.sql"], {
+  await run("psql", [databaseUrl, "-q", "-v", "ON_ERROR_STOP=1", "-f", "supabase/seed.sql", "-f", "supabase/catalog/agent-heist-0.27.0.sql", "-f", "supabase/catalog/agent-heist-0.28.0.sql", "-f", "supabase/catalog/agent-heist-0.29.0.sql", "-f", "supabase/catalog/midnight-archive-0.4.0.sql", "-f", "supabase/catalog/agent-heist-0.30.0.sql", "-f", "supabase/catalog/midnight-archive-0.5.0.sql"], {
     capture: true,
     sensitive: true,
     environment,
@@ -1457,7 +1459,7 @@ async function verifyDevelopmentFlow(ports) {
     [
       "fixtures/hosted-contract/valid/agent-heist-launch-request.json",
       "fixtures/hosted-contract/valid/agent-heist-frozen-roster.json",
-      "config/hosted/listings/agent-heist-0.29.0.json",
+      "config/hosted/listings/agent-heist-0.30.0.json",
     ].map(async (path) => JSON.parse(await readFile(join(REPOSITORY_ROOT, path), "utf8"))),
   );
   const frozenLaunchRequest = {
@@ -1659,7 +1661,7 @@ async function verifyCanonicalLocalCandidate({
     `hosted-local-${commit.slice(0, 12)}-${recordedAt.replaceAll(/[:.]/gu, "-")}.json`,
   );
   const listingValue = JSON.parse(await readFile(
-    join(REPOSITORY_ROOT, "config/hosted/listings/agent-heist-0.29.0.json"),
+    join(REPOSITORY_ROOT, "config/hosted/listings/agent-heist-0.30.0.json"),
     "utf8",
   ));
   const evidencePath = await writeHostedAcceptanceEvidence(selectedOutput, {

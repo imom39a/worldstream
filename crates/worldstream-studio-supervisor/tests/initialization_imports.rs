@@ -343,51 +343,22 @@ fn reviewed_client_declarations_install_exact_targets_and_reuse_selection_policy
         preview: false,
     };
     initialize_local(&installation)?;
-    for (name, bytes) in [
-        (
-            "inspector.json",
-            include_bytes!("../../../config/activity-clients/releases/inspector-web-v2.json")
-                .as_slice(),
-        ),
-        (
-            "heist.json",
-            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v3.json")
-                .as_slice(),
-        ),
-        (
-            "heist-v4.json",
-            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v4.json")
-                .as_slice(),
-        ),
-        (
-            "heist-v5.json",
-            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v5.json")
-                .as_slice(),
-        ),
-        (
-            "heist-v6.json",
-            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v6.json")
-                .as_slice(),
-        ),
-        (
-            "negotiate.json",
-            include_bytes!("../../../config/activity-clients/releases/negotiate-web.json")
-                .as_slice(),
-        ),
-        (
-            "negotiate-v3.json",
-            include_bytes!("../../../config/activity-clients/releases/negotiate-web-v3.json")
-                .as_slice(),
-        ),
-        (
-            "bindings.json",
-            include_bytes!("../../../config/activity-clients/local-bindings.json").as_slice(),
-        ),
-    ] {
-        fs::write(directory.path().join(name), bytes)?;
+    let declarations = directory.path().join("declarations");
+    fs::create_dir_all(declarations.join("releases"))?;
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/activity-clients");
+    let declaration_bytes = fs::read(source.join("cli-import.json"))?;
+    let imported = worldstream_studio_supervisor::initialization_inputs::parse_client_declaration(
+        &declaration_bytes,
+    )?;
+    for release in &imported.release_files {
+        fs::copy(source.join(release), declarations.join(release))?;
     }
-    let declaration = directory.path().join("clients.json");
-    fs::write(&declaration, br#"{"schema":"worldstream/client-declaration-import/v1","release_files":["inspector.json","heist.json","heist-v4.json","heist-v5.json","heist-v6.json","negotiate.json","negotiate-v3.json"],"bindings_file":"bindings.json"}"#)?;
+    fs::copy(
+        source.join(&imported.bindings_file),
+        declarations.join(&imported.bindings_file),
+    )?;
+    let declaration = declarations.join("cli-import.json");
+    fs::write(&declaration, declaration_bytes)?;
     let mut request = InitializationImportRequest {
         installation,
         runner_templates: Vec::new(),

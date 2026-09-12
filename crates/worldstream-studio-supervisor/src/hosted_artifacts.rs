@@ -14,6 +14,7 @@ pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAge
         include_bytes!("../../../config/hosted/listings/midnight-archive-0.2.0.json"),
         include_bytes!("../../../config/hosted/listings/midnight-archive-0.3.0.json"),
         include_bytes!("../../../config/hosted/listings/midnight-archive-0.4.0.json"),
+        include_bytes!("../../../config/hosted/listings/midnight-archive-0.5.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.4.0.json"),
@@ -42,10 +43,13 @@ pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAge
         include_bytes!("../../../config/hosted/listings/agent-heist-0.27.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.28.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.29.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.30.0.json"),
     ];
     const HOUSE_AGENTS: &[&[u8]] = &[
         include_bytes!("../../../config/hosted/house-agents/mira-1.json"),
+        include_bytes!("../../../config/hosted/house-agents/mira-2.json"),
         include_bytes!("../../../config/hosted/house-agents/jonah-1.json"),
+        include_bytes!("../../../config/hosted/house-agents/jonah-2.json"),
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json"),
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-2.json"),
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-3.json"),
@@ -63,6 +67,7 @@ pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAge
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-15.json"),
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-16.json"),
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-17.json"),
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-18.json"),
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-1.json"),
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-2.json"),
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-3.json"),
@@ -79,6 +84,7 @@ pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAge
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-14.json"),
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-15.json"),
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-16.json"),
+        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-17.json"),
     ];
     let listings = LISTINGS
         .iter()
@@ -174,7 +180,7 @@ mod tests {
             .iter()
             .filter(|listing| !listing.allows_result_publication())
             .collect();
-        assert_eq!(private.len(), 4);
+        assert_eq!(private.len(), 5);
         assert!(
             private
                 .iter()
@@ -197,6 +203,7 @@ mod tests {
                 "0.2.0".to_owned(),
                 "0.3.0".to_owned(),
                 "0.4.0".to_owned(),
+                "0.5.0".to_owned(),
             ])
         );
         Ok(())

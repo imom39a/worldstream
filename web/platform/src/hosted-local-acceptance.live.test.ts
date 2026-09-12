@@ -140,9 +140,9 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     // retained state.
     const retainedGames = await creator.read("/api/my-games");
     const retainedSetupId = retainedHostedSetupLaunchId(retainedGames);
-    if (retainedSetupId !== null) {
-      await preflightRetainedHostedSetup(creator, retainedSetupId);
-    }
+    const retainedParticipants = retainedSetupId === null ? null : await preflightRetainedHostedSetup({
+      creator, browserAgent, productOrigin, browserStreamOrigin, directPush, register, launchId: retainedSetupId,
+    });
     const retainedLaunchId = retainedHostedLiveLaunchId(
       retainedSetupId === null ? retainedGames : await creator.read("/api/my-games"),
     );
@@ -155,6 +155,7 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
         directPush,
         register,
         launchId: retainedLaunchId,
+        earlyParticipants: retainedParticipants,
       });
     }
 
@@ -185,15 +186,15 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     );
     assert.ok(unauthorizedStart.status >= 400);
 
-    const formed = await startLaunch(creator, launchId);
+    const { launch: formed, attached } = await startLaunch(creator, launchId,
+      (pending) => synchronizeLaunchParticipants({ creator, browserAgent, productOrigin,
+        browserStreamOrigin, directPush, register, launchId, run: recordField(pending, "run") }));
     const run = recordField(formed, "run");
     const runId = stringField(run, "run_id");
     const publicId = stringField(run, "public_id");
-    const creatorEntry = firstEntry(run);
+    const { creatorEntry, agentEntry, creatorAuthority, agentAuthority, creatorController,
+      agentController, creatorLive, agentLive, agentSockets, creatorHttpFailures, agentHttpFailures } = attached;
     const creatorEntrySelector = creatorEntry.entrySelector;
-    const agentLaunch = await browserAgent.read(`/api/launches/${launchId}`);
-    const agentEntry = firstEntry(recordField(agentLaunch, "run"));
-
     const anonymousEnter = await fetch(`${productOrigin}/api/runs/enter`, {
       method: "POST",
       headers: {
@@ -206,64 +207,6 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     assert.equal(anonymousEnter.status, 403);
     assert.equal((await fetch(`${productOrigin}/api/ws`)).status, 404);
 
-    const creatorHandoff = await enter(creator, runId, creatorEntry.entrySelector);
-    const agentHandoff = await enter(browserAgent, runId, agentEntry.entrySelector);
-    const creatorHttpFailures: string[] = [];
-    const agentHttpFailures: string[] = [];
-    const creatorAuthority = new ActivityClientHandoffClient(
-      productOrigin,
-      traceFailures(creator.fetch, creatorHttpFailures),
-      { browserOrigin: productOrigin, csrf: creator.csrf },
-    );
-    const agentAuthority = new ActivityClientHandoffClient(
-      productOrigin,
-      traceFailures(browserAgent.fetch, agentHttpFailures),
-      { browserOrigin: productOrigin, csrf: browserAgent.csrf },
-    );
-    const creatorSockets: WebSocket[] = [];
-    const agentSockets: WebSocket[] = [];
-    const creatorController = register(controller(
-      browserStreamOrigin,
-      productOrigin,
-      creatorAuthority,
-      creatorSockets,
-      directPush,
-    ));
-    const agentController = register(controller(
-      browserStreamOrigin,
-      productOrigin,
-      agentAuthority,
-      agentSockets,
-      directPush,
-    ));
-    const creatorLive = trackHeist(creatorController);
-    const agentLive = trackHeist(agentController);
-    const [creatorSession, agentSession] = await Promise.all([
-      creatorAuthority.redeem(creatorHandoff),
-      agentAuthority.redeem(agentHandoff),
-    ]);
-    assert.equal(creatorSession.state, "usable");
-    assert.equal(agentSession.state, "usable");
-    const [creatorRevalidated, agentRevalidated] = await Promise.all([
-      creatorAuthority.resume(),
-      agentAuthority.resume(),
-    ]);
-    assert.equal(creatorRevalidated.state, "usable");
-    assert.equal(agentRevalidated.state, "usable");
-    const [creatorStarted, agentStarted] = await Promise.all([
-      creatorController.start({ kind: "retained", status: creatorRevalidated }),
-      agentController.start({ kind: "retained", status: agentRevalidated }),
-    ]);
-    assert.equal(
-      creatorStarted.status,
-      "live",
-      `creator browser session did not become live: ${creatorStarted.message ?? "no detail"}; ${creatorHttpFailures.at(-1) ?? "no HTTP failure"}`,
-    );
-    assert.equal(
-      agentStarted.status,
-      "live",
-      `external browser-agent session did not become live: ${agentStarted.message ?? "no detail"}; ${agentHttpFailures.at(-1) ?? "no HTTP failure"}`,
-    );
     await Promise.all([
       waitForHeist(creatorController, creatorLive, (state) => state.authorization.role === "navigator"),
       waitForHeist(agentController, agentLive, (state) => state.authorization.role === "broker"),
@@ -597,8 +540,7 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     // This is an extra repeat-admission check. Each Match's capacity evidence
     // below comes from its own exact retirement lane, not this later probe.
     const finalHouseCapacityProbe = await formAndCloseHouseCapacityProbe({
-      creator,
-      browserAgent,
+      creator, browserAgent, productOrigin, browserStreamOrigin, directPush, register,
       matchNumber: 4,
     });
     const finalHouseProbeCapacityReleased = await reconcileAndObserveExactHouseRetirement({
@@ -750,22 +692,145 @@ function traceFailures(dispatch: typeof fetch, failures: string[]): typeof fetch
   };
 }
 
-async function startLaunch(browser: CookieBrowser, launchId: string): Promise<JsonRecord> {
-  const deadline = Date.now() + 120_000;
-  while (Date.now() < deadline) {
+async function startLaunch<T>(
+  browser: Pick<CookieBrowser, "mutateResponse">,
+  launchId: string,
+  attach: (snapshot: JsonRecord) => Promise<T>,
+  timing: { now?: () => number; sleep?: (ms: number) => Promise<void>; timeoutMs?: number; expectedRunId?: string } = {},
+): Promise<{ launch: JsonRecord; attached: T }> {
+  const now = timing.now ?? Date.now;
+  const sleep = timing.sleep ?? delay;
+  const deadline = now() + (timing.timeoutMs ?? 120_000);
+  let retainedRunId: string | null = timing.expectedRunId ?? null;
+  let attached: { value: T } | null = null;
+  while (now() < deadline) {
     const response = await browser.mutateResponse(`/api/launches/${launchId}/start`, {});
     const body = await readJsonResponse(response, [200, 202]);
-    if (body.state === "run_created") return body;
-    if (body.state === "failed_pre_genesis") {
-      throw new Error("hosted launch failed before Genesis");
+    assert.equal(response.status, body.state === "run_created" ? 200 : 202,
+      "hosted launch HTTP status disagrees with snapshot state");
+    if (["failed_pre_genesis", "cancelled", "expired", "closed_by_creator", "abandoned_prestart"].includes(String(body.state)) ||
+        body.recovery_state === "host_attention") {
+      throw new Error("hosted launch cannot continue automatically");
     }
-    const retry = typeof body.retry_after_seconds === "number"
-      ? Math.max(250, Math.min(body.retry_after_seconds * 1_000, 5_000))
-      : 500;
-    await delay(retry);
+    const run = isRecord(body.run) ? body.run : null;
+    if (run !== null) {
+      const runId = stringField(run, "run_id");
+      if (retainedRunId !== null) assert.equal(runId, retainedRunId, "hosted launch changed its retained Run");
+      retainedRunId = runId;
+    }
+    if (run?.can_enter === true && attached === null) {
+      attached = { value: await attach(body) };
+    }
+    if (body.state === "run_created") {
+      assert.ok(attached, "completed hosted launch has no usable actor entry");
+      return { launch: body, attached: attached.value };
+    }
+    const house = isRecord(body.house_fill) ? body.house_fill : null;
+    const claimDelay = house?.state === "claim_window_open" && typeof house.claim_window_closes_at === "string"
+      ? Date.parse(house.claim_window_closes_at) - now() : 0;
+    const retry = typeof body.retry_after_seconds === "number" && Number.isFinite(body.retry_after_seconds) && body.retry_after_seconds > 0
+      ? body.retry_after_seconds * 1_000 : Number.isFinite(claimDelay) && claimDelay > 0 ? claimDelay : 2_000;
+    await sleep(Math.min(Math.max(250, retry), Math.max(0, deadline - now())));
   }
-  throw new Error("hosted launch did not create a Run");
+  throw new Error("hosted launch did not commit Activity Start");
 }
+
+test("acceptance opens retained actors before Activity Start and reuses their synchronized sessions", async () => {
+  let now = 0;
+  const sleeps: number[] = [];
+  const calls: string[] = [];
+  const sessions = { creator: { session: "creator" }, externalAgent: { session: "external-agent" } };
+  let attached = false;
+  let attachmentCount = 0;
+  const run = { run_id: "retained-run", can_enter: true, entries: [{ entry_selector: "owner-entry" }] };
+  const snapshots: JsonRecord[] = [
+    { state: "collecting", house_fill: { state: "claim_window_open", claim_window_closes_at: new Date(15_000).toISOString() } },
+    { state: "reconciling", recovery_state: "genesis_recorded_repairing", run: { ...run, can_enter: false }, retry_after_seconds: 2 },
+    { state: "reconciling", recovery_state: "waiting_for_readiness", run, retry_after_seconds: 2 },
+    { state: "reconciling", recovery_state: "retrying_start", run, retry_after_seconds: 2 },
+    { state: "run_created", recovery_state: "entry_ready", run },
+  ];
+  const result = await startLaunch({
+    mutateResponse: async (path, body) => {
+      calls.push(`POST ${path}`);
+      assert.deepEqual(body, {});
+      const value = snapshots.shift()!;
+      if (value.state === "run_created") assert.equal(attached, true);
+      return Response.json(value, { status: value.state === "run_created" ? 200 : 202 });
+    },
+  }, "same-launch", async (snapshot) => {
+    assert.equal(recordField(snapshot, "run").run_id, "retained-run");
+    attachmentCount += 1;
+    attached = true;
+    return sessions;
+  }, { now: () => now, sleep: async (ms) => { sleeps.push(ms); now += ms; } });
+  assert.equal(result.launch.state, "run_created");
+  assert.strictEqual(result.attached, sessions);
+  assert.equal(attachmentCount, 1);
+  assert.deepEqual(sleeps, [15_000, 2_000, 2_000, 2_000]);
+  assert.deepEqual(calls, [
+    "POST /api/launches/same-launch/start", "POST /api/launches/same-launch/start",
+    "POST /api/launches/same-launch/start", "POST /api/launches/same-launch/start", "POST /api/launches/same-launch/start",
+  ]);
+});
+
+test("acceptance rejects pending 200 and committed 202 before redeeming any handoff", async () => {
+  for (const [state, status] of [["reconciling", 200], ["run_created", 202]] as const) {
+    let attaches = 0;
+    let posts = 0;
+    await assert.rejects(() => startLaunch({
+      mutateResponse: async () => { posts += 1; return Response.json({ state,
+        run: { run_id: "same-run", can_enter: true } }, { status }); },
+    }, "same-launch", async () => { attaches += 1; }), /HTTP status disagrees/u);
+    assert.equal(posts, 1);
+    assert.equal(attaches, 0);
+  }
+});
+
+test("acceptance rate limiting remains fatal without retries or client entry", async () => {
+  let posts = 0;
+  let attaches = 0;
+  await assert.rejects(() => startLaunch({
+    mutateResponse: async () => { posts += 1; return Response.json({ error: { code: "rate_limited" } }, { status: 429 }); },
+  }, "same-launch", async () => { attaches += 1; }), /429/u);
+  assert.equal(posts, 1);
+  assert.equal(attaches, 0);
+});
+
+test("acceptance never replaces a retained Run or retries Host attention", async () => {
+  for (const next of [
+    { state: "reconciling", recovery_state: "host_attention", run: { run_id: "original", can_enter: true } },
+    { state: "run_created", run: { run_id: "replacement", can_enter: true } },
+  ]) {
+    let attaches = 0;
+    let posts = 0;
+    await assert.rejects(() => startLaunch({
+      mutateResponse: async () => Response.json(posts++ === 0
+        ? { state: "reconciling", recovery_state: "waiting_for_readiness", run: { run_id: "original", can_enter: true } }
+        : next, { status: posts > 1 && next.state === "run_created" ? 200 : 202 }),
+    }, "same-launch", async () => { attaches += 1; }, { sleep: async () => {} }), /cannot continue|changed its retained Run/u);
+    assert.equal(attaches, 1);
+  }
+});
+
+test("acceptance attaches an already committed Run once and respects pending retry deadlines", async () => {
+  const sessions = {};
+  const ready = await startLaunch({
+    mutateResponse: async () => Response.json({ state: "run_created", run: { run_id: "same-run", can_enter: true } }),
+  }, "same-launch", async () => sessions);
+  assert.strictEqual(ready.attached, sessions);
+  let now = 0;
+  let posts = 0;
+  const sleeps: number[] = [];
+  await assert.rejects(() => startLaunch({
+    mutateResponse: async () => { posts += 1; return Response.json({ state: "collecting", retry_after_seconds: 30 }, { status: 202 }); },
+  }, "same-launch", async () => { throw new Error("unexpected attachment"); }, {
+    now: () => now, timeoutMs: 35_000,
+    sleep: async (ms) => { sleeps.push(ms); now += ms; },
+  }), /did not commit Activity Start/u);
+  assert.equal(posts, 2);
+  assert.deepEqual(sleeps, [30_000, 5_000]);
+});
 
 async function enter(
   browser: CookieBrowser,
@@ -1022,57 +1087,12 @@ async function runHouseBackedMatch(options: {
     invitation_token: stringField(invitation, "invitation_token"),
     participation: "external_agent",
   }, [201]);
-  const formed = await startLaunch(creator, launchId);
+  const { launch: formed, attached } = await startLaunch(creator, launchId,
+    (pending) => synchronizeLaunchParticipants({ ...options, launchId, run: recordField(pending, "run") }));
   const run = recordField(formed, "run");
   const runId = stringField(run, "run_id");
   const publicId = stringField(run, "public_id");
-  const creatorEntry = firstEntry(run);
-  const agentLaunch = await browserAgent.read(`/api/launches/${launchId}`);
-  const agentEntry = firstEntry(recordField(agentLaunch, "run"));
-  const creatorHandoff = await enter(creator, runId, creatorEntry.entrySelector);
-  const agentHandoff = await enter(browserAgent, runId, agentEntry.entrySelector);
-  const creatorAuthority = new ActivityClientHandoffClient(
-    productOrigin,
-    creator.fetch,
-    { browserOrigin: productOrigin, csrf: creator.csrf },
-  );
-  const agentAuthority = new ActivityClientHandoffClient(
-    productOrigin,
-    browserAgent.fetch,
-    { browserOrigin: productOrigin, csrf: browserAgent.csrf },
-  );
-  const creatorController = register(controller(
-    browserStreamOrigin,
-    productOrigin,
-    creatorAuthority,
-    [],
-    directPush,
-  ));
-  const agentController = register(controller(
-    browserStreamOrigin,
-    productOrigin,
-    agentAuthority,
-    [],
-    directPush,
-  ));
-  const creatorLive = trackHeist(creatorController);
-  const agentLive = trackHeist(agentController);
-  const [creatorSession, agentSession] = await Promise.all([
-    creatorAuthority.redeem(creatorHandoff),
-    agentAuthority.redeem(agentHandoff),
-  ]);
-  const [creatorRevalidated, agentRevalidated] = await Promise.all([
-    creatorAuthority.resume(),
-    agentAuthority.resume(),
-  ]);
-  assert.equal(creatorSession.state, "usable");
-  assert.equal(agentSession.state, "usable");
-  const [creatorStarted, agentStarted] = await Promise.all([
-    creatorController.start({ kind: "retained", status: creatorRevalidated }),
-    agentController.start({ kind: "retained", status: agentRevalidated }),
-  ]);
-  assert.equal(creatorStarted.status, "live");
-  assert.equal(agentStarted.status, "live");
+  const { creatorEntry, creatorController, agentController, creatorLive, agentLive } = attached;
   await Promise.all([
     waitForHeist(creatorController, creatorLive, (state) => state.authorization.role === "navigator"),
     waitForHeist(agentController, agentLive, (state) => state.authorization.role === "broker"),
@@ -1168,15 +1188,12 @@ async function runPeopleOnlyNoActionMatch(options: {
     invitation_token: stringField(invitation, "invitation_token"),
     participation: "external_agent",
   }, [201]);
-  const formed = await startLaunch(creator, launchId);
+  const { launch: formed, attached } = await startLaunch(creator, launchId,
+    (pending) => synchronizeLaunchParticipants({ ...options, launchId, run: recordField(pending, "run") }));
   const run = recordField(formed, "run");
   const runId = stringField(run, "run_id");
   const publicId = stringField(run, "public_id");
-  const entrySelector = await synchronizePeopleOnlyRun({
-    ...options,
-    launchId,
-    run,
-  });
+  const entrySelector = await waitForPeopleOnlyStart(attached);
   const terminal = await pollPublicResult(productOrigin, publicId, 240_000);
   assert.equal(terminal.state, "result");
   const summary = recordField(terminal, "result");
@@ -1189,7 +1206,7 @@ async function runPeopleOnlyNoActionMatch(options: {
   return { launchId, runId, publicId, entrySelector };
 }
 
-async function synchronizePeopleOnlyRun(options: {
+type LaunchParticipantOptions = {
   creator: CookieBrowser;
   browserAgent: CookieBrowser;
   productOrigin: string;
@@ -1197,50 +1214,45 @@ async function synchronizePeopleOnlyRun(options: {
   directPush: DirectPushMeasurement;
   register: <T extends { close(): void }>(controller: T) => T;
   launchId: string;
-  run: JsonRecord;
-}): Promise<string> {
-  const {
-    creator,
-    browserAgent,
-    productOrigin,
-    browserStreamOrigin,
-    directPush,
-    register,
-    launchId,
-    run,
-  } = options;
+};
+
+async function synchronizeLaunchParticipants(options: LaunchParticipantOptions & { run: JsonRecord }) {
+  const { creator, browserAgent, productOrigin, browserStreamOrigin, directPush, register, launchId, run } = options;
   const runId = stringField(run, "run_id");
   const creatorEntry = firstEntry(run);
   const agentLaunch = await browserAgent.read(`/api/launches/${launchId}`);
   const agentRun = recordField(agentLaunch, "run");
   assert.equal(stringField(agentRun, "run_id"), runId);
+  assert.equal(agentRun.can_enter, true);
   const agentEntry = firstEntry(agentRun);
-  const [creatorHandoff, agentHandoff] = await Promise.all([
-    enter(creator, runId, creatorEntry.entrySelector),
-    enter(browserAgent, runId, agentEntry.entrySelector),
-  ]);
+  const creatorHandoff = await enter(creator, runId, creatorEntry.entrySelector);
+  const agentHandoff = await enter(browserAgent, runId, agentEntry.entrySelector);
+  const creatorHttpFailures: string[] = [];
+  const agentHttpFailures: string[] = [];
   const creatorAuthority = new ActivityClientHandoffClient(
     productOrigin,
-    creator.fetch,
+    traceFailures(creator.fetch, creatorHttpFailures),
     { browserOrigin: productOrigin, csrf: creator.csrf },
   );
   const agentAuthority = new ActivityClientHandoffClient(
     productOrigin,
-    browserAgent.fetch,
+    traceFailures(browserAgent.fetch, agentHttpFailures),
     { browserOrigin: productOrigin, csrf: browserAgent.csrf },
   );
+  const creatorSockets: WebSocket[] = [];
+  const agentSockets: WebSocket[] = [];
   const creatorController = register(controller(
     browserStreamOrigin,
     productOrigin,
     creatorAuthority,
-    [],
+    creatorSockets,
     directPush,
   ));
   const agentController = register(controller(
     browserStreamOrigin,
     productOrigin,
     agentAuthority,
-    [],
+    agentSockets,
     directPush,
   ));
   const creatorLive = trackHeist(creatorController);
@@ -1255,12 +1267,31 @@ async function synchronizePeopleOnlyRun(options: {
     creatorAuthority.resume(),
     agentAuthority.resume(),
   ]);
+  assert.equal(creatorRevalidated.state, "usable");
+  assert.equal(agentRevalidated.state, "usable");
   const [creatorStarted, agentStarted] = await Promise.all([
     creatorController.start({ kind: "retained", status: creatorRevalidated }),
     agentController.start({ kind: "retained", status: agentRevalidated }),
   ]);
-  assert.equal(creatorStarted.status, "live");
-  assert.equal(agentStarted.status, "live");
+  assert.equal(
+    creatorStarted.status,
+    "live",
+    `creator browser session did not become live: ${creatorStarted.message ?? "no detail"}; ${creatorHttpFailures.at(-1) ?? "no HTTP failure"}`,
+  );
+  assert.equal(
+    agentStarted.status,
+    "live",
+    `external browser-agent session did not become live: ${agentStarted.message ?? "no detail"}; ${agentHttpFailures.at(-1) ?? "no HTTP failure"}`,
+  );
+  return { creatorEntry, agentEntry, creatorAuthority, agentAuthority,
+    creatorController, agentController, creatorLive, agentLive,
+    creatorSockets, agentSockets, creatorHttpFailures, agentHttpFailures };
+}
+
+type LaunchParticipants = Awaited<ReturnType<typeof synchronizeLaunchParticipants>>;
+
+async function waitForPeopleOnlyStart(participants: LaunchParticipants): Promise<string> {
+  const { creatorController, agentController, creatorLive, agentLive, creatorEntry } = participants;
   await Promise.all([
     waitForHeist(
       creatorController,
@@ -1282,9 +1313,7 @@ async function synchronizePeopleOnlyRun(options: {
  * Proves that a fresh House-backed formation can reserve the released slot,
  * then closes only that probe through the evidence-bound lineage closure path.
  */
-async function formAndCloseHouseCapacityProbe(options: {
-  creator: CookieBrowser;
-  browserAgent: CookieBrowser;
+async function formAndCloseHouseCapacityProbe(options: Omit<LaunchParticipantOptions, "launchId"> & {
   matchNumber: number;
 }): Promise<{ readonly runId: string; readonly formed: boolean }> {
   const { creator, browserAgent, matchNumber } = options;
@@ -1305,19 +1334,25 @@ async function formAndCloseHouseCapacityProbe(options: {
     invitation_token: stringField(invitation, "invitation_token"),
     participation: "external_agent",
   }, [201]);
-  const formed = await startLaunch(creator, launchId);
-  assert.equal(formed.state, "run_created");
-  const runId = stringField(recordField(formed, "run"), "run_id");
-  const closure = await creator.mutate(`/api/launches/${launchId}/close`, {}, [200]);
-  assert.equal(closure.version, "hosted_launch_closed.v1");
-  assert.equal(closure.closed, true);
-  const terminalLaunch = await waitForLaunchState(creator, launchId, "closed_by_creator");
-  const formedAndClosed = formed.state === "run_created" &&
-    closure.version === "hosted_launch_closed.v1" &&
-    closure.closed === true &&
-    terminalLaunch.state === "closed_by_creator";
-  assert.equal(formedAndClosed, true);
-  return Object.freeze({ runId, formed: formedAndClosed });
+  const { launch: formed, attached } = await startLaunch(creator, launchId,
+    (pending) => synchronizeLaunchParticipants({ ...options, launchId, run: recordField(pending, "run") }));
+  try {
+    assert.equal(formed.state, "run_created");
+    const runId = stringField(recordField(formed, "run"), "run_id");
+    const closure = await creator.mutate(`/api/launches/${launchId}/close`, {}, [200]);
+    assert.equal(closure.version, "hosted_launch_closed.v1");
+    assert.equal(closure.closed, true);
+    const terminalLaunch = await waitForLaunchState(creator, launchId, "closed_by_creator");
+    const formedAndClosed = formed.state === "run_created" &&
+      closure.version === "hosted_launch_closed.v1" &&
+      closure.closed === true &&
+      terminalLaunch.state === "closed_by_creator";
+    assert.equal(formedAndClosed, true);
+    return Object.freeze({ runId, formed: formedAndClosed });
+  } finally {
+    attached.creatorController.close();
+    attached.agentController.close();
+  }
 }
 
 type HouseRetirementLane = "terminal" | "prestart";
@@ -2154,10 +2189,142 @@ export function retainedHostedSetupLaunchId(value: unknown): string | null {
   return candidates[0] === undefined ? null : stringField(candidates[0], "launch_id");
 }
 
-async function preflightRetainedHostedSetup(
-  creator: CookieBrowser,
-  launchId: string,
-): Promise<void> {
+type RetainedParticipants =
+  | { mode: "people_only"; runId: string; participants: LaunchParticipants }
+  | { mode: "house_agents"; runId: string; creatorController: HostedLiveSessionController };
+
+async function synchronizeRetainedCreator(options: LaunchParticipantOptions & { run: JsonRecord }) {
+  const { creator, productOrigin, browserStreamOrigin, directPush, register, run } = options;
+  const entry = firstEntry(run);
+  const handoff = await enter(creator, stringField(run, "run_id"), entry.entrySelector);
+  const authority = new ActivityClientHandoffClient(productOrigin, creator.fetch,
+    { browserOrigin: productOrigin, csrf: creator.csrf });
+  const session = register(controller(browserStreamOrigin, productOrigin, authority, [], directPush));
+  assert.equal((await authority.redeem(handoff)).state, "usable");
+  const revalidated = await authority.resume();
+  assert.equal(revalidated.state, "usable");
+  assert.equal((await session.start({ kind: "retained", status: revalidated })).status, "live");
+  return session;
+}
+
+/** My Games can expose retained Genesis as live before Activity Start commits. */
+async function ensureRetainedLaunchStarted(
+  options: LaunchParticipantOptions,
+  initial: JsonRecord,
+  earlyParticipants: RetainedParticipants | null = null,
+  effects: {
+    synchronizeCreator?: typeof synchronizeRetainedCreator;
+    synchronizePeople?: typeof synchronizeLaunchParticipants;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<{ launch: JsonRecord; earlyParticipants: RetainedParticipants | null }> {
+  assert.equal(initial.activity_slug, "agent-heist");
+  assert.equal(stringField(initial, "launch_id"), options.launchId);
+  const expectedRunId = isRecord(initial.run) ? stringField(initial.run, "run_id") : undefined;
+  if (earlyParticipants !== null && expectedRunId !== undefined) assert.equal(earlyParticipants.runId, expectedRunId);
+  if (initial.state === "run_created") return { launch: initial, earlyParticipants };
+  assert.ok(["provisioning", "reconciling"].includes(String(initial.state)), "retained launch cannot resume");
+  assert.ok(initial.fill_mode === "people_only" || initial.fill_mode === "house_agents");
+  const { launch, attached } = await startLaunch(options.creator, options.launchId, async (pending): Promise<RetainedParticipants> => {
+    assert.equal(pending.launch_id, options.launchId);
+    assert.equal(pending.fill_mode, initial.fill_mode);
+    const run = recordField(pending, "run");
+    const runId = stringField(run, "run_id");
+    if (earlyParticipants !== null) {
+      assert.equal(earlyParticipants.runId, runId);
+      assert.equal(earlyParticipants.mode, pending.fill_mode);
+      return earlyParticipants;
+    }
+    if (pending.fill_mode === "people_only") {
+      const participants = await (effects.synchronizePeople ?? synchronizeLaunchParticipants)({ ...options, run });
+      return { mode: "people_only", runId, participants };
+    }
+    // A retained House-filled run may have no seat owned by the secondary
+    // acceptance account. The Host supplies its agents; attach only the owner.
+    const creatorController = await (effects.synchronizeCreator ?? synchronizeRetainedCreator)({ ...options, run });
+    return { mode: "house_agents", runId, creatorController };
+  }, { expectedRunId, sleep: effects.sleep });
+  assert.equal(launch.launch_id, options.launchId);
+  assert.equal(launch.fill_mode, initial.fill_mode);
+  return { launch, earlyParticipants: attached };
+}
+
+test("retained live history completes exact Start with only the actors who own seats", async () => {
+  const launchId = "20000000-0000-4000-8000-000000000001";
+  const runId = "30000000-0000-4000-8000-000000000001";
+  assert.equal(retainedHostedLiveLaunchId({ version: "platform_my_games.v1", items: [{ launch_id: launchId,
+    title: "Agent Heist", state: "live", action: "return_to_game" }] }), launchId);
+  for (const mode of ["house_agents", "people_only"] as const) {
+    let creatorAttachments = 0;
+    let peopleAttachments = 0;
+    let posts = 0;
+    const sleeps: number[] = [];
+    const initial: JsonRecord = { activity_slug: "agent-heist", launch_id: launchId,
+      fill_mode: mode, state: "reconciling", recovery_state: "waiting_for_readiness",
+      retry_after_seconds: 2, run: { run_id: runId, can_enter: true } };
+    const creator = {
+      mutateResponse: async (path: string, body: JsonRecord) => {
+        assert.equal(path, `/api/launches/${launchId}/start`);
+        assert.deepEqual(body, {});
+        posts += 1;
+        return Response.json({ ...initial, state: posts === 1 ? "reconciling" : "run_created" },
+          { status: posts === 1 ? 202 : 200 });
+      },
+    } as unknown as CookieBrowser;
+    const browserAgent = {
+      read: async () => { throw new Error("secondary account owns no House seat"); },
+    } as unknown as CookieBrowser;
+    const creatorController = { close() {} } as HostedLiveSessionController;
+    const participants = {} as LaunchParticipants;
+    const options = { creator, browserAgent, launchId } as LaunchParticipantOptions;
+    const result = await ensureRetainedLaunchStarted(options, initial, null, {
+      synchronizeCreator: async (input) => {
+        assert.strictEqual(input.creator, creator);
+        assert.equal(input.run.run_id, runId);
+        creatorAttachments += 1;
+        return creatorController;
+      },
+      synchronizePeople: async (input) => {
+        assert.strictEqual(input.creator, creator);
+        assert.strictEqual(input.browserAgent, browserAgent);
+        peopleAttachments += 1;
+        return participants;
+      },
+      sleep: async (ms) => { sleeps.push(ms); },
+    });
+    assert.equal(result.launch.state, "run_created");
+    assert.equal(result.earlyParticipants?.runId, runId);
+    assert.equal(result.earlyParticipants?.mode, mode);
+    assert.equal(creatorAttachments, mode === "house_agents" ? 1 : 0);
+    assert.equal(peopleAttachments, mode === "people_only" ? 1 : 0);
+    assert.equal(posts, 2);
+    assert.deepEqual(sleeps, [2_000]);
+
+    // A later reconciliation may need the same Start retry; retained sessions
+    // survive that retry instead of minting another one-use client handoff.
+    posts = 0;
+    const reused = await ensureRetainedLaunchStarted(options, initial, result.earlyParticipants, {
+      synchronizeCreator: async () => { throw new Error("duplicate creator handoff"); },
+      synchronizePeople: async () => { throw new Error("duplicate participant handoffs"); },
+      sleep: async () => {},
+    });
+    assert.strictEqual(reused.earlyParticipants, result.earlyParticipants);
+    assert.equal(reused.launch.state, "run_created");
+  }
+});
+
+test("retained Start rejects a replacement Run before attaching the creator", async () => {
+  const initial = { activity_slug: "agent-heist", launch_id: "same-launch", fill_mode: "house_agents",
+    state: "reconciling", run: { run_id: "original", can_enter: true } };
+  const creator = {
+    mutateResponse: async () => Response.json({ ...initial, run: { run_id: "replacement", can_enter: true } }, { status: 202 }),
+  } as unknown as CookieBrowser;
+  await assert.rejects(() => ensureRetainedLaunchStarted({ creator, launchId: "same-launch" } as LaunchParticipantOptions,
+    initial, null, { synchronizeCreator: async () => { throw new Error("should not attach"); } }), /changed its retained Run/u);
+});
+
+async function preflightRetainedHostedSetup(options: LaunchParticipantOptions): Promise<RetainedParticipants | null> {
+  const { creator, launchId } = options;
   const launch = await creator.read(`/api/launches/${launchId}`);
   const state = stringField(launch, "state");
   if (state === "collecting") {
@@ -2166,13 +2333,13 @@ async function preflightRetainedHostedSetup(
     assert.equal(closed.closed, true);
     assert.equal((await creator.read(`/api/launches/${launchId}`)).state, "closed_by_creator");
     console.info("Hosted acceptance: closed the one retained collecting setup through the durable API.");
-    return;
+    return null;
   }
   if (state === "closing") {
     const closed = await creator.mutate(`/api/launches/${launchId}/close`, {}, [200]);
     assert.equal(closed.version, "hosted_launch_closed.v1");
     assert.equal(closed.closed, true);
-    return;
+    return null;
   }
   if (state !== "provisioning" && state !== "reconciling" && state !== "run_created") {
     throw new Error(`hosted acceptance retained setup state is not resumable: ${state}`);
@@ -2181,12 +2348,13 @@ async function preflightRetainedHostedSetup(
     throw new Error("hosted acceptance cannot resume a retained non-Heist setup in this candidate");
   }
   if (state !== "run_created") {
-    const formed = await startLaunch(creator, launchId);
-    assert.equal(formed.state, "run_created");
+    return (await ensureRetainedLaunchStarted(options, launch)).earlyParticipants;
   }
+  return null;
 }
 
 async function completeRetainedRun(options: {
+  earlyParticipants?: RetainedParticipants | null;
   creator: CookieBrowser;
   browserAgent: CookieBrowser;
   productOrigin: string;
@@ -2195,8 +2363,15 @@ async function completeRetainedRun(options: {
   register: <T extends { close(): void }>(controller: T) => T;
   launchId: string;
 }): Promise<void> {
-  const retainedLaunch = await options.creator.read(`/api/launches/${options.launchId}`);
+  const initialLaunch = await options.creator.read(`/api/launches/${options.launchId}`);
+  const { launch: retainedLaunch, earlyParticipants } = await ensureRetainedLaunchStarted(
+    options, initialLaunch, options.earlyParticipants ?? null,
+  );
   if (retainedLaunch.fill_mode !== "people_only") {
+    if (earlyParticipants !== null) {
+      assert.equal(earlyParticipants.mode, "house_agents");
+      if (earlyParticipants.mode === "house_agents") earlyParticipants.creatorController.close();
+    }
     await completeRetainedRenderedRun(
       options.creator,
       options.productOrigin,
@@ -2209,7 +2384,10 @@ async function completeRetainedRun(options: {
   const retainedRun = recordField(retainedLaunch, "run");
   assert.equal(retainedRun.can_enter, true);
   const publicId = stringField(retainedRun, "public_id");
-  await synchronizePeopleOnlyRun({ ...options, run: retainedRun });
+  if (earlyParticipants !== null) assert.equal(earlyParticipants.mode, "people_only");
+  await waitForPeopleOnlyStart(earlyParticipants?.mode === "people_only"
+    ? earlyParticipants.participants
+    : await synchronizeLaunchParticipants({ ...options, run: retainedRun }));
   const terminal = await pollPublicResult(options.productOrigin, publicId, 240_000);
   assert.equal(terminal.state, "result");
   const recoveredHistory = await options.creator.read("/api/my-games");

@@ -550,6 +550,19 @@ impl<'a, R: BufRead, W: Write> McpClient<'a, R, W> {
         {
             return Ok(ManagedTurnPreparationV1::NoWork);
         }
+        // Preparation owns no provider call. The assignment helper retains the
+        // exact acquisition/claim identity across these explicitly retryable
+        // gateway failures; let the host's bounded idle backoff retry it.
+        if result.get("isError").and_then(Value::as_bool) == Some(true)
+            && matches!(
+                content.get("code").and_then(Value::as_str),
+                Some("assignment_daemon_unavailable" | "assignment_daemon_disconnected")
+            )
+            && content.get("retryable").and_then(Value::as_bool) == Some(true)
+            && content.get("next_action").and_then(Value::as_str) == Some("retry_observe")
+        {
+            return Ok(ManagedTurnPreparationV1::NoWork);
+        }
         if terminal_lease_retry(content) {
             return Ok(ManagedTurnPreparationV1::RetryAfterTerminalLease);
         }
@@ -686,6 +699,126 @@ fn descend<'a>(mut value: &'a Value, path: &[&str]) -> Option<&'a Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scripted_client_responses(results: &[Value]) -> io::Cursor<Vec<u8>> {
+        let mut bytes = Vec::new();
+        for (index, result) in results.iter().enumerate() {
+            serde_json::to_writer(
+                &mut bytes,
+                &json!({"jsonrpc": "2.0", "id": index + 1, "result": result}),
+            )
+            .unwrap();
+            bytes.push(b'\n');
+        }
+        io::Cursor::new(bytes)
+    }
+
+    #[test]
+    fn transient_preparation_retries_without_entering_the_provider_or_submitting_an_action() {
+        for code in [
+            "assignment_daemon_unavailable",
+            "assignment_daemon_disconnected",
+        ] {
+            let failure = json!({
+                "isError": true,
+                "structuredContent": {"code": code, "retryable": true, "next_action": "retry_observe"},
+            });
+            let mut input = scripted_client_responses(&[
+                failure.clone(),
+                failure,
+                json!({"isError": false, "structuredContent": {"state": "reconciled"}}),
+            ]);
+            let mut output = Vec::new();
+            let mut client = McpClient {
+                input: &mut input,
+                output: &mut output,
+                next_id: 1,
+            };
+            let mut backoff = NoWorkBackoff::new();
+            // This port has no provider: attempting execution instead of
+            // returning to the acquisition loop would fail the test.
+            let address = "127.0.0.1:0".parse().unwrap();
+            for delay in [250, 500] {
+                assert_eq!(
+                    run_one_reference_turn(&mut client, address, "unused", b"unused").unwrap(),
+                    TurnOutcomeV1::NoWork
+                );
+                assert_eq!(backoff.take(), Duration::from_millis(delay));
+            }
+            assert_eq!(
+                run_one_reference_turn(&mut client, address, "unused", b"unused").unwrap(),
+                TurnOutcomeV1::Completed
+            );
+            let requests: Vec<Value> = output
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .map(|line| serde_json::from_slice(line).unwrap())
+                .collect();
+            assert_eq!(requests.len(), 3);
+            for request in requests {
+                assert_eq!(
+                    request["params"],
+                    json!({"name": "worldstream.prepare_managed_turn", "arguments": {}})
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn preparation_rejects_unreviewed_or_nonretryable_failures() {
+        for content in [
+            json!({"code": "assignment_daemon_unavailable", "retryable": false, "next_action": "retry_observe"}),
+            json!({"code": "assignment_daemon_disconnected", "retryable": false, "next_action": "retry_observe"}),
+            json!({"code": "assignment_daemon_unavailable", "next_action": "retry_observe"}),
+            json!({"code": "assignment_daemon_unavailable", "retryable": true, "next_action": "return_to_task_setup"}),
+            json!({"code": "assignment_daemon_data_invalid", "retryable": true, "next_action": "retry_observe"}),
+            json!({"code": "assignment_authority_revoked", "retryable": true, "next_action": "retry_observe"}),
+        ] {
+            let mut input = scripted_client_responses(&[
+                json!({"isError": true, "structuredContent": content}),
+            ]);
+            let mut output = Vec::new();
+            let mut client = McpClient {
+                input: &mut input,
+                output: &mut output,
+                next_id: 1,
+            };
+            assert!(
+                run_one_reference_turn(
+                    &mut client,
+                    "127.0.0.1:0".parse().unwrap(),
+                    "unused",
+                    b"unused"
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn transient_recovery_requires_an_explicit_error_and_is_limited_to_preparation() {
+        let content = json!({
+            "code": "assignment_daemon_unavailable",
+            "retryable": true,
+            "next_action": "retry_observe",
+        });
+        let mut input = scripted_client_responses(&[
+            json!({"structuredContent": content}),
+            json!({"isError": true, "structuredContent": content}),
+        ]);
+        let mut output = Vec::new();
+        let mut client = McpClient {
+            input: &mut input,
+            output: &mut output,
+            next_id: 1,
+        };
+        assert!(client.prepare_managed_turn().is_err());
+        assert!(
+            client
+                .submit_managed_turn_action(&json!({"offer_id": "unused", "payload": {}}))
+                .is_err()
+        );
+    }
 
     #[test]
     fn idle_poll_backoff_is_bounded_and_resets_after_work() {

@@ -29,7 +29,7 @@ test("the deployed retained catalog fits the allowlist contract, including 64 re
   const allowlist = JSON.parse(line.slice(line.indexOf("=") + 1));
   assert.ok(allowlist.length > 512, "exercise the former scalar-string limit");
   assert.ok(
-    allowlist.split(",").includes("blake3:71eb289ce6c730fa6e8eefc9d222f9730e8a69b6cc297d43b8794b7eda35f5f9"),
+    allowlist.split(",").includes("blake3:aa91d73f85c13c43490a0d34820085931c23b00eb0dc87ceb83dda10b4a62781"),
     "the Fly Gateway must admit the current discovery Listing",
   );
   assert.ok(
@@ -37,7 +37,7 @@ test("the deployed retained catalog fits the allowlist contract, including 64 re
     "the Fly Gateway must retain Listing 0.28",
   );
   assert.ok(
-    allowlist.split(",").includes("blake3:4c9a98ec044e9389b9a4e3d8a8f33a371dc6ed3991556037ada61cfba4bf718a"),
+    allowlist.split(",").includes("blake3:b2a69e00c4c617b97dce75a0a5f3d0b5278d116284774400cd4ba1720e77e573"),
     "the Fly Gateway must admit the exact reviewed Archive candidate",
   );
   assert.doesNotThrow(() => validateHostedRuntimeEnvironment(environment({ WORLDSTREAM_LISTING_ALLOWLIST: allowlist })));
@@ -237,9 +237,9 @@ test("House Runner import is exact and has no secret environment", () => {
     "a".repeat(64),
   );
   assert.equal(manifest.template_id, "openrouter-house");
-  assert.equal(manifest.revision, "16");
+  assert.equal(manifest.revision, "17");
   assert.deepEqual(manifest.instances, [{
-    instance_id: "hosted-house-r16-01", health_address: "127.0.0.1:9606",
+    instance_id: "hosted-house-r17-01", health_address: "127.0.0.1:9607",
   }]);
   assert.deepEqual(manifest.compatibility, [{
     activity_pack_id: "worldstream.agent-heist",
@@ -255,9 +255,9 @@ test("Archive companions use one separate exact dormant Pack-compatible Runner r
     "a".repeat(64),
   );
   assert.equal(manifest.template_id, "openrouter-house-archive");
-  assert.equal(manifest.revision, "1");
+  assert.equal(manifest.revision, "2");
   assert.deepEqual(manifest.instances, [{
-    instance_id: "hosted-archive-house-01", health_address: "127.0.0.1:9608",
+    instance_id: "hosted-archive-house-r2-01", health_address: "127.0.0.1:9609",
   }]);
   assert.deepEqual(manifest.compatibility, [{
     activity_pack_id: "worldstream.midnight-archive",
@@ -284,6 +284,8 @@ test("successor House Runner instances do not collide with retained installation
     { instance_id: "hosted-house-r12-01", health_address: "127.0.0.1:9602" },
     { instance_id: "hosted-house-r13-01", health_address: "127.0.0.1:9603" },
     { instance_id: "hosted-house-r14-01", health_address: "127.0.0.1:9604" },
+    { instance_id: "hosted-house-r16-01", health_address: "127.0.0.1:9606" },
+    { instance_id: "hosted-archive-house-01", health_address: "127.0.0.1:9608" },
     { instance_id: "hosted-house-r15-01", health_address: "127.0.0.1:9605" },
   ]) {
   const successor = renderHouseRunnerTemplate("/var/lib/worldstream/retained-runner-executables/blake3-a/worldstream-managed-agent-host", "a".repeat(64));
@@ -299,8 +301,8 @@ test("successor House Runner instances do not collide with retained installation
 test("fresh local and Fly imports bind the two Granite strategies to distinct exact profile revisions", () => {
   const profiles = renderHouseAgentProfiles();
   assert.deepEqual(Object.values(profiles).map(({ profile_id, revision }) => ({ profile_id, revision })), [
-    { profile_id: "house-cooperative-planner", revision: "17" },
-    { profile_id: "house-skeptical-auditor", revision: "16" },
+    { profile_id: "house-cooperative-planner", revision: "18" },
+    { profile_id: "house-skeptical-auditor", revision: "17" },
   ]);
   for (const profile of Object.values(profiles)) {
     assert.equal(profile.schema, "worldstream/studio-agent-profile-publish/v2");
@@ -308,7 +310,7 @@ test("fresh local and Fly imports bind the two Granite strategies to distinct ex
     assert.deepEqual(profile.non_secret_configuration, {});
     assert.deepEqual(profile.host_contract, {
       kind: "managed_house_openrouter", host_contract_revision: "1",
-      runner_template: { template_id: "openrouter-house", revision: "16" },
+      runner_template: { template_id: "openrouter-house", revision: "17" },
     });
   }
 });
@@ -319,15 +321,15 @@ test("fresh local and Fly imports bind Mira and Jonah to their exact Archive pro
     ["mira", "jonah"].map(async (name) => [
       name,
       JSON.parse(await readFile(
-        new URL(`../config/hosted/house-agent-profiles/${name}-1.json`, import.meta.url),
+        new URL(`../config/hosted/house-agent-profiles/${name}-2.json`, import.meta.url),
         "utf8",
       )),
     ]),
   ));
   assert.deepEqual(profiles, checkedIn);
   assert.deepEqual(Object.values(profiles).map(({ profile_id, revision }) => ({ profile_id, revision })), [
-    { profile_id: "house-midnight-archive-mira", revision: "1" },
-    { profile_id: "house-midnight-archive-jonah", revision: "1" },
+    { profile_id: "house-midnight-archive-mira", revision: "2" },
+    { profile_id: "house-midnight-archive-jonah", revision: "2" },
   ]);
   for (const profile of Object.values(profiles)) {
     assert.equal(profile.schema, "worldstream/studio-agent-profile-publish/v2");
@@ -336,7 +338,7 @@ test("fresh local and Fly imports bind Mira and Jonah to their exact Archive pro
     assert.deepEqual(profile.host_contract, {
       kind: "managed_house_openrouter",
       host_contract_revision: "1",
-      runner_template: { template_id: "openrouter-house-archive", revision: "1" },
+      runner_template: { template_id: "openrouter-house-archive", revision: "2" },
     });
   }
 });
@@ -382,7 +384,7 @@ test("r12 through r15 keep their retained executable bytes after r16 installs", 
     ...renderHouseRunnerTemplate(r15, "d".repeat(64)), revision: "15",
     instances: [{ instance_id: "hosted-house-r15-01", health_address: "127.0.0.1:9605" }],
   };
-  const r16Template = renderHouseRunnerTemplate(r16, "e".repeat(64));
+  const r16Template = { ...renderHouseRunnerTemplate(r16, "e".repeat(64)), revision: "16" };
   assert.notEqual(r12, r13);
   assert.notEqual(r13, r14);
   assert.notEqual(r14, r15);
@@ -451,7 +453,7 @@ test("immutable Runner imports reuse installed exact manifests across image rebu
     await writeExecutable(oldDigest, "retained Heist bytes"),
     oldDigest,
   );
-  const heistManifest = join(installedRoot, "openrouter-house--16.json");
+  const heistManifest = join(installedRoot, "openrouter-house--17.json");
   await writeFile(heistManifest, JSON.stringify(retainedHeist), { mode: 0o600 });
   await chmod(heistManifest, 0o600);
   assert.deepEqual(await reuseExactInstalledRunnerTemplate({
@@ -465,7 +467,7 @@ test("immutable Runner imports reuse installed exact manifests across image rebu
     await writeExecutable(archiveDigest, "retained Archive bytes"),
     archiveDigest,
   );
-  const archiveManifest = join(installedRoot, "openrouter-house-archive--1.json");
+  const archiveManifest = join(installedRoot, "openrouter-house-archive--2.json");
   await writeFile(archiveManifest, JSON.stringify(retainedArchive), { mode: 0o600 });
   await chmod(archiveManifest, 0o600);
   assert.deepEqual(await reuseExactInstalledRunnerTemplate({

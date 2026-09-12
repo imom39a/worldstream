@@ -72,7 +72,7 @@ existing secret, spending, maintenance, or data-preservation checks below.
 The versioned `WORLDSTREAM_HOSTED_INSTALLATION_ID` must match in the Fly
 appliance, Vercel BFF, and active House approvals. A mismatch makes reviewed
 agents unavailable even when every service is healthy. The current release
-uses `fly-primary-r3`. Do not rename the global Supabase operating row from
+uses `fly-primary-r4`. Do not rename the global Supabase operating row from
 `fly-primary`; that row is the singleton platform admission gate, not the
 formation installation identity.
 
@@ -123,10 +123,46 @@ docker build \
   -t worldstream-hosted-catalog-update:<reviewed-source> .
 ```
 
-Before any deployment, compare all six retained executable SHA-256 values and
-the raw managed-agent BLAKE3 value with the deployed appliance. Also compare
-the generated Template `16` canonical bytes with the installed immutable
-Template `16`. A mismatch is a release stop, not an approval rotation.
+Before any catalog-only deployment, compare all six retained executable
+SHA-256 values and the raw managed-agent BLAKE3 value with the deployed
+appliance. Also compare the generated Template `16` canonical bytes with the
+installed immutable Template `16`. A mismatch is a release stop, not an
+approval rotation. The `r4` release changes the managed-host executable, so it
+must use the full image path instead of this catalog overlay. Its exact binary
+digest must be pinned by new Heist Template `17` and Archive Template `2`; the
+import must leave retained Heist Template `16` and Archive Template `1`
+unchanged.
+
+## One-time `r3` to `r4` clean-preview transition
+
+The `r4` image changes the managed-host bytes and formation installation
+identity. It must not boot over retained `r3` House Runner reservations:
+Controller startup correctly rejects a reservation whose installation identity
+does not match the current one. This cutover therefore requires separate
+explicit operator approval to start a fresh, coherent preview lineage and
+discard the earlier preview Run history. Neither this runbook nor the recovery
+ADR grants that approval. This is a destructive release transition, not an
+ordinary deploy or a recovery claim.
+
+Keep both Supabase admission switches closed and keep
+`/var/lib/worldstream/maintenance/closed` present for the whole transition.
+First capture the stopped Fly volume and platform database; label those bytes as
+preservation input only because populated recovery is still unqualified. Then,
+in one recorded reset procedure, clear only the platform launch/Run descendant
+rows while retaining Auth identities, Platform Accounts, catalog revisions,
+House revisions and approvals, deployment records, and the singleton operating
+row. Replace the stopped volume's `runtime/`, `studio/`, and
+`retained-runner-executables/` children together with new empty owner-only
+directories. Never reset just one authority or reuse any retained `r3`
+reservation under `r4`.
+
+Deploy the full `r4` image while the marker remains present. Import the exact
+new and retained declarations, install the Pack and clients, capture fresh
+`r4` approval evidence for all four current House Agents, and set the Vercel
+BFF installation identity to `fly-primary-r4`. Reopen only after Supabase,
+Fly, and Vercel report the same exact deployment identities and the complete
+local and deployed acceptance stories pass. The public release record must say
+that earlier preview history was reset.
 
 ## Planned deployment or checkpoint
 

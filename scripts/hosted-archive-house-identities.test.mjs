@@ -90,16 +90,16 @@ test("Mira and Jonah are exact distinct House revisions with reviewed behavior p
 test("profile sources and Runner template preserve the Host approval boundary", async () => {
   const profiles = renderArchiveHouseAgentProfiles();
   assert.deepEqual(profiles, {
-    mira: await json("config/hosted/house-agent-profiles/mira-1.json"),
-    jonah: await json("config/hosted/house-agent-profiles/jonah-1.json"),
+    mira: await json("config/hosted/house-agent-profiles/mira-2.json"),
+    jonah: await json("config/hosted/house-agent-profiles/jonah-2.json"),
   });
   assert.equal(
     taggedBlake3(encodeCanonical(profiles.mira)),
-    "blake3:074c3df5883f252ad0ce8c8db3cba2d2ed31b44a5dd265b2e67000b359a2a9fd",
+    "blake3:ab5b1c69a83041d78196ec356ac7c3cfff54cf7bdbcc6829862f4219c903c5d8",
   );
   assert.equal(
     taggedBlake3(encodeCanonical(profiles.jonah)),
-    "blake3:ee202951744bb38bc0cbf5262db24a4d8762badd4ed8c8379e45d0b6c60fd730",
+    "blake3:8caf0a69d0a18da2d20b0e96e6e81a3e47860617dfa872580ee3addab9d01144",
   );
   const manifest = renderArchiveHouseRunnerTemplate(
     "/var/lib/worldstream/retained-runner-executables/blake3-a/worldstream-managed-agent-host",
@@ -114,11 +114,11 @@ test("profile sources and Runner template preserve the Host approval boundary", 
     exact_revisions: ["0.1.0"],
   }]);
   assert.equal(manifest.template_id, "openrouter-house-archive");
-  assert.equal(manifest.revision, "1");
+  assert.equal(manifest.revision, "2");
   assert.deepEqual(manifest.secret_environment, []);
   assert.deepEqual(manifest.instances, [{
-    instance_id: "hosted-archive-house-01",
-    health_address: "127.0.0.1:9608",
+    instance_id: "hosted-archive-house-r2-01",
+    health_address: "127.0.0.1:9609",
   }]);
   for (const profile of Object.values(profiles)) {
     assert.equal(profile.managed_provider_credential_id, "hosted-openrouter");
@@ -175,7 +175,7 @@ test("approval preparation binds both exact companions to installed Host records
     );
   }
   await writeJson(
-    join(state, "runner-templates/installed/openrouter-house-archive--1.json"),
+    join(state, "runner-templates/installed/openrouter-house-archive--2.json"),
     template,
   );
   await writeJson(
@@ -213,8 +213,8 @@ test("approval preparation binds both exact companions to installed Host records
     runnerBinary: binaryPath,
     importReceipt: receiptPath,
     houseRevisions: [
-      resolve("config/hosted/house-agents/mira-1.json"),
-      resolve("config/hosted/house-agents/jonah-1.json"),
+      resolve("config/hosted/house-agents/mira-2.json"),
+      resolve("config/hosted/house-agents/jonah-2.json"),
     ],
     credentialId: "hosted-openrouter",
     installationId: "archive-house-test",
@@ -224,9 +224,9 @@ test("approval preparation binds both exact companions to installed Host records
   assert.deepEqual(
     prepared.evidence.map(({ receipt }) => receipt.house_agent_revision_digest).sort(),
     [
-      "blake3:7e0b07b386009d509d605c9efdbe491a035f219d10ef7ebebc6f71e99461cdde",
-      "blake3:b88da2260f391c91593996c5913961469619b53a9e457c5ea0783cd3cac59db0",
-    ],
+      "blake3:f39cbe937ea71ae36a7084b61c71072083035b2b27ef67ed953275b428d21b25",
+      "blake3:ad5a6ea6ea3b4ad9035c8c066f3ff672912dce30b506e5ae4404a6caff87fdf6",
+    ].sort(),
   );
   assert.equal(new Set(prepared.evidence.map(({ receipt }) => receipt.runner_template_revision_digest)).size, 1);
   assert.equal(new Set(prepared.evidence.map(({ receipt }) => receipt.runner_executable_digest)).size, 1);
