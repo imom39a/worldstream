@@ -717,4 +717,166 @@ mod tests {
             issued[1].browser_session_digest
         );
     }
+
+    #[test]
+    #[allow(clippy::expect_used, clippy::too_many_lines)]
+    fn public_ticket_retries_only_explicit_retryable_membership_busy() {
+        use crate::participant_handoff::FixedDaemonParticipantConsoleGatewayV1;
+        use serde_json::json;
+        use std::{
+            io::{Read as _, Write as _},
+            net::TcpListener,
+            sync::atomic::{AtomicBool, Ordering},
+            thread,
+            time::Duration,
+        };
+
+        let busy = json!({"error": {
+            "code": "room_busy", "message": "the room is temporarily busy", "retryable": true
+        }});
+        for (status, refusal, expected_gets, succeeds, persistent_busy, timeout_ms) in [
+            (429, busy.clone(), 2, true),
+            (
+                429,
+                json!({"error": {"code": "room_busy", "message": "busy", "retryable": false}}),
+                1,
+                false,
+            ),
+            (
+                429,
+                json!({"error": {"code": "rate_limited", "message": "limited", "retryable": true}}),
+                1,
+                false,
+            ),
+            (503, busy.clone(), 1, false),
+            (
+                429,
+                json!({"error": {"code": "room_busy", "message": "busy"}}),
+                1,
+                false,
+            ),
+            (
+                429,
+                json!({"error": {"code": "room_busy", "message": "busy", "retryable": true, "unexpected": true}}),
+                1,
+                false,
+            ),
+        ]
+        .into_iter()
+        .map(|(status, refusal, gets, succeeds)| (status, refusal, gets, succeeds, false, 3000))
+        .chain([
+            (429, busy.clone(), 5, false, true, 3000),
+            (429, busy.clone(), 2, false, true, 250),
+        ])
+        {
+            let root = tempdir().expect("temporary root");
+            let vault = FileSecretVaultV1::open(&root.path().join("vault")).expect("vault");
+            let secret_reference = vault
+                .store(SecretKindV1::MembershipAuthority, &[7; 32])
+                .expect("bearer");
+            let pack = PackReference {
+                id: "worldstream.agent-heist".to_owned(),
+                version: "0.2.0".to_owned(),
+                digest: format!("blake3:{}", "3".repeat(64)),
+            };
+            let binding = request(&pack);
+            let authority = FakeAuthority {
+                request: binding.clone(),
+                binding: RoomSetupPublicRelayBindingV1 {
+                    room_id: binding.room_id.clone(),
+                    member_id: binding.relay_membership_id.clone(),
+                    principal_id: binding.relay_principal_id.clone(),
+                    pack: pack.clone(),
+                    secret_reference,
+                },
+            };
+            let current = json!({
+                "version": "membership_status.v1", "room_id": binding.room_id,
+                "member_id": binding.relay_membership_id, "principal_kind": "agent",
+                "membership_status": "enabled", "access_mode": "spectator", "role": null,
+                "pack": pack,
+            });
+            let ticket = json!({"version": BROWSER_WS_TICKET_VERSION,
+                "ticket": format!("wst1:{}", "a".repeat(64)), "expires_in_ms": 15000});
+            let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP peer");
+            listener.set_nonblocking(true).expect("bounded accept");
+            let address = listener.local_addr().expect("peer address");
+            let stop = Arc::new(AtomicBool::new(false));
+            let peer_stop = Arc::clone(&stop);
+            let peer = thread::spawn(move || {
+                let mut gets = 0;
+                let mut posts = 0;
+                while !peer_stop.load(Ordering::Acquire) {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        thread::sleep(Duration::from_millis(5));
+                        continue;
+                    };
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(1)))
+                        .expect("read bound");
+                    let mut request = Vec::new();
+                    let mut byte = [0_u8; 1];
+                    while !request.ends_with(b"\r\n\r\n") {
+                        stream.read_exact(&mut byte).expect("request header");
+                        request.push(byte[0]);
+                        assert!(request.len() < 8192);
+                    }
+                    let header = String::from_utf8(request).expect("header text");
+                    if let Some(length) = header
+                        .lines()
+                        .find_map(|line| line.strip_prefix("Content-Length: "))
+                    {
+                        let length: usize = length.parse().expect("body length");
+                        assert!(length < 8192);
+                        stream
+                            .read_exact(&mut vec![0; length])
+                            .expect("request body");
+                    }
+                    let (response_status, body) = if header.starts_with("GET /v1/rooms/") {
+                        gets += 1;
+                        if gets == 1 || persistent_busy {
+                            (status, &refusal)
+                        } else {
+                            (200, &current)
+                        }
+                    } else {
+                        assert!(header.starts_with("POST /v1/hosted/browser-stream-ticket "));
+                        posts += 1;
+                        (201, &ticket)
+                    };
+                    let body = serde_json::to_vec(body).expect("response bytes");
+                    write!(stream, "HTTP/1.1 {response_status} Result\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).expect("response header");
+                    stream.write_all(&body).expect("response body");
+                }
+                (gets, posts)
+            });
+            let broker = HostedPublicStreamBrokerV1::open_with_authority(
+                &root.path().join("bindings"),
+                authority,
+                vault,
+                FixedDaemonParticipantConsoleGatewayV1::new(address, Duration::from_millis(timeout_ms))
+                    .with_absolute_http_deadline(),
+                "https://arena.example",
+            )
+            .expect("broker");
+            broker.bind(&binding).expect("retained binding");
+            let result = broker.stream_ticket(&HostedPublicStreamTicketRequestV1 {
+                schema: "worldstream/hosted-public-stream-ticket-request/v1".to_owned(),
+                public_run_id: binding.public_run_id,
+            });
+            stop.store(true, Ordering::Release);
+            let (gets, posts) = peer.join().expect("HTTP peer stopped");
+            assert_eq!(
+                result.is_ok(),
+                succeeds,
+                "public admission must recover only from explicit retryable RoomBusy"
+            );
+            assert_eq!(gets, expected_gets);
+            assert_eq!(
+                posts,
+                usize::from(succeeds),
+                "ticket issuance must occur once, after current membership is verified"
+            );
+        }
+    }
 }

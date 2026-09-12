@@ -422,7 +422,8 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
     }
 
     /// Bounds each native HTTP request across connect, writes and all reads.
-    /// WebSocket operations retain their existing per-operation timeout.
+    /// Membership status reads may retry explicit retryable `RoomBusy` refusals
+    /// within the same budget. WebSocket operations retain their existing timeout.
     #[must_use]
     pub const fn with_absolute_http_deadline(mut self) -> Self {
         self.absolute_http_deadline = true;
@@ -494,6 +495,38 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
         &self,
         authority: &HumanSeatAuthorityV1,
     ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        let deadline = Instant::now() + self.timeout;
+        // A retained Room can be Loading/CatchingUp while another client is
+        // re-entering it. Retry only the Runtime's explicit pre-admission
+        // RoomBusy refusal of this read; never replay ticket issuance or Actions.
+        for retry in 0..=4 {
+            let mut bounded = *self;
+            if self.absolute_http_deadline {
+                bounded.timeout = deadline.saturating_duration_since(Instant::now());
+                if bounded.timeout.is_zero() {
+                    return Err(ParticipantConsoleGatewayErrorV1::Unavailable);
+                }
+            }
+            if let Some(current) = bounded.read_membership_status_once(authority)? {
+                return Ok(current);
+            }
+            let delay = Duration::from_millis(100 << retry);
+            if !self.absolute_http_deadline
+                || retry == 4
+                || deadline.saturating_duration_since(Instant::now()) <= delay
+            {
+                break;
+            }
+            std::thread::sleep(delay);
+        }
+        Err(ParticipantConsoleGatewayErrorV1::Unavailable)
+    }
+
+    // None is only an explicit retryable RoomBusy refusal before admission.
+    fn read_membership_status_once(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+    ) -> Result<Option<CurrentMembershipSnapshotV1>, ParticipantConsoleGatewayErrorV1> {
         let request = Zeroizing::new(format!(
             "GET /v1/rooms/{}/members/{}/status HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
             authority.room_id(),
@@ -547,6 +580,17 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
         session_diagnostic::http(status);
         #[cfg(debug_assertions)]
         reentry_diagnostic::http(status);
+        if status == 429
+            && CanonicalJsonV1::parse(body).is_ok()
+            && serde_json::from_slice::<worldstream_protocol::ErrorEnvelope>(body).is_ok_and(
+                |envelope| {
+                    envelope.error.code == worldstream_protocol::ErrorCode::RoomBusy
+                        && envelope.error.retryable
+                },
+            )
+        {
+            return Ok(None);
+        }
         match status {
             200 => {}
             400 | 401 | 403 | 404 | 422 => return Err(ParticipantConsoleGatewayErrorV1::Rejected),
@@ -575,11 +619,11 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
             reentry_diagnostic::invalid(reentry_diagnostic::Stage::Validation);
             return Err(ParticipantConsoleGatewayErrorV1::Rejected);
         }
-        Ok(CurrentMembershipSnapshotV1 {
+        Ok(Some(CurrentMembershipSnapshotV1 {
             pack: current.pack,
             access_mode: current.access_mode,
             role: current.role,
-        })
+        }))
     }
 
     fn authenticated_json_call<T: Serialize>(
