@@ -3247,7 +3247,7 @@ const GLOBAL_RESOURCE_IDENTITY_INDEXES: [(&str, &str); 2] = [
     ),
 ];
 
-const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 31] = [
+const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 32] = [
     (
         "worldstream_transfer_fence_operation_guards",
         "worldstream_operation_guards",
@@ -3291,6 +3291,10 @@ const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 31] = [
     (
         "worldstream_transfer_fence_room_snapshots",
         "worldstream_room_snapshots",
+    ),
+    (
+        "worldstream_transfer_fence_snapshot_schedules",
+        "worldstream_room_snapshot_schedules",
     ),
     (
         "worldstream_transfer_fence_semantic_receipts",
@@ -9485,7 +9489,8 @@ mod native_hydration_tests {
 
     #[test]
     fn transfer_safety_catalog_contract_matches_the_reviewed_migration() {
-        let transfer_fence_migrations = format!("{MIGRATION_0011_SQL}{MIGRATION_0012_SQL}");
+        let transfer_fence_migrations =
+            format!("{MIGRATION_0011_SQL}{MIGRATION_0012_SQL}{MIGRATION_0015_SQL}");
         for (index, table) in GLOBAL_RESOURCE_IDENTITY_INDEXES {
             assert!(
                 MIGRATION_0011_SQL.contains(&format!("CREATE UNIQUE INDEX {index}")),
