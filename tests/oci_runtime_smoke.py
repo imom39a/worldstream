@@ -51,6 +51,7 @@ RUNTIME_ROLE_SQL_FRAGMENTS = (
     "protected_table.table_name, 'UPDATE'",
     "protected_table.table_name, 'DELETE'",
     "protected_table.table_name, 'TRUNCATE'",
+    "'public.worldstream_frames', 'DELETE'",
 )
 
 
@@ -58,9 +59,9 @@ def assert_runtime_role_contract(source: str) -> None:
     start = source.index("runtime_role_admission_sql() {")
     end = source.index("\n}\n", start)
     query = source[start:end]
-    expected = "false|" * 16 + "false"
+    expected = "false|" * 17 + "false"
     assert f'RUNTIME_ROLE_ADMISSION_EXPECTED="{expected}"' in source
-    assert query.count("|| '|' ||") == 16
+    assert query.count("|| '|' ||") == 17
     for fragment in RUNTIME_ROLE_SQL_FRAGMENTS:
         assert fragment in query
     assert "unnest(ARRAY['INSERT'" not in query

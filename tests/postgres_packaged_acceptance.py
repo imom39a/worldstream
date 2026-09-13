@@ -40,11 +40,12 @@ RUNTIME_ROLE_SQL_FRAGMENTS = (
     "protected_table.table_name, 'UPDATE'",
     "protected_table.table_name, 'DELETE'",
     "protected_table.table_name, 'TRUNCATE'",
+    "'public.worldstream_frames', 'DELETE'",
 )
 
 
 def _assert_runtime_role_sql(query: str) -> None:
-    assert query.count("|| '|' ||") == 16
+    assert query.count("|| '|' ||") == 17
     for fragment in RUNTIME_ROLE_SQL_FRAGMENTS:
         assert fragment in query
     assert "unnest(ARRAY['INSERT'" not in query
@@ -343,6 +344,7 @@ class PostgreSQLPackagedAcceptanceTests(unittest.TestCase):
                 "transfer_control_update",
                 "transfer_control_delete",
                 "transfer_control_truncate",
+                "observation_frame_delete",
             ),
         )
         module._validate_runtime_role_admission(module.RUNTIME_ROLE_ADMISSION_EXPECTED)

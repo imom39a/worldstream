@@ -154,6 +154,7 @@ RUNTIME_ROLE_ADMISSION_FIELDS = (
     "transfer_control_update",
     "transfer_control_delete",
     "transfer_control_truncate",
+    "observation_frame_delete",
 )
 RUNTIME_ROLE_ADMISSION_EXPECTED = "|".join(
     "false" for _ in RUNTIME_ROLE_ADMISSION_FIELDS
@@ -198,27 +199,41 @@ RUNTIME_ROLE_ADMISSION_SQL = (
     "(EXISTS (SELECT 1 FROM unnest(ARRAY["
     "'public.worldstream_transfer_imports',"
     "'public.worldstream_transfer_chunks',"
-    "'public.worldstream_transfer_target_fence']::text[]) "
+    "'public.worldstream_transfer_target_fence',"
+    "'public.worldstream_transfer_stream_imports_v2',"
+    "'public.worldstream_transfer_stream_chunks_v2',"
+    "'public.worldstream_transfer_stream_records_v2']::text[]) "
     "AS protected_table(table_name) WHERE has_table_privilege("
     "current_user, protected_table.table_name, 'INSERT')))::text || '|' || "
     "(EXISTS (SELECT 1 FROM unnest(ARRAY["
     "'public.worldstream_transfer_imports',"
     "'public.worldstream_transfer_chunks',"
-    "'public.worldstream_transfer_target_fence']::text[]) "
+    "'public.worldstream_transfer_target_fence',"
+    "'public.worldstream_transfer_stream_imports_v2',"
+    "'public.worldstream_transfer_stream_chunks_v2',"
+    "'public.worldstream_transfer_stream_records_v2']::text[]) "
     "AS protected_table(table_name) WHERE has_table_privilege("
     "current_user, protected_table.table_name, 'UPDATE')))::text || '|' || "
     "(EXISTS (SELECT 1 FROM unnest(ARRAY["
     "'public.worldstream_transfer_imports',"
     "'public.worldstream_transfer_chunks',"
-    "'public.worldstream_transfer_target_fence']::text[]) "
+    "'public.worldstream_transfer_target_fence',"
+    "'public.worldstream_transfer_stream_imports_v2',"
+    "'public.worldstream_transfer_stream_chunks_v2',"
+    "'public.worldstream_transfer_stream_records_v2']::text[]) "
     "AS protected_table(table_name) WHERE has_table_privilege("
     "current_user, protected_table.table_name, 'DELETE')))::text || '|' || "
     "(EXISTS (SELECT 1 FROM unnest(ARRAY["
     "'public.worldstream_transfer_imports',"
     "'public.worldstream_transfer_chunks',"
-    "'public.worldstream_transfer_target_fence']::text[]) "
+    "'public.worldstream_transfer_target_fence',"
+    "'public.worldstream_transfer_stream_imports_v2',"
+    "'public.worldstream_transfer_stream_chunks_v2',"
+    "'public.worldstream_transfer_stream_records_v2']::text[]) "
     "AS protected_table(table_name) WHERE has_table_privilege("
-    "current_user, protected_table.table_name, 'TRUNCATE')))::text "
+    "current_user, protected_table.table_name, 'TRUNCATE')))::text || '|' || "
+    "has_table_privilege(current_user, "
+    "'public.worldstream_frames', 'DELETE')::text "
     "FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user"
 )
 
@@ -2029,7 +2044,11 @@ class Provider:
             "public.worldstream_schema_migrations,"
             "public.worldstream_transfer_imports,"
             "public.worldstream_transfer_chunks,"
-            "public.worldstream_transfer_target_fence FROM runtime;",
+            "public.worldstream_transfer_target_fence,"
+            "public.worldstream_transfer_stream_imports_v2,"
+            "public.worldstream_transfer_stream_chunks_v2,"
+            "public.worldstream_transfer_stream_records_v2 FROM runtime;"
+            "REVOKE DELETE ON TABLE public.worldstream_frames FROM runtime;",
         )
         _validate_runtime_role_admission(
             self._psql(

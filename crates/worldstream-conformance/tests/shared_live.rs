@@ -966,6 +966,7 @@ impl KernelConformanceAdapter for SqliteAdapter {
 struct PostgresAdapter {
     admin: PostgresAdmin,
     store: PostgresRoomStore,
+    maintenance: PostgresRoomStore,
     authority: AuthorityV1,
     _memory: Arc<InMemoryAuthorityStoreV1>,
     plan: ScenarioPlan,
@@ -981,7 +982,7 @@ impl PostgresAdapter {
         path: PostgresConnectionPath,
     ) -> Self {
         let admin = PostgresAdmin::new(
-            PostgresConnectionConfig::direct_admin(admin_dsn)
+            PostgresConnectionConfig::direct_admin(admin_dsn.clone())
                 .unwrap_or_else(|error| panic!("PG admin config: {error}")),
         )
         .unwrap_or_else(|error| panic!("PG admin: {error}"));
@@ -993,6 +994,14 @@ impl PostgresAdapter {
                 .unwrap_or_else(|error| panic!("PG runtime config: {error}")),
         )
         .unwrap_or_else(|error| panic!("PG runtime: {error}"));
+        // Raw prefix deletion is a conformance-fixture mutation. Production
+        // runtime roles use the bounded SECURITY DEFINER retention function
+        // and deliberately have no direct DELETE privilege on Frames.
+        let maintenance = PostgresRoomStore::new(
+            PostgresConnectionConfig::runtime(admin_dsn, PostgresConnectionPath::Direct)
+                .unwrap_or_else(|error| panic!("PG maintenance config: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("PG maintenance: {error}"));
         let memory = Arc::new(InMemoryAuthorityStoreV1::new());
         memory
             .set_commit_checked_at(parsed("2026-08-15T12:00:00Z"))
@@ -1091,6 +1100,7 @@ impl PostgresAdapter {
         Self {
             admin,
             store,
+            maintenance,
             authority,
             _memory: memory,
             plan,
@@ -1468,7 +1478,7 @@ impl KernelConformanceAdapter for PostgresAdapter {
             .acknowledge_observation_conformance(room_id, member_id, 1)
             .map_err(|error| AdapterError::new("postgres-frame", format!("{error:?}")))?;
         let positions = self
-            .store
+            .maintenance
             .prune_observation_conformance(room_id, member_id, 3)
             .map_err(|error| AdapterError::new("postgres-frame", format!("{error:?}")))?;
         if positions.reset_required_through != Some(frame_head) {

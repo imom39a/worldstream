@@ -12,8 +12,15 @@ use std::sync::{Arc, Mutex};
 use worldstream_postgres::{
     PostgresAdmin, PostgresConnectionConfig, PostgresIntegrityStatusV1, PostgresMigrationPhaseV1,
     PostgresRecoveryPhaseV1, PostgresStorageDiagnosticKindV1, PostgresTelemetryEventV1,
-    PostgresTelemetrySink,
+    PostgresTelemetrySink, migration_history,
 };
+
+fn current_schema_version() -> u64 {
+    migration_history()
+        .last()
+        .and_then(|migration| u64::try_from(migration.version).ok())
+        .unwrap_or_else(|| panic!("migration history must end at a positive version"))
+}
 
 #[derive(Clone, Default)]
 struct RecordingSink(Arc<Mutex<Vec<PostgresTelemetryEventV1>>>);
@@ -47,6 +54,7 @@ fn unreachable_admin() -> PostgresAdmin {
 
 #[test]
 fn real_migration_failure_emits_closed_failed_fact_without_unwinding() {
+    let schema_version = current_schema_version();
     let sink = RecordingSink::default();
     let events = Arc::clone(&sink.0);
     let result = unreachable_admin().with_telemetry(Arc::new(sink)).migrate();
@@ -59,11 +67,11 @@ fn real_migration_failure_emits_closed_failed_fact_without_unwinding() {
         [
             PostgresTelemetryEventV1::Migration {
                 phase: PostgresMigrationPhaseV1::Started,
-                schema_version: 14,
+                schema_version,
             },
             PostgresTelemetryEventV1::Migration {
                 phase: PostgresMigrationPhaseV1::Failed,
-                schema_version: 14,
+                schema_version,
             },
         ]
     );
@@ -138,6 +146,7 @@ fn event_vocabulary_is_closed_and_contains_no_provider_data() {
 #[test]
 #[ignore = "requires a disposable PostgreSQL 17.11 provider"]
 fn live_admin_migration_and_current_schema_emit_terminal_facts() {
+    let schema_version = current_schema_version();
     let dsn = std::env::var("WORLDSTREAM_POSTGRES_TEST_DSN")
         .unwrap_or_else(|error| panic!("WORLDSTREAM_POSTGRES_TEST_DSN: {error}"));
     let config = PostgresConnectionConfig::direct_admin(dsn)
@@ -164,28 +173,28 @@ fn live_admin_migration_and_current_schema_emit_terminal_facts() {
         events[0],
         PostgresTelemetryEventV1::Migration {
             phase: PostgresMigrationPhaseV1::Started,
-            schema_version: 14,
+            schema_version,
         }
     );
     assert!(matches!(
         events[1],
         PostgresTelemetryEventV1::Migration {
             phase: PostgresMigrationPhaseV1::Applied | PostgresMigrationPhaseV1::AlreadyCurrent,
-            schema_version: 14,
-        }
+            schema_version: observed_version,
+        } if observed_version == schema_version
     ));
     assert_eq!(
         events[2],
         PostgresTelemetryEventV1::Migration {
             phase: PostgresMigrationPhaseV1::Started,
-            schema_version: 14,
+            schema_version,
         }
     );
     assert_eq!(
         events[3],
         PostgresTelemetryEventV1::Migration {
             phase: PostgresMigrationPhaseV1::AlreadyCurrent,
-            schema_version: 14,
+            schema_version,
         }
     );
 }

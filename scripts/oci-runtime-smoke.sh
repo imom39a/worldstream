@@ -10,7 +10,7 @@ readonly EXIT_RUNTIME=14
 readonly POSTGRES_IMAGE="postgres:17.11-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73"
 readonly POSTGRES_IDENTITY="postgresql/17.11; server_version_num=170011"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly RUNTIME_ROLE_ADMISSION_EXPECTED="false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false"
+readonly RUNTIME_ROLE_ADMISSION_EXPECTED="false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false"
 
 runtime_role_admission_sql() {
   cat <<'SQL'
@@ -43,10 +43,11 @@ SELECT role.rolsuper::text || '|' ||
        has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'UPDATE')::text || '|' ||
        has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'DELETE')::text || '|' ||
        has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'TRUNCATE')::text || '|' ||
-       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'INSERT')))::text || '|' ||
-       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'UPDATE')))::text || '|' ||
-       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'DELETE')))::text || '|' ||
-       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'TRUNCATE')))::text
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence','public.worldstream_transfer_stream_imports_v2','public.worldstream_transfer_stream_chunks_v2','public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'INSERT')))::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence','public.worldstream_transfer_stream_imports_v2','public.worldstream_transfer_stream_chunks_v2','public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'UPDATE')))::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence','public.worldstream_transfer_stream_imports_v2','public.worldstream_transfer_stream_chunks_v2','public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'DELETE')))::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence','public.worldstream_transfer_stream_imports_v2','public.worldstream_transfer_stream_chunks_v2','public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'TRUNCATE')))::text || '|' ||
+       has_table_privilege(current_user, 'public.worldstream_frames', 'DELETE')::text
 FROM pg_catalog.pg_roles AS role
 WHERE role.rolname = current_user
 SQL
@@ -952,6 +953,7 @@ docker exec -i "$postgres_container_name" psql \
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO runtime;
 GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO runtime;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations, public.worldstream_transfer_imports, public.worldstream_transfer_chunks, public.worldstream_transfer_target_fence, public.worldstream_transfer_stream_imports_v2, public.worldstream_transfer_stream_chunks_v2, public.worldstream_transfer_stream_records_v2 FROM runtime;
+REVOKE DELETE ON TABLE public.worldstream_frames FROM runtime;
 SQL
 runtime_role="$(docker exec "$postgres_container_name" psql \
   --host /var/run/postgresql --username runtime --dbname worldstream \

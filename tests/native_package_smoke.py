@@ -35,11 +35,12 @@ RUNTIME_ROLE_SQL_FRAGMENTS = (
     "protected_table.table_name, 'UPDATE'",
     "protected_table.table_name, 'DELETE'",
     "protected_table.table_name, 'TRUNCATE'",
+    "'public.worldstream_frames', 'DELETE'",
 )
 
 
 def assert_runtime_role_sql(query: str) -> None:
-    assert query.count("|| '|' ||") == 16
+    assert query.count("|| '|' ||") == 17
     for fragment in RUNTIME_ROLE_SQL_FRAGMENTS:
         assert fragment in query
     assert "unnest(ARRAY['INSERT'" not in query
@@ -1100,7 +1101,7 @@ def test_packaged_transfer_uses_exact_control_restart_abort_and_finalize(
     ]
 
 
-@pytest.mark.parametrize("index", range(17))
+@pytest.mark.parametrize("index", range(18))
 def test_runtime_role_witness_rejects_each_individual_escalation(index: int):
     module = load_module()
     assert module.RUNTIME_ROLE_ADMISSION_FIELDS == (
@@ -1121,6 +1122,7 @@ def test_runtime_role_witness_rejects_each_individual_escalation(index: int):
         "transfer_control_update",
         "transfer_control_delete",
         "transfer_control_truncate",
+        "observation_frame_delete",
     )
     module.validate_runtime_role_admission(module.RUNTIME_ROLE_ADMISSION_EXPECTED)
     changed = module.RUNTIME_ROLE_ADMISSION_EXPECTED.split("|")

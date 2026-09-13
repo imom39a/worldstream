@@ -105,7 +105,7 @@ class PostgreSQLHarnessBoundaryTests(unittest.TestCase):
                   "SELECT has_schema_privilege"*) printf '%s\\n' false ;;
                   "SELECT count(*)::text FROM worldstream_schema_migrations") printf '%s\\n' 17 ;;
                   "SELECT CASE WHEN count(*) = 17 AND min(version) = 1"*) printf '%s\\n' '{migration_shape}' ;;
-                  "SELECT EXISTS (SELECT 1 FROM unnest"*) printf '%s\\n' '{migration_ledger_privilege}' ;;
+                  "SELECT "*"EXISTS (SELECT 1 FROM unnest"*) printf '%s\\n' '{migration_ledger_privilege}' ;;
                   "SELECT 1") printf '%s\\n' 1 ;;
                   "SELECT count(*)::text FROM information_schema.tables"*) printf '%s\\n' 39 ;;
                   "CREATE TABLE worldstream_harness_runtime_ddl_probe"*)

@@ -2755,7 +2755,8 @@ fn main() {
                  public.worldstream_transfer_target_fence, \
                  public.worldstream_transfer_stream_imports_v2, \
                  public.worldstream_transfer_stream_chunks_v2, \
-                 public.worldstream_transfer_stream_records_v2 FROM {runtime_role}",
+                 public.worldstream_transfer_stream_records_v2 FROM {runtime_role}; \
+                 REVOKE DELETE ON TABLE public.worldstream_frames FROM {runtime_role}",
             ))
             .is_err()
         {

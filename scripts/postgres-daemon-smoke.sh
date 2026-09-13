@@ -11,7 +11,7 @@ readonly EXIT_PASS=0
 readonly EXIT_UNAVAILABLE=10
 readonly EXIT_INCOMPLETE=13
 readonly EXIT_CLEANUP=14
-readonly RUNTIME_ROLE_ADMISSION_EXPECTED="false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false"
+readonly RUNTIME_ROLE_ADMISSION_EXPECTED="false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false"
 
 runtime_role_admission_sql() {
   cat <<'SQL'
@@ -44,10 +44,11 @@ SELECT role.rolsuper::text || '|' ||
        has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'UPDATE')::text || '|' ||
        has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'DELETE')::text || '|' ||
        has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'TRUNCATE')::text || '|' ||
-       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'INSERT')))::text || '|' ||
-       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'UPDATE')))::text || '|' ||
-       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'DELETE')))::text || '|' ||
-       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'TRUNCATE')))::text
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence','public.worldstream_transfer_stream_imports_v2','public.worldstream_transfer_stream_chunks_v2','public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'INSERT')))::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence','public.worldstream_transfer_stream_imports_v2','public.worldstream_transfer_stream_chunks_v2','public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'UPDATE')))::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence','public.worldstream_transfer_stream_imports_v2','public.worldstream_transfer_stream_chunks_v2','public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'DELETE')))::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence','public.worldstream_transfer_stream_imports_v2','public.worldstream_transfer_stream_chunks_v2','public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'TRUNCATE')))::text || '|' ||
+       has_table_privilege(current_user, 'public.worldstream_frames', 'DELETE')::text
 FROM pg_catalog.pg_roles AS role
 WHERE role.rolname = current_user
 SQL
@@ -307,7 +308,7 @@ if ! grep -Fq '"operation": "verify"' "$adapter_log"; then
 fi
 migration_status="pass"
 
-if ! run_admin_sql "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO runtime; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO runtime; REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations, public.worldstream_transfer_imports, public.worldstream_transfer_chunks, public.worldstream_transfer_target_fence, public.worldstream_transfer_stream_imports_v2, public.worldstream_transfer_stream_chunks_v2, public.worldstream_transfer_stream_records_v2 FROM runtime"; then
+if ! run_admin_sql "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO runtime; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO runtime; REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations, public.worldstream_transfer_imports, public.worldstream_transfer_chunks, public.worldstream_transfer_target_fence, public.worldstream_transfer_stream_imports_v2, public.worldstream_transfer_stream_chunks_v2, public.worldstream_transfer_stream_records_v2 FROM runtime; REVOKE DELETE ON TABLE public.worldstream_frames FROM runtime"; then
   reason="runtime_privilege_hardening_failed"
   finish "$EXIT_INCOMPLETE"
 fi

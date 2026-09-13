@@ -3667,6 +3667,7 @@ struct RuntimeRoleAdmissionV1 {
     transfer_control_update: bool,
     transfer_control_delete: bool,
     transfer_control_truncate: bool,
+    observation_frame_delete: bool,
 }
 
 fn validate_runtime_role_admission(
@@ -3689,6 +3690,7 @@ fn validate_runtime_role_admission(
         || admission.transfer_control_update
         || admission.transfer_control_delete
         || admission.transfer_control_truncate
+        || admission.observation_frame_delete
     {
         Err(PostgresSchemaVerificationError::RuntimeRolePrivileges)
     } else {
@@ -3753,7 +3755,8 @@ const RUNTIME_ROLE_ADMISSION_SQL: &str = "SELECT role.rolsuper, role.rolcreatero
                         'public.worldstream_transfer_stream_imports_v2', \
                         'public.worldstream_transfer_stream_chunks_v2', \
                         'public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(name) \
-                        WHERE has_table_privilege(current_user, protected_table.name, 'TRUNCATE')) \
+                        WHERE has_table_privilege(current_user, protected_table.name, 'TRUNCATE')), \
+                    has_table_privilege(current_user, 'public.worldstream_frames', 'DELETE') \
              FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user";
 
 fn runtime_role_admission_from_row(
@@ -3810,6 +3813,9 @@ fn runtime_role_admission_from_row(
             .map_err(PostgresSchemaVerificationError::Sql)?,
         transfer_control_truncate: row
             .try_get(16)
+            .map_err(PostgresSchemaVerificationError::Sql)?,
+        observation_frame_delete: row
+            .try_get(17)
             .map_err(PostgresSchemaVerificationError::Sql)?,
     })
 }
@@ -9903,6 +9909,10 @@ mod native_hydration_tests {
             },
             RuntimeRoleAdmissionV1 {
                 transfer_control_truncate: true,
+                ..RuntimeRoleAdmissionV1::default()
+            },
+            RuntimeRoleAdmissionV1 {
+                observation_frame_delete: true,
                 ..RuntimeRoleAdmissionV1::default()
             },
         ] {

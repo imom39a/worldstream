@@ -17,7 +17,7 @@ readonly EXIT_UNAVAILABLE=10
 readonly EXIT_CONFIGURATION=12
 readonly EXIT_INCOMPLETE=13
 readonly EXIT_CLEANUP=14
-readonly RUNTIME_ROLE_ADMISSION_EXPECTED="false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false"
+readonly RUNTIME_ROLE_ADMISSION_EXPECTED="false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false"
 
 runtime_role_admission_sql() {
   cat <<'SQL'
@@ -53,7 +53,8 @@ SELECT role.rolsuper::text || '|' ||
        (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence','public.worldstream_transfer_stream_imports_v2','public.worldstream_transfer_stream_chunks_v2','public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'INSERT')))::text || '|' ||
        (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence','public.worldstream_transfer_stream_imports_v2','public.worldstream_transfer_stream_chunks_v2','public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'UPDATE')))::text || '|' ||
        (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence','public.worldstream_transfer_stream_imports_v2','public.worldstream_transfer_stream_chunks_v2','public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'DELETE')))::text || '|' ||
-       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence','public.worldstream_transfer_stream_imports_v2','public.worldstream_transfer_stream_chunks_v2','public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'TRUNCATE')))::text
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence','public.worldstream_transfer_stream_imports_v2','public.worldstream_transfer_stream_chunks_v2','public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'TRUNCATE')))::text || '|' ||
+       has_table_privilege(current_user, 'public.worldstream_frames', 'DELETE')::text
 FROM pg_catalog.pg_roles AS role
 WHERE role.rolname = current_user
 SQL
@@ -482,7 +483,7 @@ for database in worldstream worldstream_transfer worldstream_transfer_abort; do
     overall_status="incomplete"; overall_reason="admin_pre_migration_failed"; add_error "admin_pre_migration_failed"; finish "$EXIT_INCOMPLETE"
   fi
   dsn="host=127.0.0.1 port=$postgres_port dbname=$database user=admin"
-  if ! printf '%s\n' "REVOKE CREATE ON SCHEMA public FROM PUBLIC; REVOKE CREATE ON DATABASE $database FROM runtime; GRANT CONNECT ON DATABASE $database TO runtime; GRANT USAGE ON SCHEMA public TO runtime; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO runtime; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO runtime; REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations, public.worldstream_transfer_imports, public.worldstream_transfer_chunks, public.worldstream_transfer_target_fence, public.worldstream_transfer_stream_imports_v2, public.worldstream_transfer_stream_chunks_v2, public.worldstream_transfer_stream_records_v2 FROM runtime;" | PGPASSWORD="$admin_password" "$psql_bin" "$dsn" --no-psqlrc --quiet --no-align --tuples-only --no-password --set=ON_ERROR_STOP=1 >/dev/null 2>&1; then
+  if ! printf '%s\n' "REVOKE CREATE ON SCHEMA public FROM PUBLIC; REVOKE CREATE ON DATABASE $database FROM runtime; GRANT CONNECT ON DATABASE $database TO runtime; GRANT USAGE ON SCHEMA public TO runtime; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO runtime; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO runtime; REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations, public.worldstream_transfer_imports, public.worldstream_transfer_chunks, public.worldstream_transfer_target_fence, public.worldstream_transfer_stream_imports_v2, public.worldstream_transfer_stream_chunks_v2, public.worldstream_transfer_stream_records_v2 FROM runtime; REVOKE DELETE ON TABLE public.worldstream_frames FROM runtime;" | PGPASSWORD="$admin_password" "$psql_bin" "$dsn" --no-psqlrc --quiet --no-align --tuples-only --no-password --set=ON_ERROR_STOP=1 >/dev/null 2>&1; then
     overall_status="unavailable"; overall_reason="runtime_role_setup_failed"; add_error "runtime_role_setup_failed"; finish "$EXIT_UNAVAILABLE"
   fi
   runtime_psql_dsn="host=127.0.0.1 port=$postgres_port dbname=$database user=runtime"
@@ -587,7 +588,7 @@ fi
 # Leave the migration ledger and required authority singleton intact, but
 # remove durable Room and authority facts so each acceptance vector starts
 # from fresh logical state. Then reassert the runtime ledger boundary.
-truncate_sql="DO \$\$ DECLARE t text; BEGIN FOR t IN SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name NOT IN ('worldstream_schema_migrations', 'worldstream_authority_state') LOOP EXECUTE 'TRUNCATE TABLE public.' || quote_ident(t) || ' CASCADE'; END LOOP; END \$\$; REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations, public.worldstream_transfer_imports, public.worldstream_transfer_chunks, public.worldstream_transfer_target_fence, public.worldstream_transfer_stream_imports_v2, public.worldstream_transfer_stream_chunks_v2, public.worldstream_transfer_stream_records_v2 FROM runtime;"
+truncate_sql="DO \$\$ DECLARE t text; BEGIN FOR t IN SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name NOT IN ('worldstream_schema_migrations', 'worldstream_authority_state') LOOP EXECUTE 'TRUNCATE TABLE public.' || quote_ident(t) || ' CASCADE'; END LOOP; END \$\$; REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations, public.worldstream_transfer_imports, public.worldstream_transfer_chunks, public.worldstream_transfer_target_fence, public.worldstream_transfer_stream_imports_v2, public.worldstream_transfer_stream_chunks_v2, public.worldstream_transfer_stream_records_v2 FROM runtime; REVOKE DELETE ON TABLE public.worldstream_frames FROM runtime;"
 if [[ "$live_adapter_status" == "pass" ]]; then
   if ! run_db_admin_sql "$truncate_sql"; then
     add_error "logical_state_reset_or_ledger_revoke_failed"

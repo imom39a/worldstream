@@ -755,7 +755,7 @@ harden_managed_runtime_ledger() {
     return 0
   fi
   if ! psql_query "$admin_dsn" "$admin_password" \
-    "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations, public.worldstream_transfer_imports, public.worldstream_transfer_chunks, public.worldstream_transfer_target_fence, public.worldstream_transfer_stream_imports_v2, public.worldstream_transfer_stream_chunks_v2, public.worldstream_transfer_stream_records_v2 FROM \"$runtime_user\""; then
+    "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations, public.worldstream_transfer_imports, public.worldstream_transfer_chunks, public.worldstream_transfer_target_fence, public.worldstream_transfer_stream_imports_v2, public.worldstream_transfer_stream_chunks_v2, public.worldstream_transfer_stream_records_v2 FROM \"$runtime_user\"; REVOKE DELETE ON TABLE public.worldstream_frames FROM \"$runtime_user\""; then
     fail "validation_failed" "$EXIT_VALIDATION" "managed_runtime_control_table_revoke_failed"
   fi
 }
@@ -803,7 +803,7 @@ verify_runtime_path() {
   elif [[ "$(compact_psql_value)" != "39" ]]; then
     path_status="schema_mismatch"
   elif ! psql_query "$dsn" "$password" \
-    "SELECT EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_schema_migrations','public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence','public.worldstream_transfer_stream_imports_v2','public.worldstream_transfer_stream_chunks_v2','public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(table_name), unnest(ARRAY['INSERT','UPDATE','DELETE','TRUNCATE']::text[]) AS protected_privilege(privilege_name) WHERE has_table_privilege(current_user, protected_table.table_name, protected_privilege.privilege_name))::text"; then
+    "SELECT (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_schema_migrations','public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence','public.worldstream_transfer_stream_imports_v2','public.worldstream_transfer_stream_chunks_v2','public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(table_name), unnest(ARRAY['INSERT','UPDATE','DELETE','TRUNCATE']::text[]) AS protected_privilege(privilege_name) WHERE has_table_privilege(current_user, protected_table.table_name, protected_privilege.privilege_name)) OR has_table_privilege(current_user, 'public.worldstream_frames', 'DELETE'))::text"; then
     path_status="unavailable"
     migration_ledger_status="unavailable"
   elif [[ "$(compact_psql_value)" != "false" ]]; then
