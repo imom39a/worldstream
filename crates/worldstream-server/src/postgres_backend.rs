@@ -143,6 +143,8 @@ pub struct PostgresGatewayBackend {
     observation_retention: Mutex<PostgresObservationRetentionV1>,
     host_clock: Arc<dyn HostClockV1>,
     admission_lanes: RoomAdmissionLanesV1,
+    #[cfg(test)]
+    recovery_forbidden: std::sync::atomic::AtomicBool,
 }
 
 struct RuntimeWallClock;
@@ -210,6 +212,8 @@ impl PostgresGatewayBackend {
             observation_retention: Mutex::new(PostgresObservationRetentionV1::default()),
             host_clock,
             admission_lanes,
+            #[cfg(test)]
+            recovery_forbidden: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -246,7 +250,21 @@ impl PostgresGatewayBackend {
             .parse::<RunnerId>()
             .map_err(|_| BackendError::Rejected)?;
         let authenticated = self.authenticate(session)?;
-        self.verified_trace(&room_id)?;
+        self.with_serving_trace(&room_id, |trace, _| {
+            let membership = trace
+                .core_state()
+                .membership(&member_id)
+                .ok_or(BackendError::Forbidden)?;
+            if trace.core_state().room_status() != worldstream_core::RoomStatusV1::Active
+                || membership.standing() != MembershipStandingV1::Enabled
+                || membership.access_mode() != AccessModeV1::Participant
+                || membership.principal_kind() != PrincipalKindV1::Agent
+                || membership.role().is_none()
+            {
+                return Err(BackendError::Forbidden);
+            }
+            Ok(())
+        })?;
         self.authority()
             .authorize_runner_control(
                 &authenticated.into_presented(),
@@ -897,6 +915,13 @@ impl PostgresGatewayBackend {
         ),
         BackendError,
     > {
+        #[cfg(test)]
+        if self
+            .recovery_forbidden
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(BackendError::StorageUnavailable);
+        }
         let verification =
             self.store
                 .verify_room(room_id.as_ref())
@@ -918,6 +943,12 @@ impl PostgresGatewayBackend {
             .map_err(map_recovery_error)?
             .ok_or(BackendError::NotFound)?;
         Ok((trace, verification))
+    }
+
+    #[cfg(test)]
+    fn forbid_recovery_for_test(&self) {
+        self.recovery_forbidden
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Borrows one current executor only after comparing its complete Head
@@ -2703,7 +2734,7 @@ impl GatewayBackend for PostgresGatewayBackend {
             session,
             &request.runner_id,
             RunnerControlOperationV1::Claim,
-            room_id,
+            room_id.clone(),
             member_id,
         )?;
         let operation = Self::activation_request(ActivationRequestParts {
@@ -2716,11 +2747,18 @@ impl GatewayBackend for PostgresGatewayBackend {
             requested_lease_ms: Some(request.requested_lease_ms),
             disposition: None,
         });
-        match self
-            .store
-            .prepare_activation_claim(self.registry.as_ref(), authority, operation)
-            .map_err(map_activation_error)?
-        {
+        let preparation = self.with_serving_trace(&room_id, |trace, fence| {
+            self.store
+                .prepare_activation_claim_from_serving_trace(
+                    self.registry.as_ref(),
+                    authority,
+                    operation,
+                    trace,
+                    fence.integrity(),
+                )
+                .map_err(map_activation_error)
+        })?;
+        match preparation {
             worldstream_postgres::PostgresActivationClaimPreparationV1::Existing(result) => {
                 Self::activation_reply(*result)
             }
@@ -3921,10 +3959,10 @@ mod tests {
         PostgresRoomStore,
     };
     use worldstream_protocol::{
-        AccessMode, BearerWireV1, CreateMember, CreateRoomRequest, LobbyLaunchRequest,
-        MemberCapabilityProvisionRequestV1, OperatorActivityPhase, OperatorRoomIntegrityStatus,
-        OperatorRoomInventoryRequest, PackReference, PrincipalKind,
-        RunnerCapabilityProvisionRequestV1,
+        AccessMode, ActivationClaim, ActivationResultCode, BearerWireV1, CreateMember,
+        CreateRoomRequest, LobbyLaunchRequest, MemberCapabilityProvisionRequestV1,
+        OperatorActivityPhase, OperatorRoomIntegrityStatus, OperatorRoomInventoryRequest,
+        PackReference, PrincipalKind, RunnerCapabilityProvisionRequestV1,
     };
     use worldstream_runtime::SecretSource;
 
@@ -4154,7 +4192,7 @@ mod tests {
             ".reserve_action(&action_room_id, self.host_clock.as_ref())",
             ".reserve_host_stimulus(&room_id)",
             "offer_activations_authorized(",
-            "prepare_activation_claim(",
+            "prepare_activation_claim_from_serving_trace(",
             "claim_activation_authorized(",
             "operate_activation_lease_authorized(",
         ] {
@@ -5277,6 +5315,61 @@ mod tests {
             Err(BackendError::Forbidden)
         ));
 
+        // The restarted projection above installs a verified serving trace.
+        // A production Activation claim must reuse that executor and avoid
+        // both full Room verification and Genesis replay.
+        let mut activation_fixture = Client::connect(&dsn, NoTls)
+            .unwrap_or_else(|error| unreachable!("Activation fixture connection: {error}"));
+        activation_fixture
+            .execute(
+                "DELETE FROM worldstream_activation_intents WHERE activation_id LIKE 'operator-status-%'",
+                &[],
+            )
+            .unwrap_or_else(|error| unreachable!("clean status Activation fixtures: {error}"));
+        activation_fixture
+            .execute(
+                "INSERT INTO worldstream_activation_intents(\
+                 activation_id, room_id, cause_room_seq, decision_id, target_member_id,\
+                 reason_code, deduplication_key, priority, policy_revision, state,\
+                 intent_generation, lease_generation)\
+                 VALUES ($1, $2, 1, $3, $4, 'warm-path', $5, 1, 1, 'pending', 1, 0)",
+                &[
+                    &"postgres-warm-activation",
+                    &room_id,
+                    &"postgres-warm-decision",
+                    &member_id,
+                    &"postgres-warm-dedup",
+                ],
+            )
+            .unwrap_or_else(|error| unreachable!("seed warm Activation: {error}"));
+        drop(activation_fixture);
+        restarted
+            .with_serving_trace(
+                &room_id
+                    .parse()
+                    .unwrap_or_else(|_| unreachable!("warm Activation Room")),
+                |_, _| Ok(()),
+            )
+            .unwrap_or_else(|error| unreachable!("warm Activation serving trace: {error:?}"));
+        restarted.forbid_recovery_for_test();
+        let warm_claim = ActivationClaim {
+            activation_id: "postgres-warm-activation".to_owned(),
+            runner_id: "01ARZ3NDEKTSV4RRFFQ69G5FF2".to_owned(),
+            claim_id: "postgres-warm-claim".to_owned(),
+            requested_lease_ms: 30_000,
+        };
+        let runner = session(0xc2, "01ARZ3NDEKTSV4RRFFQ69G5FF4");
+        let granted = restarted
+            .activation_claim(&runner, warm_claim.clone())
+            .unwrap_or_else(|error| unreachable!("warm Activation claim: {error:?}"));
+        assert_eq!(granted.code, ActivationResultCode::Granted);
+        assert_eq!(
+            restarted
+                .activation_claim(&runner, warm_claim)
+                .unwrap_or_else(|error| unreachable!("warm claim retry: {error:?}")),
+            granted
+        );
+
         let connector = native_tls::TlsConnector::builder()
             .build()
             .unwrap_or_else(|error| unreachable!("PostgreSQL inspection TLS: {error}"));
@@ -5305,7 +5398,7 @@ mod tests {
         assert_eq!(counts.get::<_, i64>(6), 1);
 
         eprintln!(
-            "LIVE_POSTGRES_GATEWAY=PASS create+duplicate+conflict+projection+replay+attach+sync+resync+action+stale+live+ack+restart+lobby-launch+sealed-provision-replay-conflict"
+            "LIVE_POSTGRES_GATEWAY=PASS create+duplicate+conflict+projection+replay+attach+sync+resync+action+stale+live+ack+restart+lobby-launch+sealed-provision-replay-conflict+warm-activation-no-recovery"
         );
     }
 }

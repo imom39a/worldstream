@@ -5895,12 +5895,53 @@ impl PostgresRoomStore {
     /// Prepares the exact private Invocation Context for a production claim.
     /// A later guarded claim rechecks every captured Head, Membership,
     /// authority, delivery, policy, and lease witness before committing.
-    #[allow(clippy::too_many_lines, clippy::type_complexity)]
+    ///
+    /// This entry point retains the cold adapter contract for callers that do
+    /// not own a serving executor. The production gateway uses
+    /// [`Self::prepare_activation_claim_from_serving_trace`] after validating
+    /// its uniquely owned cached trace against the bounded durable serving
+    /// fence.
     pub fn prepare_activation_claim(
         &self,
         registry: &PackRegistryV1,
         authority: AuthorizedRunnerControlV1,
         request: ActivationOperationRequestV1,
+    ) -> Result<PostgresActivationClaimPreparationV1, PostgresActivationError> {
+        let room_id = authority.target().room_id.to_string();
+        let verification = self
+            .verify_room(&room_id)
+            .map_err(|_| PostgresActivationError::Fenced)?;
+        let integrity = match verification.integrity_status.as_str() {
+            "healthy" => RoomIntegrityStateV1::new(
+                RoomIntegrityStatusV1::Healthy,
+                IntegrityGenerationV1::new(verification.integrity_generation)
+                    .map_err(|_| PostgresActivationError::Corrupt)?,
+            ),
+            "faulted" | "quarantined" => return Err(PostgresActivationError::Fenced),
+            _ => return Err(PostgresActivationError::Corrupt),
+        };
+        let trace = self
+            .recover_room(registry, &room_id)
+            .map_err(|_| PostgresActivationError::Corrupt)?
+            .ok_or(PostgresActivationError::Fenced)?;
+        self.prepare_activation_claim_from_serving_trace(
+            registry, authority, request, &trace, &integrity,
+        )
+    }
+
+    /// Prepares a claim from one adapter-owned current executor after the
+    /// adapter has compared it with [`Self::current_room_serving_fence`]. This
+    /// path reads no canonical history prefix; the preparation and final claim
+    /// transactions still recheck all durable authorization and serving
+    /// witnesses before publication.
+    #[allow(clippy::too_many_lines, clippy::type_complexity)]
+    pub fn prepare_activation_claim_from_serving_trace(
+        &self,
+        registry: &PackRegistryV1,
+        authority: AuthorizedRunnerControlV1,
+        request: ActivationOperationRequestV1,
+        trace: &CoreTraceV1,
+        integrity: &RoomIntegrityStateV1,
     ) -> Result<PostgresActivationClaimPreparationV1, PostgresActivationError> {
         if authority.operation() != RunnerControlOperationV1::Claim
             || request.operation_kind != "claim"
@@ -5928,17 +5969,8 @@ impl PostgresRoomStore {
         let room_id = authority.target().room_id.to_string();
         let member_id = member_key.to_string();
         let authority = authority.into_adapter_input();
-        let verification = self
-            .verify_room(&room_id)
-            .map_err(|_| PostgresActivationError::Fenced)?;
-        if verification.integrity_status != "healthy" {
-            return Err(PostgresActivationError::Fenced);
-        }
-        let trace = self
-            .recover_room(registry, &room_id)
-            .map_err(|_| PostgresActivationError::Corrupt)?
-            .ok_or(PostgresActivationError::Fenced)?;
-        if trace.head() != &verification.head
+        if integrity.status() != RoomIntegrityStatusV1::Healthy
+            || trace.head().room_id().as_str() != room_id
             || trace.core_state().room_status() != RoomStatusV1::Active
         {
             return Err(PostgresActivationError::Fenced);
@@ -6007,7 +6039,7 @@ impl PostgresRoomStore {
         .map_err(|_| PostgresActivationError::Corrupt)?;
         let integrity_status: String = root.try_get(2).map_err(PostgresActivationError::Sql)?;
         if integrity_status != "healthy"
-            || integrity_generation != verification.integrity_generation
+            || integrity_generation != integrity.generation().get()
             || head_bytes
                 != trace
                     .head()
