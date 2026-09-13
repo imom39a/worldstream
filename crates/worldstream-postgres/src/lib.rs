@@ -8357,7 +8357,7 @@ fn snapshot_cadence_due(
     let active_started_at = active_started_at.or_else(|| Some(now.clone()));
     let time_due = if let Some(start) = active_started_at.as_deref() {
         tx.query_one(
-            "SELECT ($1::timestamptz + interval '5 minutes' <= $2::timestamptz)",
+            "SELECT ($1::text::timestamptz + interval '5 minutes' <= $2::text::timestamptz)",
             &[&start, &now],
         )?
         .try_get(0)?

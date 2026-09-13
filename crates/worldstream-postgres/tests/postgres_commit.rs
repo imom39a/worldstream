@@ -1047,10 +1047,24 @@ fn live_direct_runtime_and_optional_pooler_conformance() {
     assert_eq!(verified.transition_count, 1);
     assert_eq!(verified.member_count, 1);
     assert_eq!(verified.integrity_generation, 1);
-    assert_eq!(verified.snapshots.len(), 2);
+    assert_eq!(verified.snapshots.len(), 1);
     assert_eq!(
         verified.snapshots.last().map(|snapshot| snapshot.room_seq),
-        Some(1)
+        Some(0)
+    );
+    let cadence = runtime_client
+        .query_one(
+            "SELECT last_snapshot_room_seq, transitions_since_snapshot, active_started_at IS NOT NULL FROM worldstream_room_snapshot_schedules WHERE room_id = $1",
+            &[&ROOM],
+        )
+        .unwrap_or_else(|error| panic!("live snapshot cadence row: {error}"));
+    assert_eq!(
+        (
+            cadence.get::<_, i64>(0),
+            cadence.get::<_, i64>(1),
+            cadence.get::<_, bool>(2),
+        ),
+        (0, 1, true)
     );
     println!(
         "LIVE_POSTGRES=PASS runtime=direct advance+frame+semantic-receipt+snapshot-cache+same-identity-concurrency"
