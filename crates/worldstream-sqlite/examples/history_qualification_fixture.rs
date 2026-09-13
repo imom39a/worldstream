@@ -205,8 +205,13 @@ fn read_and_remove_snapshot_observer(database: &Path, room_id: &RoomId) -> Resul
     })
 }
 
-fn initialize_stream_metadata(store: &SqliteRoomStore, trace: &worldstream_core::CoreTraceV1) -> Result<()> {
-    let retained = trace.retained_pack().ok_or("fixture retained Pack is absent")?;
+fn initialize_stream_metadata(
+    store: &SqliteRoomStore,
+    trace: &worldstream_core::CoreTraceV1,
+) -> Result<()> {
+    let retained = trace
+        .retained_pack()
+        .ok_or("fixture retained Pack is absent")?;
     let lock = retained.revision_lock();
     let pack = PackIdentityV1::new(
         lock.pack_id.clone(),
@@ -378,15 +383,30 @@ fn run(database: &Path, count: u64, stream_metadata: bool) -> Result<Report> {
         }
     }
     let room_id: RoomId = parsed(ROOM)?;
-    let view = registry
-        .load_retained(trace.head().pack_digest())?
-        .host()
-        .view(&ViewInputV1 {
-            core: trace.core_state(),
-            activity_state: trace.activity_state(),
-            complete_head: trace.head(),
-            viewer: &PackViewerV1::Participant(parsed(MEMBER)?),
-        })?;
+    // The alternating administration workload can end with the measured
+    // Membership suspended. A final participant projection is useful when it
+    // is authorized, but it is not a prerequisite for the durable history
+    // measurement and must not turn an otherwise valid odd-length run into a
+    // fixture failure.
+    let context_bytes = if trace
+        .core_state()
+        .membership(&parsed(MEMBER)?)
+        .is_some_and(|membership| membership.standing() == MembershipStandingV1::Enabled)
+    {
+        registry
+            .load_retained(trace.head().pack_digest())?
+            .host()
+            .view(&ViewInputV1 {
+                core: trace.core_state(),
+                activity_state: trace.activity_state(),
+                complete_head: trace.head(),
+                viewer: &PackViewerV1::Participant(parsed(MEMBER)?),
+            })?
+            .canonical_bytes()
+            .len()
+    } else {
+        0
+    };
     let snapshots = read_and_remove_snapshot_observer(database, &room_id)?;
     if stream_metadata {
         initialize_stream_metadata(&store, &trace)?;
@@ -452,7 +472,7 @@ fn run(database: &Path, count: u64, stream_metadata: bool) -> Result<Report> {
             warm_path_reads: 1,
             reducer_callbacks: callbacks,
             recovery_ms,
-            context_bytes: view.canonical_bytes().len(),
+            context_bytes,
         },
         storage: Storage {
             db_bytes,

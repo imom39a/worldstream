@@ -914,6 +914,35 @@ pub struct NativeSqliteTransferReportV1 {
     capture: NativeSqliteCaptureWitnessV1,
 }
 
+/// Result of a large-history `SQLite` restore verified with bounded streaming
+/// scans.  It deliberately carries summaries and digests only: no
+/// `BackupImageV1`, `NativeSqliteRestoreEvidenceV1`, or deployment-sized row
+/// collection is constructed while restoring the file.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeSqliteStreamingRestoreReportV2 {
+    /// Bundled `SQLite` engine version used by the operation.
+    pub engine_version: String,
+    /// Number of pages copied by the native online-backup API.
+    pub page_count: u64,
+    /// Exact source durable transfer-point digest.
+    pub source_transfer_point_digest: [u8; 32],
+    /// Exact published destination durable transfer-point digest.
+    pub destination_transfer_point_digest: [u8; 32],
+    /// Complete bounded inventory of native operational relations.
+    pub operational_relation_counts: BTreeMap<String, u64>,
+    /// Digest over exact native operational rows in stable scan order.
+    pub operational_row_digest: [u8; 32],
+    destination_identity: NativeSqliteFileIdentityV1,
+}
+
+impl NativeSqliteStreamingRestoreReportV2 {
+    /// Returns the exact published destination storage and file identifiers.
+    #[must_use]
+    pub const fn destination_identity(&self) -> NativeSqliteFileIdentityV1 {
+        self.destination_identity
+    }
+}
+
 /// Non-serializable witness minted only after the bundled online-backup API
 /// and both bounded native extractions have succeeded.  A JSON envelope never
 /// creates this authority: restore verification must receive this witness
@@ -3261,6 +3290,171 @@ pub fn restore_file_with_options(
     options: NativeSqliteTransferOptions,
 ) -> Result<NativeSqliteTransferReportV1, NativeSqliteError> {
     transfer_file(source, destination, "restore", options, None)
+}
+
+/// Restores a large retained `SQLite` backup with bounded streaming
+/// verification before and after publication.  This is the restore companion
+/// to [`verify_retained_file_streaming_v2`]: it has no total-row or
+/// total-database-byte cap and never creates a legacy backup image or a
+/// deployment-sized record collection.
+///
+/// The destination is published only after its exact streaming transfer-point
+/// and native operational digests equal the retained source.
+pub fn restore_file_streaming_v2(
+    source: &Path,
+    destination: &Path,
+) -> Result<NativeSqliteStreamingRestoreReportV2, NativeSqliteError> {
+    restore_file_streaming_v2_with_options(
+        source,
+        destination,
+        NativeSqliteTransferOptions::default(),
+        NativeSqliteStreamingLimitsV2::default(),
+    )
+}
+
+/// Restores a large retained `SQLite` backup with explicit native-copy and
+/// per-row streaming limits.  Limits constrain each native backup step and
+/// each admitted row/schema element, never the total deployment history.
+#[allow(clippy::too_many_lines)]
+pub fn restore_file_streaming_v2_with_options(
+    source: &Path,
+    destination: &Path,
+    options: NativeSqliteTransferOptions,
+    limits: NativeSqliteStreamingLimitsV2,
+) -> Result<NativeSqliteStreamingRestoreReportV2, NativeSqliteError> {
+    const OPERATION: &str = "streaming restore";
+
+    validate_transfer_options(options)?;
+    if limits.max_row_bytes == 0 || limits.max_tables == 0 {
+        return Err(NativeSqliteError::OutputBoundExceeded);
+    }
+    let retained_source = RetainedNativeSqliteSource::open(source)?;
+    let publication_parent = validate_new_destination(destination)?;
+    let source_verification =
+        verify_retained_file_streaming_v2(source, &retained_source.file, limits)?;
+    retained_source.revalidate()?;
+
+    let (temporary, mut temporary_file) = temporary_destination(&publication_parent, destination)?;
+    let temporary_identity = native_file_identity(&temporary_file)?;
+    let temporary_name = temporary
+        .file_name()
+        .ok_or(NativeSqliteError::InvalidPath)?
+        .to_owned();
+    publication_parent.require_named()?;
+    publication_parent.require_relative_identity(&temporary_name, temporary_identity)?;
+    let page_count = match bundled_online_backup(
+        source,
+        &temporary,
+        &retained_source,
+        &publication_parent,
+        &temporary_name,
+        temporary_identity,
+        &temporary_file,
+        OPERATION,
+        options,
+        None,
+    ) {
+        Ok(page_count) => page_count,
+        Err(error) => {
+            return Err(if scrub_native_file(&temporary_file, temporary_identity) {
+                error
+            } else {
+                NativeSqliteError::CleanupFailed {
+                    what: "temporary retained-handle cleanup",
+                }
+            });
+        }
+    };
+    retained_source.revalidate()?;
+    temporary_file = publication_parent
+        .reopen_staging_for_publication(&temporary_name, &temporary_file, temporary_identity)
+        .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+    let mut published = None;
+    let mut source_moved = false;
+    let result = (|| {
+        publication_parent.require_named()?;
+        publication_parent.require_relative_identity(&temporary_name, temporary_identity)?;
+        let expected_fingerprint = native_file_fingerprint(&mut temporary_file)?;
+        let (mut publication_file, publication_identity) = prepare_native_publication_source(
+            &publication_parent,
+            &mut temporary_file,
+            expected_fingerprint,
+        )?;
+        source_moved = publish_native_source_without_replacement(
+            &publication_parent,
+            &mut publication_file,
+            publication_identity,
+            expected_fingerprint,
+            &mut published,
+        )?;
+
+        publication_parent.require_named()?;
+        let final_file = published.as_ref().ok_or(NativeSqliteError::CleanupFailed {
+            what: "published destination handle",
+        })?;
+        let destination_verification =
+            verify_retained_file_streaming_v2(destination, final_file, limits)?;
+        retained_source.revalidate()?;
+        if source_verification.transfer_point_digest()
+            != destination_verification.transfer_point_digest()
+            || source_verification.operational_relation_counts()
+                != destination_verification.operational_relation_counts()
+            || source_verification.operational_row_digest()
+                != destination_verification.operational_row_digest()
+        {
+            return Err(NativeSqliteError::NativeOperationFailed {
+                operation: OPERATION,
+            });
+        }
+        let destination_identity = public_native_file_identity(native_file_identity(final_file)?);
+        publication_parent.require_named()?;
+        publication_parent.require_relative_identity(&temporary_name, temporary_identity)?;
+        require_native_file_fingerprint(
+            &mut temporary_file,
+            temporary_identity,
+            expected_fingerprint,
+        )?;
+        require_native_file_fingerprint(
+            &mut publication_file,
+            publication_identity,
+            expected_fingerprint,
+        )?;
+        if let Some(final_file) = published.as_mut() {
+            let final_identity = native_file_identity(final_file)?;
+            require_native_file_fingerprint(final_file, final_identity, expected_fingerprint)?;
+            publication_parent
+                .require_relative_identity(publication_parent.name(), final_identity)?;
+        }
+        finish_native_publication_source(
+            &publication_parent,
+            &temporary_name,
+            &temporary_file,
+            temporary_identity,
+            source_moved,
+        )?;
+        publication_parent.sync()?;
+        publication_parent.require_named()?;
+        Ok(NativeSqliteStreamingRestoreReportV2 {
+            engine_version: rusqlite::version().to_owned(),
+            page_count,
+            source_transfer_point_digest: source_verification.transfer_point_digest(),
+            destination_transfer_point_digest: destination_verification.transfer_point_digest(),
+            operational_relation_counts: source_verification.operational_relation_counts().clone(),
+            operational_row_digest: source_verification.operational_row_digest(),
+            destination_identity,
+        })
+    })();
+    result.map_err(|error| {
+        cleanup_native_publication(
+            &temporary,
+            temporary_identity,
+            &temporary_file,
+            &publication_parent,
+            published.as_ref(),
+            source_moved,
+            error,
+        )
+    })
 }
 
 fn transfer_file(
@@ -7454,6 +7648,30 @@ mod tests {
             backup_file(&source, &backup),
             Err(NativeSqliteError::InvalidPath)
         );
+
+        let _ = fs::remove_file(source);
+        let _ = fs::remove_file(backup);
+        let _ = fs::remove_file(restored);
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_restore_publishes_only_matching_bounded_verification()
+    -> Result<(), NativeSqliteError> {
+        let source = create_fixture("streaming-restore-source")?;
+        let backup = fixture_path("streaming-restore-backup");
+        let restored = fixture_path("streaming-restore-target");
+        let _ = fs::remove_file(&backup);
+        let _ = fs::remove_file(&restored);
+
+        backup_file(&source, &backup)?;
+        let report = restore_file_streaming_v2(&backup, &restored)?;
+        assert_eq!(
+            report.source_transfer_point_digest,
+            report.destination_transfer_point_digest
+        );
+        assert!(!report.operational_relation_counts.is_empty());
+        assert!(nonempty_temporary_entries(&restored)?.is_empty());
 
         let _ = fs::remove_file(source);
         let _ = fs::remove_file(backup);

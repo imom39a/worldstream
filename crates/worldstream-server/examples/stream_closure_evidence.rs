@@ -19,7 +19,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use postgres::{Client, NoTls};
 use serde::Serialize;
 use worldstream_backup::native_sqlite::{
-    NativeSqliteStreamingLimitsV2, verify_retained_file_streaming_v2,
+    NativeSqliteStreamingLimitsV2, restore_file_streaming_v2, verify_retained_file_streaming_v2,
 };
 use worldstream_postgres::{
     PostgresAdmin, PostgresConnectionConfig, PostgresStreamDestinationV2,
@@ -45,6 +45,7 @@ const LARGE_BYTE_MINIMUM: u64 = 64 * 1024 * 1024;
 struct Arguments {
     source: PathBuf,
     backup: PathBuf,
+    restored_backup: PathBuf,
     stream: PathBuf,
     corrupted_stream: PathBuf,
     output: PathBuf,
@@ -68,6 +69,8 @@ struct Report {
 #[derive(Serialize)]
 struct SourceReport {
     backup_streaming_verifier: &'static str,
+    backup_streaming_restore: &'static str,
+    restored_backup_page_count: u64,
     source_epoch: u64,
     transition_minimum: u64,
     canonical_record_count: u64,
@@ -159,6 +162,7 @@ fn arguments() -> Result<Arguments> {
     let mut values = env::args().skip(1);
     let mut source = None;
     let mut backup = None;
+    let mut restored_backup = None;
     let mut stream = None;
     let mut corrupted_stream = None;
     let mut output = None;
@@ -167,15 +171,21 @@ fn arguments() -> Result<Arguments> {
     let mut stream_id = None;
     while let Some(name) = values.next() {
         let value = match name.as_str() {
-            "--source" | "--backup" | "--stream" | "--corrupted-stream" | "--output"
-            | "--admin-dsn-file" | "--corrupt-admin-dsn-file" | "--stream-id" => {
-                argument_value(&mut values, &name)?
-            }
+            "--source"
+            | "--backup"
+            | "--restored-backup"
+            | "--stream"
+            | "--corrupted-stream"
+            | "--output"
+            | "--admin-dsn-file"
+            | "--corrupt-admin-dsn-file"
+            | "--stream-id" => argument_value(&mut values, &name)?,
             _ => bail!("unknown argument {name}"),
         };
         match name.as_str() {
             "--source" => source = Some(PathBuf::from(value)),
             "--backup" => backup = Some(PathBuf::from(value)),
+            "--restored-backup" => restored_backup = Some(PathBuf::from(value)),
             "--stream" => stream = Some(PathBuf::from(value)),
             "--corrupted-stream" => corrupted_stream = Some(PathBuf::from(value)),
             "--output" => output = Some(PathBuf::from(value)),
@@ -188,6 +198,7 @@ fn arguments() -> Result<Arguments> {
     Ok(Arguments {
         source: source.ok_or_else(|| anyhow!("missing --source"))?,
         backup: backup.ok_or_else(|| anyhow!("missing --backup"))?,
+        restored_backup: restored_backup.ok_or_else(|| anyhow!("missing --restored-backup"))?,
         stream: stream.ok_or_else(|| anyhow!("missing --stream"))?,
         corrupted_stream: corrupted_stream.ok_or_else(|| anyhow!("missing --corrupted-stream"))?,
         output: output.ok_or_else(|| anyhow!("missing --output"))?,
@@ -200,7 +211,10 @@ fn arguments() -> Result<Arguments> {
 
 fn read_dsn(path: &Path) -> Result<String> {
     let metadata = fs::symlink_metadata(path).context("read DSN metadata")?;
-    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() || metadata.len() > 64 * 1024 {
+    if metadata.file_type().is_symlink()
+        || !metadata.file_type().is_file()
+        || metadata.len() > 64 * 1024
+    {
         bail!("DSN file is not an owner-supplied regular bounded file");
     }
     let value = fs::read_to_string(path).context("read DSN file")?;
@@ -221,10 +235,7 @@ fn limits() -> TransferStreamLimitsV2 {
     }
 }
 
-fn target_for_stream(
-    lineage: String,
-    source_epoch: u64,
-) -> Result<TargetFingerprintV1> {
+fn target_for_stream(lineage: String, source_epoch: u64) -> Result<TargetFingerprintV1> {
     let target_epoch = source_epoch
         .checked_add(1)
         .ok_or_else(|| anyhow!("target epoch overflow"))?;
@@ -269,7 +280,11 @@ fn rss_bytes() -> Option<u64> {
     if !output.status.success() {
         return None;
     }
-    let kib = std::str::from_utf8(&output.stdout).ok()?.trim().parse::<u64>().ok()?;
+    let kib = std::str::from_utf8(&output.stdout)
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
     kib.checked_mul(1024)
 }
 
@@ -287,11 +302,15 @@ fn inspect_stream(
     let mut max_records = 0_usize;
     let mut max_encoded_bytes = 0_u64;
     while let Some(chunk) = reader.next_chunk().context("read stream chunk")? {
-        chunks = chunks.checked_add(1).ok_or_else(|| anyhow!("chunk count overflow"))?;
+        chunks = chunks
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("chunk count overflow"))?;
         max_records = max_records.max(chunk.records().len());
         max_encoded_bytes = max_encoded_bytes.max(u64::try_from(chunk.canonical_bytes()?.len())?);
     }
-    let footer = reader.footer().ok_or_else(|| anyhow!("stream footer absent"))?;
+    let footer = reader
+        .footer()
+        .ok_or_else(|| anyhow!("stream footer absent"))?;
     if footer.record_count() != manifest.expected_record_count()
         || footer.record_bytes() != manifest.expected_record_bytes()
         || footer.stream_digest() != manifest.expected_stream_digest()
@@ -359,7 +378,10 @@ fn corrupt_copy(source: &Path, destination: &Path) -> Result<()> {
     if length < 128 {
         bail!("stream is too short for isolated corruption probe");
     }
-    let mut file = OpenOptions::new().read(true).write(true).open(destination)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(destination)?;
     let position = length / 2;
     file.seek(SeekFrom::Start(position))?;
     let mut byte = [0_u8; 1];
@@ -403,6 +425,13 @@ fn run(arguments: Arguments) -> Result<Report> {
     if DigestV1::from_bytes(&verifier.transfer_point_digest())? != backup_digest {
         bail!("streaming verifier digest differs from source transfer fence");
     }
+    let restored_backup = restore_file_streaming_v2(backup_path, &arguments.restored_backup)
+        .context("streaming retained backup restore")?;
+    if restored_backup.source_transfer_point_digest != verifier.transfer_point_digest()
+        || restored_backup.destination_transfer_point_digest != verifier.transfer_point_digest()
+    {
+        bail!("streaming restore digest differs from retained source");
+    }
 
     let lineage = source.deployment_lineage().context("read source lineage")?;
     let identity = stream_identity(&arguments.stream_id, lineage.clone(), source_epoch)?;
@@ -426,14 +455,15 @@ fn run(arguments: Arguments) -> Result<Report> {
         limits,
     )
     .is_err();
-    let disk_full_left_source_pending = source.source_transfer_state()
-        == SqliteSourceTransferStateV1::TransferPending;
+    let disk_full_left_source_pending =
+        source.source_transfer_state() == SqliteSourceTransferStateV1::TransferPending;
     if !disk_full_export_rejected || !disk_full_left_source_pending {
         bail!("disk-full export safety contract was not observed");
     }
 
-    let exported = export_pending_stream_v2(&source, &arguments.stream, &arguments.stream_id, limits)
-        .context("export pending source stream")?;
+    let exported =
+        export_pending_stream_v2(&source, &arguments.stream, &arguments.stream_id, limits)
+            .context("export pending source stream")?;
     let source_rss_after_export = rss_bytes();
     let (expected_records, expected_bytes, chunk_count, max_chunk_records, max_chunk_bytes) =
         inspect_stream(&arguments.stream, limits)?;
@@ -443,7 +473,9 @@ fn run(arguments: Arguments) -> Result<Report> {
 
     let admin_dsn = read_dsn(&arguments.admin_dsn_file)?;
     let admin = PostgresAdmin::new(PostgresConnectionConfig::direct_admin(admin_dsn.clone())?)?;
-    admin.migrate().context("migrate primary PostgreSQL target")?;
+    admin
+        .migrate()
+        .context("migrate primary PostgreSQL target")?;
 
     // Persist exactly one bounded chunk, abandon the process-local reader and
     // destination, then resume through the public server import wrapper.
@@ -474,7 +506,8 @@ fn run(arguments: Arguments) -> Result<Report> {
     import_stream_chunks_v2(&arguments.stream, &admin, target.clone(), limits)
         .context("resume and semantically finalize v2 stream")?;
     let finalized_before_authority = target_counts(&admin_dsn)?;
-    let resume_import_finalized = finalized_before_authority.stream_state.as_deref() == Some("finalized")
+    let resume_import_finalized = finalized_before_authority.stream_state.as_deref()
+        == Some("finalized")
         && !finalized_before_authority.authoritative
         && finalized_before_authority.hydrated_rooms > 0;
     if !resume_import_finalized {
@@ -511,9 +544,10 @@ fn run(arguments: Arguments) -> Result<Report> {
     finalize_stream_authority_v2(&source, &arguments.stream, &admin, target, limits)
         .context("final stream authority coordinator")?;
     let final_target = target_counts(&admin_dsn)?;
-    let source_retired = source.source_transfer_state() == SqliteSourceTransferStateV1::SourceRetired;
-    let final_authority_published = final_target.stream_state.as_deref() == Some("authoritative")
-        && final_target.authoritative;
+    let source_retired =
+        source.source_transfer_state() == SqliteSourceTransferStateV1::SourceRetired;
+    let final_authority_published =
+        final_target.stream_state.as_deref() == Some("authoritative") && final_target.authoritative;
     if !source_retired || !final_authority_published {
         bail!("authority handoff did not retire source before target publication");
     }
@@ -538,7 +572,8 @@ fn run(arguments: Arguments) -> Result<Report> {
             .semantic_expectations()
             .to_owned()
     };
-    let transition_threshold_passed = expectations.canonical_record_count() > LARGE_TRANSITION_MINIMUM;
+    let transition_threshold_passed =
+        expectations.canonical_record_count() > LARGE_TRANSITION_MINIMUM;
     let byte_threshold_passed = expected_bytes > LARGE_BYTE_MINIMUM;
     if !transition_threshold_passed || !byte_threshold_passed {
         bail!("source did not exceed the required large-stream thresholds");
@@ -553,6 +588,8 @@ fn run(arguments: Arguments) -> Result<Report> {
         release_evidence: false,
         source: SourceReport {
             backup_streaming_verifier: "verified_retained_file_streaming_v2",
+            backup_streaming_restore: "restore_file_streaming_v2",
+            restored_backup_page_count: restored_backup.page_count,
             source_epoch,
             transition_minimum: LARGE_TRANSITION_MINIMUM,
             canonical_record_count: expectations.canonical_record_count(),

@@ -343,11 +343,25 @@ def run_sqlite_backend(
         directory_path = Path(directory)
         database = directory_path / "history.db"
         output = directory_path / "report.json"
-        command = [
-            "cargo", "run", "--locked", "--quiet", "-p", "worldstream-sqlite",
-            "--example", "history_qualification_fixture", "--", "--database",
-            str(database), "--transition-count", str(transitions), "--output", str(output),
-        ]
+        fixture_binary = os.environ.get("WORLDSTREAM_HISTORY_FIXTURE_BIN")
+        if fixture_binary:
+            fixture = Path(fixture_binary)
+            if fixture.is_symlink() or not fixture.is_file() or not os.access(fixture, os.X_OK):
+                return {
+                    "status": "failed",
+                    "source": "production_sqlite_core_storage",
+                    "error": "fixture binary is not an executable regular file",
+                }
+            command = [
+                str(fixture), "--database", str(database), "--transition-count",
+                str(transitions), "--output", str(output),
+            ]
+        else:
+            command = [
+                "cargo", "run", "--locked", "--quiet", "-p", "worldstream-sqlite",
+                "--example", "history_qualification_fixture", "--", "--database",
+                str(database), "--transition-count", str(transitions), "--output", str(output),
+            ]
         if stream_metadata:
             command.append("--stream-metadata")
         child_before = resource.getrusage(resource.RUSAGE_CHILDREN) if resource else None
