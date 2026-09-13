@@ -256,6 +256,19 @@ class PostgreSQLTransferSmokeBoundaryTests(unittest.TestCase):
         self.assertNotIn('"WORLDSTREAM_PG_TRANSFER_ADMIN_DSN=$admin_dsn"', script)
         self.assertNotIn('env::var("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN")', script)
 
+    def test_helper_maps_external_input_preparations_into_the_canonical_stream(
+        self,
+    ) -> None:
+        script = HARNESS.read_text(encoding="utf-8")
+        self.assertIn(
+            "SqliteCanonicalRecordKindV1::ExternalInputPreparation => {",
+            script,
+        )
+        self.assertIn(
+            "CanonicalRecordKindV1::ExternalInputPreparation",
+            script,
+        )
+
     def test_transfer_preserves_exact_postgres_operation_guards(self) -> None:
         implementation = (
             ROOT / "crates" / "worldstream-postgres" / "src" / "transfer.rs"

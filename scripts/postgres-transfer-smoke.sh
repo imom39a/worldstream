@@ -1105,6 +1105,9 @@ fn extract_source_evidence(
                     SqliteCanonicalRecordKindV1::PackRevisionLock => {
                         CanonicalRecordKindV1::ArtifactMetadata
                     }
+                    SqliteCanonicalRecordKindV1::ExternalInputPreparation => {
+                        CanonicalRecordKindV1::ExternalInputPreparation
+                    }
                 };
                 api_records.push(
                     worldstream_transfer::LogicalRecordV1::canonical(

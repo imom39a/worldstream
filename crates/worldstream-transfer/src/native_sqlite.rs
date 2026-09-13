@@ -51,6 +51,15 @@ const TABLES: &[(&str, usize)] = &[
     ("integrity_incidents", 6),
 ];
 
+/// Returns the exact SQLite column count carried for one native operational
+/// relation in the v2 transfer stream.
+#[must_use]
+pub fn native_sqlite_operational_row_width_v2(table: &str) -> Option<usize> {
+    TABLES
+        .iter()
+        .find_map(|(candidate, width)| (*candidate == table).then_some(*width))
+}
+
 /// Ordered native relations carried by the streaming SQLite transfer
 /// projection. The list is public so a source scanner can retain a compact
 /// relation/keyset cursor instead of materializing an operational row map.

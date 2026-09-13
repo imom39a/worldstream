@@ -20,6 +20,7 @@ use worldstream_transfer::{
     TransferStreamFinalizationDestinationV2, TransferStreamFooterAccumulatorV2,
     TransferStreamFooterV2, TransferStreamIdentityV2, TransferStreamManifestV2,
     TransferStreamSemanticAccumulatorV2, TransferStreamSourceAuthorityBindingV2,
+    native_sqlite_operational_row_width_v2,
 };
 
 use crate::{
@@ -4010,27 +4011,14 @@ fn decode_native_operational_row(bytes: &[u8]) -> Result<NativeRow, PostgresTran
         return Err(PostgresTransferError::Canonical("native row wire version"));
     }
     let table = reader.string()?;
-    let expected = match table.as_str() {
-        "principals" | "runners" => 4,
-        "capabilities" => 10,
-        "capability_scopes" => 2,
-        "runner_capability_memberships" | "room_integrity" => 3,
-        "authority_change_receipts" | "activation_operation_receipts" => 9,
-        "authority_audit" | "semantic_receipts" => 12,
-        "activation_decisions" => 5,
-        "activation_intents" => 24,
-        "retired_authority_fences_v1"
-        | "observation_consequences"
-        | "observation_frames"
-        | "timers"
-        | "integrity_incidents" => 6,
-        "room_members" => 13,
-        _ => {
-            return Err(PostgresTransferError::Canonical(
-                "unknown operational table",
-            ));
-        }
-    };
+    if !PUBLICATION_ORDER.contains(&table.as_str()) {
+        return Err(PostgresTransferError::Canonical(
+            "unknown operational table",
+        ));
+    }
+    let expected = native_sqlite_operational_row_width_v2(&table).ok_or(
+        PostgresTransferError::Canonical("unknown operational table"),
+    )?;
     let count = reader.u32()? as usize;
     if count != expected {
         return Err(PostgresTransferError::Canonical(
@@ -6326,6 +6314,29 @@ mod tests {
         assert!(!PostgresTransferDestination::chunk_state_accepts_chunk(
             "authoritative"
         ));
+    }
+
+    #[test]
+    fn native_publication_row_widths_follow_the_source_stream_contract() {
+        for table in PUBLICATION_ORDER {
+            assert!(
+                native_sqlite_operational_row_width_v2(table).is_some(),
+                "missing source row-width contract for {table}"
+            );
+        }
+        assert_eq!(
+            native_sqlite_operational_row_width_v2("observation_frames"),
+            Some(7)
+        );
+        assert_eq!(
+            native_sqlite_operational_row_width_v2("room_members"),
+            Some(14)
+        );
+        assert_eq!(
+            native_sqlite_operational_row_width_v2("external_input_preparations"),
+            Some(3)
+        );
+        assert!(!PUBLICATION_ORDER.contains(&"external_input_preparations"));
     }
 
     #[test]

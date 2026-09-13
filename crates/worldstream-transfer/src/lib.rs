@@ -13,7 +13,7 @@ mod native_sqlite;
 pub use native_sqlite::{
     NATIVE_SQLITE_OPERATIONAL_TABLES_V2, NativeSqliteBundleSummaryV1, NativeSqliteRoomPolicyV1,
     NativeSqliteTransferAdapterV1, NativeSqliteTransferError, NativeSqliteTransferSpecV1,
-    encode_native_sqlite_stream_row_v2,
+    encode_native_sqlite_stream_row_v2, native_sqlite_operational_row_width_v2,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
