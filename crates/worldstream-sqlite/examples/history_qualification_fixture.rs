@@ -29,6 +29,9 @@ use worldstream_core::{
     recover_room_from_storage,
 };
 use worldstream_sqlite::SqliteRoomStore;
+use worldstream_transfer::{
+    DeploymentIdentityV1, DigestV1, PackIdentityV1, ResourceKindV1, ResourcePayloadV1,
+};
 
 const ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const MEMBER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC0";
@@ -45,7 +48,9 @@ struct Report {
     counters: Counters,
     history: History,
     storage: Storage,
+    snapshots: SnapshotMetrics,
     scenarios: Scenarios,
+    transfer_metadata_initialized: bool,
     pass: bool,
 }
 
@@ -75,6 +80,23 @@ struct Storage {
     rss_bytes: Option<u64>,
     transitions: u64,
     frames: u64,
+}
+
+/// Counts captured by a transient observer trigger attached before the first
+/// production Room commit. The trigger is dropped before this fixture exits,
+/// so it never becomes source data or changes the retained backup contract.
+#[derive(Serialize)]
+struct SnapshotMetrics {
+    /// Every successful post-commit snapshot preparation ends in one insert in
+    /// this no-failpoint workload, so this is also the measured preparation
+    /// count for the fixed-state cadence run.
+    preparation_count: u64,
+    /// Actual `room_snapshots` inserts observed while the production writer
+    /// executed its post-commit cache work.
+    write_count: u64,
+    retained_row_count: u64,
+    last_snapshot_room_seq: u64,
+    transitions_since_snapshot: u64,
 }
 
 #[derive(Serialize)]
@@ -137,11 +159,77 @@ fn rss_bytes() -> Option<u64> {
     kib.checked_mul(1024)
 }
 
-fn run(database: &Path, count: u64) -> Result<Report> {
+fn install_snapshot_observer(database: &Path) -> Result<()> {
+    let connection = Connection::open(database)?;
+    connection.execute_batch(
+        r"
+        CREATE TABLE fixture_snapshot_write_observations (room_seq INTEGER NOT NULL);
+        CREATE TRIGGER fixture_snapshot_write_observer
+        AFTER INSERT ON room_snapshots
+        BEGIN
+          INSERT INTO fixture_snapshot_write_observations(room_seq) VALUES (NEW.room_seq);
+        END;
+        ",
+    )?;
+    Ok(())
+}
+
+fn read_and_remove_snapshot_observer(database: &Path, room_id: &RoomId) -> Result<SnapshotMetrics> {
+    let connection = Connection::open(database)?;
+    let write_count = u64::try_from(connection.query_row::<i64, _, _>(
+        "SELECT count(*) FROM fixture_snapshot_write_observations",
+        [],
+        |row| row.get(0),
+    )?)?;
+    let retained_row_count = u64::try_from(connection.query_row::<i64, _, _>(
+        "SELECT count(*) FROM room_snapshots WHERE room_id = ?1",
+        [room_id.to_string()],
+        |row| row.get(0),
+    )?)?;
+    let (last_snapshot_room_seq, transitions_since_snapshot): (i64, i64) = connection.query_row(
+        "SELECT last_snapshot_room_seq, transitions_since_snapshot \
+         FROM room_snapshot_schedules WHERE room_id = ?1",
+        [room_id.to_string()],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    connection.execute_batch(
+        "DROP TRIGGER fixture_snapshot_write_observer;
+         DROP TABLE fixture_snapshot_write_observations;",
+    )?;
+    Ok(SnapshotMetrics {
+        preparation_count: write_count,
+        write_count,
+        retained_row_count,
+        last_snapshot_room_seq: u64::try_from(last_snapshot_room_seq)?,
+        transitions_since_snapshot: u64::try_from(transitions_since_snapshot)?,
+    })
+}
+
+fn initialize_stream_metadata(store: &SqliteRoomStore, trace: &worldstream_core::CoreTraceV1) -> Result<()> {
+    let retained = trace.retained_pack().ok_or("fixture retained Pack is absent")?;
+    let lock = retained.revision_lock();
+    let pack = PackIdentityV1::new(
+        lock.pack_id.clone(),
+        lock.explanatory_version.clone(),
+        DigestV1::from_bytes(trace.head().pack_digest().digest().as_bytes())?,
+    )?;
+    let resource = ResourcePayloadV1::from_bytes(
+        ResourceKindV1::Artifact,
+        "worldstream.history-qualification.fixture",
+        b"history qualification stream resource v1\n",
+    )?;
+    let identity = DeploymentIdentityV1::new(vec![pack], vec![resource.identity().clone()])?;
+    store.initialize_canonical_metadata("deployment/history-qualification", 7)?;
+    store.initialize_deployment_identity_with_resources(identity, vec![resource])?;
+    Ok(())
+}
+
+fn run(database: &Path, count: u64, stream_metadata: bool) -> Result<Report> {
     if count == 0 {
         return Err("transition count must be positive".into());
     }
     let store = SqliteRoomStore::open(database)?;
+    install_snapshot_observer(database)?;
     let authority = AuthorityV1::new(Arc::new(store.clone()));
     let host_bearer = CapabilityBearerV1::from_bytes(HOST_BEARER);
     authority.bootstrap(
@@ -299,6 +387,10 @@ fn run(database: &Path, count: u64) -> Result<Report> {
             complete_head: trace.head(),
             viewer: &PackViewerV1::Participant(parsed(MEMBER)?),
         })?;
+    let snapshots = read_and_remove_snapshot_observer(database, &room_id)?;
+    if stream_metadata {
+        initialize_stream_metadata(&store, &trace)?;
+    }
     drop(store);
     let db_bytes = size(database);
     let wal_bytes = size(&PathBuf::from(format!("{}-wal", database.display())));
@@ -370,7 +462,9 @@ fn run(database: &Path, count: u64) -> Result<Report> {
             transitions: transition_rows,
             frames: frame_rows,
         },
+        snapshots,
         scenarios: runner_scenarios,
+        transfer_metadata_initialized: stream_metadata,
         // The counter Pack intentionally emits no observation frames for this
         // administration-only workload.  A zero frame count is measured
         // evidence, while transfer/backup and Runner scenarios remain
@@ -383,6 +477,7 @@ fn main() -> Result<()> {
     let mut database = None;
     let mut output = None;
     let mut count = None;
+    let mut stream_metadata = false;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -391,12 +486,14 @@ fn main() -> Result<()> {
             "--transition-count" => {
                 count = Some(args.next().ok_or("missing transition count")?.parse()?)
             }
+            "--stream-metadata" => stream_metadata = true,
             _ => return Err(format!("unknown argument {arg}").into()),
         }
     }
     let report = run(
         &database.ok_or("missing --database")?,
         count.ok_or("missing --transition-count")?,
+        stream_metadata,
     )?;
     let bytes = serde_json::to_vec_pretty(&report)?;
     if bytes.len() > 64 * 1024 {

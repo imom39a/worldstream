@@ -328,7 +328,8 @@ def _checkpoint(path: Path, report: dict[str, Any]) -> None:
 
 
 def run_sqlite_backend(
-    *, transitions: int = 1_000, timeout_seconds: float = 300.0
+    *, transitions: int = 1_000, timeout_seconds: float = 300.0,
+    stream_metadata: bool = False,
 ) -> dict[str, Any]:
     """Run the production Core/SQLite fixture and retain bounded evidence."""
 
@@ -347,6 +348,10 @@ def run_sqlite_backend(
             "--example", "history_qualification_fixture", "--", "--database",
             str(database), "--transition-count", str(transitions), "--output", str(output),
         ]
+        if stream_metadata:
+            command.append("--stream-metadata")
+        child_before = resource.getrusage(resource.RUSAGE_CHILDREN) if resource else None
+        wall_started = time.monotonic()
         try:
             completed = subprocess.run(
                 command, cwd=ROOT, capture_output=True, timeout=timeout_seconds,
@@ -354,6 +359,8 @@ def run_sqlite_backend(
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             return {"status": "failed", "source": "production_sqlite_core_storage", "error": type(error).__name__}
+        wall_elapsed_ms = round((time.monotonic() - wall_started) * 1000, 3)
+        child_after = resource.getrusage(resource.RUSAGE_CHILDREN) if resource else None
         if len(completed.stdout) + len(completed.stderr) > MAX_BACKEND_OUTPUT_BYTES:
             return {"status": "failed", "source": "production_sqlite_core_storage", "error": "driver output exceeded bound"}
         if completed.returncode != 0 or not output.is_file():
@@ -376,6 +383,25 @@ def run_sqlite_backend(
     if any(type(storage.get(field)) is not int for field in ("db_bytes", "wal_bytes", "shm_bytes")):
         return {"status": "failed", "source": "production_sqlite_core_storage", "error": "driver storage observations incomplete"}
     scenarios = report.get("scenarios", {})
+    snapshots = report.get("snapshots", {})
+    required_snapshot_fields = (
+        "preparation_count", "write_count", "retained_row_count",
+        "last_snapshot_room_seq", "transitions_since_snapshot",
+    )
+    if any(type(snapshots.get(field)) is not int for field in required_snapshot_fields):
+        return {"status": "failed", "source": "production_sqlite_core_storage", "error": "driver snapshot counters incomplete"}
+    cpu: dict[str, Any] = {
+        "wall_elapsed_ms": wall_elapsed_ms,
+        "source": "child_process_getrusage" if child_before and child_after else "unavailable",
+    }
+    if child_before and child_after:
+        cpu.update({
+            "user_cpu_seconds": round(max(0.0, child_after.ru_utime - child_before.ru_utime), 6),
+            "system_cpu_seconds": round(max(0.0, child_after.ru_stime - child_before.ru_stime), 6),
+            # `ru_maxrss` is the process high-water mark, deliberately kept
+            # separate from the SQLite file/WAL byte measurements below.
+            "max_rss_observed": int(child_after.ru_maxrss),
+        })
     return {
         "status": "completed",
         "source": "production_sqlite_core_storage",
@@ -383,6 +409,15 @@ def run_sqlite_backend(
             scenarios.get(name, {}).get("status") == "completed"
             for name in ("crash_restart", "offline_runner", "timer_delivery", "backup", "transfer")
         ),
+        "measurement": {
+            "cpu": cpu,
+            "snapshot_cadence": snapshots,
+            "storage": {
+                "db_bytes": storage["db_bytes"],
+                "wal_bytes": storage["wal_bytes"],
+                "shm_bytes": storage["shm_bytes"],
+            },
+        },
         "report": report,
     }
 
