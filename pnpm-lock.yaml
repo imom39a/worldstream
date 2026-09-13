@@ -96,6 +96,21 @@ importers:
         specifier: 4.1.10
         version: 4.1.10(@types/node@24.13.3)(jsdom@29.0.1(@noble/hashes@2.4.0))(vite@8.2.1(@types/node@24.13.3))
 
+  packs/late-join-reference:
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+      '@worldstream/pack-cli':
+        specifier: workspace:*
+        version: link:../../sdk/typescript-pack/packages/pack-cli
+      '@worldstream/pack-sdk':
+        specifier: workspace:*
+        version: link:../../sdk/typescript-pack/packages/pack-sdk
+      typescript:
+        specifier: 5.9.2
+        version: 5.9.2
+
   packs/midnight-archive:
     devDependencies:
       '@types/node':

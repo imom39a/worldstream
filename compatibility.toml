@@ -103,7 +103,7 @@ release_verified_patches_status = "resolved"
 
 [migrations]
 logical_history_id = "worldstream-storage-v1"
-schema_contract_fingerprint = "blake3:5dd5bac169e8cce8c6620c463e2d64ffee16ead73200559a1209ae3b2c173f8c"
+schema_contract_fingerprint = "blake3:4c5ec1d25273f4a7ae1d899a1c7df4655d0d0b1d3a44e73a359adc79800c4398"
 schema_contract_fingerprint_status = "implementation_verified"
 direction = "forward_only"
 backend_specific_execution = true
@@ -202,6 +202,24 @@ status = "implementation_verified"
 id = "0015-observation-retention-v1"
 sqlite_checksum = ""
 postgresql_checksum = "blake3:2da70b2996032fc64e6e69abdc96af587740aecf360d8ace6ad104d5aa9af524"
+status = "implementation_verified"
+
+[[migrations.entries]]
+id = "0015-snapshot-cadence-v1"
+sqlite_checksum = "blake3:db914b00013cc9d7a341eabe081411f6583893f036547ed9db2c35be3866e9d6"
+postgresql_checksum = "blake3:003b294a09bfe70ca99c28a980ce2f8863eb31eff8f367ce121489eab3415333"
+status = "implementation_verified"
+
+[[migrations.entries]]
+id = "0016-activation-backlog-policy-v1"
+sqlite_checksum = "blake3:495d58fdc81fee0b6b87d8973f4445b4892da22608e459033eaa333c0d4078a4"
+postgresql_checksum = "blake3:4bd89503598f02f68dd87e2459a6e2e1849cd325bdafef20b1bba007e36ba715"
+status = "implementation_verified"
+
+[[migrations.entries]]
+id = "0017-stream-transfer-v2"
+sqlite_checksum = "blake3:aaa152c1107748f774197bd8a59600150e9d209c7e4eb14ec5e911394b23c3e2"
+postgresql_checksum = "blake3:df27084594ef32d55f5beb6f6e6a5d750bcdd9775296ecbaed7e580e582bf0d4"
 status = "implementation_verified"
 
 [[migrations.entries]]

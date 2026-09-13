@@ -43,6 +43,9 @@ struct Report {
     head_room_seq: u64,
     newest_snapshot_room_seq: u64,
     snapshot_lag_transitions: u64,
+    tail_recovery_transition_count: usize,
+    tail_recovery_elapsed_ms: u128,
+    tail_recovery_activity_callbacks: usize,
     complete_head: serde_json::Value,
     projection_hash: String,
     final_membership_standing: &'static str,
@@ -259,6 +262,24 @@ fn run(arguments: &Arguments) -> FixtureResult<Report> {
         return Err("fixture did not retain the exact non-empty snapshot tail".into());
     }
 
+    // Measure the actual bounded recovery boundary after the fixture has
+    // removed current materializations. This is intentionally separate from
+    // setup time: it reports the reducer callbacks and elapsed time paid by a
+    // cold process that loads the retained paired snapshot.
+    drop(connection);
+    let recovery_store = SqliteRoomStore::open(&arguments.database)?;
+    let recovery_started = Instant::now();
+    let recovered = worldstream_core::recover_room_from_storage(
+        &recovery_store,
+        &registry,
+        &arguments.room_id,
+    )?
+    .ok_or("fixture Room is absent during measured recovery")?;
+    let tail_recovery_transition_count = recovered.transition_count();
+    let tail_recovery_elapsed_ms = recovery_started.elapsed().as_millis();
+    let tail_recovery_activity_callbacks = recovered.activity_callback_count();
+    drop(recovery_store);
+
     Ok(Report {
         schema: REPORT_SCHEMA,
         source_revision: option_env!("WORLDSTREAM_BUILD_REVISION").unwrap_or("unbound"),
@@ -269,6 +290,9 @@ fn run(arguments: &Arguments) -> FixtureResult<Report> {
         head_room_seq,
         newest_snapshot_room_seq,
         snapshot_lag_transitions,
+        tail_recovery_transition_count,
+        tail_recovery_elapsed_ms,
+        tail_recovery_activity_callbacks,
         complete_head: serde_json::to_value(trace.head())?,
         projection_hash: view.projection_hash()?.to_string(),
         final_membership_standing: "enabled",

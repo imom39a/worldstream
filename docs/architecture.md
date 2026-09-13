@@ -796,6 +796,13 @@ One `(room_id, timer_id)` has at most one scheduled generation. `scheduled_for`,
 
 Require a unique logical activation key on room_id, cause_room_seq, member_id, and deduplication_key. Index pending/leased activations by status, lease_until, priority, and created_at.
 
+Migration `0016-activation-backlog-policy-v1` adds operational attention
+metadata (`attention_bytes`, terminal disposition, superseding identity, and
+terminal time). Refreshable intents are bounded to 64 pending rows and 1 MiB
+per Room Membership; deadline-bearing intents remain obligations. Superseded
+and age-retired identities stay queryable, while timers remain independently
+durable and are never coalesced.
+
 The frozen host permits at most one live leased Activation per Membership, so WorldStream-controlled activation starts are serialized. Additional intents may remain pending until the current lease is completed, released, expired, or cancelled. WorldStream cannot prevent a Runner from starting an independent Invocation outside this mechanism; if multiple Invocations submit Actions for one Membership, exact-head admission and Action idempotency resolve the race normally.
 
 ### activation_operation_receipts
@@ -882,6 +889,16 @@ Direct, session-pooled, and bounded transaction-scoped runtime connections are s
 ### Forward-only logical migrations and retained codecs
 
 One ordered logical migration history and schema-contract fingerprint govern both adapters. A logical migration has a stable ID and checksum plus backend-specific DDL/execution; it upgrades an empty store or any earlier v0.1 schema, and is atomic or explicitly restart-safe. Production is forward-only: there are no down migrations, mixed-version serving, rolling multi-version operation, or old-binary start after migration. Rollback restores the pre-upgrade backend backup and previous binary together.
+
+The shared tail retains `0015-snapshot-cadence-v1`,
+`0016-activation-backlog-policy-v1`, `0017-stream-transfer-v2`, and
+`0018-postgresql-snapshot-cadence-v1` in that order. PostgreSQL's historical
+`0015` execution is a reviewed no-op; its later physical cadence table is
+installed at `0018`. SQLite's `0017` stream-journal and `0018` PostgreSQL
+cadence executions are reviewed no-ops because SQLite is the verified source
+and already installed its local cadence cursor at `0015`. Those no-ops remain
+in each ledger so a logical migration ID never means different history on the
+two profiles.
 
 SQLite automatic migration occurs only during exclusive locked startup after creation and verification of a recoverable backup. Production PostgreSQL migration is an explicit offline `worldstreamctl` maintenance operation over a direct admin connection while no WorldStream process serves; daemon startup only checks engine, manifest, schema fingerprint, migration checksums, and runtime capabilities. A development auto-migration option is not production evidence.
 
@@ -1105,6 +1122,7 @@ Initial defaults, configurable only downward for public deployments:
 | Client action envelope | 64 KiB |
 | Observation frame | 256 KiB |
 | WebSocket message | 512 KiB |
+| Activation Invocation Context | 512 KiB canonical bytes |
 | Canonical Activity State | 2 MiB |
 | Durable members per room | 32 |
 | Active sessions per membership | 2 |
@@ -1147,6 +1165,18 @@ A runner claim response contains:
 - explicit artifact references authorized for that membership;
 - versioned, bounded runner budget and execution limits selected for the grant;
 - lease expiry.
+
+The Activation Invocation Context aggregate bound includes its Projection,
+ordered Action Offers, delivery branch, artifact references, runner budget and
+limits, witnesses, and envelope encoding. Claim preparation probes retained
+frame metadata under its captured claim fence before reading payloads. A suffix
+that cannot fit returns the complete current Projection Reset with reason
+`invocation_context_limit`; it never returns a prefix or truncates payload
+bytes, and it never advances the Membership Cursor or a Session barrier. If
+the essential current Reset context itself exceeds the bound, claim preparation
+returns a typed context-size failure. This byte bound does not imply a Runner
+tokenizer limit; Runner prompt construction must enforce a separately selected
+token budget.
 
 Claim grant/reclaim is one conditional database transaction. Claim, renew, release, and complete each use an independent operation ID and Canonical Request Hash and retain an immutable original result code/hash. An identical control or non-grant retry returns that result. An identical granted-claim retry returns the exact original context/result bytes only while its context is retained; after tombstoning it deterministically returns wire `result_retired` while the original result code/hash and context hash remain unchanged. Renew, release, and complete conditionally match the authenticated Runner, current claim ID, current generation, and unexpired lease. An expired older claim can never complete a later lease. Archive and affected Membership/Access/Role changes cancel and generation-fence pending/leased intents; capability revocation applies immediately.
 
@@ -1273,6 +1303,8 @@ A global lineage, schema, manifest, artifact, or cross-Room authority failure bl
 ### One-way offline SQLite-to-PostgreSQL transfer
 
 The only supported backend transfer is a versioned, resumable, whole-deployment, offline move from authoritative SQLite to an empty PostgreSQL target. The deterministic transfer bundle records source lineage, export identity, Storage Epoch, schema and codec versions, ordered chunks, row/object counts, per-chunk and whole-export digests, and a semantic fingerprint.
+
+The legacy in-memory v1 bundle remains a compatibility decoder with its existing record and byte ceilings. The v2 stream container starts with a versioned identity header (stream ID, lineage, source Storage Epoch, and direction), emits independently checksummed ordered chunks, and ends with an identity-bound whole-stream digest and exact counts. A reader allocates only its configured single chunk, rejects a duplicate, reorder, omission, bad digest, trailing bytes, or incomplete footer before reporting complete verification, and exposes an identity-bound next-chunk/next-ordinal checkpoint. An importer must bind that checkpoint to its own durable target state before a chunk is applied, so a restart can safely retry an uncommitted chunk without treating a partial stream as ready.
 
 Canonical serialized bytes are copied verbatim, never decoded and re-encoded through PostgreSQL JSON, timestamp, numeric, or text types. The bundle preserves Genesis, Transitions, every Head/hash, Core and Activity materializations, Memberships and authority, exact timer IDs/generations/`scheduled_for` values, Frames/Cursors, Operation Identities/Canonical Request Hashes/dispositions/Semantic Receipts, Activation Intents and every Activation operation receipt, each context-retention discriminator with its matching retained Invocation Context bytes or versioned tombstone, request/result/context hashes, lease and witness generations, claims/audit/fences, principals/capabilities/revocations, integrity incidents, and artifact metadata and bytes. Snapshots, indexes, caches, telemetry, Sessions, Runner presence, in-memory mailboxes, delivery attempts, and temporary state are invalidated or rebuilt.
 

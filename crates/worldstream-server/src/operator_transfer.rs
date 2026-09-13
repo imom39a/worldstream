@@ -20,7 +20,8 @@ use worldstream_backup::native_sqlite::{
 use worldstream_core::{CanonicalJsonV1, PackDigestV1, PackRevisionLockV1};
 use worldstream_pack_bundle::{PackBundleStoreV1, RetainedPackBundleArtifactV1};
 use worldstream_postgres::{
-    PostgresAdmin, PostgresTransferDestination, postgres_backend_fingerprint,
+    PostgresAdmin, PostgresStreamDestinationV2, PostgresTransferDestination,
+    postgres_backend_fingerprint,
 };
 #[cfg(windows)]
 use worldstream_runtime::create_owner_only_renameable_file;
@@ -29,13 +30,16 @@ use worldstream_runtime::{
 };
 use worldstream_sqlite::{
     SqliteCanonicalExportV1, SqliteCanonicalRecordKindV1, SqliteRoomStore,
-    SqliteSourceTransferStateV1, SqliteSourceTransferStatusV1,
+    SqliteSourceTransferStateV1, SqliteSourceTransferStatusV1, SqliteTransferStreamSourceV2,
 };
 use worldstream_transfer::{
     BackendFingerprintV1, BundleProfileV1, CanonicalRecordKindV1, DigestV1, LogicalRecordV1,
     NativeSqliteTransferAdapterV1, NativeSqliteTransferSpecV1, SessionStatePolicyV1,
     TargetFingerprintV1, TransferBundleV1, TransferImportSessionV1, TransferStateV1,
-    abort_whole_deployment, finalize_whole_deployment,
+    TransferStreamCheckpointV2, TransferStreamIdentityV2, TransferStreamLimitsV2,
+    TransferStreamReaderV2, TransferStreamSourceV2, abort_stream_whole_deployment_v2,
+    abort_whole_deployment, export_stream_v2, finalize_stream_whole_deployment_v2,
+    finalize_whole_deployment, import_and_finalize_stream_v2,
 };
 
 use crate::operator_storage::{PublicationParent, publish_open_file_noreplace};
@@ -95,6 +99,54 @@ pub struct TransferPackRestoreResultV1 {
     pub restored_bundle_count: usize,
     pub approval_records_imported: bool,
     pub restart_required: bool,
+}
+
+/// Redacted receipt for a completed, manifest-bearing v2 source stream.
+///
+/// The stream remains an offline artifact and does not itself advance target
+/// authority. Its header and manifest digests are the durable identifiers used
+/// by an importer to resume only this exact frozen source projection.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct TransferStreamExportResultV2 {
+    /// Stable response schema.
+    pub schema: &'static str,
+    /// Successful operator disposition.
+    pub status: &'static str,
+    /// Explicit source operation.
+    pub operation: &'static str,
+    /// Authenticated complete stream-header digest.
+    pub stream_header_digest: String,
+    /// Authenticated manifest digest.
+    pub manifest_digest: String,
+    /// Source lifecycle's exact frozen backup digest.
+    pub backup_digest: String,
+    /// Frozen SQLite Storage Epoch.
+    pub source_epoch: u64,
+    /// Number of records sealed by the stream footer.
+    pub record_count: u64,
+    /// Total exact payload bytes sealed by the stream footer.
+    pub record_bytes: u64,
+}
+
+/// Redacted receipt for a v2 authority transition completed from an exact
+/// manifest-bearing stream. The source and target are named only by the
+/// stream-bound digests and Storage Epochs they durably verified.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct TransferStreamAuthorityResultV2 {
+    /// Stable response schema.
+    pub schema: &'static str,
+    /// Successful operator disposition.
+    pub status: &'static str,
+    /// Explicit authority operation.
+    pub operation: &'static str,
+    /// Authenticated stream header digest.
+    pub stream_header_digest: String,
+    /// Authenticated source manifest digest.
+    pub manifest_digest: String,
+    /// Frozen SQLite source epoch.
+    pub source_epoch: u64,
+    /// Matching PostgreSQL target epoch.
+    pub target_epoch: u64,
 }
 
 /// Redacted closed failures from the transfer operator.
@@ -1373,6 +1425,274 @@ fn read_canonical_bundle(path: &Path) -> Result<TransferBundleV1, TransferOperat
     read_canonical_bundle_with_hook(path, || Ok(()))
 }
 
+/// Imports and semantically finalizes one manifest-bearing v2 stream through
+/// the durable non-serving PostgreSQL fence without reading the whole file
+/// into memory. It never publishes target authority; source retirement and the
+/// existing final publication transition remain separate operator steps.
+pub fn import_stream_chunks_v2(
+    path: &Path,
+    admin: &PostgresAdmin,
+    target: TargetFingerprintV1,
+    limits: TransferStreamLimitsV2,
+) -> Result<TransferStreamCheckpointV2, TransferOperatorError> {
+    let (mut reader, mut destination, artifact_identity) =
+        open_manifest_stream_destination_v2(path, admin, target, limits)?;
+    let checkpoint = import_and_finalize_stream_v2(&mut reader, &mut destination)
+        .map_err(|_| TransferOperatorError::Destination("stream import and verification"))?;
+    revalidate_stream_artifact_v2(path, artifact_identity)?;
+    Ok(checkpoint)
+}
+
+/// Imports, semantically finalizes, retires the matching SQLite source, and
+/// only then publishes the matching PostgreSQL target. Every phase is bound to
+/// the stream header, complete manifest, verified footer, frozen backup, and
+/// source/target Storage Epochs; no `TransferBundleV1` is constructed.
+pub fn finalize_stream_authority_v2(
+    source: &SqliteRoomStore,
+    path: &Path,
+    admin: &PostgresAdmin,
+    target: TargetFingerprintV1,
+    limits: TransferStreamLimitsV2,
+) -> Result<TransferStreamAuthorityResultV2, TransferOperatorError> {
+    let (mut reader, mut destination, artifact_identity) =
+        open_manifest_stream_destination_v2(path, admin, target, limits)?;
+    import_and_finalize_stream_v2(&mut reader, &mut destination)
+        .map_err(|_| TransferOperatorError::Destination("stream import and verification"))?;
+    let manifest = reader
+        .manifest()
+        .cloned()
+        .ok_or(TransferOperatorError::Bundle("stream manifest required"))?;
+    let footer = reader.footer().ok_or(TransferOperatorError::Bundle(
+        "verified stream footer required",
+    ))?;
+    let identity = reader.identity().clone();
+    let target = destination.target().clone();
+    revalidate_stream_artifact_v2(path, artifact_identity)?;
+    finalize_stream_whole_deployment_v2(
+        source,
+        &mut destination,
+        &identity,
+        &manifest,
+        footer,
+        &target,
+    )
+    .map_err(|_| TransferOperatorError::Destination("stream authority handoff"))?;
+    revalidate_stream_artifact_v2(path, artifact_identity)?;
+    stream_authority_result_v2("finalize_stream_authority", &identity, &manifest, &target)
+}
+
+/// Safely abandons a v2 stream before SQLite source retirement. The whole
+/// artifact is read in bounded chunks so its authenticated footer binds the
+/// target tombstone to exactly the source transfer that is restored.
+pub fn abort_stream_authority_v2(
+    source: &SqliteRoomStore,
+    path: &Path,
+    admin: &PostgresAdmin,
+    target: TargetFingerprintV1,
+    limits: TransferStreamLimitsV2,
+) -> Result<TransferStreamAuthorityResultV2, TransferOperatorError> {
+    let (mut reader, mut destination, artifact_identity) =
+        open_manifest_stream_destination_v2(path, admin, target, limits)?;
+    while reader
+        .next_chunk()
+        .map_err(|_| TransferOperatorError::Bundle("verify stream before abort"))?
+        .is_some()
+    {}
+    let manifest = reader
+        .manifest()
+        .cloned()
+        .ok_or(TransferOperatorError::Bundle("stream manifest required"))?;
+    let footer = reader.footer().ok_or(TransferOperatorError::Bundle(
+        "verified stream footer required",
+    ))?;
+    let identity = reader.identity().clone();
+    let target = destination.target().clone();
+    revalidate_stream_artifact_v2(path, artifact_identity)?;
+    abort_stream_whole_deployment_v2(
+        source,
+        &mut destination,
+        &identity,
+        &manifest,
+        footer,
+        &target,
+    )
+    .map_err(|_| TransferOperatorError::Destination("stream authority abort"))?;
+    revalidate_stream_artifact_v2(path, artifact_identity)?;
+    stream_authority_result_v2("abort_stream_authority", &identity, &manifest, &target)
+}
+
+fn open_manifest_stream_destination_v2<'a>(
+    path: &Path,
+    admin: &'a PostgresAdmin,
+    target: TargetFingerprintV1,
+    limits: TransferStreamLimitsV2,
+) -> Result<
+    (
+        TransferStreamReaderV2<File>,
+        PostgresStreamDestinationV2<'a>,
+        OperatorFileIdentity,
+    ),
+    TransferOperatorError,
+> {
+    validate_owner_only_file(path)
+        .map_err(|_| TransferOperatorError::Bundle("owner-only stream bundle"))?;
+    let file = File::open(path).map_err(|_| TransferOperatorError::Bundle("open stream bundle"))?;
+    let artifact_identity = operator_file_identity(&file)
+        .map_err(|_| TransferOperatorError::Bundle("stream bundle identity"))?;
+    require_named_file_identity(path, artifact_identity)
+        .map_err(|_| TransferOperatorError::Bundle("stream bundle identity"))?;
+    let reader = TransferStreamReaderV2::new(file, limits)
+        .map_err(|_| TransferOperatorError::Bundle("decode stream header"))?;
+    let manifest = reader
+        .manifest()
+        .cloned()
+        .ok_or(TransferOperatorError::Bundle("stream manifest required"))?;
+    let destination = PostgresStreamDestinationV2::new_with_manifest(
+        admin,
+        reader.identity().clone(),
+        manifest,
+        reader.stream_header_digest(),
+        target,
+    )
+    .map_err(|_| TransferOperatorError::Destination("open stream target"))?;
+    Ok((reader, destination, artifact_identity))
+}
+
+fn revalidate_stream_artifact_v2(
+    path: &Path,
+    artifact_identity: OperatorFileIdentity,
+) -> Result<(), TransferOperatorError> {
+    validate_owner_only_file(path)
+        .map_err(|_| TransferOperatorError::Bundle("owner-only stream bundle"))?;
+    require_named_file_identity(path, artifact_identity)
+        .map_err(|_| TransferOperatorError::Bundle("stream bundle identity changed"))
+}
+
+fn stream_authority_result_v2(
+    operation: &'static str,
+    identity: &TransferStreamIdentityV2,
+    manifest: &worldstream_transfer::TransferStreamManifestV2,
+    target: &TargetFingerprintV1,
+) -> Result<TransferStreamAuthorityResultV2, TransferOperatorError> {
+    Ok(TransferStreamAuthorityResultV2 {
+        schema: "worldstream/transfer-stream-authority-result/v2",
+        status: "ok",
+        operation,
+        stream_header_digest: identity
+            .stream_header_digest(Some(manifest))
+            .map_err(|_| TransferOperatorError::Bundle("stream header digest"))?
+            .to_string(),
+        manifest_digest: manifest
+            .digest()
+            .map_err(|_| TransferOperatorError::Bundle("stream manifest digest"))?
+            .to_string(),
+        source_epoch: identity.source_epoch(),
+        target_epoch: target.storage_epoch(),
+    })
+}
+
+/// Exports the exact backup retained by a transfer-pending SQLite source as a
+/// manifest-bearing v2 stream.
+///
+/// The caller first freezes the source with [`SqliteRoomStore::begin_source_transfer`].
+/// This function then opens only that retained backup, verifies it incrementally,
+/// emits keyset-backed records into an owner-only temporary artifact, and
+/// atomically publishes the final stream only after its authenticated footer
+/// has been written and synced. It does not construct a [`TransferBundleV1`]
+/// or collect the source records in memory.
+pub fn export_pending_stream_v2(
+    source: &SqliteRoomStore,
+    stream_path: &Path,
+    stream_id: &str,
+    limits: TransferStreamLimitsV2,
+) -> Result<TransferStreamExportResultV2, TransferOperatorError> {
+    let status = source
+        .source_transfer_status()
+        .map_err(|_| TransferOperatorError::Source("read stream source transfer fence"))?;
+    if status.state() != SqliteSourceTransferStateV1::TransferPending {
+        return Err(TransferOperatorError::Source(
+            "stream source is not transfer-pending",
+        ));
+    }
+    let source_epoch = status
+        .source_epoch()
+        .ok_or(TransferOperatorError::Source("stream source epoch"))?;
+    let backup_path = status
+        .backup_path()
+        .ok_or(TransferOperatorError::Source("stream retained backup path"))?;
+    let backup_digest = status.backup_digest().ok_or(TransferOperatorError::Source(
+        "stream retained backup digest",
+    ))?;
+    validate_owner_only_file(backup_path)
+        .map_err(|_| TransferOperatorError::Source("owner-only stream retained backup"))?;
+
+    let target_backend = postgres_backend_fingerprint()
+        .map_err(|_| TransferOperatorError::Bundle("PostgreSQL stream backend fingerprint"))?;
+    let source_backend = BackendFingerprintV1::new(
+        BundleProfileV1::SqliteBundled,
+        "sqlite-bundled",
+        target_backend.schema().clone(),
+    )
+    .map_err(|_| TransferOperatorError::Bundle("SQLite stream backend fingerprint"))?;
+    let identity = TransferStreamIdentityV2::new(
+        stream_id,
+        source
+            .deployment_lineage()
+            .map_err(|_| TransferOperatorError::Source("stream source lineage"))?,
+        source_epoch,
+        BundleProfileV1::SqliteBundled,
+        BundleProfileV1::PostgresPrimary17,
+    )
+    .map_err(|_| TransferOperatorError::Source("stream identity"))?;
+    let mut stream_source = SqliteTransferStreamSourceV2::open(
+        backup_path,
+        backup_digest,
+        &identity,
+        source_backend,
+        target_backend,
+    )
+    .map_err(|_| TransferOperatorError::Source("verified stream backup source"))?;
+    let manifest = stream_source.manifest().clone();
+    let stream_header_digest = identity
+        .stream_header_digest(Some(&manifest))
+        .map_err(|_| TransferOperatorError::Bundle("stream header digest"))?;
+    let manifest_digest = manifest
+        .digest()
+        .map_err(|_| TransferOperatorError::Bundle("stream manifest digest"))?;
+
+    publish_stream_owner_only(stream_path, "stream publication", |file| {
+        export_stream_v2(file, identity.clone(), &mut stream_source, limits)
+            .map(|_| ())
+            .map_err(|_| TransferOperatorError::Bundle("stream export"))
+    })?;
+
+    let after = source
+        .source_transfer_status()
+        .map_err(|_| TransferOperatorError::Source("recheck stream source transfer fence"))?;
+    if after.state() != SqliteSourceTransferStateV1::TransferPending
+        || after.source_epoch() != Some(source_epoch)
+        || after.backup_digest() != Some(backup_digest)
+        || after.backup_path() != Some(backup_path)
+    {
+        return Err(TransferOperatorError::Source(
+            "stream source transfer fence changed",
+        ));
+    }
+    validate_owner_only_file(stream_path)
+        .map_err(|_| TransferOperatorError::Bundle("owner-only published stream"))?;
+    Ok(TransferStreamExportResultV2 {
+        schema: "worldstream/transfer-stream-export-result/v2",
+        status: "ok",
+        operation: "export_stream",
+        stream_header_digest: stream_header_digest.to_string(),
+        manifest_digest: manifest_digest.to_string(),
+        backup_digest: backup_digest.to_string(),
+        source_epoch,
+        record_count: manifest.expected_record_count(),
+        record_bytes: manifest.expected_record_bytes(),
+    })
+}
+
 fn read_canonical_bundle_with_hook<F>(
     path: &Path,
     after_open: F,
@@ -1778,6 +2098,158 @@ fn publish_owner_only(
     label: &'static str,
 ) -> Result<(), TransferOperatorError> {
     publish_owner_only_with_hook(path, bytes, label, |_| Ok(()))
+}
+
+/// Publishes a large transfer stream without first collecting it into a
+/// memory buffer. The callback writes only to an unlinked/partial owner-only
+/// file; the final name becomes visible after the callback returns, the file
+/// is synced, and the completed stream is authenticated by its writer.
+fn publish_stream_owner_only<F>(
+    path: &Path,
+    label: &'static str,
+    write_stream: F,
+) -> Result<(), TransferOperatorError>
+where
+    F: FnOnce(&mut File) -> Result<(), TransferOperatorError>,
+{
+    let parent = PublicationParent::open(path).map_err(|_| TransferOperatorError::State(label))?;
+    parent
+        .require_relative_absent(parent.name())
+        .map_err(|_| TransferOperatorError::State("stream publication destination exists"))?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or(TransferOperatorError::State(label))?;
+    let nonce = random_nonce()?;
+    let partial = path.with_file_name(format!(".{name}.{nonce}.partial"));
+    let partial_name = partial
+        .file_name()
+        .ok_or(TransferOperatorError::State(label))?
+        .to_owned();
+    let (mut source, source_is_named) =
+        create_transfer_publication_source(&parent, &partial_name, label)?;
+    let source_identity =
+        operator_file_identity(&source).map_err(|_| TransferOperatorError::State(label))?;
+    let mut published: Option<(File, OperatorFileIdentity)> = None;
+    let result = (|| {
+        write_stream(&mut source)?;
+        source
+            .sync_all()
+            .map_err(|_| TransferOperatorError::State(label))?;
+        if source
+            .metadata()
+            .map_err(|_| TransferOperatorError::State(label))?
+            .len()
+            == 0
+        {
+            return Err(TransferOperatorError::Bundle("empty stream publication"));
+        }
+        if operator_file_identity(&source).ok() != Some(source_identity) {
+            return Err(TransferOperatorError::State(label));
+        }
+        if source_is_named {
+            parent
+                .require_relative_identity(&partial_name, source_identity)
+                .map_err(|_| TransferOperatorError::State(label))?;
+        } else {
+            parent
+                .require_relative_absent(&partial_name)
+                .map_err(|_| TransferOperatorError::State(label))?;
+        }
+        parent
+            .require_named()
+            .map_err(|_| TransferOperatorError::State(label))?;
+        let final_file = match publish_open_file_noreplace(&source, &parent) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                return Err(TransferOperatorError::State(
+                    "stream publication destination exists",
+                ));
+            }
+            Err(_) => return Err(TransferOperatorError::State(label)),
+        };
+        let final_identity =
+            operator_file_identity(&final_file).map_err(|_| TransferOperatorError::State(label))?;
+        parent
+            .require_relative_identity(parent.name(), final_identity)
+            .map_err(|_| TransferOperatorError::State(label))?;
+        parent
+            .sync()
+            .map_err(|_| TransferOperatorError::State(label))?;
+        validate_owner_only_file(path).map_err(|_| TransferOperatorError::State(label))?;
+        if final_file
+            .metadata()
+            .map_err(|_| TransferOperatorError::State(label))?
+            .len()
+            == 0
+        {
+            return Err(TransferOperatorError::Bundle("empty published stream"));
+        }
+        published = Some((final_file, final_identity));
+
+        if source_is_named {
+            #[cfg(windows)]
+            {
+                parent
+                    .require_relative_absent(&partial_name)
+                    .map_err(|_| TransferOperatorError::State(label))?;
+            }
+            #[cfg(not(windows))]
+            if !scrub_exact_operator_file(&source, source_identity) {
+                return Err(TransferOperatorError::State(
+                    "stream publication source cleanup incomplete",
+                ));
+            }
+        } else {
+            parent
+                .require_relative_absent(&partial_name)
+                .map_err(|_| TransferOperatorError::State(label))?;
+        }
+        parent
+            .sync()
+            .map_err(|_| TransferOperatorError::State(label))?;
+        parent
+            .require_named()
+            .map_err(|_| TransferOperatorError::State(label))?;
+        if let Some((final_file, final_identity)) = published.as_ref() {
+            if operator_file_identity(final_file).ok() != Some(*final_identity) {
+                return Err(TransferOperatorError::State(label));
+            }
+            parent
+                .require_relative_identity(parent.name(), *final_identity)
+                .map_err(|_| TransferOperatorError::State(label))?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let mut cleanup_complete = true;
+        if let Some((final_file, final_identity)) = published.as_ref() {
+            cleanup_complete &= scrub_exact_operator_file(final_file, *final_identity);
+        }
+        cleanup_complete &= if source_is_named {
+            scrub_exact_operator_file(&source, source_identity)
+        } else {
+            scrub_unlinked_stream_source(&source, source_identity)
+        };
+        cleanup_complete &= parent.sync().is_ok();
+        if !cleanup_complete {
+            return Err(TransferOperatorError::State(
+                "stream publication cleanup incomplete",
+            ));
+        }
+    }
+    result
+}
+
+fn scrub_unlinked_stream_source(file: &File, expected: OperatorFileIdentity) -> bool {
+    if operator_file_identity(file).ok() != Some(expected) {
+        return false;
+    }
+    if file.set_len(0).and_then(|()| file.sync_all()).is_err() {
+        return false;
+    }
+    operator_file_identity(file).ok() == Some(expected)
+        && file.metadata().is_ok_and(|metadata| metadata.len() == 0)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2255,21 +2727,27 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use tempfile::tempdir;
+    use worldstream_postgres::postgres_backend_fingerprint;
     use worldstream_runtime::{
         create_owner_only_file, prepare_data_directory, validate_owner_only_file,
     };
-    use worldstream_sqlite::{SqliteRoomStore, SqliteSourceTransferStateV1};
+    use worldstream_sqlite::{
+        SqliteRoomStore, SqliteSourceTransferStateV1, SqliteTransferStreamSourceV2,
+    };
     use worldstream_transfer::{
         BackendFingerprintV1, BundleProfileV1, DeploymentIdentityV1, DigestV1, LogicalRecordV1,
         PackIdentityV1, RecordKindV1, ResourceKindV1, TargetFingerprintV1, TransferBundleV1,
         TransferChunkDispositionV1, TransferChunkV1, TransferDestinationV1,
+        TransferStreamIdentityV2, TransferStreamLimitsV2, TransferStreamReaderV2,
+        TransferStreamSourceV2,
     };
 
     use super::{
         MAX_STATE_BYTES, OperationLockV1, OperatorPhaseV1, TransferOperatorError, abort_loaded,
-        begin_transfer, begin_transfer_with_hook, begin_transfer_with_hooks, finalize_loaded,
-        load_transfer, operator_file_identity, persist_generation, publish_or_confirm_bundle,
-        publish_owner_only, publish_owner_only_with_hook, read_bounded_with_hook,
+        begin_transfer, begin_transfer_with_hook, begin_transfer_with_hooks,
+        export_pending_stream_v2, finalize_loaded, load_transfer, operator_file_identity,
+        persist_generation, publish_or_confirm_bundle, publish_owner_only,
+        publish_owner_only_with_hook, publish_stream_owner_only, read_bounded_with_hook,
         read_canonical_bundle_with_hook, remove_named_identity_with_hook, require_resumable_phase,
         revalidate_abort_source, revalidate_finalization_source, revalidate_pending_source,
     };
@@ -3130,6 +3608,155 @@ mod tests {
         drop(initialized_source(&sqlite)?);
         begin_transfer(&sqlite, &backup, &bundle, &state_dir, transfer_id)?;
         Ok((temporary, sqlite, state_dir, backup, bundle))
+    }
+
+    #[test]
+    fn pending_source_exports_a_manifest_stream_without_a_bundle_projection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempdir()?;
+        let sqlite = temporary.path().join("source.sqlite3");
+        let state_dir = temporary.path().join("transfer-state");
+        prepare_data_directory(&state_dir)?;
+        let backup = state_dir.join("source.backup.sqlite3");
+        let stream = state_dir.join("source.stream");
+        let store = initialized_source(&sqlite)?;
+        let pending = store.begin_source_transfer(&backup)?;
+        assert_eq!(
+            pending.state(),
+            SqliteSourceTransferStateV1::TransferPending
+        );
+
+        let result = export_pending_stream_v2(
+            &store,
+            &stream,
+            "stream/operator-export",
+            TransferStreamLimitsV2 {
+                max_records_per_chunk: 2,
+                max_chunk_bytes: 4096,
+                max_record_bytes: 2048,
+                ..TransferStreamLimitsV2::default()
+            },
+        )?;
+        assert_eq!(
+            result.schema,
+            "worldstream/transfer-stream-export-result/v2"
+        );
+        assert!(stream.exists());
+        validate_owner_only_file(&stream)?;
+        assert_eq!(
+            store.source_transfer_status()?.state(),
+            SqliteSourceTransferStateV1::TransferPending
+        );
+        let file = fs::File::open(&stream)?;
+        let mut reader = TransferStreamReaderV2::new(
+            file,
+            TransferStreamLimitsV2 {
+                max_records_per_chunk: 2,
+                max_chunk_bytes: 4096,
+                max_record_bytes: 2048,
+                ..TransferStreamLimitsV2::default()
+            },
+        )?;
+        let manifest = reader.manifest().ok_or("stream manifest")?;
+        assert_eq!(
+            manifest.source_backup_digest().to_string(),
+            result.backup_digest
+        );
+        let mut count = 0_u64;
+        while let Some(chunk) = reader.next_chunk()? {
+            count += u64::try_from(chunk.records().len())?;
+        }
+        assert_eq!(count, result.record_count);
+        assert_eq!(
+            reader.footer().ok_or("stream footer")?.record_bytes(),
+            result.record_bytes
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn verified_stream_source_cursor_reopens_at_the_next_exact_record()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempdir()?;
+        let sqlite = temporary.path().join("source.sqlite3");
+        let state_dir = temporary.path().join("transfer-state");
+        prepare_data_directory(&state_dir)?;
+        let backup = state_dir.join("source.backup.sqlite3");
+        let store = initialized_source(&sqlite)?;
+        let pending = store.begin_source_transfer(&backup)?;
+        let backup_digest = pending.backup_digest().ok_or("source backup digest")?;
+        let source_epoch = pending.source_epoch().ok_or("source epoch")?;
+        let target_backend = postgres_backend_fingerprint()?;
+        let source_backend = BackendFingerprintV1::new(
+            BundleProfileV1::SqliteBundled,
+            "sqlite-bundled",
+            target_backend.schema().clone(),
+        )?;
+        let identity = TransferStreamIdentityV2::new(
+            "stream/operator-cursor",
+            store.deployment_lineage()?,
+            source_epoch,
+            BundleProfileV1::SqliteBundled,
+            BundleProfileV1::PostgresPrimary17,
+        )?;
+        let mut first = SqliteTransferStreamSourceV2::open(
+            &backup,
+            backup_digest,
+            &identity,
+            source_backend.clone(),
+            target_backend.clone(),
+        )?;
+        let manifest = first.manifest().clone();
+        let mut prefix = Vec::new();
+        for _ in 0..3 {
+            prefix.push(first.next_stream_record()?.ok_or("stream prefix record")?);
+        }
+        let cursor = first.cursor().clone();
+        assert_eq!(cursor.next_ordinal(), 3);
+
+        let mut resumed = SqliteTransferStreamSourceV2::open_at_cursor(
+            &backup,
+            backup_digest,
+            &identity,
+            source_backend,
+            target_backend,
+            cursor,
+        )?;
+        assert_eq!(resumed.manifest(), &manifest);
+        let mut expected_ordinal = 3_u64;
+        while let Some(record) = resumed.next_stream_record()? {
+            assert_eq!(record.ordinal(), expected_ordinal);
+            expected_ordinal += 1;
+        }
+        assert_eq!(
+            expected_ordinal,
+            manifest.expected_record_count(),
+            "a resumed cursor must cover the exact remaining manifest suffix"
+        );
+        assert_eq!(prefix.len(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_stream_publication_never_exposes_the_final_name()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempdir()?;
+        let destination = temporary.path().join("failed.stream");
+        let result = publish_stream_owner_only(&destination, "test stream publication", |file| {
+            file.write_all(b"partial stream bytes")
+                .map_err(|_| TransferOperatorError::State("test stream write"))?;
+            Err(TransferOperatorError::Bundle(
+                "injected stream disk failure",
+            ))
+        });
+        assert_eq!(
+            result,
+            Err(TransferOperatorError::Bundle(
+                "injected stream disk failure"
+            ))
+        );
+        assert!(!destination.exists());
+        Ok(())
     }
 
     fn generation_files(path: &std::path::Path) -> std::io::Result<Vec<String>> {

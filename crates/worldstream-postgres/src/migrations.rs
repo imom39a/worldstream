@@ -46,6 +46,17 @@ pub const EXTERNAL_INPUT_PREPARATION_MIGRATION_ID: &str = "0013-external-input-p
 pub const OBSERVATION_RESET_GENERATION_MIGRATION_ID: &str = "0014-observation-reset-generation-v1";
 /// Adds operational retention age and bounded runtime prefix maintenance.
 pub const OBSERVATION_RETENTION_MIGRATION_ID: &str = "0015-observation-retention-v1";
+/// Reserves the shared logical snapshot-cadence step. PostgreSQL has no
+/// backend-owned cadence schedule: its snapshots are produced by the same
+/// bounded Room Commit path, so the backend-specific execution is intentionally
+/// empty while the logical history remains aligned with SQLite.
+pub const SNAPSHOT_CADENCE_MIGRATION_ID: &str = "0015-snapshot-cadence-v1";
+/// Adds bounded refresh attention metadata and auditable supersession fields.
+pub const ACTIVATION_BACKLOG_POLICY_MIGRATION_ID: &str = "0016-activation-backlog-policy-v1";
+/// Adds the manifest-bound, resumable stream journal used by durable SQLite to
+/// PostgreSQL transfer. The journal remains non-serving until semantic
+/// verification succeeds behind the target authority fence.
+pub const STREAM_TRANSFER_V2_MIGRATION_ID: &str = "0017-stream-transfer-v2";
 
 /// A migration body and its stable identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -137,7 +148,9 @@ pub const SCHEMA_FINGERPRINT_MATERIAL: &str = concat!(
     "target_member_id:text:NO,reason_code:text:NO,deduplication_key:text:NO,priority:bigint:NO,",
     "semantic_deadline:text:YES,policy_revision:bigint:NO,state:text:NO,intent_generation:bigint:NO,",
     "lease_generation:bigint:NO,runner_id:text:YES,claim_id:text:YES,lease_until:text:YES,",
-    "context_hash:bytea:YES,context_bytes:bytea:YES,context_retired:boolean:NO);",
+    "context_hash:bytea:YES,context_bytes:bytea:YES,context_retired:boolean:NO,",
+    "created_at:text:NO,attention_bytes:bigint:NO,terminal_disposition:text:YES,",
+    "superseded_by_activation_id:text:YES,terminal_at:text:YES);",
     "worldstream_activation_operation_receipts(",
     "room_id:text:NO,operation_id:text:NO,operation_kind:text:NO,canonical_request_hash:bytea:NO,",
     "activation_id:text:YES,result_code:text:NO,result_bytes:bytea:NO,context_hash:bytea:YES,",
@@ -147,6 +160,9 @@ pub const SCHEMA_FINGERPRINT_MATERIAL: &str = concat!(
     "genesis_or_transition_hash:text:NO,core_schema_version:text:NO,pack_digest:text:NO,",
     "core_state_hash:text:NO,activity_state_hash:text:NO,authoritative_state_hash:text:NO,",
     "complete_head_bytes:bytea:NO,core_state_bytes:bytea:NO,activity_state_bytes:bytea:NO);",
+    "worldstream_room_snapshot_schedules(",
+    "room_id:text:NO,last_snapshot_room_seq:bigint:NO,transitions_since_snapshot:bigint:NO,",
+    "active_started_at:text:YES);",
     "worldstream_semantic_receipts(",
     "identity_bytes:bytea:NO,operation_kind:text:NO,canonical_request_hash:bytea:NO,",
     "basis_complete_head_bytes:bytea:YES,semantic_input_bytes:bytea:NO,semantic_time_bytes:bytea:NO,",
@@ -189,6 +205,17 @@ pub const SCHEMA_FINGERPRINT_MATERIAL: &str = concat!(
     "chunk_digest:bytea:NO,records_bytes:bytea:NO);",
     "worldstream_transfer_target_fence(",
     "fence_id:boolean:NO,bundle_hash:bytea:NO,target_fingerprint:bytea:NO,state:text:NO);",
+    "worldstream_transfer_stream_imports_v2(",
+    "stream_header_digest:bytea:NO,target_fingerprint:bytea:NO,manifest_bytes:bytea:NO,",
+    "manifest_digest:bytea:NO,state:text:NO,next_chunk:bigint:NO,next_ordinal:bigint:NO,",
+    "footer_chunk_count:bigint:YES,footer_record_count:bigint:YES,footer_record_bytes:bigint:YES,",
+    "footer_digest:bytea:YES);",
+    "worldstream_transfer_stream_chunks_v2(",
+    "stream_header_digest:bytea:NO,chunk_index:bigint:NO,chunk_start:bigint:NO,",
+    "chunk_end:bigint:NO,chunk_digest:bytea:NO,records_bytes:bytea:NO);",
+    "worldstream_transfer_stream_records_v2(",
+    "stream_header_digest:bytea:NO,ordinal:bigint:NO,class_tag:smallint:NO,kind_tag:smallint:NO,",
+    "identity:text:NO,record_bytes:bytea:NO,record_digest:bytea:NO);",
     "worldstream_deployment_metadata(",
     "target_id:boolean:NO,deployment_lineage_bytes:bytea:NO,storage_epoch_bytes:bytea:NO,",
     "storage_epoch:bigint:NO);",
@@ -216,7 +243,7 @@ pub fn schema_contract_fingerprint() -> Blake3DigestV1 {
 
 /// The complete ordered migration history.
 #[must_use]
-pub fn migration_history() -> [MigrationDescriptor; 14] {
+pub fn migration_history() -> [MigrationDescriptor; 17] {
     [
         MigrationDescriptor {
             version: 1,
@@ -287,6 +314,21 @@ pub fn migration_history() -> [MigrationDescriptor; 14] {
             version: 14,
             id: OBSERVATION_RETENTION_MIGRATION_ID,
             sql: MIGRATION_0014_SQL,
+        },
+        MigrationDescriptor {
+            version: 15,
+            id: SNAPSHOT_CADENCE_MIGRATION_ID,
+            sql: MIGRATION_0015_SQL,
+        },
+        MigrationDescriptor {
+            version: 16,
+            id: ACTIVATION_BACKLOG_POLICY_MIGRATION_ID,
+            sql: MIGRATION_0016_SQL,
+        },
+        MigrationDescriptor {
+            version: 17,
+            id: STREAM_TRANSFER_V2_MIGRATION_ID,
+            sql: MIGRATION_0017_SQL,
         },
     ]
 }
@@ -789,6 +831,95 @@ ALTER TABLE worldstream_members
 /// Frozen operational retention migration.
 pub const MIGRATION_0014_SQL: &str = include_str!("migrations/0015-observation-retention.sql");
 
+/// Durable PostgreSQL cadence metadata. It is operational scheduling state,
+/// not canonical Room history, and is fenced with the other writable
+/// operational tables during transfer.
+pub const MIGRATION_0015_SQL: &str = r"
+CREATE TABLE worldstream_room_snapshot_schedules (
+    room_id text PRIMARY KEY,
+    last_snapshot_room_seq bigint NOT NULL CHECK (last_snapshot_room_seq >= 0),
+    transitions_since_snapshot bigint NOT NULL CHECK (transitions_since_snapshot >= 0),
+    active_started_at text
+);
+CREATE TRIGGER worldstream_transfer_fence_snapshot_schedules
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_room_snapshot_schedules
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+";
+
+/// Adds operational metadata for the bounded refresh attention policy. The
+/// canonical Activation identity and Room history remain unchanged.
+pub const MIGRATION_0016_SQL: &str = r"
+ALTER TABLE worldstream_activation_intents
+    ADD COLUMN created_at text NOT NULL DEFAULT '';
+ALTER TABLE worldstream_activation_intents
+    ADD COLUMN attention_bytes bigint NOT NULL DEFAULT 0
+        CHECK (attention_bytes >= 0);
+ALTER TABLE worldstream_activation_intents
+    ADD COLUMN terminal_disposition text
+        CHECK (terminal_disposition IS NULL OR terminal_disposition IN (
+            'superseded_refresh', 'refresh_capacity_exceeded', 'refresh_age_exceeded',
+            'completed', 'expired', 'cancelled'
+        ));
+ALTER TABLE worldstream_activation_intents
+    ADD COLUMN superseded_by_activation_id text;
+ALTER TABLE worldstream_activation_intents
+    ADD COLUMN terminal_at text;
+CREATE INDEX worldstream_activation_pending_refresh_policy
+    ON worldstream_activation_intents(room_id, target_member_id, state, semantic_deadline, created_at, cause_room_seq);
+";
+
+/// Persists a bounded, manifest-bound stream journal separately from the v1
+/// materialized-bundle journal. Each accepted chunk and its decoded per-record
+/// staging rows commit with one cursor advance, so an interrupted importer can
+/// resume without rebuilding a bundle or retaining the full record set.
+pub const MIGRATION_0017_SQL: &str = r"
+CREATE TABLE worldstream_transfer_stream_imports_v2 (
+    stream_header_digest bytea PRIMARY KEY CHECK (octet_length(stream_header_digest) = 32),
+    target_fingerprint bytea NOT NULL CHECK (octet_length(target_fingerprint) = 32),
+    manifest_bytes bytea NOT NULL CHECK (octet_length(manifest_bytes) > 0),
+    manifest_digest bytea NOT NULL CHECK (octet_length(manifest_digest) = 32),
+    state text NOT NULL CHECK (state IN ('pending', 'verified', 'finalized', 'authoritative', 'aborted')),
+    next_chunk bigint NOT NULL CHECK (next_chunk >= 0),
+    next_ordinal bigint NOT NULL CHECK (next_ordinal >= 0),
+    footer_chunk_count bigint CHECK (footer_chunk_count >= 0),
+    footer_record_count bigint CHECK (footer_record_count >= 0),
+    footer_record_bytes bigint CHECK (footer_record_bytes >= 0),
+    footer_digest bytea CHECK (footer_digest IS NULL OR octet_length(footer_digest) = 32),
+    CHECK (
+        (footer_chunk_count IS NULL AND footer_record_count IS NULL
+            AND footer_record_bytes IS NULL AND footer_digest IS NULL)
+        OR
+        (footer_chunk_count IS NOT NULL AND footer_record_count IS NOT NULL
+            AND footer_record_bytes IS NOT NULL AND footer_digest IS NOT NULL)
+    )
+);
+CREATE TABLE worldstream_transfer_stream_chunks_v2 (
+    stream_header_digest bytea NOT NULL
+        REFERENCES worldstream_transfer_stream_imports_v2(stream_header_digest) ON DELETE CASCADE,
+    chunk_index bigint NOT NULL CHECK (chunk_index >= 0),
+    chunk_start bigint NOT NULL CHECK (chunk_start >= 0),
+    chunk_end bigint NOT NULL CHECK (chunk_end > chunk_start),
+    chunk_digest bytea NOT NULL CHECK (octet_length(chunk_digest) = 32),
+    records_bytes bytea NOT NULL,
+    PRIMARY KEY (stream_header_digest, chunk_index),
+    UNIQUE (stream_header_digest, chunk_start)
+);
+CREATE TABLE worldstream_transfer_stream_records_v2 (
+    stream_header_digest bytea NOT NULL
+        REFERENCES worldstream_transfer_stream_imports_v2(stream_header_digest) ON DELETE CASCADE,
+    ordinal bigint NOT NULL CHECK (ordinal >= 0),
+    class_tag smallint NOT NULL CHECK (class_tag IN (1, 2)),
+    kind_tag smallint NOT NULL CHECK (kind_tag > 0),
+    identity text NOT NULL CHECK (length(identity) > 0),
+    record_bytes bytea NOT NULL,
+    record_digest bytea NOT NULL CHECK (octet_length(record_digest) = 32),
+    PRIMARY KEY (stream_header_digest, ordinal),
+    UNIQUE (stream_header_digest, class_tag, kind_tag, identity)
+);
+CREATE INDEX worldstream_transfer_stream_records_v2_identity
+    ON worldstream_transfer_stream_records_v2(stream_header_digest, identity, ordinal);
+";
+
 /// The result of checking an ordered migration prefix.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MigrationVerification {
@@ -1080,7 +1211,60 @@ mod identity_tests {
         );
         assert_eq!(
             schema_contract_fingerprint().to_string(),
-            "blake3:5dd5bac169e8cce8c6620c463e2d64ffee16ead73200559a1209ae3b2c173f8c"
+            "blake3:4c5ec1d25273f4a7ae1d899a1c7df4655d0d0b1d3a44e73a359adc79800c4398"
+        );
+    }
+
+    #[test]
+    fn stream_transfer_journal_migration_is_forward_only_and_complete() {
+        let migration = migration_history()[16];
+        assert_eq!(migration.version, 17);
+        assert_eq!(migration.id, STREAM_TRANSFER_V2_MIGRATION_ID);
+        for table in [
+            "worldstream_transfer_stream_imports_v2",
+            "worldstream_transfer_stream_chunks_v2",
+            "worldstream_transfer_stream_records_v2",
+        ] {
+            assert!(migration.sql.contains(&format!("CREATE TABLE {table}")));
+        }
+        assert!(migration.sql.contains("next_chunk bigint NOT NULL"));
+        assert!(migration.sql.contains("next_ordinal bigint NOT NULL"));
+    }
+
+    #[test]
+    fn postgres_snapshot_cadence_migration_is_durable_and_transfer_fenced() {
+        let migration = migration_history()[14];
+        assert_eq!(migration.version, 15);
+        assert_eq!(migration.id, SNAPSHOT_CADENCE_MIGRATION_ID);
+        assert!(
+            migration
+                .sql
+                .contains("CREATE TABLE worldstream_room_snapshot_schedules")
+        );
+        assert!(
+            migration
+                .sql
+                .contains("worldstream_transfer_fence_snapshot_schedules")
+        );
+    }
+
+    #[test]
+    fn logical_tail_keeps_snapshot_cadence_before_activation_and_stream_journal() {
+        let tail = &migration_history()[14..];
+        assert_eq!(
+            tail.iter()
+                .map(|migration| migration.id)
+                .collect::<Vec<_>>(),
+            [
+                SNAPSHOT_CADENCE_MIGRATION_ID,
+                ACTIVATION_BACKLOG_POLICY_MIGRATION_ID,
+                STREAM_TRANSFER_V2_MIGRATION_ID,
+            ]
+        );
+        assert!(
+            tail[0]
+                .sql
+                .contains("CREATE TABLE worldstream_room_snapshot_schedules")
         );
     }
 }

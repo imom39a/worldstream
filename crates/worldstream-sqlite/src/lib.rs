@@ -24,10 +24,14 @@
 //! transaction locks remain the exact-object write serializer.
 
 mod migration_contract;
+mod transfer_stream;
 
 pub use migration_contract::{
     LOGICAL_HISTORY_ID, MigrationDescriptor, MigrationVerificationError, migration_history,
     verify_migration_prefix, verify_migration_records,
+};
+pub use transfer_stream::{
+    SqliteTransferStreamCursorV2, SqliteTransferStreamErrorV2, SqliteTransferStreamSourceV2,
 };
 
 use std::{
@@ -62,54 +66,61 @@ use serde_json::json;
 use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use worldstream_core::{
-    AccessModeV1, ActionAdmittedAt, ActionId, ActivationAttentionV1, ActivationContextInputV1,
-    ActivationDecisionV1, ActivationDeliveryV1, ActivationFrameV1, ActivationIntentStateV1,
-    ActivationInvocationContextV1, ActivationOperationRequestV1, ActivationOperationResultV1,
-    ActivationPolicyDecisionV1, ActivationPolicyDispositionV1, ActivationResultCodeV1,
-    AuthorityBootstrapStateV1, AuthorityChangeReceiptV1, AuthorityChangeResultV1,
-    AuthorityChangeStatePartsV1, AuthorityChangeStateV1, AuthorityChangeTargetV1,
-    AuthorityChangeV1, AuthorityCheckedAt, AuthorityErrorV1, AuthorityGenerationV1,
-    AuthorityReasonCodeV1, AuthoritySnapshotQueryV1, AuthoritySnapshotV1, AuthorityStoreErrorV1,
-    AuthorityStoreV1, AuthorizedCoreAdministrationV1, AuthorizedDiagnosticV1,
-    AuthorizedExternalInputV1, AuthorizedReceiptReadV1, AuthorizedReceiptResolverV1,
-    AuthorizedReplayV1, AuthorizedRunnerControlV1, AuthorizedTimerFiredV1, AuthorizedViewerV1,
-    Blake3DigestV1, CanonicalJsonV1, CanonicalRequestHashV1, CapabilityAuthoritySnapshotPartsV1,
-    CapabilityAuthoritySnapshotV1, CapabilityBearerV1, CapabilityExpiresAt, CapabilityId,
-    CapabilityProfileV1, CapabilityRevokedAt, CapabilityScopeSetV1, CapabilityScopeV1,
-    CapabilityTokenHashV1, CompleteHeadV1, CoreAdministrationRequestV1, CoreRecordedAt,
-    CoreRoomStateV1, CoreTraceV1, DiagnosticAdapterInputV1, DiagnosticOperationV1,
-    DiagnosticTargetV1, ExternalInputRecordedAt, ExternalInputV1, GenesisV1,
+    ACTIVATION_ATTENTION_ROW_OVERHEAD_BYTES_V1, AccessModeV1, ActionAdmittedAt, ActionId,
+    ActivationAttentionV1, ActivationContextInputV1, ActivationDecisionV1, ActivationDeliveryV1,
+    ActivationFrameV1, ActivationIntentStateV1, ActivationInvocationContextV1,
+    ActivationOperationRequestV1, ActivationOperationResultV1, ActivationPolicyDecisionV1,
+    ActivationPolicyDispositionV1, ActivationResultCodeV1, AuthorityBootstrapStateV1,
+    AuthorityChangeReceiptV1, AuthorityChangeResultV1, AuthorityChangeStatePartsV1,
+    AuthorityChangeStateV1, AuthorityChangeTargetV1, AuthorityChangeV1, AuthorityCheckedAt,
+    AuthorityErrorV1, AuthorityGenerationV1, AuthorityReasonCodeV1, AuthoritySnapshotQueryV1,
+    AuthoritySnapshotV1, AuthorityStoreErrorV1, AuthorityStoreV1, AuthorizedCoreAdministrationV1,
+    AuthorizedDiagnosticV1, AuthorizedExternalInputV1, AuthorizedReceiptReadV1,
+    AuthorizedReceiptResolverV1, AuthorizedReplayV1, AuthorizedRunnerControlV1,
+    AuthorizedTimerFiredV1, AuthorizedViewerV1, Blake3DigestV1, CanonicalJsonV1,
+    CanonicalRequestHashV1, CapabilityAuthoritySnapshotPartsV1, CapabilityAuthoritySnapshotV1,
+    CapabilityBearerV1, CapabilityExpiresAt, CapabilityId, CapabilityProfileV1,
+    CapabilityRevokedAt, CapabilityScopeSetV1, CapabilityScopeV1, CapabilityTokenHashV1,
+    CompleteHeadV1, CoreAdministrationRequestV1, CoreRecordedAt, CoreRoomStateV1, CoreTraceV1,
+    DiagnosticAdapterInputV1, DiagnosticOperationV1, DiagnosticTargetV1, ExternalInputRecordedAt,
+    ExternalInputV1, GenesisV1, HistoricalEvidencePageOutcomeV1, HistoricalEvidenceReferenceV1,
     HistoricalReplayAccumulatorV1, HistoricalReplayErrorV1, HistoricalReplayProjectionRequestV1,
     HistoricalReplayProjectionV1, HostClockErrorV1, HostClockSampleV1, HostClockV1,
-    IntegrityGenerationV1, MemberId, MemberReadOperationV1, MembershipAuthoritySnapshotV1,
-    MembershipGenerationV1, MembershipStandingV1, MembershipV1, OperationIdentityV1,
-    PackRegistryV1, PackRevisionLockV1, PackViewerV1, ParticipantActionAuthorityV1,
-    ParticipantActionRequestV1, ParticipantActionV1, PreparedAdvancePersistenceV1,
-    PreparedAuthorityBootstrapV1, PreparedAuthorityChangeV1, PreparedAuthorityWitnessV1,
-    PreparedCreationPersistenceV1, PreparedExistingIntentV1, PreparedObservationConsequenceV1,
-    PreparedOperationInputWitnessV1, PreparedRoomCommitV1, PreparedRoomWriteV1,
-    PreparedTimerMutationKindV1, PresentedCapabilityV1, PrincipalAuthoritySnapshotV1,
-    PrincipalAuthorityStatusV1, PrincipalGenerationV1, PrincipalId, PrincipalKindV1,
-    ReceiptSemanticInputV1, RecordedStimulusV1, RecoveredObservationConsequenceV1,
+    IntegrityGenerationV1, MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1,
+    MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES, MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1,
+    MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_TIME_MS_V1,
+    MAX_PENDING_REFRESH_AGE_MS_V1, MAX_PENDING_REFRESH_BYTES_V1, MemberId, MemberReadOperationV1,
+    MembershipAuthoritySnapshotV1, MembershipGenerationV1, MembershipStandingV1, MembershipV1,
+    OperationIdentityV1, PackRegistryV1, PackRevisionLockV1, PackViewerV1,
+    ParticipantActionAuthorityV1, ParticipantActionRequestV1, ParticipantActionV1,
+    PreparedAdvancePersistenceV1, PreparedAuthorityBootstrapV1, PreparedAuthorityChangeV1,
+    PreparedAuthorityWitnessV1, PreparedCreationPersistenceV1, PreparedExistingIntentV1,
+    PreparedObservationConsequenceV1, PreparedOperationInputWitnessV1, PreparedRoomCommitV1,
+    PreparedRoomWriteV1, PreparedTimerMutationKindV1, PresentedCapabilityV1,
+    PrincipalAuthoritySnapshotV1, PrincipalAuthorityStatusV1, PrincipalGenerationV1, PrincipalId,
+    PrincipalKindV1, ReceiptSemanticInputV1, RecordedStimulusV1, RecoveredObservationConsequenceV1,
     RecoveredRoomMaterializationsV1, RecoveredTimerStateV1, RecoveryIntegrityDispositionV1,
     ReplayAdapterInputV1, ReplayFailureClassV1, ReplayProjectionKindV1, ResolutionStatusV1,
     ResolveOutcomeV1, RoomCommitResolutionV1, RoomCommitStorageV1, RoomId, RoomIntegrityStateV1,
-    RoomIntegrityStatusV1, RoomRecoveryCandidateV1, RoomRecoveryErrorV1, RoomRecoveryStorageV1,
-    RoomSequenceV1, RoomStatusV1, RunnerAuthoritySnapshotV1, RunnerAuthorityStatusV1,
-    RunnerControlAdapterInputV1, RunnerControlOperationV1, RunnerGenerationV1, RunnerId,
-    RunnerMembershipSetV1, SemanticResultV1, SessionBarrierV1, SessionErrorV1,
-    StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, TimerId,
-    TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1, ValidatedAuthorityBootstrapV1,
-    ValidatedAuthorityChangeV1, ValidatedPackViewV1, VerifiedCurrentRoomMaterializationV1,
-    ViewerAdapterInputV1, activation_id_for_attention_v1, commit_existing_room,
-    prepare_activation_context, recover_room_from_storage,
-    resolve_authorized_room_operation_for_adapter,
+    RoomIntegrityStatusV1, RoomRecoveryCandidateV1, RoomRecoveryCheckpointV1, RoomRecoveryErrorV1,
+    RoomRecoveryStorageV1, RoomSequenceV1, RoomStatusV1, RunnerAuthoritySnapshotV1,
+    RunnerAuthorityStatusV1, RunnerControlAdapterInputV1, RunnerControlOperationV1,
+    RunnerGenerationV1, RunnerId, RunnerMembershipSetV1, SemanticResultV1, SessionBarrierV1,
+    SessionErrorV1, StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1,
+    TimerId, TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1,
+    ValidatedAuthorityBootstrapV1, ValidatedAuthorityChangeV1, ValidatedPackViewV1,
+    VerifiedCurrentRoomMaterializationV1, ViewerAdapterInputV1, activation_id_for_attention_v1,
+    activation_refresh_budget_allows_v1, commit_existing_room, prepare_activation_context,
+    recover_room_from_storage, resolve_authorized_room_operation_for_adapter,
 };
 use worldstream_sqlite_open::{ExactSqliteConnection, ExactSqliteOpenError, open_exact};
 use worldstream_transfer::{
     DeploymentIdentityV1, DigestV1, PackIdentityV1, ResourceIdentityV1, ResourceKindV1,
     ResourcePayloadV1, TransferSourceAuthorityBindingV1, TransferSourceAuthorityStateV1,
-    TransferSourceAuthorityV1, VerifiedTargetAbortV1, VerifiedTargetFinalizationV1,
+    TransferSourceAuthorityV1, TransferStreamSourceAuthorityBindingV2,
+    TransferStreamSourceAuthorityStateV2, TransferStreamSourceAuthorityV2,
+    VerifiedStreamTargetAbortV2, VerifiedStreamTargetFinalizationV2, VerifiedTargetAbortV1,
+    VerifiedTargetFinalizationV1,
 };
 
 /// Frozen `SQLite` engine selected by the authored compatibility manifest.
@@ -128,6 +139,13 @@ pub const SQLITE_BUNDLE_SOURCE_INVENTORY_DIGEST: &str =
 
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 const MAX_ACTIVATION_LEASE_MS: u64 = 30_000;
+// Invocation Context encodes `Vec<u8>` as JSON numbers, so reserve four
+// bytes per raw payload byte plus a deliberately conservative per-frame
+// envelope before materializing a retained suffix.
+const ACTIVATION_CONTEXT_FRAME_PAGE: usize = 32;
+const MAX_ACTIVATION_CONTEXT_FRAMES: usize = 512;
+const MAX_ACTIVATION_CONTEXT_FRAME_PAYLOAD_BYTES: usize =
+    MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES / 8;
 const MAX_DEPLOYMENT_LINEAGE_BYTES: usize = 128;
 const INITIAL_MIGRATION_ID: &str = "0001-initial-storage-schema";
 const AUTHORITY_MIGRATION_ID: &str = "0002-operational-authority-v1";
@@ -142,12 +160,20 @@ const TRANSFER_LIFECYCLE_MIGRATION_ID: &str = "0011-transfer-lifecycle-and-resou
 const TRANSFER_BACKUP_IDENTITY_MIGRATION_ID: &str = "0012-transfer-backup-file-identity-v1";
 const EXTERNAL_INPUT_PREPARATION_MIGRATION_ID: &str = "0013-external-input-preparations-v1";
 const OBSERVATION_RETENTION_MIGRATION_ID: &str = "0014-observation-retention-v1";
+const SNAPSHOT_CADENCE_MIGRATION_ID: &str = "0015-snapshot-cadence-v1";
+pub const ACTIVATION_BACKLOG_POLICY_MIGRATION_ID: &str = "0016-activation-backlog-policy-v1";
+/// The PostgreSQL target-only stream journal remains a no-op in the SQLite
+/// source schema, but carries the common logical migration identity.
+pub const STREAM_TRANSFER_V2_MIGRATION_ID: &str = "0017-stream-transfer-v2";
 const OPERATION_RECEIPT_CODEC_ID: &str = "worldstream/operation-receipt/v1";
 const PAIRED_SNAPSHOT_SCHEMA_VERSION: &str = "worldstream/paired-snapshot/v1";
+const SNAPSHOT_TRANSITION_INTERVAL: i64 = 250;
+const SNAPSHOT_ACTIVE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const MIGRATION_BACKUP_PREFIX: &str = "worldstream-migration-backup";
 const WRITER_QUEUE_CAPACITY: usize = 32;
 const REPLAY_PAGE_ROWS: usize = 64;
 const REPLAY_MAX_ROWS_PER_SLICE: usize = 1_024;
+const REPLAY_MAX_BYTES_PER_SLICE: usize = 2 * 1024 * 1024;
 const REPLAY_MAX_CAPTURE_DURATION: Duration = Duration::from_secs(5);
 const MAX_IN_FLIGHT_REPLAY_SLICES: usize = 2;
 const MAX_DEFERRED_REPLAY_SESSIONS: usize = 8;
@@ -736,6 +762,37 @@ CREATE INDEX observation_frames_retention_order
 ON observation_frames(room_id, member_id, retained_at, frame_seq);
 ";
 
+const SNAPSHOT_CADENCE_MIGRATION_SCHEMA: &str = r"
+CREATE TABLE room_snapshot_schedules (
+    room_id TEXT PRIMARY KEY REFERENCES rooms(room_id) ON DELETE CASCADE,
+    last_snapshot_room_seq INTEGER NOT NULL CHECK (last_snapshot_room_seq BETWEEN 0 AND 9007199254740991),
+    transitions_since_snapshot INTEGER NOT NULL CHECK (transitions_since_snapshot BETWEEN 0 AND 9007199254740991),
+    active_started_at TEXT
+) STRICT;
+";
+
+/// Adds the operational fields needed to bound refresh attention while
+/// retaining an auditable terminal disposition for every superseded identity.
+pub const ACTIVATION_BACKLOG_POLICY_MIGRATION_SCHEMA: &str = r"
+ALTER TABLE activation_intents ADD COLUMN created_at TEXT NOT NULL DEFAULT '';
+ALTER TABLE activation_intents ADD COLUMN attention_bytes INTEGER NOT NULL DEFAULT 0
+    CHECK (attention_bytes BETWEEN 0 AND 9007199254740991);
+ALTER TABLE activation_intents ADD COLUMN terminal_disposition TEXT
+    CHECK (terminal_disposition IS NULL OR terminal_disposition IN (
+        'superseded_refresh', 'refresh_capacity_exceeded', 'refresh_age_exceeded',
+        'completed', 'expired', 'cancelled'
+    ));
+ALTER TABLE activation_intents ADD COLUMN superseded_by_activation_id TEXT;
+ALTER TABLE activation_intents ADD COLUMN terminal_at TEXT;
+CREATE INDEX activation_pending_refresh_policy
+ON activation_intents(room_id, target_member_id, state, semantic_deadline, created_at, cause_room_seq);
+";
+
+const STREAM_TRANSFER_V2_MIGRATION_SCHEMA: &str = r"
+-- PostgreSQL owns the durable stream-import journal. SQLite is a verified
+-- source only, so this common logical migration has no SQLite DDL.
+";
+
 const INITIAL_MIGRATION_SCHEMA: &str = r"
 CREATE TABLE authority_fences (
     witness_id TEXT PRIMARY KEY,
@@ -1312,6 +1369,13 @@ impl SqliteRoomDiagnosticSummaryV1 {
 pub struct SqliteActivationStatusV1 {
     waiting: u32,
     leased: u32,
+    pending_refresh: u32,
+    pending_refresh_bytes: u64,
+    oldest_pending_age_ms: Option<u64>,
+    superseded_refreshes: u64,
+    age_retired_refreshes: u64,
+    executions_last_minute: u64,
+    scheduled_timers: u32,
 }
 
 impl SqliteActivationStatusV1 {
@@ -1323,6 +1387,41 @@ impl SqliteActivationStatusV1 {
     #[must_use]
     pub const fn leased(self) -> u32 {
         self.leased
+    }
+
+    #[must_use]
+    pub const fn pending_refresh(self) -> u32 {
+        self.pending_refresh
+    }
+
+    #[must_use]
+    pub const fn pending_refresh_bytes(self) -> u64 {
+        self.pending_refresh_bytes
+    }
+
+    #[must_use]
+    pub const fn oldest_pending_age_ms(self) -> Option<u64> {
+        self.oldest_pending_age_ms
+    }
+
+    #[must_use]
+    pub const fn superseded_refreshes(self) -> u64 {
+        self.superseded_refreshes
+    }
+
+    #[must_use]
+    pub const fn age_retired_refreshes(self) -> u64 {
+        self.age_retired_refreshes
+    }
+
+    #[must_use]
+    pub const fn executions_last_minute(self) -> u64 {
+        self.executions_last_minute
+    }
+
+    #[must_use]
+    pub const fn scheduled_timers(self) -> u32 {
+        self.scheduled_timers
     }
 }
 
@@ -2638,6 +2737,8 @@ pub enum SqliteActivationErrorV1 {
     StaleLease,
     #[error("Activation context is stale or invalid")]
     StaleContext,
+    #[error("Activation Invocation Context exceeds the aggregate byte budget")]
+    ContextTooLarge,
     #[error("Activation request is invalid")]
     InvalidRequest,
 }
@@ -2676,6 +2777,31 @@ pub struct SqliteActivationOfferResultV1 {
 pub struct SqliteAuthorizedReplayProjectionV1 {
     historical: HistoricalReplayProjectionV1,
     canonical_envelope: worldstream_core::CanonicalJsonV1,
+}
+
+/// Bounded metadata-only historical evidence page produced by SQLite.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SqliteHistoricalEvidencePageV1 {
+    pub outcome: HistoricalEvidencePageOutcomeV1,
+    pub references: Vec<HistoricalEvidenceReferenceV1>,
+    pub next_after_room_seq: Option<u64>,
+}
+
+/// Closed failure for the metadata-only evidence adapter.
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum SqliteHistoricalEvidenceErrorV1 {
+    #[error("historical evidence storage is unavailable")]
+    StorageUnavailable,
+    #[error("historical evidence metadata is corrupt")]
+    Corrupt,
+    #[error("historical evidence is missing")]
+    Missing,
+    #[error("historical evidence has been pruned")]
+    Pruned,
+    #[error("historical evidence has been retired")]
+    Retired,
+    #[error("historical evidence page budget exceeded")]
+    BudgetExceeded,
 }
 
 /// Bounded progress from one present-authorized Replay slice.
@@ -2992,8 +3118,16 @@ enum WriterCommand {
         binding: SqliteVerifiedTargetBindingV1,
         reply: mpsc::Sender<Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1>>,
     },
+    RestoreSourceAfterStreamAbort {
+        binding: SqliteVerifiedStreamTargetBindingV2,
+        reply: mpsc::Sender<Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1>>,
+    },
     RetireSourceAfterFinalization {
         binding: SqliteVerifiedTargetBindingV1,
+        reply: mpsc::Sender<Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1>>,
+    },
+    RetireSourceAfterStreamFinalization {
+        binding: SqliteVerifiedStreamTargetBindingV2,
         reply: mpsc::Sender<Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1>>,
     },
     ApplyAuthorityBootstrap(
@@ -3160,6 +3294,33 @@ struct SqliteVerifiedTargetBindingV1 {
     lineage_id: String,
 }
 
+/// Internal projection of the opaque v2 stream authority proof. The existing
+/// lifecycle columns retain the header digest in their historical
+/// `bundle_hash` slot; that header cryptographically binds the manifest and
+/// its expected footer, so no bundle is constructed or stored for this path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SqliteVerifiedStreamTargetBindingV2 {
+    stream_header_digest: DigestV1,
+    source_backup_digest: DigestV1,
+    target_fingerprint: DigestV1,
+    source_epoch: u64,
+    target_epoch: u64,
+    lineage_id: String,
+}
+
+impl From<&TransferStreamSourceAuthorityBindingV2> for SqliteVerifiedStreamTargetBindingV2 {
+    fn from(binding: &TransferStreamSourceAuthorityBindingV2) -> Self {
+        Self {
+            stream_header_digest: binding.stream_header_digest(),
+            source_backup_digest: binding.source_backup_digest(),
+            target_fingerprint: binding.target_fingerprint(),
+            source_epoch: binding.source_epoch(),
+            target_epoch: binding.target_epoch(),
+            lineage_id: binding.lineage_id().to_owned(),
+        }
+    }
+}
+
 impl From<&VerifiedTargetFinalizationV1> for SqliteVerifiedTargetBindingV1 {
     fn from(proof: &VerifiedTargetFinalizationV1) -> Self {
         Self {
@@ -3232,6 +3393,19 @@ struct PostCommitSnapshotV1 {
     complete_head_bytes: Vec<u8>,
     core_state_bytes: Vec<u8>,
     activity_state_bytes: Vec<u8>,
+}
+
+struct SnapshotCadenceCandidate<'a> {
+    room_id: &'a str,
+    room_seq: i64,
+    genesis: bool,
+}
+
+#[derive(Clone, Debug)]
+struct SnapshotCadenceState {
+    last_snapshot_room_seq: i64,
+    transitions_since_snapshot: i64,
+    active_started_at: Option<String>,
 }
 
 struct PreparedReceiptRow {
@@ -3433,6 +3607,29 @@ impl SqlitePreparedWrite {
             } => return None,
         };
         Some(PostCommitSnapshotV1::from_persistence(&persistence))
+    }
+
+    fn snapshot_cadence_candidate(&self) -> Option<SnapshotCadenceCandidate<'_>> {
+        match &self.branch {
+            PreparedSqliteBranch::Create(persistence) => Some(SnapshotCadenceCandidate {
+                room_id: persistence.complete_head.room_id().as_str(),
+                room_seq: 0,
+                genesis: true,
+            }),
+            PreparedSqliteBranch::Existing {
+                intent: PreparedExistingIntentV1::Advance(advance),
+                ..
+            } => Some(SnapshotCadenceCandidate {
+                room_id: advance.resulting_complete_head.room_id().as_str(),
+                room_seq: i64::try_from(advance.resulting_complete_head.room_seq().get())
+                    .unwrap_or_else(|_| unreachable!("prepared Room sequence is safe for SQLite")),
+                genesis: false,
+            }),
+            PreparedSqliteBranch::Existing {
+                intent: PreparedExistingIntentV1::DurableDisposition,
+                ..
+            } => None,
+        }
     }
 }
 
@@ -4453,6 +4650,33 @@ impl SqliteRoomStore {
         read_source_transfer_status(&connection)
     }
 
+    /// Reads the durable deployment lineage without exporting any Room or
+    /// operational records. Stream export uses this small metadata read to
+    /// bind a retained backup to the source authority fence before opening its
+    /// keyset cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed storage/corruption error when the canonical metadata
+    /// singleton is absent or invalid.
+    pub fn deployment_lineage(&self) -> Result<String, SqliteSourceTransferErrorV1> {
+        let connection = self
+            .writer
+            .open_read_connection()
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        let lineage = connection
+            .query_row(
+                "SELECT deployment_lineage FROM canonical_export_metadata WHERE metadata_id = 1",
+                (),
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|_| SqliteSourceTransferErrorV1::SourceEvidenceIncomplete)?;
+        if !is_canonical_deployment_lineage(&lineage) {
+            return Err(SqliteSourceTransferErrorV1::SourceEvidenceIncomplete);
+        }
+        Ok(lineage)
+    }
+
     /// Quiesces the controlled writer, creates and verifies one new bundled
     /// online backup, then durably enters `transfer_pending` at the next epoch.
     ///
@@ -4523,6 +4747,34 @@ impl SqliteRoomStore {
         self.writer
             .commands
             .send(WriterCommand::RestoreSourceAfterAbort { binding, reply })
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        receive
+            .recv()
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?
+    }
+
+    fn retire_after_verified_stream_target(
+        &self,
+        binding: SqliteVerifiedStreamTargetBindingV2,
+    ) -> Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1> {
+        let (reply, receive) = mpsc::channel();
+        self.writer
+            .commands
+            .send(WriterCommand::RetireSourceAfterStreamFinalization { binding, reply })
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        receive
+            .recv()
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?
+    }
+
+    fn restore_after_verified_stream_abort(
+        &self,
+        binding: SqliteVerifiedStreamTargetBindingV2,
+    ) -> Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1> {
+        let (reply, receive) = mpsc::channel();
+        self.writer
+            .commands
+            .send(WriterCommand::RestoreSourceAfterStreamAbort { binding, reply })
             .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
         receive
             .recv()
@@ -4799,17 +5051,75 @@ impl SqliteRoomStore {
                     (SELECT count(*) FROM activation_intents \
                      WHERE room_id = ?1 AND target_member_id = ?2 AND state = 'pending'), \
                     (SELECT count(*) FROM activation_intents \
-                     WHERE room_id = ?1 AND target_member_id = ?2 AND state = 'leased') \
+                     WHERE room_id = ?1 AND target_member_id = ?2 AND state = 'leased'), \
+                    (SELECT count(*) FROM activation_intents \
+                     WHERE room_id = ?1 AND target_member_id = ?2 AND state = 'pending'\
+                       AND semantic_deadline IS NULL), \
+                    (SELECT coalesce(sum(attention_bytes), 0) FROM activation_intents \
+                     WHERE room_id = ?1 AND target_member_id = ?2 AND state = 'pending'\
+                       AND semantic_deadline IS NULL), \
+                    (SELECT min(created_at) FROM activation_intents \
+                     WHERE room_id = ?1 AND target_member_id = ?2 AND state IN ('pending', 'leased')\
+                       AND created_at != ''), \
+                    (SELECT count(*) FROM activation_intents \
+                     WHERE room_id = ?1 AND target_member_id = ?2\
+                       AND terminal_disposition = 'superseded_refresh'), \
+                    (SELECT count(*) FROM activation_intents \
+                     WHERE room_id = ?1 AND target_member_id = ?2\
+                       AND terminal_disposition = 'refresh_age_exceeded'), \
+                    (SELECT count(*) FROM activation_intents \
+                     WHERE room_id = ?1 AND target_member_id = ?2\
+                       AND terminal_disposition = 'completed'\
+                       AND terminal_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-60 seconds')), \
+                    (SELECT count(*) FROM timers WHERE room_id = ?1 AND state = 'scheduled') \
                  FROM room_members WHERE room_id = ?1 AND member_id = ?2",
                 params![room_id.as_str(), member_id.as_str()],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
+                    ))
+                },
             )
             .optional()
             .map_err(|_| SqliteRoomDiagnosticErrorV1::StorageUnavailable)?
             .ok_or(SqliteRoomDiagnosticErrorV1::RoomUnavailable)?;
+        let checked_at = OffsetDateTime::parse(checked_at.as_str(), &Rfc3339)
+            .map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)?;
+        let oldest_pending_age_ms = counts
+            .4
+            .filter(|created_at| !created_at.is_empty())
+            .map(|created_at| {
+                let created_at = OffsetDateTime::parse(created_at.as_str(), &Rfc3339)
+                    .map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)?;
+                let age = checked_at - created_at;
+                u64::try_from(age.whole_milliseconds().max(0))
+                    .map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)
+            })
+            .transpose()?;
         Ok(SqliteActivationStatusV1 {
             waiting: u32::try_from(counts.0).map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)?,
             leased: u32::try_from(counts.1).map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)?,
+            pending_refresh: u32::try_from(counts.2)
+                .map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)?,
+            pending_refresh_bytes: u64::try_from(counts.3)
+                .map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)?,
+            oldest_pending_age_ms,
+            superseded_refreshes: u64::try_from(counts.5)
+                .map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)?,
+            age_retired_refreshes: u64::try_from(counts.6)
+                .map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)?,
+            executions_last_minute: u64::try_from(counts.7)
+                .map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)?,
+            scheduled_timers: u32::try_from(counts.8)
+                .map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)?,
         })
     }
 
@@ -5257,6 +5567,32 @@ impl SqliteRoomStore {
             integrity,
             frame_heads,
         } = snapshot;
+        self.commit_authorized_timer_fired_from_serving_trace(
+            authority,
+            request,
+            transition_id,
+            &mut trace,
+            &integrity,
+            &frame_heads,
+        )
+    }
+
+    /// Commits a TimerFired operation through an adapter-owned current Room
+    /// executor. This keeps successful timer advances on the same execution
+    /// basis used by warm current views and Activation claims.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_authorized_timer_fired_from_serving_trace(
+        &self,
+        authority: AuthorizedTimerFiredV1,
+        request: &TimerFiredRequestV1,
+        transition_id: TransitionId,
+        trace: &mut CoreTraceV1,
+        integrity: &RoomIntegrityStateV1,
+        frame_heads: &BTreeMap<MemberId, u64>,
+    ) -> Result<RoomCommitResolutionV1, SqliteTimerCommitErrorV1> {
+        if trace.head().room_id() != request.room_id() {
+            return Err(SqliteTimerCommitErrorV1::RoomUnavailable);
+        }
         if integrity.status() == RoomIntegrityStatusV1::Faulted {
             return Err(SqliteTimerCommitErrorV1::RoomFaulted);
         }
@@ -5274,7 +5610,7 @@ impl SqliteRoomStore {
             .prepare(stimulus)
             .map_err(|error| map_timer_commit_trace_error(&error))?;
         let prepared = PreparedRoomCommitV1::for_authorized_timer_fired(
-            &trace,
+            trace,
             request,
             prepared_transition,
             transition_id,
@@ -5283,9 +5619,7 @@ impl SqliteRoomStore {
             &frame_heads,
         )
         .map_err(map_timer_commit_preparation_error)?;
-        Ok(commit_existing_room(self, &mut trace, prepared)
-            .into_parts()
-            .0)
+        Ok(commit_existing_room(self, trace, prepared).into_parts().0)
     }
 
     /// Commits one exact Core-authorized existing-Room administration request
@@ -5331,6 +5665,47 @@ impl SqliteRoomStore {
         Ok(commit_existing_room(self, &mut trace, prepared)
             .into_parts()
             .0)
+    }
+
+    /// Commits an ExternalInput operation through an adapter-owned current
+    /// Room executor, preserving the warm execution basis for later claims.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_authorized_external_input_from_serving_trace(
+        &self,
+        authority: AuthorizedExternalInputV1,
+        room_id: &RoomId,
+        based_on_room_seq: RoomSequenceV1,
+        input: &ExternalInputV1,
+        transition_id: TransitionId,
+        trace: &mut CoreTraceV1,
+        integrity: &RoomIntegrityStateV1,
+        frame_heads: &BTreeMap<MemberId, u64>,
+    ) -> Result<RoomCommitResolutionV1, SqliteTimerCommitErrorV1> {
+        if trace.head().room_id() != room_id {
+            return Err(SqliteTimerCommitErrorV1::RoomUnavailable);
+        }
+        if integrity.status() == RoomIntegrityStatusV1::Faulted {
+            return Err(SqliteTimerCommitErrorV1::RoomFaulted);
+        }
+        if integrity.status() == RoomIntegrityStatusV1::Quarantined {
+            return Err(SqliteTimerCommitErrorV1::IntegrityUnavailable);
+        }
+        let prepared_transition = trace
+            .prepare(RecordedStimulusV1::ExternalInput(input.clone()))
+            .map_err(|error| map_timer_commit_trace_error(&error))?;
+        let prepared = PreparedRoomCommitV1::for_authorized_external_input(
+            trace,
+            room_id,
+            based_on_room_seq,
+            input,
+            prepared_transition,
+            transition_id,
+            integrity.generation(),
+            authority,
+            &frame_heads,
+        )
+        .map_err(map_timer_commit_preparation_error)?;
+        Ok(commit_existing_room(self, trace, prepared).into_parts().0)
     }
 
     /// Durably binds one `ExternalInput` operation identity and request hash to
@@ -5393,30 +5768,16 @@ impl SqliteRoomStore {
             integrity,
             frame_heads,
         } = snapshot;
-        if integrity.status() == RoomIntegrityStatusV1::Faulted {
-            return Err(SqliteTimerCommitErrorV1::RoomFaulted);
-        }
-        if integrity.status() == RoomIntegrityStatusV1::Quarantined {
-            return Err(SqliteTimerCommitErrorV1::IntegrityUnavailable);
-        }
-        let prepared_transition = trace
-            .prepare(RecordedStimulusV1::ExternalInput(input.clone()))
-            .map_err(|error| map_timer_commit_trace_error(&error))?;
-        let prepared = PreparedRoomCommitV1::for_authorized_external_input(
-            &trace,
+        self.commit_authorized_external_input_from_serving_trace(
+            authority,
             room_id,
             based_on_room_seq,
             input,
-            prepared_transition,
             transition_id,
-            integrity.generation(),
-            authority,
+            &mut trace,
+            &integrity,
             &frame_heads,
         )
-        .map_err(map_timer_commit_preparation_error)?;
-        Ok(commit_existing_room(self, &mut trace, prepared)
-            .into_parts()
-            .0)
     }
 
     /// Revalidates one receipt-read grant and resolves its exact operation in
@@ -5783,6 +6144,34 @@ impl SqliteRoomStore {
         )
     }
 
+    /// Prepares an Activation claim from an adapter-owned, verified current
+    /// Room executor. The executor is borrowed only for the pure Pack view;
+    /// the subsequent claim transaction still rereads every durable witness.
+    /// A cache miss should use [`Self::prepare_activation_claim`] so recovery
+    /// remains the verified cold fallback.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_activation_claim_from_serving_trace(
+        &self,
+        registry: &PackRegistryV1,
+        authority: &AuthorizedRunnerControlV1,
+        request: ActivationOperationRequestV1,
+        trace: &CoreTraceV1,
+        integrity: &RoomIntegrityStateV1,
+    ) -> Result<SqliteActivationClaimV1, SqliteActivationErrorV1> {
+        if trace.head().room_id() != &authority.target().room_id {
+            return Err(SqliteActivationErrorV1::Fenced);
+        }
+        prepare_activation_claim_readonly_from_trace(
+            &self.writer.database_file,
+            &self.writer.path,
+            registry,
+            authority,
+            request,
+            trace,
+            integrity.generation(),
+        )
+    }
+
     /// Renews a live Activation lease under its current generation.
     ///
     /// # Errors
@@ -5984,6 +6373,130 @@ impl SqliteRoomStore {
             },
             active,
         )
+    }
+
+    /// Reads only durable Transition identity metadata through a bounded,
+    /// keyset-paginated fence. This method never returns canonical evidence
+    /// bytes; the gateway must complete present and historical Role
+    /// authorization before calling it.
+    pub fn historical_evidence_page(
+        &self,
+        room_id: &RoomId,
+        after_room_seq: u64,
+        cut_room_seq: u64,
+    ) -> Result<SqliteHistoricalEvidencePageV1, SqliteHistoricalEvidenceErrorV1> {
+        if after_room_seq > cut_room_seq {
+            return Err(SqliteHistoricalEvidenceErrorV1::Corrupt);
+        }
+        if after_room_seq == cut_room_seq {
+            return Ok(SqliteHistoricalEvidencePageV1 {
+                outcome: HistoricalEvidencePageOutcomeV1::Exhausted,
+                references: Vec::new(),
+                next_after_room_seq: None,
+            });
+        }
+        let started = Instant::now();
+        let connection = open_retained_sqlite(
+            &self.writer.database_file,
+            &self.writer.path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(|_| SqliteHistoricalEvidenceErrorV1::StorageUnavailable)?;
+        connection
+            .busy_timeout(Duration::from_millis(250))
+            .map_err(|_| SqliteHistoricalEvidenceErrorV1::StorageUnavailable)?;
+        let room = room_id.to_string();
+        let min_sequence: Option<i64> = connection
+            .query_row(
+                "SELECT min(room_seq) FROM transitions WHERE room_id = ?1",
+                [&room],
+                |row| row.get(0),
+            )
+            .map_err(|_| SqliteHistoricalEvidenceErrorV1::StorageUnavailable)?;
+        let Some(min_sequence) = min_sequence else {
+            return Err(SqliteHistoricalEvidenceErrorV1::Missing);
+        };
+        let min_sequence =
+            u64::try_from(min_sequence).map_err(|_| SqliteHistoricalEvidenceErrorV1::Corrupt)?;
+        if after_room_seq.saturating_add(1) < min_sequence {
+            return Err(SqliteHistoricalEvidenceErrorV1::Pruned);
+        }
+        let after =
+            i64::try_from(after_room_seq).map_err(|_| SqliteHistoricalEvidenceErrorV1::Corrupt)?;
+        let cut =
+            i64::try_from(cut_room_seq).map_err(|_| SqliteHistoricalEvidenceErrorV1::Corrupt)?;
+        let limit = i64::try_from(MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1 + 1)
+            .map_err(|_| SqliteHistoricalEvidenceErrorV1::Corrupt)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT room_seq, transition_id, transition_hash, previous_lineage_hash, \
+                 length(transition_bytes) \
+                 FROM transitions WHERE room_id = ?1 AND room_seq > ?2 AND room_seq <= ?3 \
+                 ORDER BY room_seq LIMIT ?4",
+            )
+            .map_err(|_| SqliteHistoricalEvidenceErrorV1::StorageUnavailable)?;
+        let rows = statement
+            .query_map(params![room, after, cut, limit], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })
+            .map_err(|_| SqliteHistoricalEvidenceErrorV1::StorageUnavailable)?;
+        let mut references = Vec::with_capacity(MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1);
+        let mut encoded_bytes = 0_usize;
+        let mut has_more = false;
+        for row in rows {
+            if started.elapsed() >= Duration::from_millis(MAX_HISTORICAL_EVIDENCE_TIME_MS_V1) {
+                return Err(SqliteHistoricalEvidenceErrorV1::BudgetExceeded);
+            }
+            let (sequence, transition_id, transition_hash, previous_lineage_hash, bytes_len) =
+                row.map_err(|_| SqliteHistoricalEvidenceErrorV1::StorageUnavailable)?;
+            if bytes_len == 0 {
+                return Err(SqliteHistoricalEvidenceErrorV1::Retired);
+            }
+            let sequence =
+                u64::try_from(sequence).map_err(|_| SqliteHistoricalEvidenceErrorV1::Corrupt)?;
+            if references.len() >= MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1 {
+                has_more = true;
+                break;
+            }
+            let evidence_reference = format!("room/{room}/transition/{transition_id}");
+            let reference = HistoricalEvidenceReferenceV1::new(
+                sequence,
+                transition_id,
+                transition_hash,
+                previous_lineage_hash,
+                evidence_reference,
+            )
+            .ok_or(SqliteHistoricalEvidenceErrorV1::Corrupt)?;
+            let size = reference.encoded_bytes();
+            if encoded_bytes.saturating_add(size) > MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1 {
+                return Err(SqliteHistoricalEvidenceErrorV1::BudgetExceeded);
+            }
+            encoded_bytes = encoded_bytes.saturating_add(size);
+            references.push(reference);
+        }
+        if references.is_empty() {
+            return Err(SqliteHistoricalEvidenceErrorV1::Missing);
+        }
+        let next = references
+            .last()
+            .map(HistoricalEvidenceReferenceV1::room_seq);
+        Ok(SqliteHistoricalEvidencePageV1 {
+            outcome: if has_more || next.is_some_and(|value| value < cut_room_seq) {
+                HistoricalEvidencePageOutcomeV1::Complete
+            } else {
+                HistoricalEvidencePageOutcomeV1::Exhausted
+            },
+            references,
+            next_after_room_seq: next,
+        })
     }
 
     /// Resumes one opaque bounded Replay slice on the exact store that
@@ -6487,6 +7000,62 @@ impl TransferSourceAuthorityV1 for SqliteRoomStore {
     }
 }
 
+impl TransferStreamSourceAuthorityV2 for SqliteRoomStore {
+    type Error = SqliteSourceTransferErrorV1;
+
+    fn inspect_stream_source_authority(
+        &self,
+        binding: &TransferStreamSourceAuthorityBindingV2,
+    ) -> Result<TransferStreamSourceAuthorityStateV2, Self::Error> {
+        let connection = self
+            .writer
+            .open_read_connection()
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        let current = read_source_transfer_status(&connection)?;
+        let binding = SqliteVerifiedStreamTargetBindingV2::from(binding);
+        match current.state() {
+            SqliteSourceTransferStateV1::TransferPending => {
+                verify_stream_provider_binding_at_frozen_source(&connection, &current, &binding)?;
+                Ok(TransferStreamSourceAuthorityStateV2::TransferPending)
+            }
+            SqliteSourceTransferStateV1::SourceRetired => {
+                if current.bundle_hash() != Some(binding.stream_header_digest)
+                    || current.target_fingerprint() != Some(binding.target_fingerprint)
+                {
+                    return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+                }
+                verify_stream_provider_binding_at_frozen_source(&connection, &current, &binding)?;
+                Ok(TransferStreamSourceAuthorityStateV2::SourceRetired)
+            }
+            SqliteSourceTransferStateV1::SourceAuthoritative => {
+                if current.last_aborted_bundle_hash() == Some(binding.stream_header_digest)
+                    && current.last_aborted_target_fingerprint() == Some(binding.target_fingerprint)
+                {
+                    Ok(TransferStreamSourceAuthorityStateV2::SourceAuthoritativeAfterAbort)
+                } else {
+                    Err(SqliteSourceTransferErrorV1::EvidenceMismatch)
+                }
+            }
+        }
+    }
+
+    fn retire_after_verified_stream_target(
+        &self,
+        proof: &VerifiedStreamTargetFinalizationV2,
+    ) -> Result<(), Self::Error> {
+        self.retire_after_verified_stream_target(proof.binding().into())
+            .map(|_| ())
+    }
+
+    fn restore_after_verified_stream_abort(
+        &self,
+        proof: &VerifiedStreamTargetAbortV2,
+    ) -> Result<(), Self::Error> {
+        self.restore_after_verified_stream_abort(proof.binding().into())
+            .map(|_| ())
+    }
+}
+
 fn is_canonical_deployment_lineage(value: &str) -> bool {
     let bytes = value.as_bytes();
     !bytes.is_empty()
@@ -6746,8 +7315,32 @@ impl RoomRecoveryStorageV1 for SqliteRoomStore {
         let observed_fence =
             capture_observed_recovery_fence(&self.writer.database_file, &self.writer.path, room_id)
                 .map_err(|error| map_inspection_error(&error))?;
-        match self.inspect_room(room_id) {
-            Ok(inspection) => Ok(inspection.map(|value| value.recovery_candidate())),
+        match inspect_checkpoint_candidate_at_path(
+            &self.writer.database_file,
+            &self.writer.path,
+            room_id,
+        ) {
+            Ok(Some(candidate)) => Ok(Some(candidate)),
+            Ok(None) => match self.inspect_room(room_id) {
+                Ok(inspection) => Ok(inspection.map(|value| value.recovery_candidate())),
+                Err(SqliteRoomInspectionErrorV1::Corrupt) => {
+                    if let Some(fence) = observed_fence {
+                        let (reply, receive) = mpsc::channel();
+                        self.writer
+                            .commands
+                            .send(WriterCommand::QuarantineObservedRecoveryCorruption {
+                                fence: Box::new(fence),
+                                reply,
+                            })
+                            .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+                        receive
+                            .recv()
+                            .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)??;
+                    }
+                    Err(RoomRecoveryErrorV1::Corrupt)
+                }
+                Err(error) => Err(map_inspection_error(&error)),
+            },
             Err(SqliteRoomInspectionErrorV1::Corrupt) => {
                 if let Some(fence) = observed_fence {
                     let (reply, receive) = mpsc::channel();
@@ -8961,6 +9554,352 @@ fn replay_inspection_read_only(
 }
 
 #[allow(clippy::too_many_lines)]
+fn inspect_checkpoint_candidate_at_path(
+    file: &File,
+    path: &Path,
+    requested_room_id: &RoomId,
+) -> Result<Option<RoomRecoveryCandidateV1>, SqliteRoomInspectionErrorV1> {
+    const MAX_CHECKPOINT_TAIL: i64 = 250;
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX
+        | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    let mut connection = open_retained_sqlite(file, path, flags)
+        .map_err(|_| SqliteRoomInspectionErrorV1::Unavailable)?;
+    connection.pragma_update(None, "query_only", true)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+    let room_id = requested_room_id.to_string();
+    let stored: Option<StoredHeadProjection> = transaction
+        .query_row(
+            "SELECT room_status, room_seq, genesis_or_transition_hash, core_schema_version, pack_digest, \
+             core_state_hash, activity_state_hash, authoritative_state_hash, complete_head_bytes \
+             FROM rooms WHERE room_id = ?1",
+            [&room_id],
+            |row| Ok(StoredHeadProjection {
+                room_status: row.get(0)?, room_seq: row.get(1)?, lineage_hash: row.get(2)?,
+                core_schema_version: row.get(3)?, pack_digest: row.get(4)?,
+                core_state_hash: row.get(5)?, activity_state_hash: row.get(6)?,
+                authoritative_state_hash: row.get(7)?, canonical_bytes: row.get(8)?,
+            }),
+        )
+        .optional()?;
+    let Some(stored) = stored else {
+        transaction.commit()?;
+        return Ok(None);
+    };
+    let head = CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&stored.canonical_bytes)
+        .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?;
+    let upper =
+        i64::try_from(head.room_seq().get()).map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?;
+    if head.room_id() != requested_room_id
+        || stored.room_seq != upper
+        || stored.lineage_hash != head.genesis_or_transition_hash().to_string()
+        || stored.core_schema_version != head.core_schema_version()
+        || stored.pack_digest != head.pack_digest().to_string()
+        || stored.core_state_hash != head.core_state_hash().to_string()
+        || stored.activity_state_hash != head.activity_state_hash().to_string()
+        || stored.authoritative_state_hash != head.authoritative_state_hash().to_string()
+    {
+        return Err(SqliteRoomInspectionErrorV1::Corrupt);
+    }
+    // The current timers table is an operational projection of the current
+    // Head. It cannot seed an older checkpoint without a per-snapshot timer
+    // witness, so a stale checkpoint in a timer-bearing Room takes the cold
+    // verified path.
+    let has_timers: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM timers WHERE room_id = ?1)",
+        [&room_id],
+        |row| row.get(0),
+    )?;
+    let integrity: Option<(String, i64)> = transaction
+        .query_row(
+            "SELECT status, generation FROM room_integrity WHERE room_id = ?1",
+            [&room_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (status, generation) = integrity.ok_or(SqliteRoomInspectionErrorV1::Corrupt)?;
+    let integrity = parse_integrity_state(Some(&status), Some(generation))
+        .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?;
+    if integrity.status() != RoomIntegrityStatusV1::Healthy {
+        // Faulted Rooms must retain the established cold-replay repair path;
+        // quarantined Rooms are still refused by that inspection. A
+        // checkpoint is only an acceleration candidate for healthy state.
+        transaction.commit()?;
+        return Ok(None);
+    }
+    let (pack_lock, genesis_bytes): (Vec<u8>, Vec<u8>) = transaction
+        .query_row(
+            "SELECT pack_revision_lock_bytes, genesis_bytes FROM room_genesis WHERE room_id = ?1",
+            [&room_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .ok_or(SqliteRoomInspectionErrorV1::Corrupt)?;
+    PackRevisionLockV1::from_canonical_bytes(&pack_lock, head.pack_digest())
+        .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?;
+    let snapshot: Option<(i64, StoredPairedSnapshotRow)> = transaction.query_row(
+        "SELECT room_seq, snapshot_schema_version, genesis_or_transition_hash, core_schema_version, pack_digest, \
+         core_state_hash, activity_state_hash, authoritative_state_hash, complete_head_bytes, \
+         core_state_bytes, activity_state_bytes FROM room_snapshots WHERE room_id = ?1 \
+         AND room_seq <= ?2 ORDER BY room_seq DESC LIMIT 1",
+        params![room_id, upper], |row| Ok((
+            row.get(0)?,
+            (row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?,
+             row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?),
+        )),
+    ).optional()?;
+    let Some((snapshot_room_seq, snapshot)) = snapshot else {
+        transaction.commit()?;
+        return Ok(None);
+    };
+    if snapshot.0 != PAIRED_SNAPSHOT_SCHEMA_VERSION {
+        transaction.commit()?;
+        return Ok(None);
+    }
+    let checkpoint_head = CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&snapshot.7)
+        .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?;
+    let checkpoint_seq = i64::try_from(checkpoint_head.room_seq().get())
+        .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?;
+    if checkpoint_head.room_id() != requested_room_id
+        || snapshot_room_seq != checkpoint_seq
+        || checkpoint_seq < 0
+        || has_timers
+        || upper - checkpoint_seq > MAX_CHECKPOINT_TAIL
+        || snapshot.1 != checkpoint_head.genesis_or_transition_hash().to_string()
+        || snapshot.2 != checkpoint_head.core_schema_version()
+        || snapshot.3 != checkpoint_head.pack_digest().to_string()
+        || snapshot.4 != checkpoint_head.core_state_hash().to_string()
+        || snapshot.5 != checkpoint_head.activity_state_hash().to_string()
+        || snapshot.6 != checkpoint_head.authoritative_state_hash().to_string()
+        || checkpoint_head
+            .canonical_bytes()
+            .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?
+            != snapshot.7
+    {
+        transaction.commit()?;
+        return Ok(None);
+    }
+    let has_uncheckpointed_operational_state: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM observation_frames WHERE room_id = ?1) \
+         OR EXISTS(SELECT 1 FROM observation_consequences WHERE room_id = ?1) \
+         OR EXISTS(SELECT 1 FROM room_members WHERE room_id = ?1 AND membership_generation > 1)",
+        [&room_id],
+        |row| row.get(0),
+    )?;
+    if has_uncheckpointed_operational_state {
+        // These projections are not yet authenticated inside the snapshot.
+        // Even a current-Head checkpoint cannot bypass their replay checks.
+        transaction.commit()?;
+        return Ok(None);
+    }
+    let record_bytes: Vec<u8> = if checkpoint_seq == 0 {
+        transaction.query_row(
+            "SELECT genesis_bytes FROM room_genesis WHERE room_id = ?1",
+            [&room_id],
+            |row| row.get(0),
+        )?
+    } else {
+        transaction.query_row(
+            "SELECT transition_bytes FROM transitions WHERE room_id = ?1 AND room_seq = ?2",
+            params![room_id, checkpoint_seq],
+            |row| row.get(0),
+        )?
+    };
+    if VerifiedCurrentRoomMaterializationV1::verify_for_storage(
+        &checkpoint_head,
+        &record_bytes,
+        &snapshot.8,
+        &snapshot.9,
+    )
+    .is_err()
+    {
+        transaction.commit()?;
+        return Ok(None);
+    }
+    let mut timers = Vec::new();
+    {
+        let mut timer_rows = transaction.prepare(
+            "SELECT timer_id, generation, scheduled_for, payload_bytes, state FROM timers WHERE room_id = ?1 ORDER BY timer_id, generation",
+        )?;
+        let rows = timer_rows.query_map([&room_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        for row in rows {
+            let (timer_id, generation, scheduled_for, payload, state) = row?;
+            let state = match state.as_str() {
+                "scheduled" => RecoveredTimerStateV1::Scheduled,
+                "fired" => RecoveredTimerStateV1::Fired,
+                "cancelled" => RecoveredTimerStateV1::Cancelled,
+                _ => return Err(SqliteRoomInspectionErrorV1::Corrupt),
+            };
+            timers.push(worldstream_core::RecoveredTimerMaterializationV1::new(
+                timer_id
+                    .parse()
+                    .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?,
+                TimerGenerationV1::new(
+                    u64::try_from(generation).map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?,
+                )
+                .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?,
+                scheduled_for
+                    .parse()
+                    .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?,
+                payload,
+                state,
+            ));
+        }
+    }
+    let mut observation_frames = Vec::new();
+    {
+        let mut statement = transaction.prepare(
+            "SELECT member_id, frame_seq, cause_room_seq, payload_hash FROM observation_frames \
+             WHERE room_id = ?1 ORDER BY member_id, frame_seq",
+        )?;
+        let rows = statement.query_map([&room_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (member_id, frame_seq, cause_room_seq, payload_hash) = row?;
+            observation_frames.push(worldstream_core::RecoveredObservationFrameV1::from_replay(
+                member_id
+                    .parse()
+                    .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?,
+                u64::try_from(frame_seq).map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?,
+                RoomSequenceV1::new(
+                    u64::try_from(cause_room_seq)
+                        .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?,
+                )
+                .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?,
+                payload_hash
+                    .parse()
+                    .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?,
+            ));
+        }
+    }
+    let mut observation_consequences = Vec::new();
+    {
+        let mut statement = transaction.prepare(
+            "SELECT member_id, cause_room_seq, consequence_kind, projection_hash FROM observation_consequences \
+             WHERE room_id = ?1 ORDER BY member_id, cause_room_seq",
+        )?;
+        let rows = statement.query_map([&room_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (member_id, cause_room_seq, kind, projection_hash) = row?;
+            let member_id = member_id
+                .parse()
+                .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?;
+            let cause_room_seq = RoomSequenceV1::new(
+                u64::try_from(cause_room_seq).map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?,
+            )
+            .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?;
+            observation_consequences.push(match kind.as_str() {
+                "reset_required" => {
+                    worldstream_core::RecoveredObservationConsequenceV1::reset_required(
+                        member_id,
+                        cause_room_seq,
+                        projection_hash
+                            .ok_or(SqliteRoomInspectionErrorV1::Corrupt)?
+                            .parse()
+                            .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?,
+                    )
+                }
+                "visibility_lost" => {
+                    worldstream_core::RecoveredObservationConsequenceV1::visibility_lost(
+                        member_id,
+                        cause_room_seq,
+                    )
+                }
+                _ => return Err(SqliteRoomInspectionErrorV1::Corrupt),
+            });
+        }
+    }
+    let mut membership_generations = BTreeMap::new();
+    {
+        let mut statement = transaction.prepare(
+            "SELECT member_id, membership_generation FROM room_members WHERE room_id = ?1 ORDER BY member_id",
+        )?;
+        let rows = statement.query_map([&room_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (member_id, generation) = row?;
+            if membership_generations
+                .insert(member_id, generation)
+                .is_some()
+            {
+                return Err(SqliteRoomInspectionErrorV1::Corrupt);
+            }
+        }
+    }
+    let mut transitions = Vec::new();
+    let mut expected = checkpoint_seq + 1;
+    {
+        let mut statement = transaction.prepare(
+            "SELECT room_seq, transition_bytes FROM transitions WHERE room_id = ?1 AND room_seq > ?2 AND room_seq <= ?3 ORDER BY room_seq",
+        )?;
+        let rows = statement.query_map(params![room_id, checkpoint_seq, upper], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (seq, bytes) = row?;
+            if seq != expected {
+                return Err(SqliteRoomInspectionErrorV1::Corrupt);
+            }
+            transitions.push(bytes);
+            expected += 1;
+        }
+    }
+    if expected != upper + 1 {
+        return Err(SqliteRoomInspectionErrorV1::Corrupt);
+    }
+    let materializations: Option<(Vec<u8>, Vec<u8>)> = transaction.query_row(
+        "SELECT core_state_bytes, activity_state_bytes FROM room_materializations WHERE room_id = ?1", [&room_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional()?;
+    let candidate = RoomRecoveryCandidateV1::new_with_checkpoint(
+        head.clone(),
+        integrity.generation(),
+        stored.canonical_bytes,
+        pack_lock,
+        genesis_bytes,
+        transitions,
+        materializations.as_ref().map(|v| v.0.clone()),
+        materializations.map(|v| v.1),
+        RoomRecoveryCheckpointV1::new(
+            checkpoint_head,
+            record_bytes,
+            snapshot.8,
+            snapshot.9,
+            timers,
+        )
+        .with_operational_witnesses(
+            observation_frames,
+            observation_consequences,
+            membership_generations,
+        ),
+    );
+    transaction.commit()?;
+    Ok(Some(candidate))
+}
+
+#[allow(clippy::too_many_lines)]
 fn inspect_room_at_path(
     file: &File,
     path: &Path,
@@ -10024,8 +10963,26 @@ fn writer_main(
                 }
                 reply_after_namespace_check!(reply, result);
             }
+            WriterCommand::RestoreSourceAfterStreamAbort { binding, reply } => {
+                let mut result = restore_source_after_stream_abort(&mut connection, &binding);
+                if enforce_source_transfer_mode(&connection, source_transfer_state, true).is_err() {
+                    result = Err(SqliteSourceTransferErrorV1::StorageUnavailable);
+                    reply_after_namespace_check!(reply, result);
+                    break;
+                }
+                reply_after_namespace_check!(reply, result);
+            }
             WriterCommand::RetireSourceAfterFinalization { binding, reply } => {
                 let mut result = retire_source_after_finalization(&mut connection, &binding);
+                if enforce_source_transfer_mode(&connection, source_transfer_state, true).is_err() {
+                    result = Err(SqliteSourceTransferErrorV1::StorageUnavailable);
+                    reply_after_namespace_check!(reply, result);
+                    break;
+                }
+                reply_after_namespace_check!(reply, result);
+            }
+            WriterCommand::RetireSourceAfterStreamFinalization { binding, reply } => {
+                let mut result = retire_source_after_stream_finalization(&mut connection, &binding);
                 if enforce_source_transfer_mode(&connection, source_transfer_state, true).is_err() {
                     result = Err(SqliteSourceTransferErrorV1::StorageUnavailable);
                     reply_after_namespace_check!(reply, result);
@@ -11440,7 +12397,10 @@ fn verify_recovery_memberships(
         Option<i64>,
         Option<i64>,
     );
-    let expected_generations = recover_membership_generations(transaction, room_id)?;
+    let expected_generations = match recovered.membership_generations() {
+        Some(generations) => generations.clone(),
+        None => recover_membership_generations(transaction, room_id)?,
+    };
     let stored = {
         let mut statement = transaction
             .prepare(
@@ -11505,7 +12465,10 @@ fn rebuild_recovery_memberships(
     room_id: &str,
     recovered: &RecoveredRoomMaterializationsV1,
 ) -> Result<(), RoomRecoveryErrorV1> {
-    let expected_generations = recover_membership_generations(transaction, room_id)?;
+    let expected_generations = match recovered.membership_generations() {
+        Some(generations) => generations.clone(),
+        None => recover_membership_generations(transaction, room_id)?,
+    };
     let frame_heads = recovered.observation_frames().iter().fold(
         BTreeMap::<String, i64>::new(),
         |mut heads, frame| {
@@ -14252,6 +15215,205 @@ fn verify_provider_binding_at_frozen_source(
     Ok(())
 }
 
+/// Rechecks a v2 authority binding without materializing canonical export
+/// records. The retained backup verifier and both transfer-point digests walk
+/// rows incrementally; the historical lifecycle column intentionally stores
+/// the manifest-bound stream-header digest in `bundle_hash`.
+fn verify_stream_provider_binding_at_frozen_source(
+    connection: &Connection,
+    current: &SqliteSourceTransferStatusV1,
+    binding: &SqliteVerifiedStreamTargetBindingV2,
+) -> Result<(), SqliteSourceTransferErrorV1> {
+    if current.source_epoch() != Some(binding.source_epoch)
+        || current.target_epoch() != Some(binding.target_epoch)
+        || binding.source_epoch.checked_add(1) != Some(binding.target_epoch)
+        || current
+            .bundle_hash()
+            .is_some_and(|value| value != binding.stream_header_digest)
+        || current
+            .target_fingerprint()
+            .is_some_and(|value| value != binding.target_fingerprint)
+        || current.backup_digest() != Some(binding.source_backup_digest)
+    {
+        return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+    }
+    let path = current
+        .backup_path()
+        .ok_or(SqliteSourceTransferErrorV1::Corrupt)?;
+    let normalized =
+        normalized_path(path).map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    if normalized != path {
+        return Err(SqliteSourceTransferErrorV1::UnsafeBackupPath);
+    }
+    let expected_identity = current
+        .backup_identity
+        .ok_or(SqliteSourceTransferErrorV1::Corrupt)?;
+    let (retained, retained_identity) = retain_sqlite_file(path, false)
+        .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    if persisted_transfer_identity(retained_identity) != expected_identity {
+        return Err(SqliteSourceTransferErrorV1::UnsafeBackupPath);
+    }
+    let verified = worldstream_backup::native_sqlite::verify_retained_file_streaming_v2(
+        path,
+        &retained,
+        worldstream_backup::native_sqlite::NativeSqliteStreamingLimitsV2::default(),
+    )
+    .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+    let backup_digest = DigestV1::from_bytes(&verified.transfer_point_digest())
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+    if backup_digest != binding.source_backup_digest {
+        return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+    }
+    let backup = open_retained_sqlite(
+        &retained,
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+    let (lineage, epoch): (String, i64) = backup
+        .query_row(
+            "SELECT deployment_lineage, storage_epoch FROM canonical_export_metadata WHERE metadata_id = 1",
+            (),
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+    if lineage != binding.lineage_id
+        || u64::try_from(epoch).ok() != Some(binding.source_epoch)
+        || durable_transfer_point_digest(connection)? != backup_digest
+    {
+        return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+    }
+    require_retained_sqlite_name(path, &retained, retained_identity)
+        .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    Ok(())
+}
+
+fn restore_source_after_stream_abort(
+    connection: &mut Connection,
+    binding: &SqliteVerifiedStreamTargetBindingV2,
+) -> Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1> {
+    let current = read_source_transfer_status(connection)?;
+    if current.state() == SqliteSourceTransferStateV1::SourceAuthoritative {
+        return if current.last_aborted_bundle_hash == Some(binding.stream_header_digest)
+            && current.last_aborted_target_fingerprint == Some(binding.target_fingerprint)
+        {
+            Ok(current)
+        } else {
+            Err(SqliteSourceTransferErrorV1::EvidenceMismatch)
+        };
+    }
+    if current.state() != SqliteSourceTransferStateV1::TransferPending {
+        return Err(
+            if current.state() == SqliteSourceTransferStateV1::SourceRetired {
+                SqliteSourceTransferErrorV1::SourceRetired
+            } else {
+                SqliteSourceTransferErrorV1::NotTransferPending {
+                    actual: current.state(),
+                }
+            },
+        );
+    }
+    verify_stream_provider_binding_at_frozen_source(connection, &current, binding)?;
+    connection
+        .pragma_update(None, "query_only", false)
+        .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+    let changed = transaction
+        .execute(
+            "UPDATE source_transfer_lifecycle SET state = 'source_authoritative', \
+             source_epoch = NULL, target_epoch = NULL, backup_path = NULL, backup_digest = NULL, \
+             backup_storage_id = NULL, backup_file_id = NULL, \
+             bundle_hash = NULL, target_fingerprint = NULL, \
+             last_aborted_bundle_hash = ?1, last_aborted_target_fingerprint = ?2 \
+             WHERE lifecycle_id = 1 AND state = 'transfer_pending' \
+             AND source_epoch = ?3 AND target_epoch = ?4 \
+             AND (bundle_hash IS NULL OR bundle_hash = ?1) \
+             AND (target_fingerprint IS NULL OR target_fingerprint = ?2)",
+            params![
+                binding.stream_header_digest.as_bytes().as_slice(),
+                binding.target_fingerprint.as_bytes().as_slice(),
+                i64::try_from(binding.source_epoch)
+                    .map_err(|_| SqliteSourceTransferErrorV1::Corrupt)?,
+                i64::try_from(binding.target_epoch)
+                    .map_err(|_| SqliteSourceTransferErrorV1::Corrupt)?,
+            ],
+        )
+        .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+    if changed != 1 {
+        return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+    }
+    transaction
+        .commit()
+        .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+    read_source_transfer_status(connection)
+}
+
+fn retire_source_after_stream_finalization(
+    connection: &mut Connection,
+    binding: &SqliteVerifiedStreamTargetBindingV2,
+) -> Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1> {
+    let current = read_source_transfer_status(connection)?;
+    if current.state() == SqliteSourceTransferStateV1::SourceRetired {
+        return if current.bundle_hash() == Some(binding.stream_header_digest)
+            && current.target_fingerprint() == Some(binding.target_fingerprint)
+            && current.source_epoch() == Some(binding.source_epoch)
+            && current.target_epoch() == Some(binding.target_epoch)
+        {
+            verify_stream_provider_binding_at_frozen_source(connection, &current, binding)?;
+            Ok(current)
+        } else {
+            Err(SqliteSourceTransferErrorV1::SourceRetired)
+        };
+    }
+    if current.state() != SqliteSourceTransferStateV1::TransferPending {
+        return Err(SqliteSourceTransferErrorV1::NotTransferPending {
+            actual: current.state(),
+        });
+    }
+    verify_stream_provider_binding_at_frozen_source(connection, &current, binding)?;
+    connection
+        .pragma_update(None, "query_only", false)
+        .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+    let result = (|| {
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        let changed = transaction
+            .execute(
+                "UPDATE source_transfer_lifecycle SET state = 'source_retired', \
+                 bundle_hash = ?1, target_fingerprint = ?2 \
+                 WHERE lifecycle_id = 1 AND state = 'transfer_pending' \
+                 AND source_epoch = ?3 AND target_epoch = ?4 \
+                 AND (bundle_hash IS NULL OR bundle_hash = ?1) \
+                 AND (target_fingerprint IS NULL OR target_fingerprint = ?2)",
+                params![
+                    binding.stream_header_digest.as_bytes().as_slice(),
+                    binding.target_fingerprint.as_bytes().as_slice(),
+                    i64::try_from(binding.source_epoch)
+                        .map_err(|_| SqliteSourceTransferErrorV1::Corrupt)?,
+                    i64::try_from(binding.target_epoch)
+                        .map_err(|_| SqliteSourceTransferErrorV1::Corrupt)?,
+                ],
+            )
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        if changed != 1 {
+            return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+        }
+        transaction
+            .commit()
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        read_source_transfer_status(connection)
+    })();
+    connection
+        .pragma_update(None, "query_only", true)
+        .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+    result
+}
+
 fn restore_source_after_abort(
     connection: &mut Connection,
     binding: &SqliteVerifiedTargetBindingV1,
@@ -14422,6 +15584,7 @@ enum MigrationFailpoint {
     TransferBackupIdentity,
     ExternalInputPreparation,
     ObservationRetention,
+    SnapshotCadence,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -14654,6 +15817,36 @@ fn migrate_with_failpoint_and_telemetry(
         fail_migration_at(failpoint, MigrationFailpoint::ObservationRetention)?;
         insert_migration(&transaction, history[12], has_checksum_column)?;
     }
+    if migrations.len() < 14 {
+        transaction
+            .execute_batch(history[13].sql)
+            .map_err(SqliteStoreOpenError::Sqlite)?;
+        transaction
+            .execute(
+                "INSERT INTO room_snapshot_schedules( \
+                 room_id, last_snapshot_room_seq, transitions_since_snapshot, active_started_at) \
+                 SELECT rooms.room_id, coalesce(max(room_snapshots.room_seq), 0), \
+                        rooms.room_seq - coalesce(max(room_snapshots.room_seq), 0), NULL \
+                 FROM rooms LEFT JOIN room_snapshots ON room_snapshots.room_id = rooms.room_id \
+                 GROUP BY rooms.room_id, rooms.room_seq",
+                (),
+            )
+            .map_err(SqliteStoreOpenError::Sqlite)?;
+        fail_migration_at(failpoint, MigrationFailpoint::SnapshotCadence)?;
+        insert_migration(&transaction, history[13], has_checksum_column)?;
+    }
+    if migrations.len() < 15 {
+        transaction
+            .execute_batch(history[14].sql)
+            .map_err(SqliteStoreOpenError::Sqlite)?;
+        insert_migration(&transaction, history[14], has_checksum_column)?;
+    }
+    if migrations.len() < 16 {
+        transaction
+            .execute_batch(history[15].sql)
+            .map_err(SqliteStoreOpenError::Sqlite)?;
+        insert_migration(&transaction, history[15], has_checksum_column)?;
+    }
     let persisted = read_migration_rows(&transaction, has_checksum_column)?;
     let persisted = persisted
         .into_iter()
@@ -14830,6 +16023,7 @@ fn fail_migration_at(
                 "after-external-input-preparation-schema"
             }
             MigrationFailpoint::ObservationRetention => "after-observation-retention-schema",
+            MigrationFailpoint::SnapshotCadence => "after-snapshot-cadence-schema",
         };
         return Err(SqliteStoreOpenError::MigrationInterrupted { boundary });
     }
@@ -14999,7 +16193,6 @@ fn commit_prepared_inner(
                     existing_request_hash: stored.canonical_request_hash().clone(),
                 }
             };
-            let snapshot = prepared.post_commit_snapshot();
             if transaction.commit().is_err() {
                 return RoomCommitResolutionV1::Indeterminate;
             }
@@ -15007,9 +16200,13 @@ fn commit_prepared_inner(
             let snapshot_write_enabled = failpoint != Some(WriteBoundary::Snapshot);
             #[cfg(not(test))]
             let snapshot_write_enabled = true;
-            if snapshot_write_enabled && let Some(snapshot) = snapshot {
-                let _ = persist_post_commit_snapshot(connection, &snapshot);
-            }
+            maybe_persist_post_commit_snapshot(
+                connection,
+                &prepared,
+                clock,
+                false,
+                snapshot_write_enabled,
+            );
             return resolution;
         }
         Ok(None) => {}
@@ -15073,15 +16270,11 @@ fn commit_prepared_inner(
     // a replaceable cache and is intentionally best-effort: a full/read-only
     // database, crash, or malformed cache write must not turn an accepted
     // Transition into a retryable or faulted canonical result.
-    if let Some(snapshot) = prepared.post_commit_snapshot() {
-        #[cfg(test)]
-        let snapshot_write_enabled = failpoint != Some(WriteBoundary::Snapshot);
-        #[cfg(not(test))]
-        let snapshot_write_enabled = true;
-        if snapshot_write_enabled {
-            let _ = persist_post_commit_snapshot(connection, &snapshot);
-        }
-    }
+    #[cfg(test)]
+    let snapshot_write_enabled = failpoint != Some(WriteBoundary::Snapshot);
+    #[cfg(not(test))]
+    let snapshot_write_enabled = true;
+    maybe_persist_post_commit_snapshot(connection, &prepared, clock, true, snapshot_write_enabled);
     if failpoint == Some(WriteBoundary::AfterCommitUnknown) {
         RoomCommitResolutionV1::Indeterminate
     } else {
@@ -15137,9 +16330,7 @@ fn commit_creation_with_authority(
             if transaction.commit().is_err() {
                 return RoomCommitResolutionV1::Indeterminate;
             }
-            if let Some(snapshot) = prepared.post_commit_snapshot() {
-                let _ = persist_post_commit_snapshot(connection, &snapshot);
-            }
+            maybe_persist_post_commit_snapshot(connection, &prepared, clock, false, true);
             return resolution;
         }
         Ok(None) => {}
@@ -15182,9 +16373,7 @@ fn commit_creation_with_authority(
     if transaction.commit().is_err() {
         return RoomCommitResolutionV1::Indeterminate;
     }
-    if let Some(snapshot) = prepared.post_commit_snapshot() {
-        let _ = persist_post_commit_snapshot(connection, &snapshot);
-    }
+    maybe_persist_post_commit_snapshot(connection, &prepared, clock, true, true);
     RoomCommitResolutionV1::resolved(ResolutionStatusV1::New, prepared.receipt.stored_result)
 }
 
@@ -15833,6 +17022,27 @@ fn prepare_activation_claim_readonly(
     request: ActivationOperationRequestV1,
     snapshot: &SqliteGatewayRoomSnapshotV1,
 ) -> Result<SqliteActivationClaimV1, SqliteActivationErrorV1> {
+    prepare_activation_claim_readonly_from_trace(
+        file,
+        path,
+        registry,
+        authority,
+        request,
+        snapshot.trace(),
+        snapshot.integrity_generation(),
+    )
+}
+
+#[allow(clippy::too_many_lines, clippy::type_complexity)]
+fn prepare_activation_claim_readonly_from_trace(
+    file: &File,
+    path: &Path,
+    registry: &PackRegistryV1,
+    authority: &AuthorizedRunnerControlV1,
+    request: ActivationOperationRequestV1,
+    trace: &CoreTraceV1,
+    integrity_generation: IntegrityGenerationV1,
+) -> Result<SqliteActivationClaimV1, SqliteActivationErrorV1> {
     if request.operation_kind != "claim"
         || request.runner_id != authority.runner_id().to_string()
         || request.activation_id.is_none()
@@ -15957,7 +17167,6 @@ fn prepare_activation_claim_readonly(
         .map(str::parse::<TimerScheduledFor>)
         .transpose()
         .map_err(|_| SqliteActivationErrorV1::Corrupt)?;
-    let trace = snapshot.trace();
     if trace.core_state().room_status() != RoomStatusV1::Active {
         return Err(SqliteActivationErrorV1::Fenced);
     }
@@ -16029,63 +17238,147 @@ fn prepare_activation_claim_readonly(
         }
     } else {
         let cursor = cursor.ok_or(SqliteActivationErrorV1::Corrupt)?;
-        let cursor_i64 = i64::try_from(cursor).map_err(|_| SqliteActivationErrorV1::Corrupt)?;
         let frame_head_i64 =
             i64::try_from(frame_head).map_err(|_| SqliteActivationErrorV1::Corrupt)?;
-        let mut statement = connection
-            .prepare(
-                "SELECT frame_seq, cause_room_seq, payload_hash, payload_bytes \
-                 FROM observation_frames WHERE room_id = ?1 AND member_id = ?2 \
-                 AND frame_seq > ?3 AND frame_seq <= ?4 ORDER BY frame_seq",
-            )
-            .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
-        let rows = statement
-            .query_map(
-                params![room_id, member_id, cursor_i64, frame_head_i64],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, Vec<u8>>(3)?,
-                    ))
-                },
-            )
-            .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
         let mut previous = cursor;
         let mut frames = Vec::new();
-        for row in rows {
-            let (frame_seq, cause_seq, stored_hash, payload_bytes) =
-                row.map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
-            let frame_seq =
-                u64::try_from(frame_seq).map_err(|_| SqliteActivationErrorV1::Corrupt)?;
-            let cause_seq =
-                u64::try_from(cause_seq).map_err(|_| SqliteActivationErrorV1::Corrupt)?;
-            let hash = Blake3DigestV1::from_str(&stored_hash)
-                .map_err(|_| SqliteActivationErrorV1::Corrupt)?;
-            if frame_seq != previous.saturating_add(1)
-                || cause_seq > trace.head().room_seq().get()
-                || hash != Blake3DigestV1::hash(&payload_bytes)
-                || CanonicalJsonV1::from_canonical_bytes(&payload_bytes).is_err()
-            {
+        let mut payload_total = 0_usize;
+        let mut reset_for_context_limit = false;
+        loop {
+            let metadata = connection
+                .prepare(
+                    "SELECT frame_seq, cause_room_seq, payload_hash, length(payload_bytes) \
+                     FROM observation_frames WHERE room_id = ?1 AND member_id = ?2 \
+                     AND frame_seq > ?3 AND frame_seq <= ?4 ORDER BY frame_seq LIMIT ?5",
+                )
+                .and_then(|mut statement| {
+                    statement
+                        .query_map(
+                            params![
+                                room_id,
+                                member_id,
+                                i64::try_from(previous)
+                                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                                frame_head_i64,
+                                i64::try_from(ACTIVATION_CONTEXT_FRAME_PAGE)
+                                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                            ],
+                            |row| {
+                                Ok((
+                                    row.get::<_, i64>(0)?,
+                                    row.get::<_, i64>(1)?,
+                                    row.get::<_, String>(2)?,
+                                    row.get::<_, i64>(3)?,
+                                ))
+                            },
+                        )?
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
+            if metadata.is_empty() {
+                if previous != frame_head {
+                    return Err(SqliteActivationErrorV1::Corrupt);
+                }
+                break;
+            }
+            let page_start = previous;
+            let mut expected = previous;
+            for (frame_seq, cause_seq, stored_hash, length) in &metadata {
+                let frame_seq =
+                    u64::try_from(*frame_seq).map_err(|_| SqliteActivationErrorV1::Corrupt)?;
+                let cause_seq =
+                    u64::try_from(*cause_seq).map_err(|_| SqliteActivationErrorV1::Corrupt)?;
+                let length =
+                    usize::try_from(*length).map_err(|_| SqliteActivationErrorV1::Corrupt)?;
+                if frame_seq != expected.saturating_add(1)
+                    || cause_seq > trace.head().room_seq().get()
+                    || Blake3DigestV1::from_str(stored_hash).is_err()
+                {
+                    return Err(SqliteActivationErrorV1::Corrupt);
+                }
+                expected = frame_seq;
+                payload_total = payload_total
+                    .checked_add(length)
+                    .ok_or(SqliteActivationErrorV1::Corrupt)?;
+                if frames.len() + metadata.len() > MAX_ACTIVATION_CONTEXT_FRAMES
+                    || length > MAX_ACTIVATION_CONTEXT_FRAME_PAYLOAD_BYTES
+                    || payload_total > MAX_ACTIVATION_CONTEXT_FRAME_PAYLOAD_BYTES
+                {
+                    reset_for_context_limit = true;
+                    break;
+                }
+            }
+            if reset_for_context_limit {
+                break;
+            }
+            let page_end = i64::try_from(expected).map_err(|_| SqliteActivationErrorV1::Corrupt)?;
+            let payload_rows = connection
+                .prepare(
+                    "SELECT frame_seq, cause_room_seq, payload_hash, payload_bytes \
+                     FROM observation_frames WHERE room_id = ?1 AND member_id = ?2 \
+                     AND frame_seq > ?3 AND frame_seq <= ?4 ORDER BY frame_seq",
+                )
+                .and_then(|mut statement| {
+                    statement
+                        .query_map(
+                            params![room_id, member_id, page_start as i64, page_end],
+                            |row| {
+                                Ok((
+                                    row.get::<_, i64>(0)?,
+                                    row.get::<_, i64>(1)?,
+                                    row.get::<_, String>(2)?,
+                                    row.get::<_, Vec<u8>>(3)?,
+                                ))
+                            },
+                        )?
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
+            if payload_rows.len() != metadata.len() {
                 return Err(SqliteActivationErrorV1::Corrupt);
             }
-            previous = frame_seq;
-            frames.push(ActivationFrameV1 {
-                frame_seq,
-                cause_room_seq: RoomSequenceV1::new(cause_seq)
-                    .map_err(|_| SqliteActivationErrorV1::Corrupt)?,
-                payload_hash: hash,
-                payload_bytes,
-            });
+            for ((frame_seq, cause_seq, stored_hash, payload_bytes), metadata_row) in
+                payload_rows.into_iter().zip(metadata)
+            {
+                if frame_seq != metadata_row.0
+                    || cause_seq != metadata_row.1
+                    || stored_hash != metadata_row.2
+                    || usize::try_from(metadata_row.3).ok() != Some(payload_bytes.len())
+                {
+                    return Err(SqliteActivationErrorV1::Corrupt);
+                }
+                let frame_seq =
+                    u64::try_from(frame_seq).map_err(|_| SqliteActivationErrorV1::Corrupt)?;
+                let cause_seq =
+                    u64::try_from(cause_seq).map_err(|_| SqliteActivationErrorV1::Corrupt)?;
+                let hash = Blake3DigestV1::from_str(&stored_hash)
+                    .map_err(|_| SqliteActivationErrorV1::Corrupt)?;
+                if hash != Blake3DigestV1::hash(&payload_bytes)
+                    || CanonicalJsonV1::from_canonical_bytes(&payload_bytes).is_err()
+                {
+                    return Err(SqliteActivationErrorV1::Corrupt);
+                }
+                frames.push(ActivationFrameV1 {
+                    frame_seq,
+                    cause_room_seq: RoomSequenceV1::new(cause_seq)
+                        .map_err(|_| SqliteActivationErrorV1::Corrupt)?,
+                    payload_hash: hash,
+                    payload_bytes,
+                });
+            }
+            previous = expected;
         }
-        if previous != frame_head {
-            return Err(SqliteActivationErrorV1::Corrupt);
-        }
-        ActivationDeliveryV1::RetainedFrames {
-            cursor_exclusive: cursor,
-            through_frame_head: frame_head,
-            frames,
+        if reset_for_context_limit {
+            ActivationDeliveryV1::ProjectionReset {
+                baseline_frame_head: frame_head,
+                reason: "invocation_context_limit".to_owned(),
+            }
+        } else {
+            ActivationDeliveryV1::RetainedFrames {
+                cursor_exclusive: cursor,
+                through_frame_head: frame_head,
+                frames,
+            }
         }
     };
     let context = prepare_activation_context(ActivationContextInputV1 {
@@ -16099,7 +17392,7 @@ fn prepare_activation_claim_readonly(
         lease_until,
         semantic_deadline,
         room_head: trace.head().clone(),
-        integrity_generation: snapshot.integrity_generation().get(),
+        integrity_generation: integrity_generation.get(),
         policy_revision,
         authority_generation: authority.authority_generation().get(),
         membership_generation: u64::try_from(
@@ -16123,7 +17416,12 @@ fn prepare_activation_claim_readonly(
         artifact_references: Vec::new(),
         delivery,
     })
-    .map_err(|_| SqliteActivationErrorV1::InvalidRequest)?;
+    .map_err(|error| match error {
+        worldstream_core::ActivationContextErrorV1::TooLarge => {
+            SqliteActivationErrorV1::ContextTooLarge
+        }
+        _ => SqliteActivationErrorV1::InvalidRequest,
+    })?;
     Ok(SqliteActivationClaimV1 { request, context })
 }
 
@@ -16298,7 +17596,7 @@ fn activation_claim_guarded(
             None,
             None,
         )?;
-        transaction.execute("UPDATE activation_intents SET state = 'expired', intent_generation = intent_generation + 1 WHERE activation_id = ?1 AND state = 'pending'", [activation_id]).map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
+        transaction.execute("UPDATE activation_intents SET state = 'expired', terminal_disposition = 'expired', terminal_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), intent_generation = intent_generation + 1 WHERE activation_id = ?1 AND state = 'pending'", [activation_id]).map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
         insert_activation_receipt(
             &transaction,
             &room_id,
@@ -16480,7 +17778,9 @@ fn activation_lease_operation_guarded(
     let changed = transaction
         .execute(
             "UPDATE activation_intents SET state = ?1, runner_id = ?2, claim_id = ?3, \
-             lease_until = ?4, lease_generation = CASE WHEN ?1 = 'pending' THEN lease_generation + 1 ELSE lease_generation END \
+             lease_until = ?4, terminal_disposition = CASE WHEN ?1 = 'completed' THEN 'completed' ELSE terminal_disposition END, \
+             terminal_at = CASE WHEN ?1 = 'completed' THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE NULL END, \
+             lease_generation = CASE WHEN ?1 = 'pending' THEN lease_generation + 1 ELSE lease_generation END \
              WHERE room_id = ?5 AND activation_id = ?6 AND state = 'leased' \
              AND runner_id = ?7 AND claim_id = ?8 AND lease_generation = ?9",
             params![next_state, if next_state == "pending" { None::<String> } else { Some(request.runner_id.clone()) }, if next_state == "pending" { None::<String> } else { Some(claim_id.to_owned()) }, next_lease_until, room_id, activation_id, request.runner_id, claim_id, i64::try_from(expected_generation).map_err(|_| SqliteActivationErrorV1::InvalidRequest)?],
@@ -16535,51 +17835,63 @@ fn activation_offer_guarded(
         return Err(SqliteActivationErrorV1::InvalidRequest);
     }
     let existing = lookup_activation_receipt(&transaction, &room_id, request, &request_hash)?;
-    let mut offers = Vec::new();
-    let mut statement = transaction
-        .prepare(
-            "SELECT activation_id, target_member_id, cause_room_seq, reason_code, priority, semantic_deadline \
-             FROM activation_intents WHERE room_id = ?1 AND target_member_id = ?2 AND state = 'pending' \
-             ORDER BY priority DESC, cause_room_seq, activation_id",
-        )
-        .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
-    let rows = statement
-        .query_map(
+    retire_expired_refresh_intents(&transaction, &room_id, &authority.target().member_id)?;
+    let executions: i64 = transaction
+        .query_row(
+            "SELECT count(*) FROM activation_intents WHERE room_id = ?1 AND target_member_id = ?2 \
+             AND state = 'completed' AND terminal_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-60 seconds')",
             params![room_id.as_str(), authority.target().member_id.as_str()],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                ))
-            },
+            |row| row.get(0),
         )
         .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
-    for row in rows {
-        let (activation_id, member_id, cause_seq, reason, priority, deadline) =
-            row.map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
-        offers.push(SqliteActivationOfferV1 {
-            activation_id,
-            room_id: room_id
-                .parse()
-                .map_err(|_| SqliteActivationErrorV1::Corrupt)?,
-            member_id: member_id
-                .parse()
-                .map_err(|_| SqliteActivationErrorV1::Corrupt)?,
-            cause_room_seq: RoomSequenceV1::new(
-                u64::try_from(cause_seq).map_err(|_| SqliteActivationErrorV1::Corrupt)?,
+    let mut offers = Vec::new();
+    if u64::try_from(executions).map_err(|_| SqliteActivationErrorV1::Corrupt)?
+        < MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1
+    {
+        let mut statement = transaction
+            .prepare(
+                "SELECT activation_id, target_member_id, cause_room_seq, reason_code, priority, semantic_deadline \
+                 FROM activation_intents WHERE room_id = ?1 AND target_member_id = ?2 AND state = 'pending' \
+                 ORDER BY priority DESC, cause_room_seq, activation_id",
             )
-            .map_err(|_| SqliteActivationErrorV1::Corrupt)?,
-            reason_code: reason,
-            priority: u64::try_from(priority).map_err(|_| SqliteActivationErrorV1::Corrupt)?,
-            semantic_deadline: deadline,
-            maximum_lease_ms: MAX_ACTIVATION_LEASE_MS,
-        });
+            .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
+        let rows = statement
+            .query_map(
+                params![room_id.as_str(), authority.target().member_id.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            )
+            .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
+        for row in rows {
+            let (activation_id, member_id, cause_seq, reason, priority, deadline) =
+                row.map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
+            offers.push(SqliteActivationOfferV1 {
+                activation_id,
+                room_id: room_id
+                    .parse()
+                    .map_err(|_| SqliteActivationErrorV1::Corrupt)?,
+                member_id: member_id
+                    .parse()
+                    .map_err(|_| SqliteActivationErrorV1::Corrupt)?,
+                cause_room_seq: RoomSequenceV1::new(
+                    u64::try_from(cause_seq).map_err(|_| SqliteActivationErrorV1::Corrupt)?,
+                )
+                .map_err(|_| SqliteActivationErrorV1::Corrupt)?,
+                reason_code: reason,
+                priority: u64::try_from(priority).map_err(|_| SqliteActivationErrorV1::Corrupt)?,
+                semantic_deadline: deadline,
+                maximum_lease_ms: MAX_ACTIVATION_LEASE_MS,
+            });
+        }
     }
-    drop(statement);
     let had_existing = existing.is_some();
     let operation = existing.unwrap_or(ActivationOperationResultV1 {
         operation_id: request.operation_id.clone(),
@@ -16653,7 +17965,7 @@ fn expire_activation(
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
     let changed = transaction.execute(
-        "UPDATE activation_intents SET state = 'expired', intent_generation = intent_generation + 1 WHERE room_id = ?1 AND activation_id = ?2 AND state = 'pending' AND intent_generation = ?3 AND semantic_deadline IS NOT NULL AND semantic_deadline <= ?4",
+        "UPDATE activation_intents SET state = 'expired', terminal_disposition = 'expired', terminal_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), intent_generation = intent_generation + 1 WHERE room_id = ?1 AND activation_id = ?2 AND state = 'pending' AND intent_generation = ?3 AND semantic_deadline IS NOT NULL AND semantic_deadline <= ?4",
         params![room_id.to_string(), activation_id, i64::try_from(expected_generation).map_err(|_| SqliteActivationErrorV1::InvalidRequest)?, now.as_str()],
     ).map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
     transaction
@@ -16825,7 +18137,7 @@ fn commit_advance(
     if advance.resulting_core_state.room_status() == RoomStatusV1::Archived {
         transaction
             .execute(
-                "UPDATE activation_intents SET state = 'cancelled', runner_id = NULL, claim_id = NULL, lease_until = NULL, intent_generation = intent_generation + 1, lease_generation = lease_generation + 1 WHERE room_id = ?1 AND state IN ('pending', 'leased')",
+                "UPDATE activation_intents SET state = 'cancelled', runner_id = NULL, claim_id = NULL, lease_until = NULL, intent_generation = intent_generation + 1, lease_generation = lease_generation + 1, terminal_disposition = 'cancelled', terminal_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE room_id = ?1 AND state IN ('pending', 'leased')",
                 [room_id.as_str()],
             )
             .map_err(statement_failure)?;
@@ -16833,7 +18145,7 @@ fn commit_advance(
         for member_id in changed_members {
             transaction
                 .execute(
-                    "UPDATE activation_intents SET state = 'cancelled', runner_id = NULL, claim_id = NULL, lease_until = NULL, intent_generation = intent_generation + 1, lease_generation = lease_generation + 1 WHERE room_id = ?1 AND target_member_id = ?2 AND state IN ('pending', 'leased')",
+                    "UPDATE activation_intents SET state = 'cancelled', runner_id = NULL, claim_id = NULL, lease_until = NULL, intent_generation = intent_generation + 1, lease_generation = lease_generation + 1, terminal_disposition = 'cancelled', terminal_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE room_id = ?1 AND target_member_id = ?2 AND state IN ('pending', 'leased')",
                     params![room_id, member_id],
                 )
                 .map_err(statement_failure)?;
@@ -16943,14 +18255,40 @@ fn commit_advance(
             == worldstream_core::ActivationPolicyDispositionV1::Intent
         {
             let attention = &decision_record.attention;
+            let activation_id = decision_record
+                .activation_id
+                .as_deref()
+                .ok_or(RoomCommitResolutionV1::Fault)?;
+            let attention_bytes = ACTIVATION_ATTENTION_ROW_OVERHEAD_BYTES_V1
+                .checked_add(
+                    u64::try_from(attention.reason_code.len())
+                        .map_err(|_| RoomCommitResolutionV1::Fault)?,
+                )
+                .and_then(|bytes| {
+                    bytes.checked_add(u64::try_from(attention.deduplication_key.len()).ok()?)
+                })
+                .ok_or(RoomCommitResolutionV1::Fault)?;
+            let refreshable = attention.semantic_deadline.is_none();
+            if refreshable && attention_bytes <= MAX_PENDING_REFRESH_BYTES_V1 {
+                supersede_refresh_intents(
+                    transaction,
+                    &room_id,
+                    &attention.target_member_id.to_string(),
+                    activation_id,
+                    attention_bytes,
+                )?;
+            }
+            let oversized_refresh = refreshable && attention_bytes > MAX_PENDING_REFRESH_BYTES_V1;
             transaction
                 .execute(
                     "INSERT INTO activation_intents(\
                      activation_id, room_id, cause_room_seq, decision_id, target_member_id, reason_code,\
                      deduplication_key, priority, semantic_deadline, policy_revision, state,\
-                     intent_generation, lease_generation) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', 1, 0)",
+                     intent_generation, lease_generation, created_at, attention_bytes, terminal_disposition)\
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, 0,\
+                     strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?12, ?13)",
                     params![
-                        decision_record.activation_id,
+                        activation_id,
                         room_id,
                         to_i64(head.room_seq().get())?,
                         decision_record.decision_id,
@@ -16961,6 +18299,13 @@ fn commit_advance(
                         attention.semantic_deadline.as_ref().map(ToString::to_string),
                         i64::try_from(decision_record.policy.policy_revision)
                             .map_err(|_| RoomCommitResolutionV1::Fault)?,
+                        if oversized_refresh { "cancelled" } else { "pending" },
+                        i64::try_from(attention_bytes).map_err(|_| RoomCommitResolutionV1::Fault)?,
+                        if oversized_refresh {
+                            Some("refresh_capacity_exceeded")
+                        } else {
+                            None
+                        },
                     ],
                 )
                 .map_err(statement_failure)?;
@@ -16970,6 +18315,82 @@ fn commit_advance(
 
     insert_receipt(transaction, prepared).map_err(statement_failure)?;
     fail_at(failpoint, WriteBoundary::ExistingReceipt)
+}
+
+fn supersede_refresh_intents(
+    transaction: &Transaction<'_>,
+    room_id: &str,
+    target_member_id: &str,
+    superseding_activation_id: &str,
+    incoming_bytes: u64,
+) -> Result<(), RoomCommitResolutionV1> {
+    loop {
+        let (count, bytes): (i64, i64) = transaction
+            .query_row(
+                "SELECT count(*), coalesce(sum(attention_bytes), 0) FROM activation_intents \
+                 WHERE room_id = ?1 AND target_member_id = ?2 AND state = 'pending' \
+                 AND semantic_deadline IS NULL",
+                params![room_id, target_member_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|_| RoomCommitResolutionV1::Fault)?;
+        let count = u64::try_from(count).map_err(|_| RoomCommitResolutionV1::Fault)?;
+        let bytes = u64::try_from(bytes).map_err(|_| RoomCommitResolutionV1::Fault)?;
+        if activation_refresh_budget_allows_v1(count, bytes, incoming_bytes) {
+            return Ok(());
+        }
+        let candidate: Option<String> = transaction
+            .query_row(
+                "SELECT activation_id FROM activation_intents \
+                 WHERE room_id = ?1 AND target_member_id = ?2 AND state = 'pending' \
+                 AND semantic_deadline IS NULL ORDER BY created_at, cause_room_seq, activation_id LIMIT 1",
+                params![room_id, target_member_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| RoomCommitResolutionV1::Fault)?;
+        let Some(candidate) = candidate else {
+            return Ok(());
+        };
+        let changed = transaction
+            .execute(
+                "UPDATE activation_intents SET state = 'cancelled', runner_id = NULL, claim_id = NULL, \
+                 lease_until = NULL, intent_generation = intent_generation + 1, \
+                 lease_generation = lease_generation + 1, terminal_disposition = 'superseded_refresh', \
+                 superseded_by_activation_id = ?1, terminal_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                 WHERE room_id = ?2 AND activation_id = ?3 AND state = 'pending' AND semantic_deadline IS NULL",
+                params![superseding_activation_id, room_id, candidate],
+            )
+            .map_err(|_| RoomCommitResolutionV1::Fault)?;
+        if changed != 1 {
+            return Err(RoomCommitResolutionV1::Reprepare);
+        }
+    }
+}
+
+fn retire_expired_refresh_intents(
+    transaction: &Transaction<'_>,
+    room_id: &str,
+    target_member_id: &MemberId,
+) -> Result<(), SqliteActivationErrorV1> {
+    let age_seconds = MAX_PENDING_REFRESH_AGE_MS_V1 / 1_000;
+    transaction
+        .execute(
+            "UPDATE activation_intents SET state = 'cancelled', runner_id = NULL, claim_id = NULL, \
+             lease_until = NULL, intent_generation = intent_generation + 1, \
+             lease_generation = lease_generation + 1, terminal_disposition = 'refresh_age_exceeded', \
+             terminal_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+             WHERE room_id = ?1 AND target_member_id = ?2 AND state = 'pending' \
+             AND semantic_deadline IS NULL AND created_at != '' \
+             AND created_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?3)",
+            params![
+                room_id,
+                target_member_id.as_str(),
+                format!("-{} seconds", age_seconds),
+            ],
+        )
+        .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
+    Ok(())
 }
 
 fn persist_delivery_consequence(
@@ -18357,6 +19778,7 @@ fn read_authorized_replay_slice(
     let started = Instant::now();
     let row_budget = replay_slice_row_budget(path);
     let mut rows_read = 0_usize;
+    let mut bytes_read = 0_usize;
     let mut connection = open_retained_sqlite(
         file,
         path,
@@ -18384,6 +19806,10 @@ fn read_authorized_replay_slice(
             .ok_or(SqliteAuthorizedReplayErrorV1::Corrupt)?;
         let genesis = GenesisV1::from_canonical_bytes(&bytes)
             .map_err(|_| SqliteAuthorizedReplayErrorV1::Corrupt)?;
+        if bytes.len() > REPLAY_MAX_BYTES_PER_SLICE {
+            return Err(SqliteAuthorizedReplayErrorV1::Corrupt);
+        }
+        bytes_read = bytes.len();
         if genesis.room_id() != room_id
             || genesis.complete_head().room_seq().get() != 0
             || genesis.complete_head().core_schema_version()
@@ -18584,9 +20010,17 @@ fn read_authorized_replay_slice(
                 .ok_or(SqliteAuthorizedReplayErrorV1::Corrupt)?;
             let next_head =
                 validate_replay_transition_receipt(room_id, prior_head, sequence, &row)?;
+            let transition_bytes = row.transition_bytes;
+            if bytes_read.saturating_add(transition_bytes.len()) > REPLAY_MAX_BYTES_PER_SLICE {
+                if page.is_empty() {
+                    return Err(SqliteAuthorizedReplayErrorV1::Corrupt);
+                }
+                break;
+            }
             paging.prior_sequence = sequence;
             paging.receipt_head = Some(next_head);
-            page.push(row.transition_bytes);
+            bytes_read = bytes_read.saturating_add(transition_bytes.len());
+            page.push(transition_bytes);
         }
         drop(statement);
         transaction
@@ -19312,6 +20746,97 @@ fn fail_at(
     Ok(())
 }
 
+fn snapshot_cadence_state(
+    connection: &Connection,
+    candidate: &SnapshotCadenceCandidate<'_>,
+) -> Result<SnapshotCadenceState, rusqlite::Error> {
+    let stored: Option<(i64, i64, Option<String>)> = connection
+        .query_row(
+            "SELECT last_snapshot_room_seq, transitions_since_snapshot, active_started_at \
+             FROM room_snapshot_schedules WHERE room_id = ?1",
+            [candidate.room_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    if let Some((last_snapshot_room_seq, transitions_since_snapshot, active_started_at)) = stored {
+        return Ok(SnapshotCadenceState {
+            last_snapshot_room_seq,
+            transitions_since_snapshot,
+            active_started_at,
+        });
+    }
+    let last_snapshot_room_seq: i64 = connection.query_row(
+        "SELECT coalesce(max(room_seq), 0) FROM room_snapshots WHERE room_id = ?1",
+        [candidate.room_id],
+        |row| row.get(0),
+    )?;
+    Ok(SnapshotCadenceState {
+        last_snapshot_room_seq,
+        transitions_since_snapshot: candidate.room_seq.saturating_sub(last_snapshot_room_seq),
+        active_started_at: None,
+    })
+}
+
+fn snapshot_cadence_due(
+    connection: &Connection,
+    candidate: &SnapshotCadenceCandidate<'_>,
+    is_new_transition: bool,
+    now: Option<&str>,
+) -> Result<(bool, SnapshotCadenceState, i64, Option<String>), rusqlite::Error> {
+    let state = snapshot_cadence_state(connection, candidate)?;
+    let next_count = state
+        .transitions_since_snapshot
+        .saturating_add(if is_new_transition { 1 } else { 0 });
+    let next_active_started_at = if is_new_transition && state.active_started_at.is_none() {
+        now.map(str::to_owned)
+    } else {
+        state.active_started_at.clone()
+    };
+    let time_due = match (next_active_started_at.as_deref(), now) {
+        (Some(start), Some(now)) => {
+            match (
+                OffsetDateTime::parse(start, &Rfc3339),
+                OffsetDateTime::parse(now, &Rfc3339),
+            ) {
+                (Ok(start), Ok(now)) => now >= start + SNAPSHOT_ACTIVE_INTERVAL,
+                _ => false,
+            }
+        }
+        _ => false,
+    };
+    Ok((
+        candidate.genesis || next_count >= SNAPSHOT_TRANSITION_INTERVAL || time_due,
+        state,
+        next_count,
+        next_active_started_at,
+    ))
+}
+
+fn record_snapshot_cadence_advance(
+    connection: &mut Connection,
+    candidate: &SnapshotCadenceCandidate<'_>,
+    state: &SnapshotCadenceState,
+    next_count: i64,
+    active_started_at: Option<&str>,
+) -> Result<(), rusqlite::Error> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute(
+        "INSERT INTO room_snapshot_schedules( \
+         room_id, last_snapshot_room_seq, transitions_since_snapshot, active_started_at) \
+         VALUES (?1, ?2, ?3, ?4) \
+         ON CONFLICT(room_id) DO UPDATE SET \
+         transitions_since_snapshot = excluded.transitions_since_snapshot, \
+         active_started_at = excluded.active_started_at",
+        params![
+            candidate.room_id,
+            state.last_snapshot_room_seq,
+            next_count,
+            active_started_at,
+        ],
+    )?;
+    transaction.commit()
+}
+
 /// Persists one complete paired snapshot after the canonical transaction has
 /// committed.  The row is an idempotent cache keyed by the immutable Room
 /// sequence; it is never consulted as canonical history and may be deleted or
@@ -19319,6 +20844,7 @@ fn fail_at(
 fn persist_post_commit_snapshot(
     connection: &mut Connection,
     snapshot: &PostCommitSnapshotV1,
+    active_started_at: Option<&str>,
 ) -> Result<(), rusqlite::Error> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let existing: Option<StoredPairedSnapshotRow> = transaction
@@ -19391,7 +20917,52 @@ fn persist_post_commit_snapshot(
          ORDER BY room_seq DESC LIMIT 3)",
         [&snapshot.room_id],
     )?;
+    transaction.execute(
+        "INSERT INTO room_snapshot_schedules( \
+         room_id, last_snapshot_room_seq, transitions_since_snapshot, active_started_at) \
+         VALUES (?1, ?2, 0, ?3) \
+         ON CONFLICT(room_id) DO UPDATE SET \
+         last_snapshot_room_seq = excluded.last_snapshot_room_seq, \
+         transitions_since_snapshot = 0, active_started_at = excluded.active_started_at",
+        params![snapshot.room_id, snapshot.room_seq, active_started_at],
+    )?;
     transaction.commit()
+}
+
+fn maybe_persist_post_commit_snapshot(
+    connection: &mut Connection,
+    prepared: &SqlitePreparedWrite,
+    clock: &dyn TrustedAuthorityClock,
+    is_new_transition: bool,
+    snapshot_write_enabled: bool,
+) {
+    let Some(candidate) = prepared.snapshot_cadence_candidate() else {
+        return;
+    };
+    let now = clock.checked_at().ok();
+    let now_text = now.as_ref().map(|value| value.as_str());
+    let Ok((due, state, next_count, next_active_started_at)) =
+        snapshot_cadence_due(connection, &candidate, is_new_transition, now_text)
+    else {
+        return;
+    };
+    // Decide before calling `post_commit_snapshot`: that method clones all
+    // three canonical materializations and is the expensive part of this
+    // postcommit cache. A failed cache write leaves the cadence row untouched,
+    // so the next duplicate or new Advance may retry it.
+    if due {
+        if snapshot_write_enabled && let Some(snapshot) = prepared.post_commit_snapshot() {
+            let _ = persist_post_commit_snapshot(connection, &snapshot, now_text);
+        }
+    } else if is_new_transition {
+        let _ = record_snapshot_cadence_advance(
+            connection,
+            &candidate,
+            &state,
+            next_count,
+            next_active_started_at.as_deref(),
+        );
+    }
 }
 
 fn statement_failure(error: rusqlite::Error) -> RoomCommitResolutionV1 {
@@ -19655,7 +21226,7 @@ pub enum SqliteStoreOpenError {
 mod tests {
     use super::{
         SqliteRoomSupervisorErrorV1, SqliteRoomSupervisorV1, SqliteStoreOpenError,
-        acquire_writer_lock, migrate,
+        acquire_writer_lock, migrate, retire_expired_refresh_intents, supersede_refresh_intents,
     };
     use std::{
         collections::BTreeMap,
@@ -19692,26 +21263,26 @@ mod tests {
         ExistingRoomPendingAttemptV1, ExistingRoomReprepareV1, ExternalInputOperationIdentityV1,
         ExternalInputRecordedAt, ExternalInputV1, GenesisInputV1, HistoricalReplayErrorV1,
         HostClockSampleV1, InitialMembershipProposalV1, InputId, IntegrityGenerationV1,
-        MemberAuthorityUseV1, MemberReadOperationV1, MembershipChangeV1, MembershipStandingV1,
-        MembershipV1, NewCapabilityV1, OperationIdentityV1, PackGenesisRequestV1, PackRegistryV1,
-        PackViewerV1, ParticipantActionAuthorityV1, ParticipantActionOperationIdentityV1,
-        ParticipantActionRequestV1, ParticipantActionV1, PrepareRoomWriteErrorV1,
-        PreparedAuthorityWitnessV1, PreparedExistingIntentV1, PreparedNewRoomGenesisV1,
-        PreparedObservationConsequenceV1, PreparedRoomCommitV1, PreparedRoomCreationV1,
-        PreparedRoomWriteV1, PresentedCapabilityV1, PrincipalAuthoritySnapshotV1,
-        PrincipalAuthorityStatusV1, PrincipalGenerationV1, PrincipalKindV1, RecordedStimulusV1,
-        RecoveredRoomMaterializationsV1, RecoveryIntegrityDispositionV1, ReplayFailureClassV1,
-        ReplayProjectionKindV1, ResolutionStatusV1, ResolveOutcomeV1, RoomCommitResolutionV1,
-        RoomCommitStorageV1, RoomCreationIngressV1, RoomCreationPendingAttemptV1,
-        RoomCreationRequestV1, RoomId, RoomIntegrityStateV1, RoomIntegrityStatusV1,
-        RoomMembershipKeyV1, RoomRecoveryErrorV1, RoomRecoveryStorageV1, RoomSeedV1,
-        RoomSequenceV1, RoomStatusV1, RunnerControlOperationV1, RunnerGenerationV1,
-        RunnerMembershipSetV1, ScheduledTimerV1, SemanticResultV1, SessionFrameV1,
-        SessionPublishOutcomeV1, SessionStateV1, SessionV1, SourceId, StoredSemanticResultV1,
-        TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, TransitionId, TransitionV1,
-        ValidatedPackViewV1, ViewInputV1, agent_heist_digest, agent_heist_retained_digest,
-        authorize_core_administration_operation, authorize_room_creation_operation,
-        builtin_agent_heist_registry, builtin_counter_registry,
+        MemberAuthorityUseV1, MemberId, MemberReadOperationV1, MembershipChangeV1,
+        MembershipStandingV1, MembershipV1, NewCapabilityV1, OperationIdentityV1,
+        PackGenesisRequestV1, PackRegistryV1, PackViewerV1, ParticipantActionAuthorityV1,
+        ParticipantActionOperationIdentityV1, ParticipantActionRequestV1, ParticipantActionV1,
+        PrepareRoomWriteErrorV1, PreparedAuthorityWitnessV1, PreparedExistingIntentV1,
+        PreparedNewRoomGenesisV1, PreparedObservationConsequenceV1, PreparedRoomCommitV1,
+        PreparedRoomCreationV1, PreparedRoomWriteV1, PresentedCapabilityV1,
+        PrincipalAuthoritySnapshotV1, PrincipalAuthorityStatusV1, PrincipalGenerationV1,
+        PrincipalKindV1, RecordedStimulusV1, RecoveredRoomMaterializationsV1,
+        RecoveryIntegrityDispositionV1, ReplayFailureClassV1, ReplayProjectionKindV1,
+        ResolutionStatusV1, ResolveOutcomeV1, RoomCommitResolutionV1, RoomCommitStorageV1,
+        RoomCreationIngressV1, RoomCreationPendingAttemptV1, RoomCreationRequestV1, RoomId,
+        RoomIntegrityStateV1, RoomIntegrityStatusV1, RoomMembershipKeyV1, RoomRecoveryErrorV1,
+        RoomRecoveryStorageV1, RoomSeedV1, RoomSequenceV1, RoomStatusV1, RunnerControlOperationV1,
+        RunnerGenerationV1, RunnerMembershipSetV1, ScheduledTimerV1, SemanticResultV1,
+        SessionFrameV1, SessionPublishOutcomeV1, SessionStateV1, SessionV1, SourceId,
+        StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, TransitionId,
+        TransitionV1, ValidatedPackViewV1, ViewInputV1, agent_heist_digest,
+        agent_heist_retained_digest, authorize_core_administration_operation,
+        authorize_room_creation_operation, builtin_agent_heist_registry, builtin_counter_registry,
         commit_existing_room as commit_existing_room_at,
         commit_room_creation as commit_room_creation_at, counter_v1_only_registry_for_conformance,
         counter_v2_digest, counter_v2_invalid_timer_output_registry_for_conformance,
@@ -19730,16 +21301,18 @@ mod tests {
     };
 
     use super::{
-        ACTIVATION_MIGRATION_ID, AUTHORITY_MIGRATION_ID, CANONICAL_EXPORT_MIGRATION_ID,
-        DEPLOYMENT_IDENTITIES_MIGRATION_ID, DiagnosticHistoryV1,
+        ACTIVATION_BACKLOG_POLICY_MIGRATION_ID, ACTIVATION_MIGRATION_ID, AUTHORITY_MIGRATION_ID,
+        CANONICAL_EXPORT_MIGRATION_ID, DEPLOYMENT_IDENTITIES_MIGRATION_ID, DiagnosticHistoryV1,
         EXTERNAL_INPUT_PREPARATION_MIGRATION_ID, INITIAL_MIGRATION_ID, INITIAL_MIGRATION_SCHEMA,
         MAX_SAFE_INTEGER, MIGRATION_CHECKSUMS_MIGRATION_ID, MigrationFailpoint,
         OBSERVATION_MIGRATION_ID, OBSERVATION_RETENTION_MIGRATION_ID,
-        PAIRED_SNAPSHOT_SCHEMA_VERSION, SNAPSHOT_MIGRATION_ID, SQLITE_SOURCE_ID, SQLITE_VERSION,
-        SqliteActivationErrorV1, SqliteAuthorizedReplayErrorV1, SqliteAuthorizedReplayOutcomeV1,
-        SqliteAuthorizedReplayProjectionV1, SqliteCanonicalExportErrorV1,
-        SqliteCanonicalMetadataInitializationErrorV1, SqliteCanonicalMetadataInitializationV1,
-        SqliteCanonicalRecordKindV1, SqliteCanonicalRecordV1, SqliteDeploymentIdentityErrorV1,
+        PAIRED_SNAPSHOT_SCHEMA_VERSION, SNAPSHOT_CADENCE_MIGRATION_ID, SNAPSHOT_MIGRATION_ID,
+        SQLITE_SOURCE_ID, SQLITE_VERSION, STREAM_TRANSFER_V2_MIGRATION_ID,
+        SnapshotCadenceCandidate, SqliteActivationErrorV1, SqliteAuthorizedReplayErrorV1,
+        SqliteAuthorizedReplayOutcomeV1, SqliteAuthorizedReplayProjectionV1,
+        SqliteCanonicalExportErrorV1, SqliteCanonicalMetadataInitializationErrorV1,
+        SqliteCanonicalMetadataInitializationV1, SqliteCanonicalRecordKindV1,
+        SqliteCanonicalRecordV1, SqliteDeploymentIdentityErrorV1,
         SqliteDeploymentIdentityInitializationV1, SqliteExternalInputPreparationErrorV1,
         SqliteGatewayErrorV1, SqliteMigrationPhaseV1, SqliteObservationDeliveryV1,
         SqliteObservationErrorV1, SqliteObservationFrameV1, SqliteObservationPositionsV1,
@@ -19762,10 +21335,11 @@ mod tests {
         remove_transfer_named_identity_with_hook, remove_verified_transfer_backup_with_hook,
         restore_verified_migration_backup, restore_verified_migration_backup_with_hook,
         restore_verified_migration_backup_with_hooks, retire_activation_context,
-        serialize_replay_projection_test, set_replay_slice_row_budget, transfer_file_identity,
-        verify_migration_prefix, verify_migration_records, wait_until_authority_change_enqueued,
-        wait_until_guarded_commit_pauses, wait_until_recovery_install_pauses,
-        wait_until_replay_projection_pauses, wait_until_writer_queue_pauses,
+        serialize_replay_projection_test, set_replay_slice_row_budget, snapshot_cadence_due,
+        transfer_file_identity, verify_migration_prefix, verify_migration_records,
+        wait_until_authority_change_enqueued, wait_until_guarded_commit_pauses,
+        wait_until_recovery_install_pauses, wait_until_replay_projection_pauses,
+        wait_until_writer_queue_pauses,
     };
 
     const ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -21370,7 +22944,8 @@ mod tests {
                 "SELECT activation_id, room_id, cause_room_seq, decision_id, target_member_id, \
                  reason_code, deduplication_key, priority, semantic_deadline, policy_revision, \
                  state, intent_generation, lease_generation, runner_id, claim_id, lease_until, \
-                 context_hash, context_bytes, context_retired FROM activation_intents \
+                 context_hash, context_bytes, context_retired, created_at, attention_bytes, \
+                 terminal_disposition, superseded_by_activation_id, terminal_at FROM activation_intents \
                  WHERE room_id = ?1 ORDER BY cause_room_seq, activation_id",
             ),
             (
@@ -21762,7 +23337,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap_or_else(|error| panic!("count Heist paired snapshots: {error}"));
-        assert!(snapshot_count >= 2);
+        assert!(snapshot_count <= 3);
         connection
             .execute(
                 "DELETE FROM room_snapshots WHERE room_id = ?1",
@@ -22583,7 +24158,7 @@ mod tests {
         let history = migration_history();
         assert_eq!(
             history.map(|migration| migration.version),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
         assert_eq!(
             history.map(|migration| migration.id),
@@ -22601,6 +24176,9 @@ mod tests {
                 TRANSFER_BACKUP_IDENTITY_MIGRATION_ID,
                 EXTERNAL_INPUT_PREPARATION_MIGRATION_ID,
                 OBSERVATION_RETENTION_MIGRATION_ID,
+                SNAPSHOT_CADENCE_MIGRATION_ID,
+                ACTIVATION_BACKLOG_POLICY_MIGRATION_ID,
+                STREAM_TRANSFER_V2_MIGRATION_ID,
             ]
         );
         let expected_checksums = [
@@ -22617,12 +24195,79 @@ mod tests {
             "blake3:4605547211cde35f16fecf1d156b91d9ca24c39fc24b9fe875f29dcb491965b9",
             "blake3:2097e928196db3f2c572818b4ac87e436512df6f2e9f0cd098521a90366651f0",
             "blake3:153136e4d0fff3ffee1a02c0349fec8a2c1c907b636ce3396276177518225ac6",
+            "blake3:db914b00013cc9d7a341eabe081411f6583893f036547ed9db2c35be3866e9d6",
+            "blake3:495d58fdc81fee0b6b87d8973f4445b4892da22608e459033eaa333c0d4078a4",
+            "blake3:aaa152c1107748f774197bd8a59600150e9d209c7e4eb14ec5e911394b23c3e2",
         ];
         assert_eq!(expected_checksums.len(), history.len());
         for (migration, expected) in history.iter().zip(expected_checksums) {
             assert_eq!(migration.checksum().to_string(), expected);
             assert_eq!(migration.checksum(), migration.checksum());
         }
+    }
+
+    #[test]
+    fn snapshot_cadence_uses_transition_count_and_persisted_active_time() {
+        let connection = Connection::open_in_memory()
+            .unwrap_or_else(|error| panic!("open snapshot cadence fixture: {error}"));
+        connection
+            .execute_batch(
+                "CREATE TABLE room_snapshots (room_id TEXT, room_seq INTEGER);\
+                 CREATE TABLE room_snapshot_schedules (\
+                   room_id TEXT PRIMARY KEY, last_snapshot_room_seq INTEGER NOT NULL,\
+                   transitions_since_snapshot INTEGER NOT NULL, active_started_at TEXT\
+                 );",
+            )
+            .unwrap_or_else(|error| panic!("create snapshot cadence fixture: {error}"));
+        connection
+            .execute(
+                "INSERT INTO room_snapshot_schedules VALUES (?1, 0, 249, ?2)",
+                params![ROOM, "2026-08-15T12:00:00Z"],
+            )
+            .unwrap_or_else(|error| panic!("seed count cadence: {error}"));
+        let count_candidate = SnapshotCadenceCandidate {
+            room_id: ROOM,
+            room_seq: 250,
+            genesis: false,
+        };
+        let (due, _, next_count, _) = snapshot_cadence_due(
+            &connection,
+            &count_candidate,
+            true,
+            Some("2026-08-15T12:00:01Z"),
+        )
+        .unwrap_or_else(|error| panic!("count cadence decision: {error}"));
+        assert!(due);
+        assert_eq!(next_count, 250);
+
+        connection
+            .execute(
+                "UPDATE room_snapshot_schedules SET transitions_since_snapshot = 1, \
+                 active_started_at = ?2 WHERE room_id = ?1",
+                params![ROOM, "2026-08-15T12:00:00Z"],
+            )
+            .unwrap_or_else(|error| panic!("seed time cadence: {error}"));
+        let time_candidate = SnapshotCadenceCandidate {
+            room_id: ROOM,
+            room_seq: 2,
+            genesis: false,
+        };
+        let (early, _, _, _) = snapshot_cadence_due(
+            &connection,
+            &time_candidate,
+            true,
+            Some("2026-08-15T12:04:59Z"),
+        )
+        .unwrap_or_else(|error| panic!("early time cadence decision: {error}"));
+        assert!(!early);
+        let (elapsed, _, _, _) = snapshot_cadence_due(
+            &connection,
+            &time_candidate,
+            true,
+            Some("2026-08-15T12:05:00Z"),
+        )
+        .unwrap_or_else(|error| panic!("elapsed time cadence decision: {error}"));
+        assert!(elapsed);
     }
 
     #[test]
@@ -22873,9 +24518,11 @@ mod tests {
         PreparedAuthorityWitnessV1,
     ) {
         let file = NamedTempFile::new().unwrap_or_else(|error| panic!("temp history DB: {error}"));
-        let store = SqliteRoomStore::open(file.path())
+        let clock = TestAuthorityClock::at("2026-08-15T12:00:00Z");
+        let store = SqliteRoomStore::open_with_clock(file.path(), Arc::new(clock.clone()))
             .unwrap_or_else(|error| panic!("open history SQLite: {error}"));
         let (mut trace, witness) = committed_trace(&store);
+        clock.set("2026-08-15T12:10:01Z");
         let action = prepared_increment(
             &trace,
             witness.clone(),
@@ -22937,6 +24584,12 @@ mod tests {
         );
         let connection = Connection::open(file.path())
             .unwrap_or_else(|error| panic!("open recovery-corruption fixture: {error}"));
+        // This helper exercises immutable-history replay validation. Remove
+        // disposable checkpoints so a trusted cache cannot intentionally
+        // bypass the historical prefix being corrupted below.
+        connection
+            .execute("DELETE FROM room_snapshots WHERE room_id = ?1", [ROOM])
+            .unwrap_or_else(|error| panic!("remove corruption-test snapshots: {error}"));
         mutate(&connection);
         let registry = builtin_counter_registry()
             .unwrap_or_else(|error| panic!("Counter recovery registry: {error}"));
@@ -22986,12 +24639,17 @@ mod tests {
 
     fn assert_runtime_recovery_faults(registry: &PackRegistryV1) {
         let (file, store, _trace, _witness) = committed_history_fixture();
+        let connection = Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open runtime execution fixture: {error}"));
+        // Reduce, View, and Observe faults occur while replaying the durable
+        // prefix, so this conformance helper explicitly selects cold replay.
+        connection
+            .execute("DELETE FROM room_snapshots WHERE room_id = ?1", [ROOM])
+            .unwrap_or_else(|error| panic!("remove runtime-test snapshots: {error}"));
         assert!(matches!(
             recover_room_from_storage(&store, registry, &parsed(ROOM)),
             Err(RoomRecoveryErrorV1::RuntimeFault)
         ));
-        let connection = Connection::open(file.path())
-            .unwrap_or_else(|error| panic!("open runtime execution fixture: {error}"));
         let integrity: (String, i64) = connection
             .query_row(
                 "SELECT status, generation FROM room_integrity WHERE room_id = ?1",
@@ -24348,6 +26006,9 @@ mod tests {
                 (11, TRANSFER_BACKUP_IDENTITY_MIGRATION_ID.to_owned()),
                 (12, EXTERNAL_INPUT_PREPARATION_MIGRATION_ID.to_owned()),
                 (13, OBSERVATION_RETENTION_MIGRATION_ID.to_owned()),
+                (14, SNAPSHOT_CADENCE_MIGRATION_ID.to_owned()),
+                (15, ACTIVATION_BACKLOG_POLICY_MIGRATION_ID.to_owned()),
+                (16, STREAM_TRANSFER_V2_MIGRATION_ID.to_owned()),
             ]
         );
         let retired: (String, String, i64, Vec<u8>, Vec<u8>, i64) = connection
@@ -24487,7 +26148,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap_or_else(|error| panic!("read restarted migration ledger: {error}"));
-        assert_eq!(migration_count, 13);
+        assert_eq!(migration_count, 16);
     }
 
     #[test]
@@ -24780,7 +26441,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap_or_else(|error| panic!("restored migration ledger: {error}"));
-        assert_eq!(restored_migrations, 13);
+        assert_eq!(restored_migrations, 16);
 
         let startup_dir = tempdir().unwrap_or_else(|error| panic!("startup directory: {error}"));
         let startup = startup_dir.path().join("startup.sqlite3");
@@ -31635,6 +33296,68 @@ mod tests {
     }
 
     #[test]
+    fn verified_checkpoint_recovery_reads_only_the_bounded_tail() {
+        let (file, store, trace, _witness) = committed_history_fixture();
+        let connection = Connection::open(file.path()).unwrap();
+        connection
+            .execute("DELETE FROM observation_frames WHERE room_id = ?1", [ROOM])
+            .unwrap();
+        connection.execute("UPDATE room_members SET frame_head = 0, retained_frame_floor = 1 WHERE room_id = ?1", [ROOM]).unwrap();
+        let candidate = <SqliteRoomStore as RoomRecoveryStorageV1>::inspect_recovery_candidate(
+            &store,
+            &parsed(ROOM),
+        )
+        .unwrap_or_else(|error| panic!("inspect checkpoint candidate: {error:?}"))
+        .unwrap_or_else(|| panic!("checkpoint candidate unavailable"));
+        assert!(candidate.has_checkpoint());
+        assert_eq!(candidate.tail_transition_count(), 0);
+        let registry =
+            builtin_counter_registry().unwrap_or_else(|error| panic!("registry: {error}"));
+        let recovered = store
+            .recover_room(&registry, &parsed(ROOM))
+            .unwrap_or_else(|error| panic!("checkpoint recovery: {error:?}"))
+            .unwrap_or_else(|| panic!("Room disappeared during checkpoint recovery"));
+        assert_eq!(recovered.head(), trace.head());
+        assert_eq!(recovered.activity_callback_count(), 0);
+    }
+
+    #[test]
+    fn checkpoint_with_a_forged_internal_lineage_is_rejected_as_a_cache_miss() {
+        let (file, store, trace, _witness) = committed_history_fixture();
+        let connection = Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open forged checkpoint fixture: {error}"));
+        connection
+            .execute_batch("DROP TRIGGER room_snapshots_immutable_update")
+            .unwrap_or_else(|error| panic!("drop snapshot trigger: {error}"));
+        let genesis_snapshot: StoredPairedSnapshotRow = connection
+            .query_row(
+                "SELECT snapshot_schema_version, genesis_or_transition_hash, core_schema_version, pack_digest, \
+                 core_state_hash, activity_state_hash, authoritative_state_hash, complete_head_bytes, \
+                 core_state_bytes, activity_state_bytes FROM room_snapshots WHERE room_id = ?1 ORDER BY room_seq LIMIT 1",
+                [ROOM],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?)),
+            )
+            .unwrap_or_else(|error| panic!("read genesis checkpoint: {error}"));
+        connection
+            .execute(
+                "UPDATE room_snapshots SET snapshot_schema_version = ?1, genesis_or_transition_hash = ?2, \
+                 core_schema_version = ?3, pack_digest = ?4, core_state_hash = ?5, activity_state_hash = ?6, \
+                 authoritative_state_hash = ?7, complete_head_bytes = ?8, core_state_bytes = ?9, activity_state_bytes = ?10 \
+                 WHERE room_id = ?11 AND room_seq = ?12",
+                params![genesis_snapshot.0, genesis_snapshot.1, genesis_snapshot.2, genesis_snapshot.3, genesis_snapshot.4, genesis_snapshot.5, genesis_snapshot.6, genesis_snapshot.7, genesis_snapshot.8, genesis_snapshot.9, ROOM, i64::try_from(trace.head().room_seq().get()).unwrap_or(-1)],
+            )
+            .unwrap_or_else(|error| panic!("forge checkpoint row: {error}"));
+        let candidate = <SqliteRoomStore as RoomRecoveryStorageV1>::inspect_recovery_candidate(
+            &store,
+            &parsed(ROOM),
+        )
+        .unwrap_or_else(|error| panic!("inspect forged checkpoint: {error:?}"))
+        .unwrap_or_else(|| panic!("Room disappeared after forged checkpoint"));
+        assert!(!candidate.has_checkpoint());
+        drop(store);
+    }
+
+    #[test]
     fn snapshot_failure_after_commit_does_not_change_canonical_result_or_recovery() {
         let file =
             NamedTempFile::new().unwrap_or_else(|error| panic!("snapshot failpoint DB: {error}"));
@@ -31811,10 +33534,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap_or_else(|error| panic!("count paired snapshots before deletion: {error}"));
-        assert!(
-            snapshots_before >= 2,
-            "Genesis and Transition snapshots expected"
-        );
+        assert!(snapshots_before >= 1, "Genesis snapshot expected");
         connection
             .execute("DELETE FROM room_snapshots WHERE room_id = ?1", [ROOM])
             .unwrap_or_else(|error| panic!("delete every paired snapshot: {error}"));
@@ -32428,6 +34148,11 @@ mod tests {
             );
             let connection = Connection::open(file.path())
                 .unwrap_or_else(|error| panic!("open corruption fixture: {error}"));
+            // Every case below targets full-history verification. Checkpoint
+            // recovery has its own bounded-tail conformance tests.
+            connection
+                .execute("DELETE FROM room_snapshots WHERE room_id = ?1", [ROOM])
+                .unwrap_or_else(|error| panic!("remove replay-test snapshots: {error}"));
             match corruption {
                 "activity_materialization" => {
                     connection
@@ -34122,6 +35847,100 @@ mod tests {
         assert_eq!(retired, (None, 1));
     }
 
+    #[test]
+    fn bounded_refresh_policy_supersedes_oldest_and_retires_age_without_touching_obligations() {
+        let mut connection = Connection::open_in_memory().expect("in-memory policy database");
+        connection
+            .execute_batch(
+                "CREATE TABLE activation_intents(
+                    activation_id TEXT PRIMARY KEY,
+                    room_id TEXT NOT NULL,
+                    target_member_id TEXT NOT NULL,
+                    cause_room_seq INTEGER NOT NULL,
+                    semantic_deadline TEXT,
+                    state TEXT NOT NULL,
+                    intent_generation INTEGER NOT NULL,
+                    lease_generation INTEGER NOT NULL,
+                    runner_id TEXT,
+                    claim_id TEXT,
+                    lease_until TEXT,
+                    created_at TEXT NOT NULL,
+                    attention_bytes INTEGER NOT NULL,
+                    terminal_disposition TEXT,
+                    superseded_by_activation_id TEXT,
+                    terminal_at TEXT
+                );",
+            )
+            .expect("policy schema");
+        for sequence in 0..65_i64 {
+            connection
+                .execute(
+                    "INSERT INTO activation_intents(
+                        activation_id, room_id, target_member_id, cause_room_seq,
+                        semantic_deadline, state, intent_generation, lease_generation,
+                        created_at, attention_bytes
+                    ) VALUES (?1, 'room-1', '01ARZ3NDEKTSV4RRFFQ69G5FC0', ?2, NULL, 'pending', 1, 0,
+                              '2026-01-01T00:00:00Z', 128)",
+                    rusqlite::params![format!("refresh-{sequence:03}"), sequence],
+                )
+                .expect("refresh row");
+        }
+        connection
+            .execute(
+                "INSERT INTO activation_intents(
+                    activation_id, room_id, target_member_id, cause_room_seq,
+                    semantic_deadline, state, intent_generation, lease_generation,
+                    created_at, attention_bytes
+                ) VALUES ('obligation-1', 'room-1', '01ARZ3NDEKTSV4RRFFQ69G5FC0', 1000,
+                          '2026-01-01T00:00:00Z', 'pending', 1, 0,
+                          '2026-01-01T00:00:00Z', 128)",
+                [],
+            )
+            .expect("obligation row");
+
+        {
+            let transaction = connection.transaction().expect("policy transaction");
+            supersede_refresh_intents(&transaction, "room-1", PARTICIPANT, "refresh-new", 128)
+                .expect("bounded supersession");
+            transaction.commit().expect("policy commit");
+        }
+        let (pending_refreshes, superseded, obligation_state): (i64, i64, String) = connection
+            .query_row(
+                "SELECT
+                    (SELECT count(*) FROM activation_intents
+                     WHERE state = 'pending' AND semantic_deadline IS NULL),
+                    (SELECT count(*) FROM activation_intents
+                     WHERE terminal_disposition = 'superseded_refresh'),
+                    (SELECT state FROM activation_intents WHERE activation_id = 'obligation-1')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("policy report");
+        assert_eq!(pending_refreshes, 63);
+        assert_eq!(superseded, 2);
+        assert_eq!(obligation_state, "pending");
+
+        let transaction = connection.transaction().expect("age transaction");
+        transaction
+            .execute(
+                "UPDATE activation_intents SET created_at = '2000-01-01T00:00:00Z'
+                 WHERE activation_id = 'refresh-002' AND state = 'pending'",
+                [],
+            )
+            .expect("age row");
+        retire_expired_refresh_intents(&transaction, "room-1", &parsed::<MemberId>(PARTICIPANT))
+            .expect("age retirement");
+        transaction.commit().expect("age commit");
+        let disposition: String = connection
+            .query_row(
+                "SELECT terminal_disposition FROM activation_intents WHERE activation_id = 'refresh-002'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("age disposition");
+        assert_eq!(disposition, "refresh_age_exceeded");
+    }
+
     fn fixture_deployment_identity() -> DeploymentIdentityV1 {
         DeploymentIdentityV1::new(
             vec![
@@ -35423,11 +37242,11 @@ mod tests {
             vec![
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Started,
-                    schema_version: 13,
+                    schema_version: 16,
                 },
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Applied,
-                    schema_version: 13,
+                    schema_version: 16,
                 },
             ]
         );
@@ -35467,16 +37286,16 @@ mod tests {
             [
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Started,
-                    schema_version: 13,
+                    schema_version: 16,
                 },
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::AlreadyCurrent,
-                    schema_version: 13,
+                    schema_version: 16,
                 },
             ]
         );
         assert!(final_events.iter().all(|event| match event {
-            SqliteTelemetryEventV1::Migration { schema_version, .. } => *schema_version <= 13,
+            SqliteTelemetryEventV1::Migration { schema_version, .. } => *schema_version <= 16,
             SqliteTelemetryEventV1::Recovery { .. }
             | SqliteTelemetryEventV1::Integrity { .. }
             | SqliteTelemetryEventV1::StorageDiagnostic { .. } => true,

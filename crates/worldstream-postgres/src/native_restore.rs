@@ -7306,7 +7306,7 @@ fn isolated_room_bytes_digest(
         ),
         (
             "activation_intents",
-            "SELECT jsonb_build_array(activation_id, room_id, cause_room_seq, decision_id, target_member_id, reason_code, deduplication_key, priority, semantic_deadline, policy_revision, state, intent_generation, lease_generation, runner_id, claim_id, lease_until, context_hash, context_bytes, context_retired)::text FROM worldstream_activation_intents WHERE room_id = $1 ORDER BY activation_id",
+            "SELECT jsonb_build_array(activation_id, room_id, cause_room_seq, decision_id, target_member_id, reason_code, deduplication_key, priority, semantic_deadline, policy_revision, state, intent_generation, lease_generation, runner_id, claim_id, lease_until, context_hash, context_bytes, context_retired, created_at, attention_bytes, terminal_disposition, superseded_by_activation_id, terminal_at)::text FROM worldstream_activation_intents WHERE room_id = $1 ORDER BY activation_id",
         ),
         (
             "activation_receipts",
@@ -7904,7 +7904,7 @@ const DURABLE_DOMAIN_QUERIES: [(NativeRestoreDurableDomainV1, &str); 34] = [
     ),
     (
         NativeRestoreDurableDomainV1::ActivationIntents,
-        "SELECT jsonb_build_array(activation_id, room_id, cause_room_seq, decision_id, target_member_id, reason_code, deduplication_key, priority, semantic_deadline, policy_revision, state, intent_generation, lease_generation, runner_id, claim_id, lease_until, context_hash, context_bytes, context_retired)::text FROM worldstream_activation_intents ORDER BY activation_id",
+        "SELECT jsonb_build_array(activation_id, room_id, cause_room_seq, decision_id, target_member_id, reason_code, deduplication_key, priority, semantic_deadline, policy_revision, state, intent_generation, lease_generation, runner_id, claim_id, lease_until, context_hash, context_bytes, context_retired, created_at, attention_bytes, terminal_disposition, superseded_by_activation_id, terminal_at)::text FROM worldstream_activation_intents ORDER BY activation_id",
     ),
     (
         NativeRestoreDurableDomainV1::ActivationOperationReceipts,
@@ -8024,7 +8024,7 @@ fn preflight_activation_intents(
     bounded_global_provider_rows(
         client,
         budget,
-        "SELECT jsonb_build_array(a.activation_id, a.room_id, a.cause_room_seq, a.target_member_id, a.state, a.intent_generation, a.lease_generation, a.runner_id, a.claim_id, a.lease_until, a.context_hash, a.context_bytes, a.context_retired)::text FROM worldstream_activation_intents a JOIN worldstream_room_roots r ON r.room_id = a.room_id WHERE r.integrity_status = 'healthy' ORDER BY a.activation_id",
+        "SELECT jsonb_build_array(a.activation_id, a.room_id, a.cause_room_seq, a.target_member_id, a.state, a.intent_generation, a.lease_generation, a.runner_id, a.claim_id, a.lease_until, a.context_hash, a.context_bytes, a.context_retired, a.created_at, a.attention_bytes, a.terminal_disposition, a.superseded_by_activation_id, a.terminal_at)::text FROM worldstream_activation_intents a JOIN worldstream_room_roots r ON r.room_id = a.room_id WHERE r.integrity_status = 'healthy' ORDER BY a.activation_id",
         &mut remaining,
         false,
     )?;

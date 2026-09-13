@@ -683,6 +683,41 @@ pub struct LobbyLaunchResponse {
     pub duplicate: bool,
 }
 
+/// Version of the host external-input ingress envelope.
+pub const EXTERNAL_INPUT_INGRESS_REQUEST_VERSION: &str = "worldstream/external-input-ingress.v1";
+
+/// Versioned host ingress for one allowlisted external input. The payload is
+/// canonicalized before Core admission; `recorded_at` is optional because the
+/// first accepted preparation supplies it and retries reuse that durable time.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalInputIngressRequestV1 {
+    pub version: String,
+    pub source_id: String,
+    pub input_id: String,
+    pub input_type: String,
+    pub based_on_room_seq: u64,
+    pub pack_digest: String,
+    pub payload: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_at: Option<String>,
+}
+
+/// Safe result of one generic external input commit.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalInputIngressResponseV1 {
+    pub version: String,
+    pub room_id: String,
+    pub source_id: String,
+    pub input_id: String,
+    pub input_type: String,
+    pub recorded_at: String,
+    pub transition_id: String,
+    pub room_head: RoomHead,
+    pub duplicate: bool,
+}
+
 pub const ROOM_ARCHIVE_REQUEST_SCHEMA_V1: &str = "worldstream/room-archive-request/v1";
 pub const ROOM_ARCHIVE_RESPONSE_SCHEMA_V1: &str = "worldstream/room-archive-response/v1";
 
@@ -941,6 +976,51 @@ pub struct ReplayResponse {
     pub projection: Projection,
     pub projection_hash: String,
     pub verification: String,
+    pub room_health: String,
+    pub integrity_generation: u64,
+}
+
+/// Version of the bounded historical evidence reference response.
+pub const HISTORICAL_EVIDENCE_RESPONSE_VERSION: &str =
+    "worldstream/historical-evidence-references.v1";
+
+/// Explicit result of a bounded evidence page. Missing/pruned/retired are
+/// stable outcomes so callers do not mistake an empty page for unavailable
+/// evidence.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoricalEvidenceOutcomeV1 {
+    Complete,
+    Exhausted,
+    Missing,
+    Pruned,
+    Retired,
+}
+
+/// A durable pointer to retained evidence. It contains no Transition bytes or
+/// model-generated summary and is safe to hand to an authorized Runner.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoricalEvidenceReferenceV1 {
+    pub room_seq: u64,
+    pub transition_id: String,
+    pub transition_hash: String,
+    pub previous_lineage_hash: String,
+    pub evidence_reference: String,
+}
+
+/// One stable-cut, keyset-paginated evidence reference page.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoricalEvidenceResponseV1 {
+    pub version: String,
+    pub room_id: String,
+    pub cut_room_seq: u64,
+    pub after_room_seq: u64,
+    pub next_after_room_seq: Option<u64>,
+    pub outcome: HistoricalEvidenceOutcomeV1,
+    pub references: Vec<HistoricalEvidenceReferenceV1>,
+    pub room_head: RoomHead,
     pub room_health: String,
     pub integrity_generation: u64,
 }

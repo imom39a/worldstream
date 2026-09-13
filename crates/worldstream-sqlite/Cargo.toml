@@ -16,6 +16,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 time.workspace = true
 worldstream-core = { path = "../worldstream-core", version = "=0.1.0", features = ["conformance-tracer"] }
+worldstream-backup = { path = "../worldstream-backup", version = "=0.1.0" }
 worldstream-sqlite-open.workspace = true
 worldstream-transfer = { path = "../worldstream-transfer", version = "=0.1.0" }
 

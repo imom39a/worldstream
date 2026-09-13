@@ -46,6 +46,40 @@ where
         .unwrap_or_else(|error| unreachable!("fixture parse failed: {error}"))
 }
 
+#[test]
+fn historical_evidence_reference_is_bounded_and_contains_no_payload() {
+    let reference = HistoricalEvidenceReferenceV1::new(
+        7,
+        "transition-7".to_owned(),
+        "blake3:abc".to_owned(),
+        "blake3:def".to_owned(),
+        "room/01ARZ3NDEKTSV4RRFFQ69G5FAV/transition/7".to_owned(),
+    )
+    .unwrap_or_else(|| unreachable!("valid evidence reference"));
+    assert_eq!(reference.room_seq(), 7);
+    assert!(reference.encoded_bytes() < MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1);
+    assert!(
+        HistoricalEvidenceReferenceV1::new(
+            0,
+            "transition-0".to_owned(),
+            "hash".to_owned(),
+            "prior".to_owned(),
+            "room/r/transition/0".to_owned(),
+        )
+        .is_none()
+    );
+    assert!(
+        HistoricalEvidenceReferenceV1::new(
+            1,
+            "transition-1".to_owned(),
+            "hash\nwith-secret".to_owned(),
+            "prior".to_owned(),
+            "room/r/transition/1".to_owned(),
+        )
+        .is_none()
+    );
+}
+
 fn json(value: &str) -> CanonicalJsonV1 {
     CanonicalJsonV1::parse(value.as_bytes())
         .unwrap_or_else(|error| unreachable!("fixture JSON failed: {error}"))

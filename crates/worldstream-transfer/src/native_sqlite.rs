@@ -39,7 +39,7 @@ const TABLES: &[(&str, usize)] = &[
     ("authority_change_receipts", 9),
     ("authority_audit", 12),
     ("activation_decisions", 5),
-    ("activation_intents", 19),
+    ("activation_intents", 24),
     ("activation_operation_receipts", 9),
     ("observation_consequences", 6),
     ("observation_frames", 7),
@@ -50,6 +50,67 @@ const TABLES: &[(&str, usize)] = &[
     ("timers", 6),
     ("integrity_incidents", 6),
 ];
+
+/// Ordered native relations carried by the streaming SQLite transfer
+/// projection. The list is public so a source scanner can retain a compact
+/// relation/keyset cursor instead of materializing an operational row map.
+pub const NATIVE_SQLITE_OPERATIONAL_TABLES_V2: &[&str] = &[
+    "retired_authority_fences_v1",
+    "principals",
+    "runners",
+    "capabilities",
+    "capability_scopes",
+    "runner_capability_memberships",
+    "authority_change_receipts",
+    "authority_audit",
+    "activation_decisions",
+    "activation_intents",
+    "activation_operation_receipts",
+    "observation_consequences",
+    "observation_frames",
+    "room_integrity",
+    "room_members",
+    "semantic_receipts",
+    "external_input_preparations",
+    "timers",
+    "integrity_incidents",
+];
+
+/// Encodes one source-native operational row for the bounded v2 stream.
+///
+/// This is intentionally a row-at-a-time seam. It validates the immutable
+/// native shape and preserves storage classes exactly, but leaves cross-row
+/// semantic checks to the streaming source verifier and the final target
+/// semantic verifier.
+pub fn encode_native_sqlite_stream_row_v2(
+    row: &NativeSqliteRowV1,
+) -> Result<(String, Vec<u8>), NativeSqliteTransferError> {
+    let Some((table, expected)) = TABLES.iter().find(|(table, _)| *table == row.table) else {
+        return Err(NativeSqliteTransferError::MissingRelation {
+            relation: "unknown operational table",
+        });
+    };
+    let mut values = row.values.clone();
+    if *table == "activation_intents" && values.len() == 19 {
+        values.extend([
+            NativeSqliteValueV1::Text(String::new()),
+            NativeSqliteValueV1::Integer(0),
+            NativeSqliteValueV1::Null,
+            NativeSqliteValueV1::Null,
+            NativeSqliteValueV1::Null,
+        ]);
+    }
+    if values.len() != *expected {
+        return Err(NativeSqliteTransferError::InvalidRowShape {
+            table,
+            expected: *expected,
+            actual: values.len(),
+        });
+    }
+    let identity = row_identity(table, &values)?;
+    let bytes = encode_row(table, &values)?;
+    Ok((identity, bytes))
+}
 
 /// The immutable inputs needed to build an operational-row transfer bundle.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -899,16 +960,29 @@ fn prepare_rows(
             if row.table != *table {
                 return Err(NativeSqliteTransferError::RowTableMismatch);
             }
-            if row.values.len() != *expected {
+            // A v1 source predating migration 0016 has the original 19-column
+            // Activation shape. Normalize its compatibility defaults before
+            // hashing so it remains importable into the current schema.
+            let mut normalized_values = row.values.clone();
+            if *table == "activation_intents" && normalized_values.len() == 19 {
+                normalized_values.extend([
+                    NativeSqliteValueV1::Text(String::new()),
+                    NativeSqliteValueV1::Integer(0),
+                    NativeSqliteValueV1::Null,
+                    NativeSqliteValueV1::Null,
+                    NativeSqliteValueV1::Null,
+                ]);
+            }
+            if normalized_values.len() != *expected {
                 return Err(NativeSqliteTransferError::InvalidRowShape {
                     table,
                     expected: *expected,
                     actual: row.values.len(),
                 });
             }
-            let identity = row_identity(table, &row.values)?;
-            let room_id = room_id(table, &row.values)?;
-            let bytes = encode_row(table, &row.values)?;
+            let identity = row_identity(table, &normalized_values)?;
+            let room_id = room_id(table, &normalized_values)?;
+            let bytes = encode_row(table, &normalized_values)?;
             let digest = DigestV1::hash(&bytes);
             if let Some((prior_digest, prior_bytes, prior_table)) = seen.get(&identity) {
                 if *prior_digest == digest && *prior_bytes == bytes {
@@ -927,7 +1001,7 @@ fn prepare_rows(
                 table,
                 identity,
                 room_id,
-                values: row.values.clone(),
+                values: normalized_values,
                 bytes,
             });
         }
@@ -2212,6 +2286,11 @@ mod tests {
                     Value::Null,
                     Value::Null,
                     Value::Integer(0),
+                    Value::Text("2026-01-01T00:00:00Z".to_owned()),
+                    Value::Integer(128),
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
                 ],
             )],
         );

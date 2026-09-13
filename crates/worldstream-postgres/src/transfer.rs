@@ -15,7 +15,11 @@ use worldstream_transfer::{
     NativeSqliteRoomPolicyV1, NativeSqliteTransferAdapterV1, NativeSqliteTransferError,
     PackIdentityV1, RecordKindV1, ResourceIdentityV1, ResourceKindV1, TargetFingerprintV1,
     TransferBundleV1, TransferChunkDispositionV1, TransferChunkV1, TransferDestinationV1,
-    TransferError, TransferScopeV1,
+    TransferError, TransferScopeV1, TransferStreamAuthorityDestinationV2,
+    TransferStreamCheckpointV2, TransferStreamChunkV2, TransferStreamDestinationV2,
+    TransferStreamFinalizationDestinationV2, TransferStreamFooterAccumulatorV2,
+    TransferStreamFooterV2, TransferStreamIdentityV2, TransferStreamManifestV2,
+    TransferStreamSemanticAccumulatorV2, TransferStreamSourceAuthorityBindingV2,
 };
 
 use crate::{
@@ -131,6 +135,7 @@ LOCK TABLE
     worldstream_activation_intents,
     worldstream_activation_operation_receipts,
     worldstream_room_snapshots,
+    worldstream_room_snapshot_schedules,
     worldstream_semantic_receipts,
     worldstream_integrity_incidents,
     worldstream_authority_fences,
@@ -144,6 +149,9 @@ LOCK TABLE
     worldstream_authority_audit,
     worldstream_transfer_imports,
     worldstream_transfer_chunks,
+    worldstream_transfer_stream_imports_v2,
+    worldstream_transfer_stream_chunks_v2,
+    worldstream_transfer_stream_records_v2,
     worldstream_transfer_target_fence,
     worldstream_deployment_metadata,
     worldstream_deployment_identity_metadata,
@@ -170,6 +178,7 @@ SELECT domain, row_count FROM (
     UNION ALL SELECT 'worldstream_activation_intents', count(*)::bigint FROM worldstream_activation_intents
     UNION ALL SELECT 'worldstream_activation_operation_receipts', count(*)::bigint FROM worldstream_activation_operation_receipts
     UNION ALL SELECT 'worldstream_room_snapshots', count(*)::bigint FROM worldstream_room_snapshots
+    UNION ALL SELECT 'worldstream_room_snapshot_schedules', count(*)::bigint FROM worldstream_room_snapshot_schedules
     UNION ALL SELECT 'worldstream_semantic_receipts', count(*)::bigint FROM worldstream_semantic_receipts
     UNION ALL SELECT 'worldstream_integrity_incidents', count(*)::bigint FROM worldstream_integrity_incidents
     UNION ALL SELECT 'worldstream_authority_fences', count(*)::bigint FROM worldstream_authority_fences
@@ -182,6 +191,9 @@ SELECT domain, row_count FROM (
     UNION ALL SELECT 'worldstream_authority_audit', count(*)::bigint FROM worldstream_authority_audit
     UNION ALL SELECT 'worldstream_transfer_imports', count(*)::bigint FROM worldstream_transfer_imports
     UNION ALL SELECT 'worldstream_transfer_chunks', count(*)::bigint FROM worldstream_transfer_chunks
+    UNION ALL SELECT 'worldstream_transfer_stream_imports_v2', count(*)::bigint FROM worldstream_transfer_stream_imports_v2
+    UNION ALL SELECT 'worldstream_transfer_stream_chunks_v2', count(*)::bigint FROM worldstream_transfer_stream_chunks_v2
+    UNION ALL SELECT 'worldstream_transfer_stream_records_v2', count(*)::bigint FROM worldstream_transfer_stream_records_v2
     UNION ALL SELECT 'worldstream_transfer_target_fence', count(*)::bigint FROM worldstream_transfer_target_fence
     UNION ALL SELECT 'worldstream_deployment_metadata', count(*)::bigint FROM worldstream_deployment_metadata
     UNION ALL SELECT 'worldstream_deployment_identity_metadata', count(*)::bigint FROM worldstream_deployment_identity_metadata
@@ -215,6 +227,7 @@ TRUNCATE TABLE
     worldstream_activation_intents,
     worldstream_activation_operation_receipts,
     worldstream_room_snapshots,
+    worldstream_room_snapshot_schedules,
     worldstream_semantic_receipts,
     worldstream_integrity_incidents,
     worldstream_authority_fences,
@@ -228,6 +241,9 @@ TRUNCATE TABLE
     worldstream_authority_audit,
     worldstream_transfer_chunks,
     worldstream_transfer_imports,
+    worldstream_transfer_stream_records_v2,
+    worldstream_transfer_stream_chunks_v2,
+    worldstream_transfer_stream_imports_v2,
     worldstream_deployment_metadata,
     worldstream_deployment_identity_metadata,
     worldstream_deployment_pack_identities,
@@ -249,6 +265,1975 @@ pub struct PostgresTransferDestination<'a> {
     bundle_hash: DigestV1,
     target: TargetFingerprintV1,
     target_digest: DigestV1,
+}
+
+/// Bounded v2 stream staging target. It reuses the existing non-serving
+/// target fence and chunk journal, but keys them with the identity-bound v2
+/// stream digest rather than a materialized v1 bundle hash.
+pub struct PostgresStreamDestinationV2<'a> {
+    admin: &'a PostgresAdmin,
+    identity: TransferStreamIdentityV2,
+    identity_digest: DigestV1,
+    manifest: Option<TransferStreamManifestV2>,
+    manifest_digest: Option<DigestV1>,
+    target: TargetFingerprintV1,
+    target_digest: DigestV1,
+}
+
+impl<'a> PostgresStreamDestinationV2<'a> {
+    /// Opens the durable target journal for one frozen v2 source identity.
+    pub fn new(
+        admin: &'a PostgresAdmin,
+        identity: TransferStreamIdentityV2,
+        target: TargetFingerprintV1,
+    ) -> Result<Self, PostgresTransferError> {
+        if target.backend() != &postgres_backend_fingerprint()? {
+            return Err(PostgresTransferError::TargetMismatch(
+                "backend/schema/migration fingerprint",
+            ));
+        }
+        Ok(Self {
+            admin,
+            identity_digest: identity.digest()?,
+            identity,
+            manifest: None,
+            manifest_digest: None,
+            target_digest: target.fingerprint_digest()?,
+            target,
+        })
+    }
+
+    /// Opens the manifest-bound stream journal for a complete v2 deployment.
+    ///
+    /// The caller passes the reader's header digest so checkpoint/retry state
+    /// binds the immutable source manifest as well as the stream identity.
+    pub fn new_with_manifest(
+        admin: &'a PostgresAdmin,
+        identity: TransferStreamIdentityV2,
+        manifest: TransferStreamManifestV2,
+        stream_header_digest: DigestV1,
+        target: TargetFingerprintV1,
+    ) -> Result<Self, PostgresTransferError> {
+        let expected_backend = postgres_backend_fingerprint()?;
+        if target.backend() != &expected_backend {
+            return Err(PostgresTransferError::TargetMismatch(
+                "backend/schema/migration fingerprint",
+            ));
+        }
+        if manifest.target_backend_digest()
+            != target
+                .backend()
+                .digest()
+                .map_err(PostgresTransferError::Contract)?
+        {
+            return Err(PostgresTransferError::TargetMismatch(
+                "stream manifest target backend",
+            ));
+        }
+        if target.lineage_id() != identity.lineage_id()
+            || target.storage_epoch()
+                != identity.source_epoch().checked_add(1).ok_or(
+                    PostgresTransferError::InvalidProviderValue("stream target epoch"),
+                )?
+        {
+            return Err(PostgresTransferError::TargetMismatch(
+                "stream manifest target identity",
+            ));
+        }
+        let computed_header = identity.stream_header_digest(Some(&manifest))?;
+        if computed_header != stream_header_digest {
+            return Err(PostgresTransferError::TargetMismatch(
+                "stream manifest header digest",
+            ));
+        }
+        Ok(Self {
+            admin,
+            identity,
+            identity_digest: stream_header_digest,
+            manifest_digest: Some(manifest.digest()?),
+            manifest: Some(manifest),
+            target_digest: target.fingerprint_digest()?,
+            target,
+        })
+    }
+
+    /// Returns the exact target fingerprint fenced by this stream import.
+    #[must_use]
+    pub const fn target(&self) -> &TargetFingerprintV1 {
+        &self.target
+    }
+
+    fn stream_key(&self) -> [u8; 32] {
+        self.identity_digest.as_bytes()
+    }
+
+    fn target_key(&self) -> [u8; 32] {
+        self.target_digest.as_bytes()
+    }
+
+    fn manifest_required(&self) -> Result<&TransferStreamManifestV2, PostgresTransferError> {
+        self.manifest
+            .as_ref()
+            .ok_or(PostgresTransferError::TargetMismatch("stream manifest"))
+    }
+
+    fn verify_stream_authority_binding(
+        &self,
+        binding: &TransferStreamSourceAuthorityBindingV2,
+    ) -> Result<(), PostgresTransferError> {
+        let manifest = self.manifest_required()?;
+        let manifest_digest = self
+            .manifest_digest
+            .ok_or(PostgresTransferError::TargetMismatch(
+                "stream manifest digest",
+            ))?;
+        if binding.stream_header_digest() != self.identity_digest
+            || binding.manifest_digest() != manifest_digest
+            || binding.source_backup_digest() != manifest.source_backup_digest()
+            || binding.target_fingerprint() != self.target_digest
+            || binding.source_epoch() != self.identity.source_epoch()
+            || binding.target_epoch() != self.target.storage_epoch()
+            || binding.lineage_id() != self.identity.lineage_id()
+            || binding.footer().record_count() != manifest.expected_record_count()
+            || binding.footer().record_bytes() != manifest.expected_record_bytes()
+            || binding.footer().stream_digest() != manifest.expected_stream_digest()
+        {
+            return Err(PostgresTransferError::TargetMismatch(
+                "stream authority binding",
+            ));
+        }
+        Ok(())
+    }
+
+    fn read_stream_journal_identity(
+        &self,
+        transaction: &mut Transaction<'_>,
+        binding: &TransferStreamSourceAuthorityBindingV2,
+    ) -> Result<String, PostgresTransferError> {
+        self.verify_stream_authority_binding(binding)?;
+        let manifest = self.manifest_required()?;
+        let stream_key = self.stream_key();
+        let row = transaction
+            .query_opt(
+                "SELECT target_fingerprint, manifest_bytes, manifest_digest, state FROM worldstream_transfer_stream_imports_v2 WHERE stream_header_digest = $1 FOR UPDATE",
+                &[&stream_key.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?
+            .ok_or(PostgresTransferError::MissingImport)?;
+        let target: Vec<u8> = row.try_get(0).map_err(PostgresTransferError::Sql)?;
+        let manifest_bytes: Vec<u8> = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+        let manifest_digest: Vec<u8> = row.try_get(2).map_err(PostgresTransferError::Sql)?;
+        let state: String = row.try_get(3).map_err(PostgresTransferError::Sql)?;
+        if target != self.target_key()
+            || manifest_bytes != manifest.canonical_bytes()?
+            || manifest_digest != binding.manifest_digest().as_bytes()
+        {
+            return Err(PostgresTransferError::TargetMismatch(
+                "persisted stream authority binding",
+            ));
+        }
+        Ok(state)
+    }
+
+    fn read_finalized_stream_journal(
+        &self,
+        transaction: &mut Transaction<'_>,
+        binding: &TransferStreamSourceAuthorityBindingV2,
+    ) -> Result<String, PostgresTransferError> {
+        let state = self.read_stream_journal_identity(transaction, binding)?;
+        let stream_key = self.stream_key();
+        let row = transaction
+            .query_one(
+                "SELECT footer_chunk_count, footer_record_count, footer_record_bytes, footer_digest FROM worldstream_transfer_stream_imports_v2 WHERE stream_header_digest = $1 FOR UPDATE",
+                &[&stream_key.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        let chunks: Option<i64> = row.try_get(0).map_err(PostgresTransferError::Sql)?;
+        let records: Option<i64> = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+        let bytes: Option<i64> = row.try_get(2).map_err(PostgresTransferError::Sql)?;
+        let digest: Option<Vec<u8>> = row.try_get(3).map_err(PostgresTransferError::Sql)?;
+        let footer = binding.footer();
+        if chunks
+            != Some(
+                i64::try_from(footer.chunk_count()).map_err(|_| {
+                    PostgresTransferError::InvalidProviderValue("stream footer chunks")
+                })?,
+            )
+            || records
+                != Some(i64::try_from(footer.record_count()).map_err(|_| {
+                    PostgresTransferError::InvalidProviderValue("stream footer records")
+                })?)
+            || bytes
+                != Some(i64::try_from(footer.record_bytes()).map_err(|_| {
+                    PostgresTransferError::InvalidProviderValue("stream footer bytes")
+                })?)
+            || digest.as_deref() != Some(footer.stream_digest().as_bytes().as_slice())
+        {
+            return Err(PostgresTransferError::TargetMismatch(
+                "persisted stream footer",
+            ));
+        }
+        Ok(state)
+    }
+
+    fn ensure_manifest_import(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<String, PostgresTransferError> {
+        let manifest = self.manifest_required()?;
+        let manifest_bytes = manifest.canonical_bytes()?;
+        let manifest_digest = self
+            .manifest_digest
+            .ok_or(PostgresTransferError::TargetMismatch(
+                "stream manifest digest",
+            ))?;
+        let stream_key = self.stream_key();
+        let target_key = self.target_key();
+        PostgresTransferDestination::lock_target_preflight(transaction)?;
+
+        // An authority publication removes the target fence, so a retry after
+        // the caller lost its success response must consult the durable stream
+        // journal before applying first-import empty-target rules.  The exact
+        // manifest and target fingerprint are still checked below; this only
+        // lets an already-authoritative import be reverified idempotently.
+        if let Some(row) = transaction
+            .query_opt(
+                "SELECT target_fingerprint, manifest_bytes, manifest_digest, state FROM worldstream_transfer_stream_imports_v2 WHERE stream_header_digest = $1 FOR UPDATE",
+                &[&stream_key.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?
+        {
+            let stored_target: Vec<u8> = row.try_get(0).map_err(PostgresTransferError::Sql)?;
+            let stored_manifest: Vec<u8> = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+            let stored_manifest_digest: Vec<u8> = row.try_get(2).map_err(PostgresTransferError::Sql)?;
+            let state: String = row.try_get(3).map_err(PostgresTransferError::Sql)?;
+            if stored_target != target_key {
+                return Err(PostgresTransferError::TargetMismatch(
+                    "persisted target fingerprint",
+                ));
+            }
+            if stored_manifest != manifest_bytes
+                || stored_manifest_digest != manifest_digest.as_bytes()
+            {
+                return Err(PostgresTransferError::TargetMismatch(
+                    "persisted stream manifest",
+                ));
+            }
+            if state == "authoritative" {
+                return Ok(state);
+            }
+        }
+        let mut fence = transaction
+            .query_opt(
+                "SELECT bundle_hash, target_fingerprint, state FROM worldstream_transfer_target_fence WHERE fence_id = true FOR UPDATE",
+                &[],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        if fence.is_none() {
+            PostgresTransferDestination::preflight_empty_target(transaction)?;
+            transaction
+                .execute(
+                    "INSERT INTO worldstream_transfer_target_fence(fence_id, bundle_hash, target_fingerprint, state) VALUES (true, $1, $2, 'importing')",
+                    &[&stream_key.as_slice(), &target_key.as_slice()],
+                )
+                .map_err(PostgresTransferError::Sql)?;
+            fence = transaction
+                .query_opt(
+                    "SELECT bundle_hash, target_fingerprint, state FROM worldstream_transfer_target_fence WHERE fence_id = true FOR UPDATE",
+                    &[],
+                )
+                .map_err(PostgresTransferError::Sql)?;
+        }
+        let fence = fence.ok_or(PostgresTransferError::MissingTargetFence)?;
+        let stored_stream: Vec<u8> = fence.try_get(0).map_err(PostgresTransferError::Sql)?;
+        let stored_target: Vec<u8> = fence.try_get(1).map_err(PostgresTransferError::Sql)?;
+        let fence_state: String = fence.try_get(2).map_err(PostgresTransferError::Sql)?;
+        if fence_state == "aborted" {
+            return Err(PostgresTransferError::TargetAborted);
+        }
+        if fence_state != "importing" || stored_stream != stream_key {
+            return Err(PostgresTransferError::TargetMismatch(
+                "persisted stream fence",
+            ));
+        }
+        PostgresTransferDestination::verify_target_fence_bytes(
+            self.identity_digest,
+            self.target_digest,
+            Some((&stored_stream, &stored_target)),
+        )?;
+        transaction
+            .execute(
+                "INSERT INTO worldstream_transfer_stream_imports_v2(stream_header_digest, target_fingerprint, manifest_bytes, manifest_digest, state, next_chunk, next_ordinal) VALUES ($1, $2, $3, $4, 'pending', 0, 0) ON CONFLICT (stream_header_digest) DO NOTHING",
+                &[&stream_key.as_slice(), &target_key.as_slice(), &manifest_bytes, &manifest_digest.as_bytes().as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        let row = transaction
+            .query_one(
+                "SELECT target_fingerprint, manifest_bytes, manifest_digest, state FROM worldstream_transfer_stream_imports_v2 WHERE stream_header_digest = $1 FOR UPDATE",
+                &[&stream_key.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        let stored_target: Vec<u8> = row.try_get(0).map_err(PostgresTransferError::Sql)?;
+        let stored_manifest: Vec<u8> = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+        let stored_manifest_digest: Vec<u8> = row.try_get(2).map_err(PostgresTransferError::Sql)?;
+        if stored_target != target_key {
+            return Err(PostgresTransferError::TargetMismatch(
+                "persisted target fingerprint",
+            ));
+        }
+        if stored_manifest != manifest_bytes || stored_manifest_digest != manifest_digest.as_bytes()
+        {
+            return Err(PostgresTransferError::TargetMismatch(
+                "persisted stream manifest",
+            ));
+        }
+        row.try_get(3).map_err(PostgresTransferError::Sql)
+    }
+
+    fn read_manifest_checkpoint(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<TransferStreamCheckpointV2, PostgresTransferError> {
+        let stream_key = self.stream_key();
+        let row = transaction
+            .query_one(
+                "SELECT next_chunk, next_ordinal FROM worldstream_transfer_stream_imports_v2 WHERE stream_header_digest = $1 FOR UPDATE",
+                &[&stream_key.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        let next_chunk = u64::try_from(
+            row.try_get::<_, i64>(0)
+                .map_err(PostgresTransferError::Sql)?,
+        )
+        .map_err(|_| PostgresTransferError::InvalidProviderValue("stream next chunk"))?;
+        let next_ordinal = u64::try_from(
+            row.try_get::<_, i64>(1)
+                .map_err(PostgresTransferError::Sql)?,
+        )
+        .map_err(|_| PostgresTransferError::InvalidProviderValue("stream next ordinal"))?;
+        Ok(TransferStreamCheckpointV2 {
+            stream_identity_digest: self.identity_digest,
+            next_chunk,
+            next_ordinal,
+        })
+    }
+
+    fn ensure_import(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<String, PostgresTransferError> {
+        if self.manifest.is_some() {
+            return self.ensure_manifest_import(transaction);
+        }
+        let stream_key = self.stream_key();
+        let target_key = self.target_key();
+        PostgresTransferDestination::lock_target_preflight(transaction)?;
+        let mut fence = transaction
+            .query_opt(
+                "SELECT bundle_hash, target_fingerprint, state FROM worldstream_transfer_target_fence WHERE fence_id = true FOR UPDATE",
+                &[],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        if fence.is_none() {
+            PostgresTransferDestination::preflight_empty_target(transaction)?;
+            transaction
+                .execute(
+                    "INSERT INTO worldstream_transfer_target_fence(fence_id, bundle_hash, target_fingerprint, state) VALUES (true, $1, $2, 'importing')",
+                    &[&stream_key.as_slice(), &target_key.as_slice()],
+                )
+                .map_err(PostgresTransferError::Sql)?;
+            fence = transaction
+                .query_opt(
+                    "SELECT bundle_hash, target_fingerprint, state FROM worldstream_transfer_target_fence WHERE fence_id = true FOR UPDATE",
+                    &[],
+                )
+                .map_err(PostgresTransferError::Sql)?;
+        }
+        let fence = fence.ok_or(PostgresTransferError::MissingTargetFence)?;
+        let stored_stream: Vec<u8> = fence.try_get(0).map_err(PostgresTransferError::Sql)?;
+        let stored_target: Vec<u8> = fence.try_get(1).map_err(PostgresTransferError::Sql)?;
+        let fence_state: String = fence.try_get(2).map_err(PostgresTransferError::Sql)?;
+        if fence_state == "aborted" {
+            return Err(PostgresTransferError::TargetAborted);
+        }
+        if fence_state != "importing" || stored_stream != stream_key {
+            return Err(PostgresTransferError::TargetMismatch(
+                "persisted stream fence",
+            ));
+        }
+        PostgresTransferDestination::verify_target_fence_bytes(
+            self.identity_digest,
+            self.target_digest,
+            Some((&stored_stream, &stored_target)),
+        )?;
+        transaction
+            .execute(
+                "INSERT INTO worldstream_transfer_imports(bundle_hash, target_fingerprint, state) VALUES ($1, $2, 'pending') ON CONFLICT (bundle_hash) DO NOTHING",
+                &[&stream_key.as_slice(), &target_key.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        let row = transaction
+            .query_one(
+                "SELECT target_fingerprint, state FROM worldstream_transfer_imports WHERE bundle_hash = $1 FOR UPDATE",
+                &[&stream_key.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        let stored_target: Vec<u8> = row.try_get(0).map_err(PostgresTransferError::Sql)?;
+        if stored_target != target_key {
+            return Err(PostgresTransferError::TargetMismatch(
+                "persisted target fingerprint",
+            ));
+        }
+        row.try_get(1).map_err(PostgresTransferError::Sql)
+    }
+
+    fn read_checkpoint(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<TransferStreamCheckpointV2, PostgresTransferError> {
+        if self.manifest.is_some() {
+            return self.read_manifest_checkpoint(transaction);
+        }
+        let stream_key = self.stream_key();
+        let rows = transaction
+            .query(
+                "SELECT chunk_start, chunk_end FROM worldstream_transfer_chunks WHERE bundle_hash = $1 ORDER BY chunk_start FOR UPDATE",
+                &[&stream_key.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        let mut next_ordinal = 0_u64;
+        let mut next_chunk = 0_u64;
+        for row in rows {
+            let start = u64::try_from(
+                row.try_get::<_, i64>(0)
+                    .map_err(PostgresTransferError::Sql)?,
+            )
+            .map_err(|_| PostgresTransferError::InvalidProviderValue("stream chunk start"))?;
+            let end = u64::try_from(
+                row.try_get::<_, i64>(1)
+                    .map_err(PostgresTransferError::Sql)?,
+            )
+            .map_err(|_| PostgresTransferError::InvalidProviderValue("stream chunk end"))?;
+            if start != next_ordinal || end <= start {
+                return Err(PostgresTransferError::OverlappingChunk);
+            }
+            next_ordinal = end;
+            next_chunk =
+                next_chunk
+                    .checked_add(1)
+                    .ok_or(PostgresTransferError::InvalidProviderValue(
+                        "stream chunk index",
+                    ))?;
+        }
+        Ok(TransferStreamCheckpointV2 {
+            stream_identity_digest: self.identity_digest,
+            next_chunk,
+            next_ordinal,
+        })
+    }
+
+    fn apply_manifest_chunk(
+        &self,
+        chunk: &TransferStreamChunkV2,
+    ) -> Result<TransferStreamCheckpointV2, PostgresTransferError> {
+        chunk.verify_with_header_digest(self.identity_digest)?;
+        let start = i64::try_from(chunk.start_ordinal())
+            .map_err(|_| PostgresTransferError::InvalidProviderValue("stream chunk start"))?;
+        let end = i64::try_from(chunk.end_ordinal()?)
+            .map_err(|_| PostgresTransferError::InvalidProviderValue("stream chunk end"))?;
+        let index = i64::try_from(chunk.index())
+            .map_err(|_| PostgresTransferError::InvalidProviderValue("stream chunk index"))?;
+        let bytes = chunk.canonical_bytes()?;
+        let stream_key = self.stream_key();
+        let mut client = self
+            .admin
+            .connect()
+            .map_err(PostgresTransferError::Connection)?;
+        let mut transaction = client.transaction().map_err(PostgresTransferError::Sql)?;
+        let state = self.ensure_manifest_import(&mut transaction)?;
+        if state != "pending" {
+            return Err(PostgresTransferError::InvalidImportState {
+                expected: "pending",
+                actual: state,
+            });
+        }
+        let checkpoint = self.read_manifest_checkpoint(&mut transaction)?;
+        if let Some(row) = transaction
+            .query_opt(
+                "SELECT chunk_start, chunk_end, chunk_digest, records_bytes FROM worldstream_transfer_stream_chunks_v2 WHERE stream_header_digest = $1 AND chunk_index = $2 FOR UPDATE",
+                &[&stream_key.as_slice(), &index],
+            )
+            .map_err(PostgresTransferError::Sql)?
+        {
+            let stored_start: i64 = row.try_get(0).map_err(PostgresTransferError::Sql)?;
+            let stored_end: i64 = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+            let stored_digest: Vec<u8> = row.try_get(2).map_err(PostgresTransferError::Sql)?;
+            let stored_bytes: Vec<u8> = row.try_get(3).map_err(PostgresTransferError::Sql)?;
+            if stored_start == start
+                && stored_end == end
+                && stored_digest == chunk.digest().as_bytes()
+                && stored_bytes == bytes
+            {
+                PostgresTransferDestination::commit_transaction(transaction)?;
+                return Ok(checkpoint);
+            }
+            return Err(PostgresTransferError::ChunkConflict);
+        }
+        if checkpoint.next_chunk != chunk.index()
+            || checkpoint.next_ordinal != chunk.start_ordinal()
+        {
+            return Err(PostgresTransferError::OverlappingChunk);
+        }
+        transaction
+            .execute(
+                "INSERT INTO worldstream_transfer_stream_chunks_v2(stream_header_digest, chunk_index, chunk_start, chunk_end, chunk_digest, records_bytes) VALUES ($1, $2, $3, $4, $5, $6)",
+                &[&stream_key.as_slice(), &index, &start, &end, &chunk.digest().as_bytes().as_slice(), &bytes],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        for record in chunk.records() {
+            let ordinal = i64::try_from(record.ordinal()).map_err(|_| {
+                PostgresTransferError::InvalidProviderValue("stream record ordinal")
+            })?;
+            let (class_tag, kind_tag) = record.wire_tags();
+            let class_tag = i16::from(class_tag);
+            let kind_tag = i16::from(kind_tag);
+            transaction
+                .execute(
+                    "INSERT INTO worldstream_transfer_stream_records_v2(stream_header_digest, ordinal, class_tag, kind_tag, identity, record_bytes, record_digest) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                    &[&stream_key.as_slice(), &ordinal, &class_tag, &kind_tag, &record.identity(), &record.bytes(), &record.digest().as_bytes().as_slice()],
+                )
+                .map_err(PostgresTransferError::Sql)?;
+        }
+        let next_chunk =
+            chunk
+                .index()
+                .checked_add(1)
+                .ok_or(PostgresTransferError::InvalidProviderValue(
+                    "stream chunk index",
+                ))?;
+        let next_ordinal = chunk.end_ordinal()?;
+        let stored = transaction
+            .execute(
+                "UPDATE worldstream_transfer_stream_imports_v2 SET next_chunk = $2, next_ordinal = $3 WHERE stream_header_digest = $1 AND state = 'pending' AND next_chunk = $4 AND next_ordinal = $5",
+                &[&stream_key.as_slice(), &i64::try_from(next_chunk).map_err(|_| PostgresTransferError::InvalidProviderValue("stream next chunk"))?, &i64::try_from(next_ordinal).map_err(|_| PostgresTransferError::InvalidProviderValue("stream next ordinal"))?, &index, &start],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        if stored != 1 {
+            return Err(PostgresTransferError::OverlappingChunk);
+        }
+        PostgresTransferDestination::commit_transaction(transaction)?;
+        Ok(TransferStreamCheckpointV2 {
+            stream_identity_digest: self.identity_digest,
+            next_chunk,
+            next_ordinal,
+        })
+    }
+
+    fn verify_stream_fence(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<(), PostgresTransferError> {
+        let row = transaction
+            .query_opt(
+                "SELECT bundle_hash, target_fingerprint, state FROM worldstream_transfer_target_fence WHERE fence_id = true FOR UPDATE",
+                &[],
+            )
+            .map_err(PostgresTransferError::Sql)?
+            .ok_or(PostgresTransferError::MissingTargetFence)?;
+        let stream: Vec<u8> = row.try_get(0).map_err(PostgresTransferError::Sql)?;
+        let target: Vec<u8> = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+        let state: String = row.try_get(2).map_err(PostgresTransferError::Sql)?;
+        if state == "aborted" {
+            return Err(PostgresTransferError::TargetAborted);
+        }
+        if state != "importing" {
+            return Err(PostgresTransferError::TargetMismatch(
+                "stream target fence state",
+            ));
+        }
+        PostgresTransferDestination::verify_target_fence_bytes(
+            self.identity_digest,
+            self.target_digest,
+            Some((&stream, &target)),
+        )
+    }
+
+    fn remove_stream_fence_for_hydration(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<(), PostgresTransferError> {
+        self.verify_stream_fence(transaction)?;
+        let stream_key = self.stream_key();
+        let target_key = self.target_key();
+        let removed = transaction
+            .execute(
+                "DELETE FROM worldstream_transfer_target_fence WHERE fence_id = true AND bundle_hash = $1 AND target_fingerprint = $2 AND state = 'importing'",
+                &[&stream_key.as_slice(), &target_key.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        if removed != 1 {
+            return Err(PostgresTransferError::MissingTargetFence);
+        }
+        Ok(())
+    }
+
+    fn restore_stream_fence_after_hydration(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<(), PostgresTransferError> {
+        let stream_key = self.stream_key();
+        let target_key = self.target_key();
+        let restored = transaction
+            .execute(
+                "INSERT INTO worldstream_transfer_target_fence(fence_id, bundle_hash, target_fingerprint, state) VALUES (true, $1, $2, 'importing')",
+                &[&stream_key.as_slice(), &target_key.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        if restored != 1 {
+            return Err(PostgresTransferError::MissingTargetFence);
+        }
+        self.verify_stream_fence(transaction)
+    }
+
+    fn lock_stream_abort_fence(
+        &self,
+        transaction: &mut Transaction<'_>,
+        binding: &TransferStreamSourceAuthorityBindingV2,
+    ) -> Result<AbortFenceStateV1, PostgresTransferError> {
+        let Some(row) = transaction
+            .query_opt(
+                "SELECT bundle_hash, target_fingerprint, state FROM worldstream_transfer_target_fence WHERE fence_id = true FOR UPDATE",
+                &[],
+            )
+            .map_err(PostgresTransferError::Sql)?
+        else {
+            return Ok(AbortFenceStateV1::Missing);
+        };
+        let stream: Vec<u8> = row.try_get(0).map_err(PostgresTransferError::Sql)?;
+        let target: Vec<u8> = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+        if stream.as_slice() != binding.stream_header_digest().as_bytes().as_slice()
+            || target.as_slice() != binding.target_fingerprint().as_bytes().as_slice()
+        {
+            return Err(PostgresTransferError::TargetMismatch(
+                "persisted stream abort fence",
+            ));
+        }
+        match row
+            .try_get::<_, String>(2)
+            .map_err(PostgresTransferError::Sql)?
+            .as_str()
+        {
+            "importing" => Ok(AbortFenceStateV1::Importing),
+            "aborted" => Ok(AbortFenceStateV1::AlreadyAborted),
+            _ => Err(PostgresTransferError::TargetMismatch(
+                "persisted stream abort fence state",
+            )),
+        }
+    }
+
+    fn verify_aborted_stream_empty(
+        transaction: &mut Transaction<'_>,
+    ) -> Result<(), PostgresTransferError> {
+        // The aborted target fence itself is the only retained target row. A
+        // stream journal is deliberately removed so this exact tombstone can
+        // act as source-restoration evidence without preserving staging or
+        // hydrated serving truth.
+        PostgresTransferDestination::verify_empty_target_domains(transaction, 1)
+    }
+
+    fn discard_stream_import_behind_fence(
+        &self,
+        transaction: &mut Transaction<'_>,
+        binding: &TransferStreamSourceAuthorityBindingV2,
+    ) -> Result<(), PostgresTransferError> {
+        self.remove_stream_fence_for_hydration(transaction)?;
+        transaction
+            .batch_execute(DISCARD_TRANSFER_TARGET_SQL)
+            .map_err(PostgresTransferError::Sql)?;
+        PostgresTransferDestination::preflight_empty_target(transaction)?;
+        let stream_key = self.stream_key();
+        let target_key = self.target_key();
+        let inserted = transaction
+            .execute(
+                "INSERT INTO worldstream_transfer_target_fence(fence_id, bundle_hash, target_fingerprint, state) VALUES (true, $1, $2, 'aborted')",
+                &[&stream_key.as_slice(), &target_key.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        if inserted != 1
+            || self.lock_stream_abort_fence(transaction, binding)?
+                != AbortFenceStateV1::AlreadyAborted
+        {
+            return Err(PostgresTransferError::MissingTargetFence);
+        }
+        Self::verify_aborted_stream_empty(transaction)
+    }
+
+    fn finalize_manifest_stream(
+        &self,
+        footer: TransferStreamFooterV2,
+    ) -> Result<(), PostgresTransferError> {
+        let manifest = self.manifest_required()?.clone();
+        let stream_key = self.stream_key();
+        let target_key = self.target_key();
+        let mut client = self
+            .admin
+            .connect()
+            .map_err(PostgresTransferError::Connection)?;
+        let mut transaction = client.transaction().map_err(PostgresTransferError::Sql)?;
+        let state = self.ensure_manifest_import(&mut transaction)?;
+        match state.as_str() {
+            "pending" => {
+                let checkpoint = self.read_manifest_checkpoint(&mut transaction)?;
+                if checkpoint.next_chunk != footer.chunk_count()
+                    || checkpoint.next_ordinal != footer.record_count()
+                {
+                    return Err(PostgresTransferError::OverlappingChunk);
+                }
+                verify_stream_staging(
+                    &mut transaction,
+                    self.identity_digest,
+                    &self.identity,
+                    &manifest,
+                    footer,
+                )?;
+                let updated = transaction
+                    .execute(
+                        "UPDATE worldstream_transfer_stream_imports_v2 SET footer_chunk_count = $2, footer_record_count = $3, footer_record_bytes = $4, footer_digest = $5 WHERE stream_header_digest = $1 AND state = 'pending'",
+                        &[
+                            &stream_key.as_slice(),
+                            &i64::try_from(footer.chunk_count()).map_err(|_| PostgresTransferError::InvalidProviderValue("stream footer chunks"))?,
+                            &i64::try_from(footer.record_count()).map_err(|_| PostgresTransferError::InvalidProviderValue("stream footer records"))?,
+                            &i64::try_from(footer.record_bytes()).map_err(|_| PostgresTransferError::InvalidProviderValue("stream footer bytes"))?,
+                            &footer.stream_digest().as_bytes().as_slice(),
+                        ],
+                    )
+                    .map_err(PostgresTransferError::Sql)?;
+                if updated != 1 {
+                    return Err(PostgresTransferError::InvalidImportState {
+                        expected: "pending",
+                        actual: state,
+                    });
+                }
+                self.remove_stream_fence_for_hydration(&mut transaction)?;
+                hydrate_stream_staging(
+                    &mut transaction,
+                    self.identity_digest,
+                    &manifest,
+                    self.target.storage_epoch(),
+                )?;
+                verify_stream_hydration(&mut transaction, self.identity_digest, &manifest)?;
+                self.restore_stream_fence_after_hydration(&mut transaction)?;
+                let finalized = transaction
+                    .execute(
+                        "UPDATE worldstream_transfer_stream_imports_v2 SET state = 'finalized' WHERE stream_header_digest = $1 AND target_fingerprint = $2 AND state = 'pending'",
+                        &[&stream_key.as_slice(), &target_key.as_slice()],
+                    )
+                    .map_err(PostgresTransferError::Sql)?;
+                if finalized != 1 {
+                    return Err(PostgresTransferError::InvalidImportState {
+                        expected: "pending",
+                        actual: state,
+                    });
+                }
+            }
+            "finalized" => {
+                self.remove_stream_fence_for_hydration(&mut transaction)?;
+                verify_stream_hydration(&mut transaction, self.identity_digest, &manifest)?;
+                self.restore_stream_fence_after_hydration(&mut transaction)?;
+            }
+            "authoritative" => {
+                verify_stream_hydration(&mut transaction, self.identity_digest, &manifest)?;
+            }
+            actual => {
+                return Err(PostgresTransferError::InvalidImportState {
+                    expected: "pending or finalized",
+                    actual: actual.to_owned(),
+                });
+            }
+        }
+        PostgresTransferDestination::commit_transaction(transaction)
+    }
+
+    /// Publishes a stream that has already completed semantic verification.
+    ///
+    /// Source retirement remains coordinated by the operator boundary; this
+    /// method only performs the existing final target fence transition.
+    pub fn publish_finalized_stream_authority(&self) -> Result<(), PostgresTransferError> {
+        self.manifest_required()?;
+        let stream_key = self.stream_key();
+        let target_key = self.target_key();
+        let mut client = self
+            .admin
+            .connect()
+            .map_err(PostgresTransferError::Connection)?;
+        let mut transaction = client.transaction().map_err(PostgresTransferError::Sql)?;
+        let state: String = transaction
+            .query_one(
+                "SELECT state FROM worldstream_transfer_stream_imports_v2 WHERE stream_header_digest = $1 AND target_fingerprint = $2 FOR UPDATE",
+                &[&stream_key.as_slice(), &target_key.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?
+            .try_get(0)
+            .map_err(PostgresTransferError::Sql)?;
+        if state == "finalized" {
+            self.verify_stream_fence(&mut transaction)?;
+            let removed = transaction
+                .execute(
+                    "DELETE FROM worldstream_transfer_target_fence WHERE fence_id = true AND bundle_hash = $1 AND target_fingerprint = $2 AND state = 'importing'",
+                    &[&stream_key.as_slice(), &target_key.as_slice()],
+                )
+                .map_err(PostgresTransferError::Sql)?;
+            if removed != 1 {
+                return Err(PostgresTransferError::MissingTargetFence);
+            }
+            let updated = transaction
+                .execute(
+                    "UPDATE worldstream_transfer_stream_imports_v2 SET state = 'authoritative' WHERE stream_header_digest = $1 AND target_fingerprint = $2 AND state = 'finalized'",
+                    &[&stream_key.as_slice(), &target_key.as_slice()],
+                )
+                .map_err(PostgresTransferError::Sql)?;
+            if updated != 1 {
+                return Err(PostgresTransferError::InvalidImportState {
+                    expected: "finalized",
+                    actual: state,
+                });
+            }
+        } else if state != "authoritative" {
+            return Err(PostgresTransferError::InvalidImportState {
+                expected: "finalized",
+                actual: state,
+            });
+        }
+        PostgresTransferDestination::commit_transaction(transaction)
+    }
+}
+
+impl TransferStreamDestinationV2 for PostgresStreamDestinationV2<'_> {
+    type Error = PostgresTransferError;
+
+    fn checkpoint(
+        &mut self,
+        identity: &TransferStreamIdentityV2,
+    ) -> Result<Option<TransferStreamCheckpointV2>, Self::Error> {
+        if identity != &self.identity {
+            return Err(PostgresTransferError::TargetMismatch("stream identity"));
+        }
+        let mut client = self
+            .admin
+            .connect()
+            .map_err(PostgresTransferError::Connection)?;
+        let mut transaction = client.transaction().map_err(PostgresTransferError::Sql)?;
+        let state = self.ensure_import(&mut transaction)?;
+        let accepts_resume = if self.manifest.is_some() {
+            matches!(state.as_str(), "pending" | "finalized" | "authoritative")
+        } else {
+            PostgresTransferDestination::chunk_state_accepts_chunk(&state)
+        };
+        if !accepts_resume {
+            return Err(PostgresTransferError::InvalidImportState {
+                expected: "pending",
+                actual: state,
+            });
+        }
+        let checkpoint = self.read_checkpoint(&mut transaction)?;
+        PostgresTransferDestination::commit_transaction(transaction)?;
+        Ok((checkpoint.next_chunk != 0).then_some(checkpoint))
+    }
+
+    fn apply_stream_chunk(
+        &mut self,
+        identity: &TransferStreamIdentityV2,
+        chunk: &TransferStreamChunkV2,
+    ) -> Result<TransferStreamCheckpointV2, Self::Error> {
+        if identity != &self.identity {
+            return Err(PostgresTransferError::TargetMismatch("stream identity"));
+        }
+        if self.manifest.is_some() {
+            return self.apply_manifest_chunk(chunk);
+        }
+        chunk.verify(identity)?;
+        let start = i64::try_from(chunk.start_ordinal())
+            .map_err(|_| PostgresTransferError::InvalidProviderValue("stream chunk start"))?;
+        let end = i64::try_from(chunk.end_ordinal()?)
+            .map_err(|_| PostgresTransferError::InvalidProviderValue("stream chunk end"))?;
+        let bytes = chunk.canonical_bytes()?;
+        let stream_key = self.stream_key();
+        let mut client = self
+            .admin
+            .connect()
+            .map_err(PostgresTransferError::Connection)?;
+        let mut transaction = client.transaction().map_err(PostgresTransferError::Sql)?;
+        let state = self.ensure_import(&mut transaction)?;
+        if !PostgresTransferDestination::chunk_state_accepts_chunk(&state) {
+            return Err(PostgresTransferError::InvalidImportState {
+                expected: "pending",
+                actual: state,
+            });
+        }
+        let checkpoint = self.read_checkpoint(&mut transaction)?;
+        if let Some(row) = transaction
+            .query_opt(
+                "SELECT chunk_end, chunk_digest, records_bytes FROM worldstream_transfer_chunks WHERE bundle_hash = $1 AND chunk_start = $2 FOR UPDATE",
+                &[&stream_key.as_slice(), &start],
+            )
+            .map_err(PostgresTransferError::Sql)?
+        {
+            let stored_end: i64 = row.try_get(0).map_err(PostgresTransferError::Sql)?;
+            let stored_digest: Vec<u8> = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+            let stored_bytes: Vec<u8> = row.try_get(2).map_err(PostgresTransferError::Sql)?;
+            if stored_end == end && stored_digest == chunk.digest().as_bytes() && stored_bytes == bytes {
+                PostgresTransferDestination::commit_transaction(transaction)?;
+                return Ok(checkpoint);
+            }
+            return Err(PostgresTransferError::ChunkConflict);
+        }
+        if checkpoint.next_chunk != chunk.index()
+            || checkpoint.next_ordinal != chunk.start_ordinal()
+        {
+            return Err(PostgresTransferError::OverlappingChunk);
+        }
+        transaction
+            .execute(
+                "INSERT INTO worldstream_transfer_chunks(bundle_hash, chunk_start, chunk_end, chunk_digest, records_bytes) VALUES ($1, $2, $3, $4, $5)",
+                &[&stream_key.as_slice(), &start, &end, &chunk.digest().as_bytes().as_slice(), &bytes],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        let checkpoint = TransferStreamCheckpointV2 {
+            stream_identity_digest: self.identity_digest,
+            next_chunk: chunk.index().checked_add(1).ok_or(
+                PostgresTransferError::InvalidProviderValue("stream chunk index"),
+            )?,
+            next_ordinal: chunk.end_ordinal()?,
+        };
+        PostgresTransferDestination::commit_transaction(transaction)?;
+        Ok(checkpoint)
+    }
+}
+
+impl TransferStreamFinalizationDestinationV2 for PostgresStreamDestinationV2<'_> {
+    fn finalize_stream(
+        &mut self,
+        identity: &TransferStreamIdentityV2,
+        manifest: &TransferStreamManifestV2,
+        footer: TransferStreamFooterV2,
+    ) -> Result<(), Self::Error> {
+        if identity != &self.identity || self.manifest.as_ref() != Some(manifest) {
+            return Err(PostgresTransferError::TargetMismatch(
+                "stream finalization identity",
+            ));
+        }
+        self.finalize_manifest_stream(footer)
+    }
+}
+
+impl TransferStreamAuthorityDestinationV2 for PostgresStreamDestinationV2<'_> {
+    fn confirm_stream_finalization(
+        &mut self,
+        binding: &TransferStreamSourceAuthorityBindingV2,
+    ) -> Result<(), Self::Error> {
+        self.verify_stream_authority_binding(binding)?;
+        self.admin
+            .verify_schema()
+            .map_err(PostgresTransferError::Schema)?;
+
+        // This is deliberately its own durable phase. The source must never
+        // retire until the footer, journal, hydrated rows, and semantic proof
+        // have all committed while the importing fence still blocks serving.
+        self.finalize_manifest_stream(binding.footer())?;
+
+        let manifest = self.manifest_required()?;
+        let mut client = self
+            .admin
+            .connect()
+            .map_err(PostgresTransferError::Connection)?;
+        let mut transaction = client.transaction().map_err(PostgresTransferError::Sql)?;
+        PostgresTransferDestination::lock_target_preflight(&mut transaction)?;
+        let state = self.read_finalized_stream_journal(&mut transaction, binding)?;
+        if state != "finalized" {
+            return Err(PostgresTransferError::InvalidImportState {
+                expected: "finalized",
+                actual: state,
+            });
+        }
+        self.verify_stream_fence(&mut transaction)?;
+        verify_stream_hydration(&mut transaction, self.identity_digest, manifest)?;
+        PostgresTransferDestination::commit_transaction(transaction)
+    }
+
+    fn reconcile_stream_finalization_after_definite_source_failure(
+        &mut self,
+        binding: &TransferStreamSourceAuthorityBindingV2,
+    ) -> Result<(), Self::Error> {
+        self.verify_stream_authority_binding(binding)?;
+        let manifest = self.manifest_required()?;
+        let stream_key = self.stream_key();
+        let target_key = self.target_key();
+        let mut client = self
+            .admin
+            .connect()
+            .map_err(PostgresTransferError::Connection)?;
+        let mut transaction = client.transaction().map_err(PostgresTransferError::Sql)?;
+        PostgresTransferDestination::lock_target_preflight(&mut transaction)?;
+        let state = self.read_finalized_stream_journal(&mut transaction, binding)?;
+        match state.as_str() {
+            "finalized" => {
+                self.verify_stream_fence(&mut transaction)?;
+                // Keep the exact hydrated target fenced, but remove the
+                // finalized marker and footer so a later retry has to repeat
+                // the complete staging/footer/semantic proof before it can
+                // ask the source to retire again.
+                verify_stream_hydration(&mut transaction, self.identity_digest, manifest)?;
+                let updated = transaction
+                    .execute(
+                        "UPDATE worldstream_transfer_stream_imports_v2 \
+                         SET state = 'pending', footer_chunk_count = NULL, \
+                             footer_record_count = NULL, footer_record_bytes = NULL, footer_digest = NULL \
+                         WHERE stream_header_digest = $1 AND target_fingerprint = $2 AND state = 'finalized'",
+                        &[&stream_key.as_slice(), &target_key.as_slice()],
+                    )
+                    .map_err(PostgresTransferError::Sql)?;
+                if updated != 1 {
+                    return Err(PostgresTransferError::InvalidImportState {
+                        expected: "finalized",
+                        actual: state,
+                    });
+                }
+            }
+            "authoritative" => return Err(PostgresTransferError::RollbackRefused),
+            actual => {
+                return Err(PostgresTransferError::InvalidImportState {
+                    expected: "finalized",
+                    actual: actual.to_owned(),
+                });
+            }
+        }
+        PostgresTransferDestination::commit_transaction(transaction)
+    }
+
+    fn accept_stream_authority(
+        &mut self,
+        binding: &TransferStreamSourceAuthorityBindingV2,
+    ) -> Result<(), Self::Error> {
+        self.verify_stream_authority_binding(binding)?;
+        let manifest = self.manifest_required()?;
+        let stream_key = self.stream_key();
+        let target_key = self.target_key();
+        let mut client = self
+            .admin
+            .connect()
+            .map_err(PostgresTransferError::Connection)?;
+        let mut transaction = client.transaction().map_err(PostgresTransferError::Sql)?;
+        PostgresTransferDestination::lock_target_preflight(&mut transaction)?;
+        let state = self.read_finalized_stream_journal(&mut transaction, binding)?;
+        match state.as_str() {
+            "finalized" => {
+                self.verify_stream_fence(&mut transaction)?;
+                // This is the final semantic check immediately before the
+                // existing target authority fence is removed. It runs in the
+                // same provider transaction as publication.
+                verify_stream_hydration(&mut transaction, self.identity_digest, manifest)?;
+                let removed = transaction
+                    .execute(
+                        "DELETE FROM worldstream_transfer_target_fence \
+                         WHERE fence_id = true AND bundle_hash = $1 \
+                           AND target_fingerprint = $2 AND state = 'importing'",
+                        &[&stream_key.as_slice(), &target_key.as_slice()],
+                    )
+                    .map_err(PostgresTransferError::Sql)?;
+                if removed != 1 {
+                    return Err(PostgresTransferError::MissingTargetFence);
+                }
+                let updated = transaction
+                    .execute(
+                        "UPDATE worldstream_transfer_stream_imports_v2 \
+                         SET state = 'authoritative' \
+                         WHERE stream_header_digest = $1 AND target_fingerprint = $2 \
+                           AND state = 'finalized'",
+                        &[&stream_key.as_slice(), &target_key.as_slice()],
+                    )
+                    .map_err(PostgresTransferError::Sql)?;
+                if updated != 1 {
+                    return Err(PostgresTransferError::InvalidImportState {
+                        expected: "finalized",
+                        actual: state,
+                    });
+                }
+            }
+            "authoritative" => {
+                if transaction
+                    .query_opt(
+                        "SELECT 1 FROM worldstream_transfer_target_fence WHERE fence_id = true FOR UPDATE",
+                        &[],
+                    )
+                    .map_err(PostgresTransferError::Sql)?
+                    .is_some()
+                {
+                    return Err(PostgresTransferError::TargetMismatch(
+                        "authoritative stream target retains a transfer fence",
+                    ));
+                }
+                verify_stream_hydration(&mut transaction, self.identity_digest, manifest)?;
+            }
+            actual => {
+                return Err(PostgresTransferError::InvalidImportState {
+                    expected: "finalized",
+                    actual: actual.to_owned(),
+                });
+            }
+        }
+        PostgresTransferDestination::commit_transaction(transaction)
+    }
+
+    fn abort_stream_import(
+        &mut self,
+        binding: &TransferStreamSourceAuthorityBindingV2,
+    ) -> Result<(), Self::Error> {
+        self.verify_stream_authority_binding(binding)?;
+        let stream_key = self.stream_key();
+        let target_key = self.target_key();
+        let mut client = self
+            .admin
+            .connect()
+            .map_err(PostgresTransferError::Connection)?;
+        let mut transaction = client.transaction().map_err(PostgresTransferError::Sql)?;
+        PostgresTransferDestination::lock_target_preflight(&mut transaction)?;
+        let fence_state = self.lock_stream_abort_fence(&mut transaction, binding)?;
+        let has_import = transaction
+            .query_opt(
+                "SELECT 1 FROM worldstream_transfer_stream_imports_v2 \
+                 WHERE stream_header_digest = $1 FOR UPDATE",
+                &[&stream_key.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?
+            .is_some();
+
+        if !has_import {
+            match fence_state {
+                AbortFenceStateV1::AlreadyAborted => {
+                    Self::verify_aborted_stream_empty(&mut transaction)?;
+                    return PostgresTransferDestination::commit_transaction(transaction);
+                }
+                AbortFenceStateV1::Importing => return Err(PostgresTransferError::MissingImport),
+                AbortFenceStateV1::Missing => {
+                    // An abort before the first chunk records an exact target
+                    // tombstone under the same empty-target locks as import.
+                    PostgresTransferDestination::preflight_empty_target(&mut transaction)?;
+                    let inserted = transaction
+                        .execute(
+                            "INSERT INTO worldstream_transfer_target_fence(fence_id, bundle_hash, target_fingerprint, state) \
+                             VALUES (true, $1, $2, 'aborted')",
+                            &[&stream_key.as_slice(), &target_key.as_slice()],
+                        )
+                        .map_err(PostgresTransferError::Sql)?;
+                    if inserted != 1
+                        || self.lock_stream_abort_fence(&mut transaction, binding)?
+                            != AbortFenceStateV1::AlreadyAborted
+                    {
+                        return Err(PostgresTransferError::MissingTargetFence);
+                    }
+                    Self::verify_aborted_stream_empty(&mut transaction)?;
+                    return PostgresTransferDestination::commit_transaction(transaction);
+                }
+            }
+        }
+
+        if fence_state != AbortFenceStateV1::Importing {
+            return Err(PostgresTransferError::MissingTargetFence);
+        }
+        let state = self.read_stream_journal_identity(&mut transaction, binding)?;
+        match state.as_str() {
+            "pending" | "verified" | "finalized" => {
+                self.discard_stream_import_behind_fence(&mut transaction, binding)?;
+            }
+            "authoritative" => return Err(PostgresTransferError::RollbackRefused),
+            "aborted" => return Err(PostgresTransferError::TargetAborted),
+            actual => {
+                return Err(PostgresTransferError::InvalidImportState {
+                    expected: "pending, verified, or finalized",
+                    actual: actual.to_owned(),
+                });
+            }
+        }
+        PostgresTransferDestination::commit_transaction(transaction)
+    }
+}
+
+const STREAM_STAGING_PAGE_ROWS: i64 = 256;
+
+fn stream_record_page(
+    transaction: &mut Transaction<'_>,
+    stream_digest: DigestV1,
+    after_ordinal: i64,
+) -> Result<Vec<worldstream_transfer::LogicalRecordV1>, PostgresTransferError> {
+    let stream_key = stream_digest.as_bytes();
+    transaction
+        .query(
+            "SELECT ordinal, class_tag, kind_tag, identity, record_bytes, record_digest FROM worldstream_transfer_stream_records_v2 WHERE stream_header_digest = $1 AND ordinal > $2 ORDER BY ordinal LIMIT $3",
+            &[&stream_key.as_slice(), &after_ordinal, &STREAM_STAGING_PAGE_ROWS],
+        )
+        .map_err(PostgresTransferError::Sql)?
+        .into_iter()
+        .map(|row| {
+            let ordinal = u64::try_from(
+                row.try_get::<_, i64>(0)
+                    .map_err(PostgresTransferError::Sql)?,
+            )
+            .map_err(|_| PostgresTransferError::InvalidProviderValue("stream staged ordinal"))?;
+            let class_tag = u8::try_from(
+                row.try_get::<_, i16>(1)
+                    .map_err(PostgresTransferError::Sql)?,
+            )
+            .map_err(|_| PostgresTransferError::InvalidProviderValue("stream record class"))?;
+            let kind_tag = u8::try_from(
+                row.try_get::<_, i16>(2)
+                    .map_err(PostgresTransferError::Sql)?,
+            )
+            .map_err(|_| PostgresTransferError::InvalidProviderValue("stream record kind"))?;
+            let identity: String = row.try_get(3).map_err(PostgresTransferError::Sql)?;
+            let bytes: Vec<u8> = row.try_get(4).map_err(PostgresTransferError::Sql)?;
+            let digest: Vec<u8> = row.try_get(5).map_err(PostgresTransferError::Sql)?;
+            worldstream_transfer::LogicalRecordV1::from_parts(
+                ordinal,
+                worldstream_transfer::LogicalRecordV1::decode_kind(class_tag, kind_tag)?,
+                identity,
+                &bytes,
+                DigestV1::from_bytes(&digest)?,
+            )
+            .map_err(PostgresTransferError::Contract)
+        })
+        .collect()
+}
+
+fn stream_records_of_kind_page(
+    transaction: &mut Transaction<'_>,
+    stream_digest: DigestV1,
+    kind: CanonicalRecordKindV1,
+    after_ordinal: i64,
+) -> Result<Vec<worldstream_transfer::LogicalRecordV1>, PostgresTransferError> {
+    let stream_key = stream_digest.as_bytes();
+    transaction
+        .query(
+            "SELECT ordinal, identity, record_bytes, record_digest FROM worldstream_transfer_stream_records_v2 WHERE stream_header_digest = $1 AND class_tag = 1 AND kind_tag = $2 AND ordinal > $3 ORDER BY ordinal LIMIT $4",
+            &[
+                &stream_key.as_slice(),
+                &i16::from(kind.wire_tag()),
+                &after_ordinal,
+                &STREAM_STAGING_PAGE_ROWS,
+            ],
+        )
+        .map_err(PostgresTransferError::Sql)?
+        .into_iter()
+        .map(|row| {
+            let ordinal = u64::try_from(
+                row.try_get::<_, i64>(0)
+                    .map_err(PostgresTransferError::Sql)?,
+            )
+            .map_err(|_| PostgresTransferError::InvalidProviderValue("stream staged ordinal"))?;
+            let identity: String = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+            let bytes: Vec<u8> = row.try_get(2).map_err(PostgresTransferError::Sql)?;
+            let digest: Vec<u8> = row.try_get(3).map_err(PostgresTransferError::Sql)?;
+            worldstream_transfer::LogicalRecordV1::canonical(ordinal, kind, identity, &bytes)
+                .and_then(|record| {
+                    if record.digest() != DigestV1::from_bytes(&digest)? {
+                        return Err(TransferError::HashMismatch {
+                            what: "stream staged record",
+                            expected: DigestV1::from_bytes(&digest)?,
+                            actual: record.digest(),
+                        });
+                    }
+                    Ok(record)
+                })
+                .map_err(PostgresTransferError::Contract)
+        })
+        .collect()
+}
+
+fn stream_exact_record(
+    transaction: &mut Transaction<'_>,
+    stream_digest: DigestV1,
+    kind: CanonicalRecordKindV1,
+    identity: &str,
+) -> Result<worldstream_transfer::LogicalRecordV1, PostgresTransferError> {
+    let stream_key = stream_digest.as_bytes();
+    let row = transaction
+        .query_opt(
+            "SELECT ordinal, record_bytes, record_digest FROM worldstream_transfer_stream_records_v2 WHERE stream_header_digest = $1 AND class_tag = 1 AND kind_tag = $2 AND identity = $3 FOR UPDATE",
+            &[&stream_key.as_slice(), &i16::from(kind.wire_tag()), &identity],
+        )
+        .map_err(PostgresTransferError::Sql)?
+        .ok_or(PostgresTransferError::Canonical("stream canonical record is absent"))?;
+    let ordinal = u64::try_from(
+        row.try_get::<_, i64>(0)
+            .map_err(PostgresTransferError::Sql)?,
+    )
+    .map_err(|_| PostgresTransferError::InvalidProviderValue("stream staged ordinal"))?;
+    let bytes: Vec<u8> = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+    let digest: Vec<u8> = row.try_get(2).map_err(PostgresTransferError::Sql)?;
+    worldstream_transfer::LogicalRecordV1::from_parts(
+        ordinal,
+        RecordKindV1::Canonical(kind),
+        identity,
+        &bytes,
+        DigestV1::from_bytes(&digest)?,
+    )
+    .map_err(PostgresTransferError::Contract)
+}
+
+fn verify_stream_staging(
+    transaction: &mut Transaction<'_>,
+    stream_digest: DigestV1,
+    identity: &TransferStreamIdentityV2,
+    manifest: &TransferStreamManifestV2,
+    footer: TransferStreamFooterV2,
+) -> Result<(), PostgresTransferError> {
+    let stream_key = stream_digest.as_bytes();
+    let chunk_count = u64::try_from(
+        transaction
+            .query_one(
+                "SELECT count(*) FROM worldstream_transfer_stream_chunks_v2 WHERE stream_header_digest = $1",
+                &[&stream_key.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?
+            .try_get::<_, i64>(0)
+            .map_err(PostgresTransferError::Sql)?,
+    )
+    .map_err(|_| PostgresTransferError::InvalidProviderValue("stream chunk count"))?;
+    if chunk_count != footer.chunk_count() {
+        return Err(PostgresTransferError::OverlappingChunk);
+    }
+    let mut after = -1_i64;
+    let mut expected_ordinal = 0_u64;
+    let mut semantic = TransferStreamSemanticAccumulatorV2::new();
+    let mut complete = TransferStreamFooterAccumulatorV2::new(identity, Some(manifest))?;
+    loop {
+        let page = stream_record_page(transaction, stream_digest, after)?;
+        if page.is_empty() {
+            break;
+        }
+        for record in &page {
+            if record.ordinal() != expected_ordinal {
+                return Err(PostgresTransferError::OverlappingChunk);
+            }
+            semantic.observe(record)?;
+            complete.observe(record)?;
+            expected_ordinal = expected_ordinal.checked_add(1).ok_or(
+                PostgresTransferError::InvalidProviderValue("stream ordinal"),
+            )?;
+        }
+        after = i64::try_from(
+            page.last()
+                .ok_or(PostgresTransferError::OverlappingChunk)?
+                .ordinal(),
+        )
+        .map_err(|_| PostgresTransferError::InvalidProviderValue("stream staged ordinal"))?;
+    }
+    if complete.record_count() != footer.record_count()
+        || complete.record_bytes() != footer.record_bytes()
+        || complete.digest() != footer.stream_digest()
+    {
+        return Err(PostgresTransferError::Canonical(
+            "stream staged footer mismatch",
+        ));
+    }
+    let expected = manifest.semantic_expectations();
+    if semantic.canonical_record_count() != expected.canonical_record_count()
+        || semantic.native_operational_record_count() != expected.native_operational_record_count()
+        || semantic.canonical_digest() != expected.canonical_digest()
+        || semantic.native_operational_digest() != expected.native_operational_digest()
+    {
+        return Err(PostgresTransferError::Canonical(
+            "stream staged semantic parity",
+        ));
+    }
+    Ok(())
+}
+
+fn persist_stream_deployment_metadata(
+    transaction: &mut Transaction<'_>,
+    stream_digest: DigestV1,
+    target_epoch: u64,
+) -> Result<(), PostgresTransferError> {
+    let lineage = stream_exact_record(
+        transaction,
+        stream_digest,
+        CanonicalRecordKindV1::DeploymentLineage,
+        "deployment/lineage",
+    )?;
+    let epoch = stream_exact_record(
+        transaction,
+        stream_digest,
+        CanonicalRecordKindV1::StorageEpoch,
+        "deployment/epoch",
+    )?;
+    let target_epoch = i64::try_from(target_epoch)
+        .map_err(|_| PostgresTransferError::InvalidProviderValue("target epoch"))?;
+    if let Some(row) = transaction
+        .query_opt(
+            "SELECT deployment_lineage_bytes, storage_epoch_bytes, storage_epoch FROM worldstream_deployment_metadata WHERE target_id = true FOR UPDATE",
+            &[],
+        )
+        .map_err(PostgresTransferError::Sql)?
+    {
+        if row
+            .try_get::<_, Vec<u8>>(0)
+            .map_err(PostgresTransferError::Sql)?
+            != lineage.bytes()
+            || row
+                .try_get::<_, Vec<u8>>(1)
+                .map_err(PostgresTransferError::Sql)?
+                != epoch.bytes()
+            || row
+                .try_get::<_, i64>(2)
+                .map_err(PostgresTransferError::Sql)?
+                != target_epoch
+        {
+            return Err(PostgresTransferError::Canonical(
+                "stream deployment metadata mismatch",
+            ));
+        }
+    } else {
+        transaction
+            .execute(
+                "INSERT INTO worldstream_deployment_metadata(target_id, deployment_lineage_bytes, storage_epoch_bytes, storage_epoch) VALUES (true, $1, $2, $3)",
+                &[&lineage.bytes(), &epoch.bytes(), &target_epoch],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+    }
+    Ok(())
+}
+
+fn persist_stream_resource_payloads(
+    transaction: &mut Transaction<'_>,
+    stream_digest: DigestV1,
+    identity: &DeploymentIdentityV1,
+) -> Result<(), PostgresTransferError> {
+    for resource in identity.resources() {
+        let record = stream_exact_record(
+            transaction,
+            stream_digest,
+            CanonicalRecordKindV1::ArtifactBytes,
+            &resource_record_identity(resource),
+        )?;
+        resource.verify_bytes(record.bytes()).map_err(|_| {
+            PostgresTransferError::DeploymentIdentity("stream resource payload identity")
+        })?;
+        let kind = resource_kind_name(resource.kind());
+        let digest = resource.digest().as_bytes();
+        transaction
+            .execute(
+                "INSERT INTO worldstream_deployment_resource_blobs(resource_kind, resource_identity, resource_bytes, resource_digest) VALUES ($1, $2, $3, $4) ON CONFLICT (resource_kind, resource_identity) DO NOTHING",
+                &[&kind, &resource.identity(), &record.bytes(), &digest.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        let stored = transaction
+            .query_one(
+                "SELECT resource_bytes, resource_digest FROM worldstream_deployment_resource_blobs WHERE resource_kind = $1 AND resource_identity = $2 FOR UPDATE",
+                &[&kind, &resource.identity()],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        if stored
+            .try_get::<_, Vec<u8>>(0)
+            .map_err(PostgresTransferError::Sql)?
+            != record.bytes()
+            || stored
+                .try_get::<_, Vec<u8>>(1)
+                .map_err(PostgresTransferError::Sql)?
+                != digest
+        {
+            return Err(PostgresTransferError::DeploymentIdentity(
+                "stream persisted resource payload",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn stream_room_ids_page(
+    transaction: &mut Transaction<'_>,
+    stream_digest: DigestV1,
+    after_identity: &str,
+) -> Result<Vec<String>, PostgresTransferError> {
+    let stream_key = stream_digest.as_bytes();
+    transaction
+        .query(
+            "SELECT identity FROM worldstream_transfer_stream_records_v2 WHERE stream_header_digest = $1 AND class_tag = 1 AND kind_tag = $2 AND identity > $3 ORDER BY identity LIMIT $4",
+            &[
+                &stream_key.as_slice(),
+                &i16::from(CanonicalRecordKindV1::RoomGenesis.wire_tag()),
+                &after_identity,
+                &STREAM_STAGING_PAGE_ROWS,
+            ],
+        )
+        .map_err(PostgresTransferError::Sql)?
+        .into_iter()
+        .map(|row| {
+            let identity: String = row.try_get(0).map_err(PostgresTransferError::Sql)?;
+            canonical_room_id(&identity).ok_or(PostgresTransferError::Canonical(
+                "stream Room Genesis identity",
+            ))
+        })
+        .collect()
+}
+
+fn hydrate_stream_room(
+    transaction: &mut Transaction<'_>,
+    stream_digest: DigestV1,
+    room_id: &str,
+    target_epoch: u64,
+) -> Result<(), PostgresTransferError> {
+    let genesis = stream_exact_record(
+        transaction,
+        stream_digest,
+        CanonicalRecordKindV1::RoomGenesis,
+        &format!("room/{room_id}/genesis"),
+    )?;
+    let head = stream_exact_record(
+        transaction,
+        stream_digest,
+        CanonicalRecordKindV1::RoomHead,
+        &format!("room/{room_id}/head"),
+    )?;
+    let core = stream_exact_record(
+        transaction,
+        stream_digest,
+        CanonicalRecordKindV1::CoreMaterialization,
+        &format!("room/{room_id}/core"),
+    )?;
+    let activity = stream_exact_record(
+        transaction,
+        stream_digest,
+        CanonicalRecordKindV1::ActivityMaterialization,
+        &format!("room/{room_id}/activity"),
+    )?;
+    let pack_lock = stream_exact_record(
+        transaction,
+        stream_digest,
+        CanonicalRecordKindV1::ArtifactMetadata,
+        &format!("room/{room_id}/pack-revision-lock"),
+    )?;
+    transaction
+        .execute(
+            "INSERT INTO worldstream_genesis(room_id, pack_revision_lock_bytes, genesis_bytes) VALUES ($1, $2, $3) ON CONFLICT (room_id) DO NOTHING",
+            &[&room_id, &pack_lock.bytes(), &genesis.bytes()],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    let stored = transaction
+        .query_one(
+            "SELECT pack_revision_lock_bytes, genesis_bytes FROM worldstream_genesis WHERE room_id = $1 FOR UPDATE",
+            &[&room_id],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    if stored
+        .try_get::<_, Vec<u8>>(0)
+        .map_err(PostgresTransferError::Sql)?
+        != pack_lock.bytes()
+        || stored
+            .try_get::<_, Vec<u8>>(1)
+            .map_err(PostgresTransferError::Sql)?
+            != genesis.bytes()
+    {
+        return Err(PostgresTransferError::Canonical("stream Genesis bytes"));
+    }
+    let target_epoch = i64::try_from(target_epoch)
+        .map_err(|_| PostgresTransferError::InvalidProviderValue("target epoch"))?;
+    transaction
+        .execute(
+            "INSERT INTO worldstream_room_roots(room_id, head_bytes, integrity_generation, integrity_status) VALUES ($1, $2, $3, 'healthy') ON CONFLICT (room_id) DO NOTHING",
+            &[&room_id, &head.bytes(), &target_epoch],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    let stored = transaction
+        .query_one(
+            "SELECT head_bytes FROM worldstream_room_roots WHERE room_id = $1 FOR UPDATE",
+            &[&room_id],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    if stored
+        .try_get::<_, Vec<u8>>(0)
+        .map_err(PostgresTransferError::Sql)?
+        != head.bytes()
+    {
+        return Err(PostgresTransferError::Canonical("stream Head bytes"));
+    }
+    transaction
+        .execute(
+            "INSERT INTO worldstream_materializations(room_id, core_state_bytes, activity_state_bytes) VALUES ($1, $2, $3) ON CONFLICT (room_id) DO NOTHING",
+            &[&room_id, &core.bytes(), &activity.bytes()],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    let stored = transaction
+        .query_one(
+            "SELECT core_state_bytes, activity_state_bytes FROM worldstream_materializations WHERE room_id = $1 FOR UPDATE",
+            &[&room_id],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    if stored
+        .try_get::<_, Vec<u8>>(0)
+        .map_err(PostgresTransferError::Sql)?
+        != core.bytes()
+        || stored
+            .try_get::<_, Vec<u8>>(1)
+            .map_err(PostgresTransferError::Sql)?
+            != activity.bytes()
+    {
+        return Err(PostgresTransferError::Canonical(
+            "stream materialization bytes",
+        ));
+    }
+    let prefix = format!("room/{room_id}/transition/");
+    let stream_key = stream_digest.as_bytes();
+    let mut after = -1_i64;
+    loop {
+        let rows = transaction
+            .query(
+                "SELECT ordinal, identity, record_bytes FROM worldstream_transfer_stream_records_v2 WHERE stream_header_digest = $1 AND class_tag = 1 AND kind_tag = $2 AND ordinal > $3 AND left(identity, char_length($4)) = $4 ORDER BY ordinal LIMIT $5",
+                &[
+                    &stream_key.as_slice(),
+                    &i16::from(CanonicalRecordKindV1::RoomTransition.wire_tag()),
+                    &after,
+                    &prefix,
+                    &STREAM_STAGING_PAGE_ROWS,
+                ],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in &rows {
+            let ordinal: i64 = row.try_get(0).map_err(PostgresTransferError::Sql)?;
+            let identity: String = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+            let transition: Vec<u8> = row.try_get(2).map_err(PostgresTransferError::Sql)?;
+            let sequence = canonical_room_sequence(&identity)?;
+            transaction
+                .execute(
+                    "INSERT INTO worldstream_transitions(room_id, room_seq, transition_bytes) VALUES ($1, $2, $3) ON CONFLICT (room_id, room_seq) DO NOTHING",
+                    &[&room_id, &sequence, &transition],
+                )
+                .map_err(PostgresTransferError::Sql)?;
+            let stored = transaction
+                .query_one(
+                    "SELECT transition_bytes FROM worldstream_transitions WHERE room_id = $1 AND room_seq = $2 FOR UPDATE",
+                    &[&room_id, &sequence],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .try_get::<_, Vec<u8>>(0)
+                .map_err(PostgresTransferError::Sql)?;
+            if stored != transition {
+                return Err(PostgresTransferError::Canonical("stream transition bytes"));
+            }
+            after = ordinal;
+        }
+    }
+    Ok(())
+}
+
+fn publish_stream_external_input_preparations(
+    transaction: &mut Transaction<'_>,
+    stream_digest: DigestV1,
+) -> Result<(), PostgresTransferError> {
+    let mut after = -1_i64;
+    loop {
+        let page = stream_records_of_kind_page(
+            transaction,
+            stream_digest,
+            CanonicalRecordKindV1::ExternalInputPreparation,
+            after,
+        )?;
+        if page.is_empty() {
+            break;
+        }
+        for record in &page {
+            let preparation = decode_external_input_preparation_record(record)?;
+            if transaction
+                .query_opt(
+                    "SELECT 1 FROM worldstream_room_roots WHERE room_id = $1 FOR SHARE",
+                    &[&preparation.room_id],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .is_none()
+            {
+                return Err(PostgresTransferError::Canonical(
+                    "stream ExternalInput preparation Room",
+                ));
+            }
+            transaction
+                .execute(
+                    "INSERT INTO worldstream_external_input_preparations(identity_bytes, canonical_request_hash, recorded_at) VALUES ($1, $2, $3) ON CONFLICT (identity_bytes) DO NOTHING",
+                    &[&preparation.identity_bytes, &preparation.request_hash, &preparation.recorded_at],
+                )
+                .map_err(PostgresTransferError::Sql)?;
+            after = i64::try_from(record.ordinal()).map_err(|_| {
+                PostgresTransferError::InvalidProviderValue("stream staged ordinal")
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn publish_stream_room_integrity(
+    transaction: &mut Transaction<'_>,
+    row: &NativeRow,
+) -> Result<(), PostgresTransferError> {
+    let room_id = native_text(row, 0)?;
+    let status = native_text(row, 1)?;
+    let generation = native_integer(row, 2)?;
+    if generation <= 0 || !matches!(status.as_str(), "healthy" | "faulted" | "quarantined") {
+        return Err(PostgresTransferError::Canonical(
+            "stream native integrity row",
+        ));
+    }
+    let existing = transaction
+        .query_opt(
+            "SELECT integrity_generation, integrity_status FROM worldstream_room_roots WHERE room_id = $1 FOR UPDATE",
+            &[&room_id],
+        )
+        .map_err(PostgresTransferError::Sql)?
+        .ok_or(PostgresTransferError::Canonical(
+            "stream integrity Room is absent",
+        ))?;
+    let stored_generation: i64 = existing.try_get(0).map_err(PostgresTransferError::Sql)?;
+    let stored_status: String = existing.try_get(1).map_err(PostgresTransferError::Sql)?;
+    if stored_generation != generation || stored_status != status {
+        transaction
+            .execute(
+                "UPDATE worldstream_room_roots SET integrity_generation = $1, integrity_status = $2 WHERE room_id = $3",
+                &[&generation, &status, &room_id],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+    }
+    Ok(())
+}
+
+fn publish_stream_native_table(
+    transaction: &mut Transaction<'_>,
+    stream_digest: DigestV1,
+    table: &str,
+) -> Result<(), PostgresTransferError> {
+    let mut after = -1_i64;
+    loop {
+        let page = stream_records_of_kind_page(
+            transaction,
+            stream_digest,
+            CanonicalRecordKindV1::NativeOperationalRow,
+            after,
+        )?;
+        if page.is_empty() {
+            break;
+        }
+        for record in &page {
+            let row = decode_native_operational_row(record.bytes())?;
+            if row.table != table {
+                after = i64::try_from(record.ordinal()).map_err(|_| {
+                    PostgresTransferError::InvalidProviderValue("stream staged ordinal")
+                })?;
+                continue;
+            }
+            match row.table.as_str() {
+                "retired_authority_fences_v1" => {
+                    publish_retired_authority_fence(transaction, &row)?
+                }
+                "principals" => publish_authority_principal(transaction, &row)?,
+                "runners" => publish_authority_runner(transaction, &row)?,
+                "capabilities" => publish_authority_capability(transaction, &row)?,
+                "capability_scopes" => publish_authority_capability_scope(transaction, &row)?,
+                "runner_capability_memberships" => {
+                    publish_runner_capability_membership(transaction, &row)?;
+                }
+                "authority_change_receipts" => publish_authority_change_receipt(transaction, &row)?,
+                "authority_audit" => publish_authority_audit(transaction, &row)?,
+                "room_integrity" => publish_stream_room_integrity(transaction, &row)?,
+                "room_members" => publish_room_member(transaction, &row)?,
+                "timers" => publish_timer(transaction, &row)?,
+                "observation_frames" => publish_observation_frame(transaction, &row)?,
+                "observation_consequences" => publish_observation_consequence(transaction, &row)?,
+                "activation_decisions" => publish_activation_decision(transaction, &row)?,
+                "activation_intents" => publish_activation_intent(transaction, &row)?,
+                "activation_operation_receipts" => publish_activation_receipt(transaction, &row)?,
+                "semantic_receipts" => {
+                    publish_semantic_receipt(transaction, &row, NativePublicationMode::Hydrate)?;
+                }
+                "integrity_incidents" => publish_integrity_incident(transaction, &row)?,
+                "external_input_preparations" => {
+                    return Err(PostgresTransferError::Canonical(
+                        "stream external input must be canonical",
+                    ));
+                }
+                _ => return Err(PostgresTransferError::Canonical("stream native table")),
+            }
+            after = i64::try_from(record.ordinal()).map_err(|_| {
+                PostgresTransferError::InvalidProviderValue("stream staged ordinal")
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn hydrate_stream_staging(
+    transaction: &mut Transaction<'_>,
+    stream_digest: DigestV1,
+    manifest: &TransferStreamManifestV2,
+    target_epoch: u64,
+) -> Result<(), PostgresTransferError> {
+    let identity = manifest.deployment_identity();
+    let canonical_identity = identity.canonical_bytes()?;
+    PostgresTransferDestination::persist_identity_metadata(
+        transaction,
+        identity,
+        &canonical_identity,
+    )?;
+    PostgresTransferDestination::persist_identity_rows(transaction, identity)?;
+    persist_stream_resource_payloads(transaction, stream_digest, identity)?;
+    PostgresTransferDestination::verify_persisted_identity(transaction, identity)?;
+    persist_stream_deployment_metadata(transaction, stream_digest, target_epoch)?;
+
+    let mut after = String::new();
+    loop {
+        let rooms = stream_room_ids_page(transaction, stream_digest, &after)?;
+        if rooms.is_empty() {
+            break;
+        }
+        for room_id in &rooms {
+            hydrate_stream_room(transaction, stream_digest, room_id, target_epoch)?;
+        }
+        after = rooms
+            .last()
+            .map(|room| format!("room/{room}/genesis"))
+            .ok_or(PostgresTransferError::Canonical("stream Room cursor"))?;
+    }
+    publish_stream_external_input_preparations(transaction, stream_digest)?;
+    for table in PUBLICATION_ORDER {
+        publish_stream_native_table(transaction, stream_digest, table)?;
+    }
+    Ok(())
+}
+
+fn native_stream_relation_count_sql(relation: &str) -> Option<&'static str> {
+    match relation {
+        "retired_authority_fences_v1" => {
+            Some("SELECT count(*) FROM worldstream_retired_authority_fences_v1")
+        }
+        "principals" => Some("SELECT count(*) FROM worldstream_authority_principals"),
+        "runners" => Some("SELECT count(*) FROM worldstream_authority_runners"),
+        "capabilities" => Some("SELECT count(*) FROM worldstream_authority_capabilities"),
+        "capability_scopes" => Some("SELECT count(*) FROM worldstream_authority_capability_scopes"),
+        "runner_capability_memberships" => {
+            Some("SELECT count(*) FROM worldstream_authority_runner_capability_memberships")
+        }
+        "authority_change_receipts" => {
+            Some("SELECT count(*) FROM worldstream_authority_change_receipts")
+        }
+        "authority_audit" => Some("SELECT count(*) FROM worldstream_authority_audit"),
+        "room_integrity" => Some("SELECT count(*) FROM worldstream_room_roots"),
+        "room_members" => Some("SELECT count(*) FROM worldstream_members"),
+        "timers" => Some("SELECT count(*) FROM worldstream_timers"),
+        "observation_frames" => Some("SELECT count(*) FROM worldstream_frames"),
+        "observation_consequences" => {
+            Some("SELECT count(*) FROM worldstream_observation_consequences")
+        }
+        "activation_decisions" => Some("SELECT count(*) FROM worldstream_activation_decisions"),
+        "activation_intents" => Some("SELECT count(*) FROM worldstream_activation_intents"),
+        "activation_operation_receipts" => {
+            Some("SELECT count(*) FROM worldstream_activation_operation_receipts")
+        }
+        "semantic_receipts" => Some("SELECT count(*) FROM worldstream_semantic_receipts"),
+        "external_input_preparations" => {
+            Some("SELECT count(*) FROM worldstream_external_input_preparations")
+        }
+        "integrity_incidents" => Some("SELECT count(*) FROM worldstream_integrity_incidents"),
+        _ => None,
+    }
+}
+
+fn verify_stream_hydration(
+    transaction: &mut Transaction<'_>,
+    stream_digest: DigestV1,
+    manifest: &TransferStreamManifestV2,
+) -> Result<(), PostgresTransferError> {
+    for relation in manifest.native_summary().relations() {
+        let sql = native_stream_relation_count_sql(relation.relation()).ok_or(
+            PostgresTransferError::Canonical("stream native relation inventory"),
+        )?;
+        let actual = u64::try_from(
+            transaction
+                .query_one(sql, &[])
+                .map_err(PostgresTransferError::Sql)?
+                .try_get::<_, i64>(0)
+                .map_err(PostgresTransferError::Sql)?,
+        )
+        .map_err(|_| PostgresTransferError::InvalidProviderValue("stream native count"))?;
+        if actual != relation.rows() {
+            return Err(PostgresTransferError::Canonical(
+                "stream native relation cardinality",
+            ));
+        }
+    }
+    let mut after = String::new();
+    let mut rooms = 0_u64;
+    let mut healthy = 0_u64;
+    let mut isolated = 0_u64;
+    let registry = worldstream_core::builtin_worldstream_registry()
+        .map_err(|_| PostgresTransferError::Canonical("retained Pack registry"))?;
+    loop {
+        let rows = transaction
+            .query(
+                "SELECT room_id, integrity_status FROM worldstream_room_roots WHERE room_id > $1 ORDER BY room_id LIMIT $2",
+                &[&after, &STREAM_STAGING_PAGE_ROWS],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in &rows {
+            let room_id: String = row.try_get(0).map_err(PostgresTransferError::Sql)?;
+            let status: String = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+            rooms = rooms
+                .checked_add(1)
+                .ok_or(PostgresTransferError::InvalidProviderValue(
+                    "stream Room count",
+                ))?;
+            match status.as_str() {
+                "healthy" => {
+                    healthy = healthy.checked_add(1).ok_or(
+                        PostgresTransferError::InvalidProviderValue("stream healthy Room count"),
+                    )?;
+                    let verification =
+                        PostgresRoomStore::verify_room_in_transaction(transaction, &room_id)
+                            .map_err(PostgresTransferError::Semantic)?;
+                    if verification.integrity_status != "healthy"
+                        || verification.verify_executable_replay(&registry).is_err()
+                    {
+                        return Err(PostgresTransferError::Canonical(
+                            "stream healthy Room executable replay",
+                        ));
+                    }
+                }
+                "faulted" | "quarantined" => {
+                    isolated = isolated.checked_add(1).ok_or(
+                        PostgresTransferError::InvalidProviderValue("stream isolated Room count"),
+                    )?;
+                }
+                _ => {
+                    return Err(PostgresTransferError::Canonical(
+                        "stream Room integrity status",
+                    ));
+                }
+            }
+            after = room_id;
+        }
+    }
+    let expected = manifest.semantic_expectations();
+    if rooms != expected.room_count()
+        || healthy != expected.healthy_room_count()
+        || isolated != expected.isolated_room_count()
+    {
+        return Err(PostgresTransferError::Canonical(
+            "stream Room semantic parity",
+        ));
+    }
+    // Re-read the staged summary after hydration as a durable corruption check.
+    // The caller already verified the footer before any serving table changed.
+    let _ = stream_digest;
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2033,7 +4018,7 @@ fn decode_native_operational_row(bytes: &[u8]) -> Result<NativeRow, PostgresTran
         "authority_change_receipts" | "activation_operation_receipts" => 9,
         "authority_audit" | "semantic_receipts" => 12,
         "activation_decisions" => 5,
-        "activation_intents" => 19,
+        "activation_intents" => 24,
         "retired_authority_fences_v1"
         | "observation_consequences"
         | "observation_frames"
@@ -3080,15 +5065,20 @@ fn publish_activation_intent(
     let context_hash = native_optional_blob(row, 16)?;
     let context_bytes = native_optional_blob(row, 17)?;
     let context_retired = native_integer(row, 18)? != 0;
+    let created_at = native_text(row, 19)?;
+    let attention_bytes = native_integer(row, 20)?;
+    let terminal_disposition = native_optional_text(row, 21)?;
+    let superseded_by_activation_id = native_optional_text(row, 22)?;
+    let terminal_at = native_optional_text(row, 23)?;
     transaction
         .execute(
-            "INSERT INTO worldstream_activation_intents(activation_id, room_id, cause_room_seq, decision_id, target_member_id, reason_code, deduplication_key, priority, semantic_deadline, policy_revision, state, intent_generation, lease_generation, runner_id, claim_id, lease_until, context_hash, context_bytes, context_retired) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) ON CONFLICT (activation_id) DO NOTHING",
-            &[&activation_id, &room_id, &cause_room_seq, &decision_id, &target_member_id, &reason_code, &deduplication_key, &priority, &semantic_deadline, &policy_revision, &state, &intent_generation, &lease_generation, &runner_id, &claim_id, &lease_until, &context_hash, &context_bytes, &context_retired],
+            "INSERT INTO worldstream_activation_intents(activation_id, room_id, cause_room_seq, decision_id, target_member_id, reason_code, deduplication_key, priority, semantic_deadline, policy_revision, state, intent_generation, lease_generation, runner_id, claim_id, lease_until, context_hash, context_bytes, context_retired, created_at, attention_bytes, terminal_disposition, superseded_by_activation_id, terminal_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24) ON CONFLICT (activation_id) DO NOTHING",
+            &[&activation_id, &room_id, &cause_room_seq, &decision_id, &target_member_id, &reason_code, &deduplication_key, &priority, &semantic_deadline, &policy_revision, &state, &intent_generation, &lease_generation, &runner_id, &claim_id, &lease_until, &context_hash, &context_bytes, &context_retired, &created_at, &attention_bytes, &terminal_disposition, &superseded_by_activation_id, &terminal_at],
         )
         .map_err(PostgresTransferError::Sql)?;
     let stored = transaction
         .query_one(
-            "SELECT room_id, cause_room_seq, decision_id, target_member_id, reason_code, deduplication_key, priority, semantic_deadline, policy_revision, state, intent_generation, lease_generation, runner_id, claim_id, lease_until, context_hash, context_bytes, context_retired FROM worldstream_activation_intents WHERE activation_id = $1",
+            "SELECT room_id, cause_room_seq, decision_id, target_member_id, reason_code, deduplication_key, priority, semantic_deadline, policy_revision, state, intent_generation, lease_generation, runner_id, claim_id, lease_until, context_hash, context_bytes, context_retired, created_at, attention_bytes, terminal_disposition, superseded_by_activation_id, terminal_at FROM worldstream_activation_intents WHERE activation_id = $1",
             &[&activation_id],
         )
         .map_err(PostgresTransferError::Sql)?;
@@ -3147,6 +5137,21 @@ fn publish_activation_intent(
         stored
             .try_get::<_, bool>(17)
             .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, String>(18)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, i64>(19)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Option<String>>(20)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Option<String>>(21)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Option<String>>(22)
+            .map_err(PostgresTransferError::Sql)?,
     );
     if actual.0 != room_id
         || actual.1 != cause_room_seq
@@ -3166,6 +5171,11 @@ fn publish_activation_intent(
         || actual.15 != context_hash
         || actual.16 != context_bytes
         || actual.17 != context_retired
+        || actual.18 != created_at
+        || actual.19 != attention_bytes
+        || actual.20 != terminal_disposition
+        || actual.21 != superseded_by_activation_id
+        || actual.22 != terminal_at
     {
         return Err(PostgresTransferError::Canonical(
             "activation intent mismatch",
@@ -4149,11 +6159,13 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let fingerprint = postgres_backend_fingerprint()?;
         assert_eq!(fingerprint.profile(), BundleProfileV1::PostgresPrimary17);
-        assert_eq!(fingerprint.schema().migrations().len(), 14);
+        assert_eq!(fingerprint.schema().migrations().len(), 17);
         assert_eq!(fingerprint.schema().migrations()[5].version(), 6);
         assert_eq!(fingerprint.schema().migrations()[10].version(), 11);
         assert_eq!(fingerprint.schema().migrations()[11].version(), 12);
         assert_eq!(fingerprint.schema().migrations()[12].version(), 13);
+        assert_eq!(fingerprint.schema().migrations()[15].version(), 16);
+        assert_eq!(fingerprint.schema().migrations()[16].version(), 17);
         Ok(())
     }
 
@@ -4215,6 +6227,7 @@ mod tests {
             "worldstream_activation_intents",
             "worldstream_activation_operation_receipts",
             "worldstream_room_snapshots",
+            "worldstream_room_snapshot_schedules",
             "worldstream_semantic_receipts",
             "worldstream_integrity_incidents",
             "worldstream_authority_fences",
@@ -4228,6 +6241,9 @@ mod tests {
             "worldstream_authority_audit",
             "worldstream_transfer_chunks",
             "worldstream_transfer_imports",
+            "worldstream_transfer_stream_records_v2",
+            "worldstream_transfer_stream_chunks_v2",
+            "worldstream_transfer_stream_imports_v2",
             "worldstream_deployment_metadata",
             "worldstream_deployment_identity_metadata",
             "worldstream_deployment_pack_identities",

@@ -4514,6 +4514,82 @@ pub struct RoomRecoveryCandidateV1 {
     canonical_transition_bytes: Vec<Vec<u8>>,
     canonical_core_state_bytes: Option<Vec<u8>>,
     canonical_activity_state_bytes: Option<Vec<u8>>,
+    checkpoint: Option<RoomRecoveryCheckpointV1>,
+}
+
+/// A verified-cache witness for a durable checkpoint.  The checkpoint is
+/// disposable acceleration data: its Head and materialized state must match
+/// the checkpoint record, while the immutable tail is still replayed through
+/// the retained executor before installation.
+#[derive(Clone)]
+pub struct RoomRecoveryCheckpointV1 {
+    checkpoint_head: CompleteHeadV1,
+    checkpoint_record_bytes: Vec<u8>,
+    core_state_bytes: Vec<u8>,
+    activity_state_bytes: Vec<u8>,
+    timers: Vec<RecoveredTimerMaterializationV1>,
+    observation_frames: Vec<RecoveredObservationFrameV1>,
+    observation_consequences: Vec<RecoveredObservationConsequenceV1>,
+    membership_generations: BTreeMap<String, i64>,
+}
+
+impl RoomRecoveryCheckpointV1 {
+    #[must_use]
+    pub fn new(
+        checkpoint_head: CompleteHeadV1,
+        checkpoint_record_bytes: Vec<u8>,
+        core_state_bytes: Vec<u8>,
+        activity_state_bytes: Vec<u8>,
+        timers: Vec<RecoveredTimerMaterializationV1>,
+    ) -> Self {
+        Self {
+            checkpoint_head,
+            checkpoint_record_bytes,
+            core_state_bytes,
+            activity_state_bytes,
+            timers,
+            observation_frames: Vec::new(),
+            observation_consequences: Vec::new(),
+            membership_generations: BTreeMap::new(),
+        }
+    }
+
+    pub fn with_operational_witnesses(
+        mut self,
+        observation_frames: Vec<RecoveredObservationFrameV1>,
+        observation_consequences: Vec<RecoveredObservationConsequenceV1>,
+        membership_generations: BTreeMap<String, i64>,
+    ) -> Self {
+        self.observation_frames = observation_frames;
+        self.observation_consequences = observation_consequences;
+        self.membership_generations = membership_generations;
+        self
+    }
+
+    pub(crate) fn head(&self) -> &CompleteHeadV1 {
+        &self.checkpoint_head
+    }
+    pub(crate) fn record_bytes(&self) -> &[u8] {
+        &self.checkpoint_record_bytes
+    }
+    pub(crate) fn core_state_bytes(&self) -> &[u8] {
+        &self.core_state_bytes
+    }
+    pub(crate) fn activity_state_bytes(&self) -> &[u8] {
+        &self.activity_state_bytes
+    }
+    pub(crate) fn timers(&self) -> &[RecoveredTimerMaterializationV1] {
+        &self.timers
+    }
+    pub(crate) fn observation_frames(&self) -> &[RecoveredObservationFrameV1] {
+        &self.observation_frames
+    }
+    pub(crate) fn observation_consequences(&self) -> &[RecoveredObservationConsequenceV1] {
+        &self.observation_consequences
+    }
+    pub(crate) fn membership_generations(&self) -> &BTreeMap<String, i64> {
+        &self.membership_generations
+    }
 }
 
 impl fmt::Debug for RoomRecoveryCandidateV1 {
@@ -4547,7 +4623,35 @@ impl RoomRecoveryCandidateV1 {
             canonical_transition_bytes,
             canonical_core_state_bytes,
             canonical_activity_state_bytes,
+            checkpoint: None,
         }
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_checkpoint(
+        head: CompleteHeadV1,
+        integrity_generation: IntegrityGenerationV1,
+        canonical_head_bytes: Vec<u8>,
+        canonical_pack_revision_lock_bytes: Vec<u8>,
+        canonical_genesis_bytes: Vec<u8>,
+        canonical_transition_bytes: Vec<Vec<u8>>,
+        canonical_core_state_bytes: Option<Vec<u8>>,
+        canonical_activity_state_bytes: Option<Vec<u8>>,
+        checkpoint: RoomRecoveryCheckpointV1,
+    ) -> Self {
+        let mut candidate = Self::new(
+            head,
+            integrity_generation,
+            canonical_head_bytes,
+            canonical_pack_revision_lock_bytes,
+            canonical_genesis_bytes,
+            canonical_transition_bytes,
+            canonical_core_state_bytes,
+            canonical_activity_state_bytes,
+        );
+        candidate.checkpoint = Some(checkpoint);
+        candidate
     }
 
     /// Validates immutable lineage without loading the retained executor and
@@ -4569,6 +4673,22 @@ impl RoomRecoveryCandidateV1 {
             self.canonical_core_state_bytes.as_deref(),
             self.canonical_activity_state_bytes.as_deref(),
         )
+    }
+
+    pub(crate) fn checkpoint(&self) -> Option<&RoomRecoveryCheckpointV1> {
+        self.checkpoint.as_ref()
+    }
+
+    /// Whether this candidate carries a verified-cache checkpoint witness.
+    #[must_use]
+    pub fn has_checkpoint(&self) -> bool {
+        self.checkpoint.is_some()
+    }
+
+    /// Number of immutable Transition rows retained after the checkpoint.
+    #[must_use]
+    pub fn tail_transition_count(&self) -> usize {
+        self.canonical_transition_bytes.len()
     }
 }
 
@@ -4664,6 +4784,23 @@ redacted_debug!(RecoveredTimerMaterializationV1);
 
 impl RecoveredTimerMaterializationV1 {
     #[must_use]
+    pub fn new(
+        timer_id: TimerId,
+        generation: TimerGenerationV1,
+        scheduled_for: TimerScheduledFor,
+        canonical_payload_bytes: Vec<u8>,
+        state: RecoveredTimerStateV1,
+    ) -> Self {
+        Self {
+            timer_id,
+            generation,
+            scheduled_for,
+            canonical_payload_bytes,
+            state,
+        }
+    }
+
+    #[must_use]
     pub const fn timer_id(&self) -> &TimerId {
         &self.timer_id
     }
@@ -4700,6 +4837,7 @@ pub struct RecoveredRoomMaterializationsV1 {
     timers: Vec<RecoveredTimerMaterializationV1>,
     observation_frames: Vec<RecoveredObservationFrameV1>,
     observation_consequences: Vec<RecoveredObservationConsequenceV1>,
+    membership_generations: Option<BTreeMap<String, i64>>,
 }
 redacted_debug!(RecoveredRoomMaterializationsV1);
 
@@ -4761,6 +4899,7 @@ impl RecoveredRoomMaterializationsV1 {
             timers: recover_timer_ledger(canonical_genesis_bytes, canonical_transition_bytes)?,
             observation_frames: Vec::new(),
             observation_consequences: Vec::new(),
+            membership_generations: None,
         })
     }
 
@@ -4805,6 +4944,7 @@ impl RecoveredRoomMaterializationsV1 {
             timers,
             observation_frames: Vec::new(),
             observation_consequences: Vec::new(),
+            membership_generations: None,
         })
     }
 
@@ -4842,6 +4982,10 @@ impl RecoveredRoomMaterializationsV1 {
     pub fn observation_consequences(&self) -> &[RecoveredObservationConsequenceV1] {
         &self.observation_consequences
     }
+
+    pub fn membership_generations(&self) -> Option<&BTreeMap<String, i64>> {
+        self.membership_generations.as_ref()
+    }
 }
 
 /// Non-secret addressed frame integrity witness reproduced during replay.
@@ -4871,6 +5015,27 @@ pub enum RecoveredObservationConsequenceV1 {
 }
 
 impl RecoveredObservationConsequenceV1 {
+    #[must_use]
+    pub fn reset_required(
+        member_id: MemberId,
+        cause_room_seq: RoomSequenceV1,
+        projection_hash: Blake3DigestV1,
+    ) -> Self {
+        Self::ResetRequired {
+            member_id,
+            cause_room_seq,
+            projection_hash,
+        }
+    }
+
+    #[must_use]
+    pub fn visibility_lost(member_id: MemberId, cause_room_seq: RoomSequenceV1) -> Self {
+        Self::VisibilityLost {
+            member_id,
+            cause_room_seq,
+        }
+    }
+
     pub(crate) fn from_replay_reset(
         member_id: MemberId,
         cause_room_seq: RoomSequenceV1,
@@ -4912,7 +5077,7 @@ impl RecoveredObservationConsequenceV1 {
 }
 
 impl RecoveredObservationFrameV1 {
-    pub(crate) fn from_replay(
+    pub fn from_replay(
         member_id: MemberId,
         frame_seq: u64,
         cause_room_seq: RoomSequenceV1,
@@ -5050,12 +5215,21 @@ pub fn recover_room_from_storage(
         {
             return Err(RoomRecoveryErrorV1::Corrupt);
         }
-        candidate.preflight_lineage_materializations()?;
-        let report = CoreTraceV1::replay_for_recovery(
-            registry,
-            &candidate.canonical_genesis_bytes,
-            &candidate.canonical_transition_bytes,
-        )
+        let report = if let Some(checkpoint) = candidate.checkpoint() {
+            CoreTraceV1::replay_checkpoint_for_recovery(
+                registry,
+                &candidate.canonical_genesis_bytes,
+                checkpoint,
+                &candidate.canonical_transition_bytes,
+            )
+        } else {
+            candidate.preflight_lineage_materializations()?;
+            CoreTraceV1::replay_for_recovery(
+                registry,
+                &candidate.canonical_genesis_bytes,
+                &candidate.canonical_transition_bytes,
+            )
+        }
         .map_err(|failure| {
             if failure.class == ReplayFailureClassV1::RuntimeUnavailable
                 && failure.last_verified_head.as_deref() == Some(&candidate.head)
@@ -5168,49 +5342,68 @@ fn recover_materializations(
         canonical_core_state_bytes,
         canonical_activity_state_bytes,
         memberships,
-        timers: recover_timer_ledger(
-            &candidate.canonical_genesis_bytes,
-            &candidate.canonical_transition_bytes,
-        )?,
-        observation_frames: report
-            .observation_consequences()
-            .iter()
-            .filter_map(|consequence| match consequence {
-                crate::trace::ReplayObservationConsequenceV1::ObservationFrame(frame) => {
-                    Some(RecoveredObservationFrameV1 {
-                        member_id: frame.member_id().clone(),
-                        frame_seq: frame.frame_seq(),
-                        cause_room_seq: frame.cause_room_seq(),
-                        payload_hash: frame.payload_hash().clone(),
-                    })
-                }
-                crate::trace::ReplayObservationConsequenceV1::ResetRequired { .. }
-                | crate::trace::ReplayObservationConsequenceV1::VisibilityLost { .. } => None,
-            })
-            .collect(),
-        observation_consequences: report
-            .observation_consequences()
-            .iter()
-            .filter_map(|consequence| match consequence {
-                crate::trace::ReplayObservationConsequenceV1::ObservationFrame(_) => None,
-                crate::trace::ReplayObservationConsequenceV1::ResetRequired {
-                    member_id,
-                    cause_room_seq,
-                    projection_hash,
-                } => Some(RecoveredObservationConsequenceV1::ResetRequired {
-                    member_id: member_id.clone(),
-                    cause_room_seq: *cause_room_seq,
-                    projection_hash: projection_hash.clone(),
-                }),
-                crate::trace::ReplayObservationConsequenceV1::VisibilityLost {
-                    member_id,
-                    cause_room_seq,
-                } => Some(RecoveredObservationConsequenceV1::VisibilityLost {
-                    member_id: member_id.clone(),
-                    cause_room_seq: *cause_room_seq,
-                }),
-            })
-            .collect(),
+        timers: if let Some(checkpoint) = candidate.checkpoint() {
+            recover_timer_ledger_from_checkpoint(checkpoint, &candidate.canonical_transition_bytes)?
+        } else {
+            recover_timer_ledger(
+                &candidate.canonical_genesis_bytes,
+                &candidate.canonical_transition_bytes,
+            )?
+        },
+        observation_frames: {
+            let mut frames = candidate.checkpoint().map_or_else(Vec::new, |checkpoint| {
+                checkpoint.observation_frames().to_vec()
+            });
+            frames.extend(
+                report.observation_consequences().iter().filter_map(
+                    |consequence| match consequence {
+                        crate::trace::ReplayObservationConsequenceV1::ObservationFrame(frame) => {
+                            Some(RecoveredObservationFrameV1 {
+                                member_id: frame.member_id().clone(),
+                                frame_seq: frame.frame_seq(),
+                                cause_room_seq: frame.cause_room_seq(),
+                                payload_hash: frame.payload_hash().clone(),
+                            })
+                        }
+                        crate::trace::ReplayObservationConsequenceV1::ResetRequired { .. }
+                        | crate::trace::ReplayObservationConsequenceV1::VisibilityLost { .. } => {
+                            None
+                        }
+                    },
+                ),
+            );
+            frames
+        },
+        observation_consequences: {
+            let mut consequences = candidate.checkpoint().map_or_else(Vec::new, |checkpoint| {
+                checkpoint.observation_consequences().to_vec()
+            });
+            consequences.extend(report.observation_consequences().iter().filter_map(
+                |consequence| match consequence {
+                    crate::trace::ReplayObservationConsequenceV1::ObservationFrame(_) => None,
+                    crate::trace::ReplayObservationConsequenceV1::ResetRequired {
+                        member_id,
+                        cause_room_seq,
+                        projection_hash,
+                    } => Some(RecoveredObservationConsequenceV1::ResetRequired {
+                        member_id: member_id.clone(),
+                        cause_room_seq: *cause_room_seq,
+                        projection_hash: projection_hash.clone(),
+                    }),
+                    crate::trace::ReplayObservationConsequenceV1::VisibilityLost {
+                        member_id,
+                        cause_room_seq,
+                    } => Some(RecoveredObservationConsequenceV1::VisibilityLost {
+                        member_id: member_id.clone(),
+                        cause_room_seq: *cause_room_seq,
+                    }),
+                },
+            ));
+            consequences
+        },
+        membership_generations: candidate
+            .checkpoint()
+            .map(|checkpoint| checkpoint.membership_generations().clone()),
     })
 }
 
@@ -5310,6 +5503,73 @@ pub(crate) fn recover_timer_ledger(
                 return Err(RoomRecoveryErrorV1::Corrupt);
             }
             row.state = RecoveredTimerStateV1::Fired;
+            scheduled.remove(&fired.timer_id);
+        }
+        for change in transition.ordered_timer_changes() {
+            apply_recovered_timer_change(
+                &mut timers,
+                &mut scheduled,
+                &mut last_generation,
+                transition.recorded_stimulus(),
+                change,
+            )?;
+        }
+    }
+    Ok(timers.into_values().collect())
+}
+
+fn recover_timer_ledger_from_checkpoint(
+    checkpoint: &RoomRecoveryCheckpointV1,
+    canonical_transition_bytes: &[Vec<u8>],
+) -> Result<Vec<RecoveredTimerMaterializationV1>, RoomRecoveryErrorV1> {
+    let mut timers = BTreeMap::new();
+    let mut scheduled = BTreeMap::new();
+    let mut last_generation = BTreeMap::new();
+    for row in checkpoint.timers() {
+        if timers
+            .insert((row.timer_id().clone(), row.generation()), row.clone())
+            .is_some()
+            || last_generation
+                .insert(row.timer_id().clone(), row.generation())
+                .is_some_and(|previous| previous >= row.generation())
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+        if row.state() == RecoveredTimerStateV1::Scheduled
+            && scheduled
+                .insert(row.timer_id().clone(), row.generation())
+                .is_some()
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+    }
+    for bytes in canonical_transition_bytes {
+        let transition =
+            TransitionV1::from_canonical_bytes(bytes).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        if let RecordedStimulusV1::TimerFired(fired) = transition.recorded_stimulus() {
+            if scheduled.get(&fired.timer_id) != Some(&fired.generation) {
+                return Err(RoomRecoveryErrorV1::Corrupt);
+            }
+            let row = timers
+                .get_mut(&(fired.timer_id.clone(), fired.generation))
+                .ok_or(RoomRecoveryErrorV1::Corrupt)?;
+            if row.state() != RecoveredTimerStateV1::Scheduled
+                || row.scheduled_for() != &fired.scheduled_for
+                || row.canonical_payload_bytes()
+                    != fired
+                        .canonical_payload
+                        .to_bytes()
+                        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?
+            {
+                return Err(RoomRecoveryErrorV1::Corrupt);
+            }
+            *row = RecoveredTimerMaterializationV1::new(
+                row.timer_id().clone(),
+                row.generation(),
+                row.scheduled_for().clone(),
+                row.canonical_payload_bytes().to_vec(),
+                RecoveredTimerStateV1::Fired,
+            );
             scheduled.remove(&fired.timer_id);
         }
         for change in transition.ordered_timer_changes() {

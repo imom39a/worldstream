@@ -4,6 +4,8 @@
 
 mod activity_start;
 mod args;
+pub mod external_effect;
+mod external_input;
 pub mod managed_control;
 pub mod operator_packs;
 pub mod operator_storage;
@@ -56,8 +58,9 @@ use worldstream_protocol::{
     ActivityPackCatalogRole, ActivityPackCatalogSchema, ActivityPackLobbyCompatibility,
     ActivityPackStartCompatibility, BROWSER_WS_TICKET_VERSION, BearerWireV1,
     BrowserWebSocketTicketIssueResponse, ClientHello, ClientMode, CreateRoomRequest,
-    CreateRoomResponse, ErrorBody, ErrorCode, ErrorEnvelope,
-    HOSTED_BROWSER_WS_SESSION_REVOKE_VERSION, HOSTED_BROWSER_WS_TICKET_VERSION,
+    CreateRoomResponse, ErrorBody, ErrorCode, ErrorEnvelope, ExternalInputIngressRequestV1,
+    ExternalInputIngressResponseV1, HOSTED_BROWSER_WS_SESSION_REVOKE_VERSION,
+    HOSTED_BROWSER_WS_TICKET_VERSION, HistoricalEvidenceResponseV1,
     HostedBrowserWebSocketSessionRevokeRequest, HostedBrowserWebSocketTicketIssueRequest,
     HostedRoomCreationRequestV2, HostedRoomCreationResponseV2, LobbyLaunchRequest,
     LobbyLaunchResponse, MemberCapabilityProvisionRequestV1, MemberCapabilityProvisionResponseV1,
@@ -1038,6 +1041,16 @@ pub trait GatewayBackend: Send + Sync + 'static {
     ) -> Result<LobbyLaunchResponse, BackendError> {
         Err(BackendError::StorageUnavailable)
     }
+    /// Admits one allowlisted host external input through the existing Core
+    /// ExternalInput path. Its source/type and exact Pack pin are mandatory.
+    fn ingest_external_input(
+        &self,
+        _session: &GatewaySession,
+        _room_id: &str,
+        _request: ExternalInputIngressRequestV1,
+    ) -> Result<ExternalInputIngressResponseV1, BackendError> {
+        Err(BackendError::StorageUnavailable)
+    }
     /// Reads one exact metadata-derived Activity Start receipt without
     /// dispatching a new input. `None` is a guarded absence.
     fn resolve_lobby_launch(
@@ -1084,6 +1097,18 @@ pub trait GatewayBackend: Send + Sync + 'static {
         _room_id: &str,
         _at_room_seq: u64,
     ) -> Result<ReplayResponse, BackendError> {
+        Err(BackendError::StorageUnavailable)
+    }
+    /// Reads a bounded page of durable historical evidence references after
+    /// present and historical Membership authorization. The response never
+    /// contains replay bytes or model summaries.
+    fn historical_evidence(
+        &self,
+        _session: &GatewaySession,
+        _room_id: &str,
+        _at_room_seq: u64,
+        _after_room_seq: u64,
+    ) -> Result<HistoricalEvidenceResponseV1, BackendError> {
         Err(BackendError::StorageUnavailable)
     }
     /// Reads exact Membership facts without attaching or modifying its Cursor.
@@ -2176,10 +2201,15 @@ pub fn operator_router(state: OperatorState) -> Router {
         )
         .route("/v1/rooms/{room_id}/projection", get(current_projection))
         .route(
+            "/v1/rooms/{room_id}/external-input",
+            post(ingest_external_input),
+        )
+        .route(
             "/v1/rooms/{room_id}/members/{member_id}/status",
             get(current_membership_status),
         )
         .route("/v1/rooms/{room_id}/replay", get(historical_replay))
+        .route("/v1/rooms/{room_id}/evidence", get(historical_evidence))
         .route(
             "/v1/stream/ticket",
             options(browser_ticket_preflight).post(issue_browser_ticket),
@@ -3441,6 +3471,68 @@ async fn historical_replay(
     }
 }
 
+async fn historical_evidence(
+    State(state): State<OperatorState>,
+    Path(room_id): Path<String>,
+    RawQuery(raw_query): RawQuery,
+    headers: HeaderMap,
+) -> ResponseResult<HistoricalEvidenceResponseV1> {
+    let correlation = traceparent_correlation(&headers);
+    let session = Arc::new(authenticated_session(&headers)?);
+    let (at_room_seq, after_room_seq) = parse_historical_evidence_query(raw_query.as_deref())?;
+    admit_authenticated_http(
+        &state,
+        &session,
+        &[AdmissionTarget {
+            room_id: &room_id,
+            member_id: None,
+        }],
+        None,
+        correlation,
+    )
+    .await?;
+    let backend = Arc::clone(&state.backend);
+    match backend_call(backend, move |backend| {
+        backend.historical_evidence(&session, &room_id, at_room_seq, after_room_seq)
+    })
+    .await
+    {
+        Ok(response) => Ok(Json(response)),
+        Err(error) => Err(ResponseError::from(error)),
+    }
+}
+
+async fn ingest_external_input(
+    State(state): State<OperatorState>,
+    Path(room_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ResponseResult<ExternalInputIngressResponseV1> {
+    let correlation = traceparent_correlation(&headers);
+    let session = Arc::new(authenticated_session(&headers)?);
+    let request = strict_json::<ExternalInputIngressRequestV1>(&body)?;
+    admit_authenticated_http(
+        &state,
+        &session,
+        &[AdmissionTarget {
+            room_id: &room_id,
+            member_id: None,
+        }],
+        None,
+        correlation,
+    )
+    .await?;
+    let backend = Arc::clone(&state.backend);
+    match backend_call(backend, move |backend| {
+        backend.ingest_external_input(&session, &room_id, request)
+    })
+    .await
+    {
+        Ok(response) => Ok(Json(response)),
+        Err(error) => Err(ResponseError::from(error)),
+    }
+}
+
 fn parse_replay_query(raw_query: Option<&str>) -> Result<u64, ResponseError> {
     let Some(raw_query) = raw_query else {
         return Err(ResponseError::from(BackendError::Rejected));
@@ -3461,6 +3553,47 @@ fn parse_replay_query(raw_query: Option<&str>) -> Result<u64, ResponseError> {
     value
         .parse::<u64>()
         .map_err(|_| ResponseError::from(BackendError::Rejected))
+}
+
+fn parse_historical_evidence_query(raw_query: Option<&str>) -> Result<(u64, u64), ResponseError> {
+    let Some(raw_query) = raw_query else {
+        return Err(ResponseError::from(BackendError::Rejected));
+    };
+    if raw_query.is_empty() || raw_query.len() > 128 {
+        return Err(ResponseError::from(BackendError::Rejected));
+    }
+    let mut at = None;
+    let mut after = 0_u64;
+    let mut saw_after = false;
+    for part in raw_query.split('&') {
+        let Some((name, value)) = part.split_once('=') else {
+            return Err(ResponseError::from(BackendError::Rejected));
+        };
+        if value.is_empty() {
+            return Err(ResponseError::from(BackendError::Rejected));
+        }
+        match name {
+            "at_room_seq" if at.is_none() => {
+                at = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| ResponseError::from(BackendError::Rejected))?,
+                );
+            }
+            "after_room_seq" if !saw_after => {
+                saw_after = true;
+                after = value
+                    .parse::<u64>()
+                    .map_err(|_| ResponseError::from(BackendError::Rejected))?;
+            }
+            _ => return Err(ResponseError::from(BackendError::Rejected)),
+        }
+    }
+    let at = at.ok_or_else(|| ResponseError::from(BackendError::Rejected))?;
+    if after > at {
+        return Err(ResponseError::from(BackendError::Rejected));
+    }
+    Ok((at, after))
 }
 
 /// Issues one origin-bound, short-lived browser admission ticket. The bearer
@@ -8863,6 +8996,27 @@ mod tests {
                     .uri("/v1/operator/rooms/room/lobby/launch")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(lobby_launch_body())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn external_input_route_requires_authenticated_host_admission() {
+        let app = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("valid state: {error}"))
+                .with_backend(Arc::new(SuccessfulCreateBackend)),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/rooms/room/external-input")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
                     .unwrap_or_else(|error| unreachable!("request: {error}")),
             )
             .await

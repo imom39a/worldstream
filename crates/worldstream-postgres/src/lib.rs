@@ -28,19 +28,21 @@ mod transfer;
 
 pub use authority::{PostgresAuthenticatedCapabilityV1, PostgresAuthorityAuthenticationError};
 pub use migrations::{
-    AUTHORITY_FACTS_MIGRATION_ID, AUTHORITY_MIGRATION_ID, DEPLOYMENT_IDENTITY_MIGRATION_ID,
-    DEPLOYMENT_METADATA_MIGRATION_ID, EXTERNAL_INPUT_PREPARATION_MIGRATION_ID,
-    FixtureMigrationProvider, INITIAL_MIGRATION_ID, KERNEL_CONFORMANCE_MIGRATION_ID,
-    KERNEL_PARITY_MIGRATION_ID, LOGICAL_HISTORY_ID, MIGRATION_0002_SQL, MIGRATION_0003_SQL,
-    MIGRATION_0004_SQL, MIGRATION_0005_SQL, MIGRATION_0006_SQL, MIGRATION_0007_SQL,
-    MIGRATION_0008_SQL, MIGRATION_0009_SQL, MIGRATION_0010_SQL, MIGRATION_0011_SQL,
-    MIGRATION_0012_SQL, MIGRATION_0013_SQL, MIGRATION_0014_SQL, MigrationDescriptor,
-    MigrationFailpoint, MigrationRecord, MigrationVerification, MigrationVerificationError,
-    OBSERVATION_RESET_GENERATION_MIGRATION_ID, OBSERVATION_RETENTION_MIGRATION_ID,
-    SCHEMA_CONTRACT_ID, SCHEMA_FINGERPRINT_MATERIAL, TRANSFER_PUBLICATION_MIGRATION_ID,
-    TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID, TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID,
-    migration_history, schema_contract_fingerprint, verify_migration_prefix,
-    verify_runtime_migration_history,
+    ACTIVATION_BACKLOG_POLICY_MIGRATION_ID, AUTHORITY_FACTS_MIGRATION_ID, AUTHORITY_MIGRATION_ID,
+    DEPLOYMENT_IDENTITY_MIGRATION_ID, DEPLOYMENT_METADATA_MIGRATION_ID,
+    EXTERNAL_INPUT_PREPARATION_MIGRATION_ID, FixtureMigrationProvider, INITIAL_MIGRATION_ID,
+    KERNEL_CONFORMANCE_MIGRATION_ID, KERNEL_PARITY_MIGRATION_ID, LOGICAL_HISTORY_ID,
+    MIGRATION_0002_SQL, MIGRATION_0003_SQL, MIGRATION_0004_SQL, MIGRATION_0005_SQL,
+    MIGRATION_0006_SQL, MIGRATION_0007_SQL, MIGRATION_0008_SQL, MIGRATION_0009_SQL,
+    MIGRATION_0010_SQL, MIGRATION_0011_SQL, MIGRATION_0012_SQL, MIGRATION_0013_SQL,
+    MIGRATION_0014_SQL, MIGRATION_0015_SQL, MIGRATION_0016_SQL, MIGRATION_0017_SQL,
+    MigrationDescriptor, MigrationFailpoint, MigrationRecord, MigrationVerification,
+    MigrationVerificationError, OBSERVATION_RESET_GENERATION_MIGRATION_ID,
+    OBSERVATION_RETENTION_MIGRATION_ID, SCHEMA_CONTRACT_ID, SCHEMA_FINGERPRINT_MATERIAL,
+    SNAPSHOT_CADENCE_MIGRATION_ID, STREAM_TRANSFER_V2_MIGRATION_ID,
+    TRANSFER_PUBLICATION_MIGRATION_ID, TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID,
+    TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID, migration_history, schema_contract_fingerprint,
+    verify_migration_prefix, verify_runtime_migration_history,
 };
 pub use retention::PostgresObservationRetentionV1;
 pub use telemetry::{
@@ -48,7 +50,8 @@ pub use telemetry::{
     PostgresStorageDiagnosticKindV1, PostgresTelemetryEventV1, PostgresTelemetrySink,
 };
 pub use transfer::{
-    PostgresTransferDestination, PostgresTransferError, postgres_backend_fingerprint,
+    PostgresStreamDestinationV2, PostgresTransferDestination, PostgresTransferError,
+    postgres_backend_fingerprint,
 };
 
 use std::{
@@ -74,31 +77,37 @@ use telemetry::{MigrationTelemetryGuard, emit_postgres_telemetry};
 use thiserror::Error;
 use worldstream_backup::{VerifierLimits, max_native_restore_canonical_row_bytes};
 use worldstream_core::{
-    AccessModeV1, ActivationContextInputV1, ActivationDeliveryV1, ActivationFrameV1,
-    ActivationIntentStateV1, ActivationInvocationContextV1, ActivationOperationRequestV1,
-    ActivationOperationResultV1, ActivationResultCodeV1, AuthorityCheckedAt, AuthorityErrorV1,
-    AuthorityStoreErrorV1, AuthorityStoreV1, AuthorizedCoreAdministrationV1,
-    AuthorizedDiagnosticV1, AuthorizedExternalInputV1, AuthorizedReceiptReadV1,
-    AuthorizedReceiptResolverV1, AuthorizedReplayV1, AuthorizedRunnerControlV1,
-    AuthorizedTimerFiredV1, Blake3DigestV1, CanonicalJsonV1, CanonicalRequestHashV1,
-    CompleteHeadV1, CoreAdministrationRequestV1, CoreRecordedAt, CoreTraceV1,
-    DiagnosticOperationV1, DiagnosticTargetV1, ExternalInputRecordedAt, ExternalInputV1, GenesisV1,
-    HistoricalReplayErrorV1, HistoricalReplayProjectionV1, HostClockSampleV1,
-    IntegrityGenerationV1, MemberId, MembershipStandingV1, MembershipV1, OperationIdentityV1,
-    PackRegistryV1, PackRevisionLockV1, PackViewerV1, ParticipantActionAuthorityV1,
-    ParticipantActionRequestV1, ParticipantActionV1, PreparedAdvancePersistenceV1,
-    PreparedAuthorityWitnessV1, PreparedCreationPersistenceV1, PreparedExistingIntentV1,
-    PreparedMembershipMaterializationV1, PreparedObservationConsequenceV1, PreparedRoomCommitV1,
-    PreparedRoomWriteV1, PreparedTimerMutationKindV1, RecordedStimulusV1,
-    RecoveredObservationConsequenceV1, RecoveredRoomMaterializationsV1, RecoveredTimerStateV1,
-    RecoveryIntegrityDispositionV1, ReplayFailureClassV1, ReplayStorageVerificationV1,
-    ResolutionStatusV1, ResolveOutcomeV1, RoomCommitResolutionV1, RoomCommitStorageV1, RoomId,
-    RoomIntegrityStateV1, RoomIntegrityStatusV1, RoomRecoveryCandidateV1, RoomRecoveryErrorV1,
-    RoomRecoveryStorageV1, RoomSequenceV1, RoomStatusV1, RunnerControlAdapterInputV1,
-    RunnerControlOperationV1, StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1,
-    TimerGenerationV1, TimerId, TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1,
-    VerifiedCurrentRoomMaterializationV1, ViewerAdapterInputV1, commit_existing_room,
-    prepare_activation_context, projection_hash_for_canonical_bytes,
+    ACTIVATION_ATTENTION_ROW_OVERHEAD_BYTES_V1, AccessModeV1, ActivationContextInputV1,
+    ActivationDeliveryV1, ActivationFrameV1, ActivationIntentStateV1,
+    ActivationInvocationContextV1, ActivationOperationRequestV1, ActivationOperationResultV1,
+    ActivationResultCodeV1, AuthorityCheckedAt, AuthorityErrorV1, AuthorityStoreErrorV1,
+    AuthorityStoreV1, AuthorizedCoreAdministrationV1, AuthorizedDiagnosticV1,
+    AuthorizedExternalInputV1, AuthorizedReceiptReadV1, AuthorizedReceiptResolverV1,
+    AuthorizedReplayV1, AuthorizedRunnerControlV1, AuthorizedTimerFiredV1, Blake3DigestV1,
+    CanonicalJsonV1, CanonicalRequestHashV1, CompleteHeadV1, CoreAdministrationRequestV1,
+    CoreRecordedAt, CoreTraceV1, DiagnosticOperationV1, DiagnosticTargetV1,
+    ExternalInputRecordedAt, ExternalInputV1, GenesisV1, HistoricalEvidencePageOutcomeV1,
+    HistoricalEvidenceReferenceV1, HistoricalReplayErrorV1, HistoricalReplayProjectionV1,
+    HostClockSampleV1, IntegrityGenerationV1, MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1,
+    MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES, MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1,
+    MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_TIME_MS_V1,
+    MAX_PENDING_REFRESH_AGE_MS_V1, MAX_PENDING_REFRESH_BYTES_V1, MemberId, MembershipStandingV1,
+    MembershipV1, OperationIdentityV1, PackRegistryV1, PackRevisionLockV1, PackViewerV1,
+    ParticipantActionAuthorityV1, ParticipantActionRequestV1, ParticipantActionV1,
+    PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1, PreparedCreationPersistenceV1,
+    PreparedExistingIntentV1, PreparedMembershipMaterializationV1,
+    PreparedObservationConsequenceV1, PreparedRoomCommitV1, PreparedRoomWriteV1,
+    PreparedTimerMutationKindV1, RecordedStimulusV1, RecoveredObservationConsequenceV1,
+    RecoveredRoomMaterializationsV1, RecoveredTimerStateV1, RecoveryIntegrityDispositionV1,
+    ReplayFailureClassV1, ReplayStorageVerificationV1, ResolutionStatusV1, ResolveOutcomeV1,
+    RoomCommitResolutionV1, RoomCommitStorageV1, RoomId, RoomIntegrityStateV1,
+    RoomIntegrityStatusV1, RoomRecoveryCandidateV1, RoomRecoveryErrorV1, RoomRecoveryStorageV1,
+    RoomSequenceV1, RoomStatusV1, RunnerControlAdapterInputV1, RunnerControlOperationV1,
+    StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, TimerId,
+    TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1,
+    VerifiedCurrentRoomMaterializationV1, ViewerAdapterInputV1,
+    activation_refresh_budget_allows_v1, commit_existing_room, prepare_activation_context,
+    projection_hash_for_canonical_bytes,
 };
 
 #[cfg(feature = "conformance-tracer")]
@@ -113,6 +122,12 @@ const POSTGRES_MINIMUM_VERSION_NUM: u32 = 170_011;
 /// The schema contract implemented by this adapter.
 pub const POSTGRES_SCHEMA_VERSION: &str = "worldstream-postgresql-room-commit-v1";
 const MAX_ACTIVATION_LEASE_MS: u64 = 30_000;
+// See the matching SQLite claim reader. The reservation is deliberately
+// conservative because `Vec<u8>` is canonically represented as JSON numbers.
+const ACTIVATION_CONTEXT_FRAME_PAGE: usize = 32;
+const MAX_ACTIVATION_CONTEXT_FRAMES: usize = 512;
+const MAX_ACTIVATION_CONTEXT_FRAME_PAYLOAD_BYTES: usize =
+    MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES / 8;
 /// A single retained Observation read may materialize no more than this many
 /// frames. Larger ranges take a coherent Projection Reset instead of loading
 /// an unbounded backlog that the transport would reject anyway.
@@ -695,6 +710,8 @@ pub enum PostgresActivationError {
     StaleLease,
     #[error("Activation receipt or context is corrupt")]
     Corrupt,
+    #[error("Activation Invocation Context exceeds the aggregate byte budget")]
+    ContextTooLarge,
 }
 
 /// Exact durable lifecycle of one PostgreSQL Timer generation.
@@ -894,6 +911,31 @@ pub enum PostgresReplayError {
     Verification,
     #[error("historical replay failed: {0}")]
     Replay(#[from] HistoricalReplayErrorV1),
+}
+
+/// Bounded metadata-only evidence page from PostgreSQL.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PostgresHistoricalEvidencePageV1 {
+    pub outcome: HistoricalEvidencePageOutcomeV1,
+    pub references: Vec<HistoricalEvidenceReferenceV1>,
+    pub next_after_room_seq: Option<u64>,
+}
+
+/// Closed production failure for the historical evidence adapter.
+#[derive(Debug, Error)]
+pub enum PostgresHistoricalEvidenceErrorV1 {
+    #[error("PostgreSQL historical evidence storage is unavailable")]
+    StorageUnavailable,
+    #[error("PostgreSQL historical evidence metadata is corrupt")]
+    Corrupt,
+    #[error("historical evidence is missing")]
+    Missing,
+    #[error("historical evidence has been pruned")]
+    Pruned,
+    #[error("historical evidence has been retired")]
+    Retired,
+    #[error("historical evidence page budget exceeded")]
+    BudgetExceeded,
 }
 
 impl PostgresStorageFailure {
@@ -1460,6 +1502,14 @@ impl PostgresAdmin {
             )
             .map_err(PostgresMaintenanceError::Sql)?;
         }
+        tx.execute(
+            "INSERT INTO worldstream_room_snapshot_schedules(room_id, last_snapshot_room_seq, transitions_since_snapshot, active_started_at) VALUES ($1, $2, 0, NULL) ON CONFLICT (room_id) DO UPDATE SET last_snapshot_room_seq = EXCLUDED.last_snapshot_room_seq, transitions_since_snapshot = 0, active_started_at = NULL",
+            &[
+                &room_id,
+                &i64::try_from(verification.transition_bytes.len()).unwrap_or(-1),
+            ],
+        )
+        .map_err(PostgresMaintenanceError::Sql)?;
         tx.commit().map_err(PostgresMaintenanceError::Sql)?;
         Ok(verification.transition_bytes.len() + 1)
     }
@@ -2325,6 +2375,13 @@ impl PostgresRoomDiagnosticSummaryV1 {
 pub struct PostgresActivationStatusV1 {
     waiting: u32,
     leased: u32,
+    pending_refresh: u32,
+    pending_refresh_bytes: u64,
+    oldest_pending_age_ms: Option<u64>,
+    superseded_refreshes: u64,
+    age_retired_refreshes: u64,
+    executions_last_minute: u64,
+    scheduled_timers: u32,
 }
 
 impl PostgresActivationStatusV1 {
@@ -2336,6 +2393,41 @@ impl PostgresActivationStatusV1 {
     #[must_use]
     pub const fn leased(self) -> u32 {
         self.leased
+    }
+
+    #[must_use]
+    pub const fn pending_refresh(self) -> u32 {
+        self.pending_refresh
+    }
+
+    #[must_use]
+    pub const fn pending_refresh_bytes(self) -> u64 {
+        self.pending_refresh_bytes
+    }
+
+    #[must_use]
+    pub const fn oldest_pending_age_ms(self) -> Option<u64> {
+        self.oldest_pending_age_ms
+    }
+
+    #[must_use]
+    pub const fn superseded_refreshes(self) -> u64 {
+        self.superseded_refreshes
+    }
+
+    #[must_use]
+    pub const fn age_retired_refreshes(self) -> u64 {
+        self.age_retired_refreshes
+    }
+
+    #[must_use]
+    pub const fn executions_last_minute(self) -> u64 {
+        self.executions_last_minute
+    }
+
+    #[must_use]
+    pub const fn scheduled_timers(self) -> u32 {
+        self.scheduled_timers
     }
 }
 
@@ -3087,6 +3179,7 @@ const SCHEMA_TABLE_ORDER: &[&str] = &[
     "worldstream_activation_intents",
     "worldstream_activation_operation_receipts",
     "worldstream_room_snapshots",
+    "worldstream_room_snapshot_schedules",
     "worldstream_semantic_receipts",
     "worldstream_integrity_incidents",
     "worldstream_authority_fences",
@@ -3101,6 +3194,9 @@ const SCHEMA_TABLE_ORDER: &[&str] = &[
     "worldstream_transfer_imports",
     "worldstream_transfer_chunks",
     "worldstream_transfer_target_fence",
+    "worldstream_transfer_stream_imports_v2",
+    "worldstream_transfer_stream_chunks_v2",
+    "worldstream_transfer_stream_records_v2",
     "worldstream_deployment_metadata",
     "worldstream_deployment_identity_metadata",
     "worldstream_deployment_pack_identities",
@@ -3625,22 +3721,34 @@ const RUNTIME_ROLE_ADMISSION_SQL: &str = "SELECT role.rolsuper, role.rolcreatero
                     EXISTS (SELECT 1 FROM unnest(ARRAY[ \
                         'public.worldstream_transfer_imports', \
                         'public.worldstream_transfer_chunks', \
-                        'public.worldstream_transfer_target_fence']::text[]) AS protected_table(name) \
+                        'public.worldstream_transfer_target_fence', \
+                        'public.worldstream_transfer_stream_imports_v2', \
+                        'public.worldstream_transfer_stream_chunks_v2', \
+                        'public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(name) \
                         WHERE has_table_privilege(current_user, protected_table.name, 'INSERT')), \
                     EXISTS (SELECT 1 FROM unnest(ARRAY[ \
                         'public.worldstream_transfer_imports', \
                         'public.worldstream_transfer_chunks', \
-                        'public.worldstream_transfer_target_fence']::text[]) AS protected_table(name) \
+                        'public.worldstream_transfer_target_fence', \
+                        'public.worldstream_transfer_stream_imports_v2', \
+                        'public.worldstream_transfer_stream_chunks_v2', \
+                        'public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(name) \
                         WHERE has_table_privilege(current_user, protected_table.name, 'UPDATE')), \
                     EXISTS (SELECT 1 FROM unnest(ARRAY[ \
                         'public.worldstream_transfer_imports', \
                         'public.worldstream_transfer_chunks', \
-                        'public.worldstream_transfer_target_fence']::text[]) AS protected_table(name) \
+                        'public.worldstream_transfer_target_fence', \
+                        'public.worldstream_transfer_stream_imports_v2', \
+                        'public.worldstream_transfer_stream_chunks_v2', \
+                        'public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(name) \
                         WHERE has_table_privilege(current_user, protected_table.name, 'DELETE')), \
                     EXISTS (SELECT 1 FROM unnest(ARRAY[ \
                         'public.worldstream_transfer_imports', \
                         'public.worldstream_transfer_chunks', \
-                        'public.worldstream_transfer_target_fence']::text[]) AS protected_table(name) \
+                        'public.worldstream_transfer_target_fence', \
+                        'public.worldstream_transfer_stream_imports_v2', \
+                        'public.worldstream_transfer_stream_chunks_v2', \
+                        'public.worldstream_transfer_stream_records_v2']::text[]) AS protected_table(name) \
                         WHERE has_table_privilege(current_user, protected_table.name, 'TRUNCATE')) \
              FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user";
 
@@ -4077,7 +4185,28 @@ impl PostgresRoomStore {
                     (SELECT count(*) FROM worldstream_activation_intents \
                      WHERE room_id = $1 AND target_member_id = $2 AND state = 'pending'), \
                     (SELECT count(*) FROM worldstream_activation_intents \
-                     WHERE room_id = $1 AND target_member_id = $2 AND state = 'leased') \
+                     WHERE room_id = $1 AND target_member_id = $2 AND state = 'leased'), \
+                    (SELECT count(*) FROM worldstream_activation_intents \
+                     WHERE room_id = $1 AND target_member_id = $2 AND state = 'pending' \
+                       AND semantic_deadline IS NULL), \
+                    (SELECT coalesce(sum(attention_bytes), 0) FROM worldstream_activation_intents \
+                     WHERE room_id = $1 AND target_member_id = $2 AND state = 'pending' \
+                       AND semantic_deadline IS NULL), \
+                    (SELECT (EXTRACT(EPOCH FROM (clock_timestamp() - min(created_at::timestamptz))) * 1000)::bigint \
+                     FROM worldstream_activation_intents \
+                     WHERE room_id = $1 AND target_member_id = $2 \
+                       AND state IN ('pending', 'leased') AND created_at != ''), \
+                    (SELECT count(*) FROM worldstream_activation_intents \
+                     WHERE room_id = $1 AND target_member_id = $2 \
+                       AND terminal_disposition = 'superseded_refresh'), \
+                    (SELECT count(*) FROM worldstream_activation_intents \
+                     WHERE room_id = $1 AND target_member_id = $2 \
+                       AND terminal_disposition = 'refresh_age_exceeded'), \
+                    (SELECT count(*) FROM worldstream_activation_intents \
+                     WHERE room_id = $1 AND target_member_id = $2 \
+                       AND terminal_disposition = 'completed' \
+                       AND terminal_at::timestamptz >= clock_timestamp() - interval '60 seconds'), \
+                    (SELECT count(*) FROM worldstream_timers WHERE room_id = $1 AND state = 'scheduled') \
                  FROM worldstream_members WHERE room_id = $1 AND member_id = $2",
                 &[&room_id.as_str(), &member_id.as_str()],
             )
@@ -4089,9 +4218,47 @@ impl PostgresRoomStore {
         let leased = row
             .try_get::<_, i64>(1)
             .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
+        let pending_refresh = row
+            .try_get::<_, i64>(2)
+            .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
+        let pending_refresh_bytes = row
+            .try_get::<_, i64>(3)
+            .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
+        let oldest_pending_age_ms = row
+            .try_get::<_, Option<i64>>(4)
+            .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
+        let superseded_refreshes = row
+            .try_get::<_, i64>(5)
+            .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
+        let age_retired_refreshes = row
+            .try_get::<_, i64>(6)
+            .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
+        let executions_last_minute = row
+            .try_get::<_, i64>(7)
+            .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
+        let scheduled_timers = row
+            .try_get::<_, i64>(8)
+            .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
         Ok(PostgresActivationStatusV1 {
             waiting: u32::try_from(waiting).map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?,
             leased: u32::try_from(leased).map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?,
+            pending_refresh: u32::try_from(pending_refresh)
+                .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?,
+            pending_refresh_bytes: u64::try_from(pending_refresh_bytes)
+                .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?,
+            oldest_pending_age_ms: oldest_pending_age_ms
+                .map(|age| {
+                    u64::try_from(age.max(0)).map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)
+                })
+                .transpose()?,
+            superseded_refreshes: u64::try_from(superseded_refreshes)
+                .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?,
+            age_retired_refreshes: u64::try_from(age_retired_refreshes)
+                .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?,
+            executions_last_minute: u64::try_from(executions_last_minute)
+                .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?,
+            scheduled_timers: u32::try_from(scheduled_timers)
+                .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?,
         })
     }
 
@@ -4428,6 +4595,123 @@ impl PostgresRoomStore {
             .revalidate_current(&final_snapshot, &final_checked_at)
             .map_err(|_| PostgresReplayError::Authority)?;
         Ok(replay)
+    }
+
+    /// Reads only durable Transition identity metadata through a bounded,
+    /// keyset-paginated fence. Canonical evidence bytes and model summaries
+    /// stay inside the storage/Core boundary.
+    pub fn historical_evidence_page(
+        &self,
+        room_id: &RoomId,
+        after_room_seq: u64,
+        cut_room_seq: u64,
+    ) -> Result<PostgresHistoricalEvidencePageV1, PostgresHistoricalEvidenceErrorV1> {
+        if after_room_seq > cut_room_seq {
+            return Err(PostgresHistoricalEvidenceErrorV1::Corrupt);
+        }
+        if after_room_seq == cut_room_seq {
+            return Ok(PostgresHistoricalEvidencePageV1 {
+                outcome: HistoricalEvidencePageOutcomeV1::Exhausted,
+                references: Vec::new(),
+                next_after_room_seq: None,
+            });
+        }
+        let started = std::time::Instant::now();
+        let mut client = Client::connect(&self.config.dsn, self.config.tls.clone())
+            .map_err(|_| PostgresHistoricalEvidenceErrorV1::StorageUnavailable)?;
+        let min_row = client
+            .query_opt(
+                "SELECT min(room_seq) FROM worldstream_transitions WHERE room_id = $1",
+                &[&room_id.as_str()],
+            )
+            .map_err(|_| PostgresHistoricalEvidenceErrorV1::StorageUnavailable)?
+            .ok_or(PostgresHistoricalEvidenceErrorV1::Missing)?;
+        let min_sequence: Option<i64> = min_row
+            .try_get(0)
+            .map_err(|_| PostgresHistoricalEvidenceErrorV1::Corrupt)?;
+        let Some(min_sequence) = min_sequence else {
+            return Err(PostgresHistoricalEvidenceErrorV1::Missing);
+        };
+        let min_sequence =
+            u64::try_from(min_sequence).map_err(|_| PostgresHistoricalEvidenceErrorV1::Corrupt)?;
+        if after_room_seq.saturating_add(1) < min_sequence {
+            return Err(PostgresHistoricalEvidenceErrorV1::Pruned);
+        }
+        let after = i64::try_from(after_room_seq)
+            .map_err(|_| PostgresHistoricalEvidenceErrorV1::Corrupt)?;
+        let cut =
+            i64::try_from(cut_room_seq).map_err(|_| PostgresHistoricalEvidenceErrorV1::Corrupt)?;
+        let limit = i64::try_from(MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1 + 1)
+            .map_err(|_| PostgresHistoricalEvidenceErrorV1::Corrupt)?;
+        let rows = client
+            .query(
+                "SELECT room_seq, transition_bytes FROM worldstream_transitions \
+                 WHERE room_id = $1 AND room_seq > $2 AND room_seq <= $3 \
+                 ORDER BY room_seq LIMIT $4",
+                &[&room_id.as_str(), &after, &cut, &limit],
+            )
+            .map_err(|_| PostgresHistoricalEvidenceErrorV1::StorageUnavailable)?;
+        let mut references = Vec::with_capacity(MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1);
+        let mut encoded_bytes = 0_usize;
+        let has_more = rows.len() > MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1;
+        for row in rows
+            .into_iter()
+            .take(MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1)
+        {
+            if started.elapsed()
+                >= std::time::Duration::from_millis(MAX_HISTORICAL_EVIDENCE_TIME_MS_V1)
+            {
+                return Err(PostgresHistoricalEvidenceErrorV1::BudgetExceeded);
+            }
+            let sequence = u64::try_from(
+                row.try_get::<_, i64>(0)
+                    .map_err(|_| PostgresHistoricalEvidenceErrorV1::Corrupt)?,
+            )
+            .map_err(|_| PostgresHistoricalEvidenceErrorV1::Corrupt)?;
+            let bytes: Vec<u8> = row
+                .try_get(1)
+                .map_err(|_| PostgresHistoricalEvidenceErrorV1::Corrupt)?;
+            if bytes.is_empty() {
+                return Err(PostgresHistoricalEvidenceErrorV1::Retired);
+            }
+            if bytes.len() > MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1 {
+                return Err(PostgresHistoricalEvidenceErrorV1::BudgetExceeded);
+            }
+            let transition = TransitionV1::from_canonical_bytes(&bytes)
+                .map_err(|_| PostgresHistoricalEvidenceErrorV1::Corrupt)?;
+            if transition.room_seq().get() != sequence {
+                return Err(PostgresHistoricalEvidenceErrorV1::Corrupt);
+            }
+            let reference = HistoricalEvidenceReferenceV1::new(
+                sequence,
+                format!("transition-{sequence}"),
+                transition.transition_hash().to_string(),
+                transition.previous_lineage_hash().to_string(),
+                format!("room/{}/transition/{}", room_id, sequence),
+            )
+            .ok_or(PostgresHistoricalEvidenceErrorV1::Corrupt)?;
+            let size = reference.encoded_bytes();
+            if encoded_bytes.saturating_add(size) > MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1 {
+                return Err(PostgresHistoricalEvidenceErrorV1::BudgetExceeded);
+            }
+            encoded_bytes = encoded_bytes.saturating_add(size);
+            references.push(reference);
+        }
+        if references.is_empty() {
+            return Err(PostgresHistoricalEvidenceErrorV1::Missing);
+        }
+        let next = references
+            .last()
+            .map(HistoricalEvidenceReferenceV1::room_seq);
+        Ok(PostgresHistoricalEvidencePageV1 {
+            outcome: if has_more || next.is_some_and(|value| value < cut_room_seq) {
+                HistoricalEvidencePageOutcomeV1::Complete
+            } else {
+                HistoricalEvidencePageOutcomeV1::Exhausted
+            },
+            references,
+            next_after_room_seq: next,
+        })
     }
 
     /// Prepares and commits one Core-authorized Participant Action through
@@ -5784,51 +6068,136 @@ impl PostgresRoomStore {
             }
         } else {
             let cursor = cursor.ok_or(PostgresActivationError::Corrupt)?;
-            let rows = tx
-                .query(
-                    "SELECT frame_seq, cause_room_seq, payload_hash, payload_bytes FROM worldstream_frames WHERE room_id = $1 AND member_id = $2 AND frame_seq > $3 AND frame_seq <= $4 ORDER BY frame_seq",
-                    &[
-                        &room_id,
-                        &member_id,
-                        &i64::try_from(cursor).map_err(|_| PostgresActivationError::Corrupt)?,
-                        &i64::try_from(frame_head).map_err(|_| PostgresActivationError::Corrupt)?,
-                    ],
-                )
-                .map_err(PostgresActivationError::Sql)?;
             let mut previous = cursor;
             let mut frames = Vec::new();
-            for row in rows {
-                let frame_seq = postgres_nonnegative_u64(&row, 0)?;
-                let cause_seq = postgres_nonnegative_u64(&row, 1)?;
-                let stored_hash: Vec<u8> = row.try_get(2).map_err(PostgresActivationError::Sql)?;
-                let payload_bytes: Vec<u8> =
-                    row.try_get(3).map_err(PostgresActivationError::Sql)?;
-                let payload_hash =
-                    Blake3DigestV1::from_str(&format!("blake3:{}", hex_bytes(&stored_hash)))
-                        .map_err(|_| PostgresActivationError::Corrupt)?;
-                if frame_seq != previous.saturating_add(1)
-                    || cause_seq > trace.head().room_seq().get()
-                    || payload_hash != Blake3DigestV1::hash(&payload_bytes)
-                    || CanonicalJsonV1::from_canonical_bytes(&payload_bytes).is_err()
-                {
+            let mut payload_total = 0_usize;
+            let mut reset_for_context_limit = false;
+            loop {
+                let metadata = tx
+                    .query(
+                        "SELECT frame_seq, cause_room_seq, payload_hash, octet_length(payload_bytes) \
+                         FROM worldstream_frames WHERE room_id = $1 AND member_id = $2 \
+                         AND frame_seq > $3 AND frame_seq <= $4 ORDER BY frame_seq LIMIT $5",
+                        &[
+                            &room_id,
+                            &member_id,
+                            &i64::try_from(previous).map_err(|_| PostgresActivationError::Corrupt)?,
+                            &i64::try_from(frame_head).map_err(|_| PostgresActivationError::Corrupt)?,
+                            &i64::try_from(ACTIVATION_CONTEXT_FRAME_PAGE)
+                                .map_err(|_| PostgresActivationError::Corrupt)?,
+                        ],
+                    )
+                    .map_err(PostgresActivationError::Sql)?;
+                if metadata.is_empty() {
+                    if previous != frame_head {
+                        return Err(PostgresActivationError::Corrupt);
+                    }
+                    break;
+                }
+                let page_start = previous;
+                let mut expected = previous;
+                for row in &metadata {
+                    let frame_seq = postgres_nonnegative_u64(row, 0)?;
+                    let cause_seq = postgres_nonnegative_u64(row, 1)?;
+                    let payload_hash: Vec<u8> =
+                        row.try_get(2).map_err(PostgresActivationError::Sql)?;
+                    let length = usize::try_from(
+                        row.try_get::<_, i32>(3)
+                            .map_err(PostgresActivationError::Sql)?,
+                    )
+                    .map_err(|_| PostgresActivationError::Corrupt)?;
+                    if frame_seq != expected.saturating_add(1)
+                        || cause_seq > trace.head().room_seq().get()
+                        || Blake3DigestV1::from_str(&format!("blake3:{}", hex_bytes(&payload_hash)))
+                            .is_err()
+                    {
+                        return Err(PostgresActivationError::Corrupt);
+                    }
+                    expected = frame_seq;
+                    payload_total = payload_total
+                        .checked_add(length)
+                        .ok_or(PostgresActivationError::Corrupt)?;
+                    if frames.len() + metadata.len() > MAX_ACTIVATION_CONTEXT_FRAMES
+                        || length > MAX_ACTIVATION_CONTEXT_FRAME_PAYLOAD_BYTES
+                        || payload_total > MAX_ACTIVATION_CONTEXT_FRAME_PAYLOAD_BYTES
+                    {
+                        reset_for_context_limit = true;
+                        break;
+                    }
+                }
+                if reset_for_context_limit {
+                    break;
+                }
+                let payload_rows = tx
+                    .query(
+                        "SELECT frame_seq, cause_room_seq, payload_hash, payload_bytes \
+                         FROM worldstream_frames WHERE room_id = $1 AND member_id = $2 \
+                         AND frame_seq > $3 AND frame_seq <= $4 ORDER BY frame_seq",
+                        &[
+                            &room_id,
+                            &member_id,
+                            &i64::try_from(page_start)
+                                .map_err(|_| PostgresActivationError::Corrupt)?,
+                            &i64::try_from(expected)
+                                .map_err(|_| PostgresActivationError::Corrupt)?,
+                        ],
+                    )
+                    .map_err(PostgresActivationError::Sql)?;
+                if payload_rows.len() != metadata.len() {
                     return Err(PostgresActivationError::Corrupt);
                 }
-                previous = frame_seq;
-                frames.push(ActivationFrameV1 {
-                    frame_seq,
-                    cause_room_seq: RoomSequenceV1::new(cause_seq)
-                        .map_err(|_| PostgresActivationError::Corrupt)?,
-                    payload_hash,
-                    payload_bytes,
-                });
+                for (row, metadata_row) in payload_rows.iter().zip(metadata.iter()) {
+                    let frame_seq = postgres_nonnegative_u64(row, 0)?;
+                    let cause_seq = postgres_nonnegative_u64(row, 1)?;
+                    let payload_hash: Vec<u8> =
+                        row.try_get(2).map_err(PostgresActivationError::Sql)?;
+                    let payload_bytes: Vec<u8> =
+                        row.try_get(3).map_err(PostgresActivationError::Sql)?;
+                    let metadata_hash: Vec<u8> = metadata_row
+                        .try_get(2)
+                        .map_err(PostgresActivationError::Sql)?;
+                    if frame_seq != postgres_nonnegative_u64(metadata_row, 0)?
+                        || cause_seq != postgres_nonnegative_u64(metadata_row, 1)?
+                        || payload_hash != metadata_hash
+                        || usize::try_from(
+                            metadata_row
+                                .try_get::<_, i32>(3)
+                                .map_err(PostgresActivationError::Sql)?,
+                        )
+                        .ok()
+                            != Some(payload_bytes.len())
+                    {
+                        return Err(PostgresActivationError::Corrupt);
+                    }
+                    let payload_hash =
+                        Blake3DigestV1::from_str(&format!("blake3:{}", hex_bytes(&payload_hash)))
+                            .map_err(|_| PostgresActivationError::Corrupt)?;
+                    if payload_hash != Blake3DigestV1::hash(&payload_bytes)
+                        || CanonicalJsonV1::from_canonical_bytes(&payload_bytes).is_err()
+                    {
+                        return Err(PostgresActivationError::Corrupt);
+                    }
+                    frames.push(ActivationFrameV1 {
+                        frame_seq,
+                        cause_room_seq: RoomSequenceV1::new(cause_seq)
+                            .map_err(|_| PostgresActivationError::Corrupt)?,
+                        payload_hash,
+                        payload_bytes,
+                    });
+                }
+                previous = expected;
             }
-            if previous != frame_head {
-                return Err(PostgresActivationError::Corrupt);
-            }
-            ActivationDeliveryV1::RetainedFrames {
-                cursor_exclusive: cursor,
-                through_frame_head: frame_head,
-                frames,
+            if reset_for_context_limit {
+                ActivationDeliveryV1::ProjectionReset {
+                    baseline_frame_head: frame_head,
+                    reason: "invocation_context_limit".to_owned(),
+                }
+            } else {
+                ActivationDeliveryV1::RetainedFrames {
+                    cursor_exclusive: cursor,
+                    through_frame_head: frame_head,
+                    frames,
+                }
             }
         };
         let runner_budget_bytes = postgres_canonical_bytes(&serde_json::json!({
@@ -5867,7 +6236,12 @@ impl PostgresRoomStore {
             artifact_references: Vec::new(),
             delivery,
         })
-        .map_err(|_| PostgresActivationError::InvalidRequest)?;
+        .map_err(|error| match error {
+            worldstream_core::ActivationContextErrorV1::TooLarge => {
+                PostgresActivationError::ContextTooLarge
+            }
+            _ => PostgresActivationError::InvalidRequest,
+        })?;
         tx.commit().map_err(PostgresActivationError::Sql)?;
         Ok(PostgresActivationClaimPreparationV1::Prepared(Box::new(
             PostgresActivationClaimV1 {
@@ -5960,7 +6334,7 @@ impl PostgresRoomStore {
         let context_hash = Blake3DigestV1::hash(&context_bytes);
         if deadline_expired {
             tx.execute(
-                "UPDATE worldstream_activation_intents SET state = 'expired', intent_generation = intent_generation + 1 WHERE room_id = $1 AND activation_id = $2 AND state = 'pending'",
+                "UPDATE worldstream_activation_intents SET state = 'expired', terminal_disposition = 'expired', terminal_at = to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'), intent_generation = intent_generation + 1 WHERE room_id = $1 AND activation_id = $2 AND state = 'pending'",
                 &[&room_id, &activation_id],
             ).map_err(PostgresActivationError::Sql)?;
             let result = postgres_activation_result(
@@ -6137,7 +6511,7 @@ impl PostgresRoomStore {
         }
         if deadline_expired {
             tx.execute(
-                "UPDATE worldstream_activation_intents SET state = 'expired', intent_generation = intent_generation + 1 WHERE room_id = $1 AND activation_id = $2 AND state = 'pending'",
+                "UPDATE worldstream_activation_intents SET state = 'expired', terminal_disposition = 'expired', terminal_at = to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'), intent_generation = intent_generation + 1 WHERE room_id = $1 AND activation_id = $2 AND state = 'pending'",
                 &[&room_id, &activation_id],
             )
             .map_err(PostgresActivationError::Sql)?;
@@ -6276,7 +6650,7 @@ impl PostgresRoomStore {
             expected
         };
         let changed = tx.execute(
-            "UPDATE worldstream_activation_intents SET state = $1, runner_id = CASE WHEN $1 = 'pending' THEN NULL ELSE runner_id END, claim_id = CASE WHEN $1 = 'pending' THEN NULL ELSE claim_id END, lease_until = $2, lease_generation = $3 WHERE room_id = $4 AND activation_id = $5 AND state = 'leased' AND runner_id = $6 AND claim_id = $7 AND lease_generation = $8",
+            "UPDATE worldstream_activation_intents SET state = $1, runner_id = CASE WHEN $1 = 'pending' THEN NULL ELSE runner_id END, claim_id = CASE WHEN $1 = 'pending' THEN NULL ELSE claim_id END, lease_until = $2, terminal_disposition = CASE WHEN $1 = 'completed' THEN 'completed' ELSE terminal_disposition END, terminal_at = CASE WHEN $1 = 'completed' THEN to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') ELSE NULL END, lease_generation = $3 WHERE room_id = $4 AND activation_id = $5 AND state = 'leased' AND runner_id = $6 AND claim_id = $7 AND lease_generation = $8",
             &[
                 &next_state,
                 &next_until,
@@ -6839,7 +7213,7 @@ impl RoomCommitStorageV1 for PostgresRoomStore {
         };
         let result = self.commit_transaction(&mut transaction, prepared);
         match result {
-            Ok(resolution) => {
+            Ok((resolution, snapshot_work)) => {
                 if !matches!(
                     &resolution,
                     RoomCommitResolutionV1::GenesisCreated { .. }
@@ -6857,6 +7231,13 @@ impl RoomCommitStorageV1 for PostgresRoomStore {
                 if let Err(error) = transaction.commit() {
                     self.record_error(&error);
                     return RoomCommitResolutionV1::Indeterminate;
+                }
+                if let Some(work) = snapshot_work {
+                    // Snapshots are a disposable recovery cache.  The
+                    // canonical transaction is already committed here;
+                    // failure is intentionally swallowed and the next due
+                    // commit will try again.
+                    let _ = self.persist_post_commit_snapshot(&work);
                 }
                 if self.take_failpoint(PostgresFailpoint::UnknownAfterCommit) {
                     RoomCommitResolutionV1::Indeterminate
@@ -7082,6 +7463,8 @@ fn postgres_validate_activation_context(
                 "reset_marked"
             } else if cursor.is_some_and(|value| value.saturating_add(1) < retained_floor) {
                 "retained_range_unavailable"
+            } else if reason == "invocation_context_limit" {
+                "invocation_context_limit"
             } else {
                 return Err(PostgresActivationError::Fenced);
             };
@@ -7270,6 +7653,34 @@ fn postgres_activation_offers(
     room_id: &str,
     member_id: &str,
 ) -> Result<Vec<PostgresActivationOfferV1>, PostgresActivationError> {
+    let age_ms = i64::try_from(MAX_PENDING_REFRESH_AGE_MS_V1)
+        .map_err(|_| PostgresActivationError::Corrupt)?;
+    tx.execute(
+        r#"UPDATE worldstream_activation_intents SET state = 'cancelled', runner_id = NULL, claim_id = NULL,
+         lease_until = NULL, intent_generation = intent_generation + 1,
+         lease_generation = lease_generation + 1, terminal_disposition = 'refresh_age_exceeded',
+         terminal_at = to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+         WHERE room_id = $1 AND target_member_id = $2 AND state = 'pending'
+         AND semantic_deadline IS NULL AND created_at != ''
+         AND created_at::timestamptz <= clock_timestamp() - ($3::bigint * interval '1 millisecond')"#,
+        &[&room_id, &member_id, &age_ms],
+    )
+    .map_err(PostgresActivationError::Sql)?;
+    let executions: i64 = tx
+        .query_one(
+            r#"SELECT count(*) FROM worldstream_activation_intents
+             WHERE room_id = $1 AND target_member_id = $2 AND state = 'completed'
+             AND terminal_at::timestamptz >= clock_timestamp() - interval '1 minute'"#,
+            &[&room_id, &member_id],
+        )
+        .map_err(PostgresActivationError::Sql)?
+        .try_get(0)
+        .map_err(PostgresActivationError::Sql)?;
+    if u64::try_from(executions).map_err(|_| PostgresActivationError::Corrupt)?
+        >= MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1
+    {
+        return Ok(Vec::new());
+    }
     let rows = tx.query(
         "SELECT activation_id, target_member_id, cause_room_seq, reason_code, priority, semantic_deadline, policy_revision FROM worldstream_activation_intents WHERE room_id = $1 AND target_member_id = $2 AND state = 'pending' ORDER BY priority DESC, cause_room_seq, activation_id",
         &[&room_id, &member_id],
@@ -7454,12 +7865,35 @@ enum CommitDecision {
     Provider(postgres::Error),
 }
 
+const SNAPSHOT_TRANSITION_INTERVAL: i64 = 250;
+
+#[must_use]
+fn snapshot_cadence_due_for(next_count: i64, time_due: bool) -> bool {
+    next_count >= SNAPSHOT_TRANSITION_INTERVAL || time_due
+}
+
+/// Bytes selected while the canonical transaction is still open.  The
+/// snapshot itself is written by a separate best-effort transaction after the
+/// canonical receipt has committed, so a disposable-cache failure cannot
+/// roll back Room history.
+#[derive(Clone, Debug)]
+struct PostgresSnapshotWork {
+    room_id: String,
+    room_seq: i64,
+    previous_last_snapshot_room_seq: i64,
+    transitions_since_snapshot: i64,
+    head: CompleteHeadV1,
+    head_bytes: Vec<u8>,
+    core_state_bytes: Vec<u8>,
+    activity_state_bytes: Vec<u8>,
+}
+
 impl PostgresRoomStore {
     fn commit_transaction(
         &self,
         tx: &mut Transaction<'_>,
         prepared: &PreparedRoomWriteV1,
-    ) -> Result<RoomCommitResolutionV1, CommitDecision> {
+    ) -> Result<(RoomCommitResolutionV1, Option<PostgresSnapshotWork>), CommitDecision> {
         let identity_bytes = prepared
             .identity()
             .canonical_bytes()
@@ -7483,9 +7917,12 @@ impl PostgresRoomStore {
                     hex_bytes(&stored_hash)
                 ))
                 .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?;
-                return Ok(RoomCommitResolutionV1::Conflict {
-                    existing_request_hash,
-                });
+                return Ok((
+                    RoomCommitResolutionV1::Conflict {
+                        existing_request_hash,
+                    },
+                    None,
+                ));
             }
             let Some(bytes) = stored_receipt else {
                 return Err(CommitDecision::Resolution(
@@ -7494,9 +7931,9 @@ impl PostgresRoomStore {
             };
             let stored = StoredSemanticResultV1::from_canonical_receipt_bytes(&bytes)
                 .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?;
-            return Ok(RoomCommitResolutionV1::resolved(
-                ResolutionStatusV1::Existing,
-                stored,
+            return Ok((
+                RoomCommitResolutionV1::resolved(ResolutionStatusV1::Existing, stored),
+                None,
             ));
         }
         let authority_current = match prepared {
@@ -7508,7 +7945,7 @@ impl PostgresRoomStore {
             }
         };
         if !authority_current {
-            return Ok(RoomCommitResolutionV1::Fenced);
+            return Ok((RoomCommitResolutionV1::Fenced, None));
         }
         let identity_bytes = prepared
             .identity()
@@ -7578,7 +8015,7 @@ impl PostgresRoomStore {
         tx: &mut Transaction<'_>,
         create: &worldstream_core::PreparedRoomCreationV1,
         identity_bytes: &[u8],
-    ) -> Result<RoomCommitResolutionV1, CommitDecision> {
+    ) -> Result<(RoomCommitResolutionV1, Option<PostgresSnapshotWork>), CommitDecision> {
         let _ = self;
         let persistence = create.persistence();
         let room_id = persistence.complete_head.room_id().to_string();
@@ -7597,16 +8034,16 @@ impl PostgresRoomStore {
             )
             .map_err(CommitDecision::Provider)?;
         if claimed_root.is_none() {
-            return Ok(RoomCommitResolutionV1::Reprepare);
+            return Ok((RoomCommitResolutionV1::Reprepare, None));
         }
         insert_creation(tx, persistence).map_err(CommitDecision::Provider)?;
         let receipt = create.semantic_result().canonical_receipt_bytes().to_vec();
         tx.execute("UPDATE worldstream_operation_guards SET room_id = $1, receipt_bytes = $2 WHERE identity_bytes = $3", &[&room_id, &receipt, &identity_bytes]).map_err(CommitDecision::Provider)?;
         persist_semantic_receipt(tx, create.semantic_result(), identity_bytes)?;
         let stored = create.semantic_result().clone();
-        Ok(RoomCommitResolutionV1::resolved(
-            ResolutionStatusV1::New,
-            stored,
+        Ok((
+            RoomCommitResolutionV1::resolved(ResolutionStatusV1::New, stored),
+            None,
         ))
     }
 
@@ -7615,12 +8052,12 @@ impl PostgresRoomStore {
         tx: &mut Transaction<'_>,
         existing: &worldstream_core::PreparedRoomCommitV1,
         identity_bytes: &[u8],
-    ) -> Result<RoomCommitResolutionV1, CommitDecision> {
+    ) -> Result<(RoomCommitResolutionV1, Option<PostgresSnapshotWork>), CommitDecision> {
         let _ = self;
         let room_id = existing.basis_complete_head().room_id().to_string();
         let row = tx.query_opt("SELECT head_bytes, integrity_generation, integrity_status FROM worldstream_room_roots WHERE room_id = $1 FOR UPDATE", &[&room_id]).map_err(CommitDecision::Provider)?;
         let Some(row) = row else {
-            return Ok(RoomCommitResolutionV1::Fault);
+            return Ok((RoomCommitResolutionV1::Fault, None));
         };
         let head_bytes: Vec<u8> = row
             .try_get(0)
@@ -7634,12 +8071,12 @@ impl PostgresRoomStore {
         if status != "healthy"
             || generation != i64::try_from(existing.integrity_generation().get()).unwrap_or(-1)
         {
-            return Ok(RoomCommitResolutionV1::Fenced);
+            return Ok((RoomCommitResolutionV1::Fenced, None));
         }
         let head = CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&head_bytes)
             .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?;
         if &head != existing.basis_complete_head() {
-            return Ok(RoomCommitResolutionV1::Reprepare);
+            return Ok((RoomCommitResolutionV1::Reprepare, None));
         }
         match existing.intent() {
             PreparedExistingIntentV1::DurableDisposition => {
@@ -7660,20 +8097,31 @@ impl PostgresRoomStore {
                     || advance.transition.resulting_authoritative_state_hash()
                         != advance.resulting_complete_head.authoritative_state_hash()
                 {
-                    return Ok(RoomCommitResolutionV1::Fault);
+                    return Ok((RoomCommitResolutionV1::Fault, None));
                 }
                 validate_advance_witnesses(tx, &room_id, existing, advance)?;
-                persist_advance(tx, &room_id, existing.integrity_generation(), advance)?;
+                let snapshot_work =
+                    persist_advance(tx, &room_id, existing.integrity_generation(), advance)?;
                 let receipt = existing
                     .semantic_result()
                     .canonical_receipt_bytes()
                     .to_vec();
                 finish_receipt(tx, existing, &receipt, identity_bytes)?;
+                return Ok((
+                    RoomCommitResolutionV1::resolved(
+                        ResolutionStatusV1::New,
+                        existing.semantic_result().clone(),
+                    ),
+                    snapshot_work,
+                ));
             }
         }
-        Ok(RoomCommitResolutionV1::resolved(
-            ResolutionStatusV1::New,
-            existing.semantic_result().clone(),
+        Ok((
+            RoomCommitResolutionV1::resolved(
+                ResolutionStatusV1::New,
+                existing.semantic_result().clone(),
+            ),
+            None,
         ))
     }
 }
@@ -7838,6 +8286,10 @@ fn insert_creation(
         &p.canonical_core_state_bytes,
         &p.canonical_activity_state_bytes,
     )?;
+    tx.execute(
+        "INSERT INTO worldstream_room_snapshot_schedules(room_id, last_snapshot_room_seq, transitions_since_snapshot, active_started_at) VALUES ($1, 0, 0, NULL) ON CONFLICT (room_id) DO NOTHING",
+        &[&head],
+    )?;
     Ok(())
 }
 
@@ -7867,6 +8319,98 @@ fn persist_snapshot(
         ],
     )?;
     Ok(())
+}
+
+fn snapshot_cadence_due(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    room_seq: i64,
+) -> Result<(bool, i64, i64), postgres::Error> {
+    let now: String = tx
+        .query_one(
+            "SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')",
+            &[],
+        )?
+        .try_get(0)?;
+    let stored = tx.query_opt(
+        "SELECT last_snapshot_room_seq, transitions_since_snapshot, active_started_at FROM worldstream_room_snapshot_schedules WHERE room_id = $1 FOR UPDATE",
+        &[&room_id],
+    )?;
+    let (last_snapshot_room_seq, transitions_since_snapshot, active_started_at) = if let Some(row) =
+        stored
+    {
+        (row.try_get(0)?, row.try_get(1)?, row.try_get(2)?)
+    } else {
+        let last: i64 = tx
+            .query_one(
+                "SELECT COALESCE(MAX(room_seq), 0) FROM worldstream_room_snapshots WHERE room_id = $1",
+                &[&room_id],
+            )?
+            .try_get(0)?;
+        (last, room_seq.saturating_sub(last).saturating_sub(1), None)
+    };
+    let next_count = transitions_since_snapshot.saturating_add(1);
+    let active_started_at = active_started_at.or_else(|| Some(now.clone()));
+    let time_due = if let Some(start) = active_started_at.as_deref() {
+        tx.query_one(
+            "SELECT ($1::timestamptz + interval '5 minutes' <= $2::timestamptz)",
+            &[&start, &now],
+        )?
+        .try_get(0)?
+    } else {
+        false
+    };
+    Ok((
+        snapshot_cadence_due_for(next_count, time_due),
+        last_snapshot_room_seq,
+        next_count,
+    ))
+}
+
+fn record_snapshot_cadence_advance(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    last_snapshot_room_seq: i64,
+    next_count: i64,
+) -> Result<(), postgres::Error> {
+    let now: String = tx
+        .query_one(
+            "SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')",
+            &[],
+        )?
+        .try_get(0)?;
+    tx.execute(
+        "INSERT INTO worldstream_room_snapshot_schedules(room_id, last_snapshot_room_seq, transitions_since_snapshot, active_started_at) VALUES ($1, $2, $3, $4) ON CONFLICT (room_id) DO UPDATE SET transitions_since_snapshot = EXCLUDED.transitions_since_snapshot, active_started_at = COALESCE(worldstream_room_snapshot_schedules.active_started_at, EXCLUDED.active_started_at)",
+        &[&room_id, &last_snapshot_room_seq, &next_count, &Some(now)],
+    )?;
+    Ok(())
+}
+
+impl PostgresRoomStore {
+    fn persist_post_commit_snapshot(&self, work: &PostgresSnapshotWork) -> Result<(), ()> {
+        let mut client = self.connect().map_err(|_| ())?;
+        let mut tx = client.transaction().map_err(|_| ())?;
+        persist_snapshot(
+            &mut tx,
+            &work.room_id,
+            &work.head,
+            &work.head_bytes,
+            &work.core_state_bytes,
+            &work.activity_state_bytes,
+        )
+        .map_err(|_| ())?;
+        tx.execute(
+            "DELETE FROM worldstream_room_snapshots WHERE room_id = $1 AND room_seq NOT IN (SELECT room_seq FROM worldstream_room_snapshots WHERE room_id = $1 ORDER BY room_seq DESC LIMIT 3)",
+            &[&work.room_id],
+        )
+        .map_err(|_| ())?;
+        tx.execute(
+            "UPDATE worldstream_room_snapshot_schedules SET last_snapshot_room_seq = $1, transitions_since_snapshot = 0, active_started_at = NULL WHERE room_id = $2 AND last_snapshot_room_seq = $3 AND transitions_since_snapshot = $4",
+            &[&work.room_seq, &work.room_id, &work.previous_last_snapshot_room_seq, &work.transitions_since_snapshot],
+        )
+        .map_err(|_| ())?;
+        tx.commit().map_err(|_| ())
+    }
 }
 
 fn insert_member(
@@ -7906,8 +8450,17 @@ fn persist_advance(
     room_id: &str,
     expected_integrity_generation: worldstream_core::IntegrityGenerationV1,
     advance: &PreparedAdvancePersistenceV1,
-) -> Result<(), CommitDecision> {
+) -> Result<Option<PostgresSnapshotWork>, CommitDecision> {
     let seq = i64::try_from(advance.transition.room_seq().get()).unwrap_or(-1);
+    let (snapshot_due, previous_last_snapshot_room_seq, transitions_since_snapshot) =
+        snapshot_cadence_due(tx, room_id, seq).map_err(CommitDecision::Provider)?;
+    record_snapshot_cadence_advance(
+        tx,
+        room_id,
+        previous_last_snapshot_room_seq,
+        transitions_since_snapshot,
+    )
+    .map_err(CommitDecision::Provider)?;
     tx.execute("INSERT INTO worldstream_transitions(room_id, room_seq, transition_bytes) VALUES ($1, $2, $3)", &[&room_id, &seq, &advance.canonical_transition_bytes]).map_err(CommitDecision::Provider)?;
     let changed = tx
         .execute(
@@ -7928,15 +8481,6 @@ fn persist_advance(
     if changed != 1 {
         return Err(CommitDecision::Resolution(RoomCommitResolutionV1::Fault));
     }
-    persist_snapshot(
-        tx,
-        room_id,
-        &advance.resulting_complete_head,
-        &advance.canonical_resulting_head_bytes,
-        &advance.canonical_resulting_core_state_bytes,
-        &advance.canonical_resulting_activity_state_bytes,
-    )
-    .map_err(CommitDecision::Provider)?;
     persist_members_and_cancel_activations(tx, room_id, advance)?;
     for mutation in &advance.timer_changes {
         persist_timer_mutation(tx, room_id, mutation)?;
@@ -7964,7 +8508,28 @@ fn persist_advance(
                 return Err(CommitDecision::Resolution(RoomCommitResolutionV1::Fault));
             };
             let attention = &decision_record.attention;
-            tx.execute("INSERT INTO worldstream_activation_intents(activation_id, room_id, cause_room_seq, decision_id, target_member_id, reason_code, deduplication_key, priority, semantic_deadline, policy_revision, state, intent_generation, lease_generation) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', 1, 0)", &[
+            let attention_bytes = ACTIVATION_ATTENTION_ROW_OVERHEAD_BYTES_V1
+                .checked_add(
+                    i64::try_from(attention.reason_code.len())
+                        .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?
+                        as u64,
+                )
+                .and_then(|bytes| {
+                    bytes.checked_add(u64::try_from(attention.deduplication_key.len()).ok()?)
+                })
+                .ok_or(CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?;
+            let refreshable = attention.semantic_deadline.is_none();
+            if refreshable && attention_bytes <= MAX_PENDING_REFRESH_BYTES_V1 {
+                supersede_refresh_intents(
+                    tx,
+                    &room_id,
+                    &attention.target_member_id.to_string(),
+                    activation_id,
+                    attention_bytes,
+                )?;
+            }
+            let oversized_refresh = refreshable && attention_bytes > MAX_PENDING_REFRESH_BYTES_V1;
+            tx.execute(r#"INSERT INTO worldstream_activation_intents(activation_id, room_id, cause_room_seq, decision_id, target_member_id, reason_code, deduplication_key, priority, semantic_deadline, policy_revision, state, intent_generation, lease_generation, created_at, attention_bytes, terminal_disposition) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 1, 0, to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), $12, $13)"#, &[
                 &activation_id,
                 &room_id,
                 &seq,
@@ -7975,10 +8540,78 @@ fn persist_advance(
                 &i64::from(attention.priority),
                 &attention.semantic_deadline.as_ref().map(ToString::to_string),
                 &i64::try_from(decision_record.policy.policy_revision).unwrap_or(-1),
+                &if oversized_refresh { "cancelled" } else { "pending" },
+                &i64::try_from(attention_bytes).map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?,
+                &if oversized_refresh { Some("refresh_capacity_exceeded") } else { None },
             ]).map_err(CommitDecision::Provider)?;
         }
     }
-    Ok(())
+    Ok(snapshot_due.then(|| PostgresSnapshotWork {
+        room_id: room_id.to_owned(),
+        room_seq: seq,
+        previous_last_snapshot_room_seq,
+        transitions_since_snapshot,
+        head: advance.resulting_complete_head.clone(),
+        head_bytes: advance.canonical_resulting_head_bytes.clone(),
+        core_state_bytes: advance.canonical_resulting_core_state_bytes.clone(),
+        activity_state_bytes: advance.canonical_resulting_activity_state_bytes.clone(),
+    }))
+}
+
+fn supersede_refresh_intents(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    target_member_id: &str,
+    superseding_activation_id: &str,
+    incoming_bytes: u64,
+) -> Result<(), CommitDecision> {
+    loop {
+        let row = tx
+            .query_one(
+                "SELECT count(*), coalesce(sum(attention_bytes), 0) FROM worldstream_activation_intents \
+                 WHERE room_id = $1 AND target_member_id = $2 AND state = 'pending' \
+                 AND semantic_deadline IS NULL",
+                &[&room_id, &target_member_id],
+            )
+            .map_err(CommitDecision::Provider)?;
+        let count: i64 = row.try_get(0).map_err(CommitDecision::Provider)?;
+        let bytes: i64 = row.try_get(1).map_err(CommitDecision::Provider)?;
+        let count = u64::try_from(count)
+            .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?;
+        let bytes = u64::try_from(bytes)
+            .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?;
+        if activation_refresh_budget_allows_v1(count, bytes, incoming_bytes) {
+            return Ok(());
+        }
+        let candidate = tx
+            .query_opt(
+                "SELECT activation_id FROM worldstream_activation_intents \
+                 WHERE room_id = $1 AND target_member_id = $2 AND state = 'pending' \
+                 AND semantic_deadline IS NULL ORDER BY created_at, cause_room_seq, activation_id LIMIT 1",
+                &[&room_id, &target_member_id],
+            )
+            .map_err(CommitDecision::Provider)?;
+        let Some(candidate) = candidate else {
+            return Ok(());
+        };
+        let candidate_id: String = candidate.try_get(0).map_err(CommitDecision::Provider)?;
+        let changed = tx
+            .execute(
+                r#"UPDATE worldstream_activation_intents SET state = 'cancelled', runner_id = NULL, claim_id = NULL,
+                 lease_until = NULL, intent_generation = intent_generation + 1,
+                 lease_generation = lease_generation + 1, terminal_disposition = 'superseded_refresh',
+                 superseded_by_activation_id = $1,
+                 terminal_at = to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+                 WHERE room_id = $2 AND activation_id = $3 AND state = 'pending' AND semantic_deadline IS NULL"#,
+                &[&superseding_activation_id, &room_id, &candidate_id],
+            )
+            .map_err(CommitDecision::Provider)?;
+        if changed != 1 {
+            return Err(CommitDecision::Resolution(
+                RoomCommitResolutionV1::Reprepare,
+            ));
+        }
+    }
 }
 
 fn persist_members_and_cancel_activations(
@@ -8016,14 +8649,14 @@ fn persist_members_and_cancel_activations(
     }
     if advance.resulting_core_state.room_status() == worldstream_core::RoomStatusV1::Archived {
         tx.execute(
-            "UPDATE worldstream_activation_intents SET state = 'cancelled', runner_id = NULL, claim_id = NULL, lease_until = NULL, intent_generation = intent_generation + 1, lease_generation = lease_generation + 1 WHERE room_id = $1 AND state IN ('pending', 'leased')",
+            "UPDATE worldstream_activation_intents SET state = 'cancelled', runner_id = NULL, claim_id = NULL, lease_until = NULL, intent_generation = intent_generation + 1, lease_generation = lease_generation + 1, terminal_disposition = 'cancelled', terminal_at = to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') WHERE room_id = $1 AND state IN ('pending', 'leased')",
             &[&room_id],
         )
         .map_err(CommitDecision::Provider)?;
     } else {
         for member_id in changed_members {
             tx.execute(
-                "UPDATE worldstream_activation_intents SET state = 'cancelled', runner_id = NULL, claim_id = NULL, lease_until = NULL, intent_generation = intent_generation + 1, lease_generation = lease_generation + 1 WHERE room_id = $1 AND target_member_id = $2 AND state IN ('pending', 'leased')",
+                "UPDATE worldstream_activation_intents SET state = 'cancelled', runner_id = NULL, claim_id = NULL, lease_until = NULL, intent_generation = intent_generation + 1, lease_generation = lease_generation + 1, terminal_disposition = 'cancelled', terminal_at = to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') WHERE room_id = $1 AND target_member_id = $2 AND state IN ('pending', 'leased')",
                 &[&room_id, &member_id],
             )
             .map_err(CommitDecision::Provider)?;
@@ -8839,6 +9472,16 @@ fn fixture_apply_witnesses(
 #[cfg(test)]
 mod native_hydration_tests {
     use super::*;
+
+    #[test]
+    fn snapshot_cadence_selects_count_or_active_time_before_work_is_materialized() {
+        assert!(!snapshot_cadence_due_for(249, false));
+        assert!(snapshot_cadence_due_for(250, false));
+        assert!(snapshot_cadence_due_for(1, true));
+        // A failed post-commit write leaves the durable count due, so a later
+        // commit retries without changing canonical history.
+        assert!(snapshot_cadence_due_for(250, false));
+    }
 
     #[test]
     fn transfer_safety_catalog_contract_matches_the_reviewed_migration() {

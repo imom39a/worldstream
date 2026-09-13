@@ -82,6 +82,9 @@ const REQUIRED_MIGRATIONS: &[&str] = &[
     "0012-transfer-backup-file-identity-v1",
     "0013-external-input-preparations-v1",
     "0014-observation-retention-v1",
+    "0015-snapshot-cadence-v1",
+    "0016-activation-backlog-policy-v1",
+    "0017-stream-transfer-v2",
 ];
 const REQUIRED_MIGRATION_CHECKSUMS: &[&str] = &[
     "blake3:dd07208c71d7165b93861883b25411b1e7c33a6be36fc2be28a638e1ab5cd763",
@@ -97,7 +100,14 @@ const REQUIRED_MIGRATION_CHECKSUMS: &[&str] = &[
     "blake3:4605547211cde35f16fecf1d156b91d9ca24c39fc24b9fe875f29dcb491965b9",
     "blake3:2097e928196db3f2c572818b4ac87e436512df6f2e9f0cd098521a90366651f0",
     "blake3:153136e4d0fff3ffee1a02c0349fec8a2c1c907b636ce3396276177518225ac6",
+    "blake3:db914b00013cc9d7a341eabe081411f6583893f036547ed9db2c35be3866e9d6",
+    "blake3:495d58fdc81fee0b6b87d8973f4445b4892da22608e459033eaa333c0d4078a4",
+    "blake3:aaa152c1107748f774197bd8a59600150e9d209c7e4eb14ec5e911394b23c3e2",
 ];
+// These are reviewed shipped prefixes, rather than an arbitrary version
+// range. A retained backup must present one exact contiguous ledger through
+// the corresponding release boundary.
+const SUPPORTED_MIGRATION_COUNTS: &[usize] = &[13, 15, 16];
 
 /// The `SQLite` engine selected by the workspace's bundled rusqlite build.
 pub const BUNDLED_SQLITE_VERSION: &str = "3.53.4";
@@ -109,6 +119,63 @@ pub struct NativeSqliteLimits {
     pub max_rows: usize,
     /// Maximum bytes captured from one native query's stdout.
     pub max_output_bytes: usize,
+}
+
+/// Per-row and schema bounds for the streaming retained-backup verifier.
+///
+/// Unlike NativeSqliteLimits, these bounds do not cap total rows or total
+/// database bytes. The verifier advances each relation cursor incrementally,
+/// so a complete deployment larger than the legacy bundle limits remains
+/// verifiable without retaining all rows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeSqliteStreamingLimitsV2 {
+    /// Maximum exact bytes admitted from one native row.
+    pub max_row_bytes: usize,
+    /// Maximum table names admitted from the schema inventory.
+    pub max_tables: usize,
+}
+
+impl Default for NativeSqliteStreamingLimitsV2 {
+    fn default() -> Self {
+        Self {
+            max_row_bytes: 16 * 1024 * 1024,
+            max_tables: 1024,
+        }
+    }
+}
+
+/// Source-side evidence produced by a retained, incrementally verified
+/// SQLite backup. It contains only bounded summaries; no BackupImageV1 or
+/// all-record collection is constructed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeSqliteStreamingVerificationV2 {
+    /// Exact durable transfer-point digest, compatible with the source
+    /// lifecycle backup_digest witness.
+    transfer_point_digest: [u8; 32],
+    /// Count of every modeled operational relation.
+    operational_relation_counts: BTreeMap<String, u64>,
+    /// Digest over exact modeled operational rows in scan order.
+    operational_row_digest: [u8; 32],
+}
+
+impl NativeSqliteStreamingVerificationV2 {
+    /// Returns the exact source lifecycle transfer-point digest.
+    #[must_use]
+    pub const fn transfer_point_digest(&self) -> [u8; 32] {
+        self.transfer_point_digest
+    }
+
+    /// Returns the complete bounded operational relation inventory.
+    #[must_use]
+    pub fn operational_relation_counts(&self) -> &BTreeMap<String, u64> {
+        &self.operational_relation_counts
+    }
+
+    /// Returns the exact modeled operational-row digest.
+    #[must_use]
+    pub const fn operational_row_digest(&self) -> [u8; 32] {
+        self.operational_row_digest
+    }
 }
 
 /// One exact `SQLite` value returned by the bounded native extraction seam.
@@ -1241,7 +1308,7 @@ fn extract_restore_evidence_at_coordinate(
                 ),
                 limits,
             )?;
-            let valid = rows.len() == REQUIRED_MIGRATIONS.len()
+            let valid = SUPPORTED_MIGRATION_COUNTS.contains(&rows.len())
                 && rows.iter().enumerate().all(|(index, row)| {
                     native_integer(row, 0, "migration version")
                         .ok()
@@ -1687,6 +1754,281 @@ pub fn durable_transfer_point_digest_retained(
     Ok(digest)
 }
 
+/// Incrementally verifies one retained SQLite backup and derives the exact
+/// transfer-point/native-operational manifest inputs for a v2 stream export.
+///
+/// The scan never constructs BackupImageV1, NativeSqliteOperationalRowsV1, or
+/// a full record vector. It hashes rows as they are read and applies only
+/// per-row/schema bounds, allowing a source to exceed legacy 100k/64 MiB
+/// bundle limits while still proving that its named backup object stayed
+/// stable through the complete scan.
+pub fn verify_retained_file_streaming_v2(
+    path: &Path,
+    file: &File,
+    limits: NativeSqliteStreamingLimitsV2,
+) -> Result<NativeSqliteStreamingVerificationV2, NativeSqliteError> {
+    if limits.max_row_bytes == 0 || limits.max_tables == 0 {
+        return Err(NativeSqliteError::OutputBoundExceeded);
+    }
+    let identity = native_file_identity(file)?;
+    if native_path_identity(path).ok() != Some(identity) {
+        return Err(NativeSqliteError::InvalidPath);
+    }
+    let coordinate = retained_native_query_coordinate(path, file, identity)?;
+    let connection = open_native_read_connection(coordinate.file(), coordinate.path())?;
+    connection
+        .busy_timeout(Duration::from_millis(50))
+        .and_then(|()| connection.execute_batch("PRAGMA query_only=ON; BEGIN;"))
+        .map_err(|_| NativeSqliteError::QueryFailed)?;
+    let integrity: String = connection
+        .query_row("PRAGMA integrity_check", (), |row| row.get(0))
+        .map_err(|_| NativeSqliteError::QueryFailed)?;
+    if integrity != "ok" {
+        return Err(NativeSqliteError::InvalidRow {
+            what: "streaming integrity check",
+        });
+    }
+    let actual_tables = connection
+        .prepare(
+            r"
+SELECT name FROM sqlite_schema
+WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+ORDER BY name",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map((), |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|_| NativeSqliteError::QueryFailed)?;
+    if actual_tables.len() > limits.max_tables {
+        return Err(NativeSqliteError::OutputBoundExceeded);
+    }
+    let actual_set = actual_tables.iter().cloned().collect::<BTreeSet<_>>();
+    if REQUIRED_TABLES
+        .iter()
+        .any(|table| !actual_set.contains(*table))
+    {
+        return Err(NativeSqliteError::InvalidRow {
+            what: "streaming required table",
+        });
+    }
+    verify_streaming_migration_contract_at_connection(&connection, limits)?;
+    let transfer_point_digest =
+        durable_transfer_point_digest_streaming_at_connection(&connection, &actual_tables, limits)?;
+    let mut operational_hasher = blake3::Hasher::new();
+    operational_hasher.update(b"worldstream/sqlite-stream-operational/v2");
+    let mut operational_relation_counts = BTreeMap::new();
+    for (table, _) in OPERATIONAL_QUERIES {
+        let quoted = table.replace('"', r#""""#);
+        let mut statement = connection
+            .prepare(&format!("SELECT * FROM \"{quoted}\" ORDER BY rowid"))
+            .map_err(|_| NativeSqliteError::QueryFailed)?;
+        let columns = statement.column_count();
+        let mut rows = statement
+            .query(())
+            .map_err(|_| NativeSqliteError::QueryFailed)?;
+        let mut count = 0_u64;
+        while let Some(row) = rows.next().map_err(|_| NativeSqliteError::QueryFailed)? {
+            operational_hasher.update(table.as_bytes());
+            digest_streaming_native_row(&mut operational_hasher, row, columns, limits)?;
+            count = count
+                .checked_add(1)
+                .ok_or(NativeSqliteError::OutputBoundExceeded)?;
+        }
+        operational_relation_counts.insert((*table).to_owned(), count);
+    }
+    drop(connection);
+    if native_file_identity(file)? != identity || native_path_identity(path).ok() != Some(identity)
+    {
+        return Err(NativeSqliteError::InvalidPath);
+    }
+    coordinate.revalidate()?;
+    Ok(NativeSqliteStreamingVerificationV2 {
+        transfer_point_digest,
+        operational_relation_counts,
+        operational_row_digest: *operational_hasher.finalize().as_bytes(),
+    })
+}
+
+/// Verifies the small migration ledger incrementally without treating its
+/// row count as proof of the reviewed contract.  The accepted counts are
+/// deliberately enumerated release prefixes, and every row must carry the
+/// matching contiguous version, logical ID, and source checksum.
+fn verify_streaming_migration_contract_at_connection(
+    connection: &Connection,
+    limits: NativeSqliteStreamingLimitsV2,
+) -> Result<(), NativeSqliteError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT version, migration_id, source_checksum \
+             FROM schema_migrations ORDER BY version, rowid",
+        )
+        .map_err(|_| NativeSqliteError::QueryFailed)?;
+    let mut rows = statement
+        .query(())
+        .map_err(|_| NativeSqliteError::QueryFailed)?;
+    let mut count = 0_usize;
+    while let Some(row) = rows.next().map_err(|_| NativeSqliteError::QueryFailed)? {
+        let Some(expected_id) = REQUIRED_MIGRATIONS.get(count) else {
+            return Err(NativeSqliteError::InvalidRow {
+                what: "streaming migration contract",
+            });
+        };
+        let expected_checksum =
+            REQUIRED_MIGRATION_CHECKSUMS
+                .get(count)
+                .ok_or(NativeSqliteError::InvalidRow {
+                    what: "streaming migration contract",
+                })?;
+        let ValueRef::Integer(version) =
+            row.get_ref(0).map_err(|_| NativeSqliteError::QueryFailed)?
+        else {
+            return Err(NativeSqliteError::InvalidRow {
+                what: "streaming migration contract",
+            });
+        };
+        let ValueRef::Text(migration_id) =
+            row.get_ref(1).map_err(|_| NativeSqliteError::QueryFailed)?
+        else {
+            return Err(NativeSqliteError::InvalidRow {
+                what: "streaming migration contract",
+            });
+        };
+        let ValueRef::Text(checksum) =
+            row.get_ref(2).map_err(|_| NativeSqliteError::QueryFailed)?
+        else {
+            return Err(NativeSqliteError::InvalidRow {
+                what: "streaming migration contract",
+            });
+        };
+        if migration_id.len() > limits.max_row_bytes || checksum.len() > limits.max_row_bytes {
+            return Err(NativeSqliteError::OutputBoundExceeded);
+        }
+        if usize::try_from(version).ok() != Some(count + 1)
+            || migration_id != expected_id.as_bytes()
+            || checksum != expected_checksum.as_bytes()
+        {
+            return Err(NativeSqliteError::InvalidRow {
+                what: "streaming migration contract",
+            });
+        }
+        count = count
+            .checked_add(1)
+            .ok_or(NativeSqliteError::OutputBoundExceeded)?;
+    }
+    if !SUPPORTED_MIGRATION_COUNTS.contains(&count) {
+        return Err(NativeSqliteError::InvalidRow {
+            what: "streaming migration contract",
+        });
+    }
+    Ok(())
+}
+
+fn durable_transfer_point_digest_streaming_at_connection(
+    connection: &Connection,
+    tables: &[String],
+    limits: NativeSqliteStreamingLimitsV2,
+) -> Result<[u8; 32], NativeSqliteError> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"worldstream/sqlite-transfer-point/v1");
+    let mut statement = connection
+        .prepare(
+            r"
+SELECT type, name, tbl_name, sql FROM sqlite_schema
+WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+ORDER BY type, name, tbl_name",
+        )
+        .map_err(|_| NativeSqliteError::QueryFailed)?;
+    let mut rows = statement
+        .query(())
+        .map_err(|_| NativeSqliteError::QueryFailed)?;
+    while let Some(row) = rows.next().map_err(|_| NativeSqliteError::QueryFailed)? {
+        for index in 0..4 {
+            let ValueRef::Text(value) = row
+                .get_ref(index)
+                .map_err(|_| NativeSqliteError::QueryFailed)?
+            else {
+                return Err(NativeSqliteError::InvalidRow {
+                    what: "streaming digest schema",
+                });
+            };
+            if value.len() > limits.max_row_bytes {
+                return Err(NativeSqliteError::OutputBoundExceeded);
+            }
+            digest_native_length(&mut hasher, value.len())?;
+            hasher.update(value);
+        }
+    }
+    drop(rows);
+    drop(statement);
+    for table in tables {
+        if table == "source_transfer_lifecycle" {
+            continue;
+        }
+        digest_native_length(&mut hasher, table.len())?;
+        hasher.update(table.as_bytes());
+        let quoted = table.replace('"', r#""""#);
+        let mut statement = connection
+            .prepare(&format!("SELECT * FROM \"{quoted}\" ORDER BY rowid"))
+            .map_err(|_| NativeSqliteError::QueryFailed)?;
+        let columns = statement.column_count();
+        let mut rows = statement
+            .query(())
+            .map_err(|_| NativeSqliteError::QueryFailed)?;
+        while let Some(row) = rows.next().map_err(|_| NativeSqliteError::QueryFailed)? {
+            hasher.update(b"row");
+            digest_streaming_native_row(&mut hasher, row, columns, limits)?;
+        }
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
+
+fn digest_streaming_native_row(
+    hasher: &mut blake3::Hasher,
+    row: &Row<'_>,
+    columns: usize,
+    limits: NativeSqliteStreamingLimitsV2,
+) -> Result<(), NativeSqliteError> {
+    let mut row_bytes = 0_usize;
+    for index in 0..columns {
+        match row
+            .get_ref(index)
+            .map_err(|_| NativeSqliteError::QueryFailed)?
+        {
+            ValueRef::Null => {
+                hasher.update(&[0]);
+            }
+            ValueRef::Integer(value) => {
+                row_bytes = row_bytes.saturating_add(std::mem::size_of::<i64>());
+                hasher.update(&[1]);
+                hasher.update(&value.to_le_bytes());
+            }
+            ValueRef::Real(value) => {
+                row_bytes = row_bytes.saturating_add(std::mem::size_of::<f64>());
+                hasher.update(&[2]);
+                hasher.update(&value.to_bits().to_le_bytes());
+            }
+            ValueRef::Text(value) => {
+                row_bytes = row_bytes.saturating_add(value.len());
+                hasher.update(&[3]);
+                digest_native_length(hasher, value.len())?;
+                hasher.update(value);
+            }
+            ValueRef::Blob(value) => {
+                row_bytes = row_bytes.saturating_add(value.len());
+                hasher.update(&[4]);
+                digest_native_length(hasher, value.len())?;
+                hasher.update(value);
+            }
+        }
+        if row_bytes > limits.max_row_bytes {
+            return Err(NativeSqliteError::OutputBoundExceeded);
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_lines)]
 fn durable_transfer_point_digest_at_connection(
     connection: &Connection,
@@ -1956,8 +2298,8 @@ fn verify_file_at_coordinate(
         "schema_migrations",
     )?;
     let migration_count = migrations.len();
-    for (index, expected) in REQUIRED_MIGRATIONS.iter().enumerate() {
-        let valid = migrations.get(index).is_some_and(|row| {
+    for (index, row) in migrations.iter().enumerate() {
+        let valid = REQUIRED_MIGRATIONS.get(index).is_some_and(|expected| {
             row.len() == 3
                 && row[0].parse::<usize>().ok() == Some(index + 1)
                 && row[1] == *expected
@@ -1973,7 +2315,7 @@ fn verify_file_at_coordinate(
             break;
         }
     }
-    if migrations.len() != REQUIRED_MIGRATIONS.len() {
+    if !SUPPORTED_MIGRATION_COUNTS.contains(&migrations.len()) {
         diagnostic(
             &mut diagnostics,
             "migration_contract_mismatch",
@@ -2604,7 +2946,7 @@ fn verify_operational_rows(
     if let Some(rows) = evidence.tables.get("activation_intents") {
         counts.activation_intent_count = rows.len();
         for row in rows {
-            let valid = row.values.len() == 19
+            let valid = (row.values.len() == 19 || row.values.len() == 24)
                 && text_value(&row.values, 0).is_some_and(|activation_id| {
                     let room_id = text_value(&row.values, 1);
                     let state = text_value(&row.values, 10);
@@ -2640,6 +2982,30 @@ fn verify_operational_rows(
                                     .is_some_and(|hash| blake3::hash(value).as_bytes() == hash)
                             })
                             && (retired == Some(0) || retired == Some(1))
+                            // Rows created before migration 0016 retain the
+                            // original 19-column shape and remain valid.
+                            && (row.values.len() == 19
+                                || (text_value(&row.values, 19).is_some()
+                                    && integer_value(&row.values, 20)
+                                        .is_some_and(|value| value >= 0)
+                                    && (text_value_or_null(&row.values, 21).is_none()
+                                        || matches!(
+                                            text_value_or_null(&row.values, 21),
+                                            Some(
+                                                "superseded_refresh"
+                                                    | "refresh_capacity_exceeded"
+                                                    | "refresh_age_exceeded"
+                                                    | "completed"
+                                                    | "expired"
+                                                    | "cancelled"
+                                            )
+                                        ))
+                                    && (text_value_or_null(&row.values, 22).is_none()
+                                        || text_value_or_null(&row.values, 22)
+                                            .is_some_and(|value| !value.is_empty()))
+                                    && (text_value_or_null(&row.values, 23).is_none()
+                                        || text_value_or_null(&row.values, 23)
+                                            .is_some_and(|value| !value.is_empty()))))
                             && (!leased
                                 || integer_value(&row.values, 12).is_some_and(|value| value > 0))
                     })
@@ -5059,7 +5425,7 @@ mod tests {
                  CREATE TABLE observation_frames(room_id TEXT, member_id TEXT, frame_seq INTEGER, cause_room_seq INTEGER, payload_hash TEXT, payload_bytes BLOB, retained_at TEXT);\
                  CREATE TABLE observation_consequences(room_id TEXT, member_id TEXT, cause_room_seq INTEGER, consequence_kind TEXT, payload_bytes BLOB, projection_hash TEXT);\
                  CREATE TABLE activation_decisions(room_id TEXT, cause_room_seq INTEGER, decision_id TEXT, target_member_id TEXT, decision_bytes BLOB);\
-                 CREATE TABLE activation_intents(activation_id TEXT, room_id TEXT, cause_room_seq INTEGER, decision_id TEXT, target_member_id TEXT, reason_code TEXT, deduplication_key TEXT, priority INTEGER, semantic_deadline TEXT, policy_revision INTEGER, state TEXT, intent_generation INTEGER, lease_generation INTEGER, runner_id TEXT, claim_id TEXT, lease_until TEXT, context_hash BLOB, context_bytes BLOB, context_retired INTEGER);\
+                 CREATE TABLE activation_intents(activation_id TEXT, room_id TEXT, cause_room_seq INTEGER, decision_id TEXT, target_member_id TEXT, reason_code TEXT, deduplication_key TEXT, priority INTEGER, semantic_deadline TEXT, policy_revision INTEGER, state TEXT, intent_generation INTEGER, lease_generation INTEGER, runner_id TEXT, claim_id TEXT, lease_until TEXT, context_hash BLOB, context_bytes BLOB, context_retired INTEGER, created_at TEXT, attention_bytes INTEGER, terminal_disposition TEXT, superseded_by_activation_id TEXT, terminal_at TEXT);\
                  CREATE TABLE activation_operation_receipts(room_id TEXT, operation_id TEXT, operation_kind TEXT, canonical_request_hash BLOB, activation_id TEXT, result_code TEXT, result_bytes BLOB, context_hash BLOB, context_bytes BLOB);\
                  CREATE TABLE semantic_receipts(room_id TEXT, operation_kind TEXT, operation_identity_bytes BLOB, codec_id TEXT, canonical_request_hash BLOB, basis_complete_head_bytes BLOB, semantic_input_bytes BLOB, semantic_time_bytes BLOB, resolution_kind TEXT, transition_seq INTEGER, stored_resolution_bytes BLOB, committed_at TEXT);\
                  CREATE TABLE external_input_preparations(operation_identity_bytes BLOB, canonical_request_hash BLOB, recorded_at TEXT);\
@@ -5411,7 +5777,7 @@ mod tests {
             })?;
         connection
             .execute(
-                "INSERT INTO activation_intents VALUES ('activation-1', ?1, 1, 'decision-1', ?2, 'reason', 'dedup', 0, NULL, 1, 'pending', 1, 0, NULL, NULL, NULL, NULL, NULL, 0)",
+                "INSERT INTO activation_intents VALUES ('activation-1', ?1, 1, 'decision-1', ?2, 'reason', 'dedup', 0, NULL, 1, 'pending', 1, 0, NULL, NULL, NULL, NULL, NULL, 0, '2026-01-01T00:00:00Z', 128, NULL, NULL, NULL)",
                 params![room_id, member_id],
             )
             .map_err(|_| NativeSqliteError::NativeOperationFailed {
@@ -5495,7 +5861,7 @@ mod tests {
             migration_contract: MigrationContractV1 {
                 logical_history_id: "worldstream-storage-v1".to_owned(),
                 schema_contract_fingerprint: DigestV1::parse(
-                    "5dd5bac169e8cce8c6620c463e2d64ffee16ead73200559a1209ae3b2c173f8c".to_owned(),
+                    "4c5ec1d25273f4a7ae1d899a1c7df4655d0d0b1d3a44e73a359adc79800c4398".to_owned(),
                 )
                 .unwrap(),
                 records,
@@ -5765,6 +6131,124 @@ mod tests {
         assert_eq!(report.transition_count, 1);
         assert_eq!(report.valid_snapshot_count, 1);
         assert_eq!(report.disposable_snapshot_count, 0);
+        let _ = fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_retained_verifier_matches_the_lifecycle_digest_without_a_bundle_image()
+    -> Result<(), NativeSqliteError> {
+        let path = create_fixture("streaming-verifier")?;
+        let file = File::open(&path).map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let streaming = verify_retained_file_streaming_v2(
+            &path,
+            &file,
+            NativeSqliteStreamingLimitsV2::default(),
+        )?;
+        let legacy_digest =
+            durable_transfer_point_digest_retained(&path, &file, NativeSqliteLimits::default())?;
+        assert_eq!(streaming.transfer_point_digest(), legacy_digest);
+        assert_eq!(
+            streaming.operational_relation_counts().len(),
+            OPERATIONAL_QUERIES.len()
+        );
+        assert!(
+            streaming
+                .operational_relation_counts()
+                .contains_key("external_input_preparations")
+        );
+        assert_ne!(streaming.operational_row_digest(), [0_u8; 32]);
+        assert_eq!(
+            verify_retained_file_streaming_v2(
+                &path,
+                &file,
+                NativeSqliteStreamingLimitsV2 {
+                    max_row_bytes: 1,
+                    max_tables: 1024,
+                },
+            ),
+            Err(NativeSqliteError::OutputBoundExceeded)
+        );
+        let _ = fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_retained_verifier_requires_the_reviewed_stream_migration_ledger()
+    -> Result<(), NativeSqliteError> {
+        let path = create_fixture("streaming-migration-ledger")?;
+        let connection = Connection::open(&path)
+            .map_err(|_| NativeSqliteError::NativeOperationFailed { operation: "open" })?;
+        connection
+            .execute_batch(
+                "INSERT INTO schema_migrations VALUES \
+                 (14, '0015-snapshot-cadence-v1', \
+                  'blake3:db914b00013cc9d7a341eabe081411f6583893f036547ed9db2c35be3866e9d6');",
+            )
+            .map_err(|_| NativeSqliteError::NativeOperationFailed {
+                operation: "insert snapshot cadence migration",
+            })?;
+        drop(connection);
+        let file = File::open(&path).map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        assert_eq!(
+            verify_retained_file_streaming_v2(
+                &path,
+                &file,
+                NativeSqliteStreamingLimitsV2::default(),
+            ),
+            Err(NativeSqliteError::InvalidRow {
+                what: "streaming migration contract",
+            })
+        );
+        drop(file);
+
+        let connection = Connection::open(&path)
+            .map_err(|_| NativeSqliteError::NativeOperationFailed { operation: "open" })?;
+        connection
+            .execute_batch(
+                "INSERT INTO schema_migrations VALUES \
+                 (15, '0016-activation-backlog-policy-v1', \
+                  'blake3:495d58fdc81fee0b6b87d8973f4445b4892da22608e459033eaa333c0d4078a4'), \
+                 (16, '0017-stream-transfer-v2', \
+                  'blake3:aaa152c1107748f774197bd8a59600150e9d209c7e4eb14ec5e911394b23c3e2');",
+            )
+            .map_err(|_| NativeSqliteError::NativeOperationFailed {
+                operation: "insert stream migration",
+            })?;
+        drop(connection);
+        let file = File::open(&path).map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        assert!(
+            verify_retained_file_streaming_v2(
+                &path,
+                &file,
+                NativeSqliteStreamingLimitsV2::default(),
+            )
+            .is_ok()
+        );
+        drop(file);
+
+        let connection = Connection::open(&path)
+            .map_err(|_| NativeSqliteError::NativeOperationFailed { operation: "open" })?;
+        connection
+            .execute(
+                "UPDATE schema_migrations SET source_checksum = 'tampered' WHERE version = 16",
+                (),
+            )
+            .map_err(|_| NativeSqliteError::NativeOperationFailed {
+                operation: "tamper stream migration",
+            })?;
+        drop(connection);
+        let file = File::open(&path).map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        assert_eq!(
+            verify_retained_file_streaming_v2(
+                &path,
+                &file,
+                NativeSqliteStreamingLimitsV2::default(),
+            ),
+            Err(NativeSqliteError::InvalidRow {
+                what: "streaming migration contract",
+            })
+        );
         let _ = fs::remove_file(path);
         Ok(())
     }

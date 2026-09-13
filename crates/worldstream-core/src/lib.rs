@@ -46,11 +46,16 @@ mod session;
 mod trace;
 
 pub use activation::{
-    ActivationAttentionV1, ActivationContextErrorV1, ActivationContextInputV1,
-    ActivationDecisionV1, ActivationDeliveryV1, ActivationFrameV1, ActivationIntentStateV1,
-    ActivationInvocationContextV1, ActivationOperationRequestV1, ActivationOperationResultV1,
-    ActivationPolicyDecisionV1, ActivationPolicyDispositionV1, ActivationResultCodeV1,
-    ActivationShapeErrorV1, activation_id_for_attention_v1, prepare_activation_context,
+    ACTIVATION_ATTENTION_POLICY_REVISION_V1, ACTIVATION_ATTENTION_ROW_OVERHEAD_BYTES_V1,
+    ActivationAttentionClassV1, ActivationAttentionV1, ActivationContextErrorV1,
+    ActivationContextInputV1, ActivationDecisionV1, ActivationDeliveryV1, ActivationFrameV1,
+    ActivationIntentStateV1, ActivationInvocationContextV1, ActivationOperationRequestV1,
+    ActivationOperationResultV1, ActivationPolicyDecisionV1, ActivationPolicyDispositionV1,
+    ActivationResultCodeV1, ActivationShapeErrorV1, MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1,
+    MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES, MAX_PENDING_REFRESH_ACTIVATIONS_V1,
+    MAX_PENDING_REFRESH_AGE_MS_V1, MAX_PENDING_REFRESH_BYTES_V1, activation_id_for_attention_v1,
+    activation_refresh_budget_allows_v1, prepare_activation_context,
+    prepare_activation_context_with_byte_limit,
 };
 pub use activity_pack::{
     ACTION_OFFER_DOMAIN, ACTIVITY_PACK_HOST_CONTRACT_ID, ACTIVITY_PACK_OPERATION_CODEC_ID,
@@ -84,6 +89,11 @@ pub use agent_heist_lobby::{
     AGENT_HEIST_LOBBY_CONTRACT, AGENT_HEIST_LOBBY_VERSION, AgentHeistLobbyV2,
     HOST_LAUNCH_INPUT_TYPE, HOST_LOBBY_LAUNCH_SOURCE, agent_heist_lobby_launch_applicable,
 };
+
+/// The sole generic external-input kind admitted by the v1 gateway surface.
+/// Activity Packs still decide whether this typed input is semantically valid.
+pub const EXTERNAL_INPUT_INGRESS_SOURCE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FH2";
+pub const EXTERNAL_INPUT_INGRESS_TYPE: &str = "worldstream.external_input.v1";
 pub use agent_heist_lobby_v3::{
     AGENT_HEIST_LOBBY_VERSION as AGENT_HEIST_CLOCK_SAFE_VERSION, AgentHeistLobbyV3,
 };
@@ -182,9 +192,9 @@ pub use room_commit::{
     RoomCommitResolutionV1, RoomCommitStorageV1, RoomCreationCommitOutcomeV1,
     RoomCreationIngressV1, RoomCreationPendingAttemptV1, RoomCreationReprepareV1,
     RoomCreationRequestV1, RoomCreationResolveV1, RoomCreationRetryV1, RoomOperationIngressErrorV1,
-    RoomRecoveryCandidateV1, RoomRecoveryErrorV1, RoomRecoveryStorageV1, SemanticResultV1,
-    StoredSemanticResultV1, TimerFiredReprepareV1, TimerFiredRequestV1, TimerOperationIdentityV1,
-    TimerReprepareOutcomeV1, VerifiedCurrentRoomMaterializationV1,
+    RoomRecoveryCandidateV1, RoomRecoveryCheckpointV1, RoomRecoveryErrorV1, RoomRecoveryStorageV1,
+    SemanticResultV1, StoredSemanticResultV1, TimerFiredReprepareV1, TimerFiredRequestV1,
+    TimerOperationIdentityV1, TimerReprepareOutcomeV1, VerifiedCurrentRoomMaterializationV1,
     authorize_core_administration_operation, authorize_participant_action_operation,
     authorize_room_creation_operation, commit_existing_room, commit_room_creation,
     external_input_request_hash, resolve_authorized_room_operation_for_adapter,
@@ -201,12 +211,15 @@ pub use session::{
     SessionFrameV1, SessionPublishOutcomeV1, SessionStateV1, SessionSyncTokenV1, SessionV1,
 };
 pub use trace::{
-    AdvanceDispositionV1, CoreReducerV1, CoreTraceV1, HistoricalReplayAccumulatorV1,
-    HistoricalReplayErrorV1, HistoricalReplayProjectionRequestV1, HistoricalReplayProjectionV1,
-    PackFaultV1, PreparedCoreStateV1, PreparedRoomTransitionV1, ReplayActivationDecisionWitnessV1,
-    ReplayFailureClassV1, ReplayFailureV1, ReplayMembershipWitnessV1,
-    ReplayObservationPositionWitnessV1, ReplayReportV1, ReplayStepV1, ReplayStorageVerificationV1,
-    RoomTransitionPreparerV1, RoomTransitionStateV1, TraceErrorV1, VerifiedCoreStateV1,
+    AdvanceDispositionV1, CoreReducerV1, CoreTraceV1, HistoricalEvidencePageOutcomeV1,
+    HistoricalEvidenceReferenceV1, HistoricalReplayAccumulatorV1, HistoricalReplayErrorV1,
+    HistoricalReplayProjectionRequestV1, HistoricalReplayProjectionV1,
+    MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1,
+    MAX_HISTORICAL_EVIDENCE_TIME_MS_V1, PackFaultV1, PreparedCoreStateV1, PreparedRoomTransitionV1,
+    ReplayActivationDecisionWitnessV1, ReplayFailureClassV1, ReplayFailureV1,
+    ReplayMembershipWitnessV1, ReplayObservationPositionWitnessV1, ReplayReportV1, ReplayStepV1,
+    ReplayStorageVerificationV1, RoomTransitionPreparerV1, RoomTransitionStateV1, TraceErrorV1,
+    VerifiedCoreStateV1,
 };
 
 #[cfg(test)]

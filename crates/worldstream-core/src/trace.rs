@@ -1450,6 +1450,201 @@ impl CoreTraceV1 {
         Self::replay_registry(registry, genesis_bytes, transition_bytes, true)
     }
 
+    /// Reconstructs an executor from a storage-verified checkpoint and folds
+    /// only the immutable Transition tail after that checkpoint.  The
+    /// checkpoint is never trusted for lineage: its record, Head, hashes,
+    /// materializations, timer ledger, and retained pack are checked before
+    /// the first tail reduction.
+    pub(crate) fn replay_checkpoint_for_recovery(
+        registry: &PackRegistryV1,
+        genesis_bytes: &[u8],
+        checkpoint: &crate::RoomRecoveryCheckpointV1,
+        transition_bytes: &[Vec<u8>],
+    ) -> Result<ReplayReportV1, ReplayFailureV1> {
+        let genesis = decode_replay_genesis(genesis_bytes)?;
+        let room_seed = genesis.room_seed.clone();
+        let checkpoint_head = checkpoint.head().clone();
+        if checkpoint_head.room_id() != genesis.room_id() {
+            return Err(ReplayFailureV1::without_head(
+                ReplayFailureClassV1::Sequence,
+                "checkpoint is outside the captured recovery range".to_owned(),
+            ));
+        }
+        let request = pack_genesis_request_from_record(&genesis);
+        let verified = registry
+            .prepare_genesis_for_retained_room(&request)
+            .map_err(|error| map_retained_genesis_error(&error, checkpoint_head.clone()))?;
+        verify_retained_genesis_matches_record(&genesis, &verified)?;
+        let retained_pack = verified.retained_pack().clone();
+        let transition_preparer = RoomTransitionPreparerV1::from_retained_pack(
+            retained_pack.clone(),
+            genesis.room_seed.clone(),
+        );
+        let core_state =
+            CanonicalJsonV1::decode_canonical::<CoreRoomStateV1>(checkpoint.core_state_bytes())
+                .map_err(|_| {
+                    ReplayFailureV1::with_head(
+                        ReplayFailureClassV1::NonCanonicalRecord,
+                        "checkpoint Core state is not canonical".to_owned(),
+                        checkpoint_head.clone(),
+                    )
+                })?;
+        let activity_state = CanonicalJsonV1::from_canonical_bytes(
+            checkpoint.activity_state_bytes(),
+        )
+        .map_err(|_| {
+            ReplayFailureV1::with_head(
+                ReplayFailureClassV1::NonCanonicalRecord,
+                "checkpoint Activity state is not canonical".to_owned(),
+                checkpoint_head.clone(),
+            )
+        })?;
+        transition_preparer
+            .core_reducer
+            .validate_state(core_state.clone())
+            .map_err(|error| {
+                ReplayFailureV1::with_head(
+                    ReplayFailureClassV1::CoreInvariant,
+                    error.to_string(),
+                    checkpoint_head.clone(),
+                )
+            })?;
+        if hash_core_state(&core_state).map_err(|error| {
+            ReplayFailureV1::with_head(
+                ReplayFailureClassV1::CanonicalEncoding,
+                error.to_string(),
+                checkpoint_head.clone(),
+            )
+        })? != *checkpoint_head.core_state_hash()
+            || hash_activity_state(&checkpoint_head.pack_digest(), &activity_state).map_err(
+                |error| {
+                    ReplayFailureV1::with_head(
+                        ReplayFailureClassV1::CanonicalEncoding,
+                        error.to_string(),
+                        checkpoint_head.clone(),
+                    )
+                },
+            )? != *checkpoint_head.activity_state_hash()
+            || hash_authoritative_state(
+                &checkpoint_head.pack_digest(),
+                checkpoint_head.core_state_hash(),
+                checkpoint_head.activity_state_hash(),
+            )
+            .map_err(|error| {
+                ReplayFailureV1::with_head(
+                    ReplayFailureClassV1::CanonicalEncoding,
+                    error.to_string(),
+                    checkpoint_head.clone(),
+                )
+            })? != *checkpoint_head.authoritative_state_hash()
+        {
+            return Err(ReplayFailureV1::with_head(
+                ReplayFailureClassV1::CoreState,
+                "checkpoint materialization hash mismatch".to_owned(),
+                checkpoint_head.clone(),
+            ));
+        }
+        let record_head = if checkpoint_head.room_seq().get() == 0 {
+            let record =
+                GenesisV1::from_canonical_bytes(checkpoint.record_bytes()).map_err(|_| {
+                    ReplayFailureV1::with_head(
+                        ReplayFailureClassV1::NonCanonicalRecord,
+                        "checkpoint Genesis is not canonical".to_owned(),
+                        checkpoint_head.clone(),
+                    )
+                })?;
+            validate_stored_genesis_integrity(&record).map_err(|error| {
+                ReplayFailureV1::with_head(
+                    ReplayFailureClassV1::CoreInvariant,
+                    error.to_string(),
+                    checkpoint_head.clone(),
+                )
+            })?;
+            record.complete_head()
+        } else {
+            let record =
+                TransitionV1::from_canonical_bytes(checkpoint.record_bytes()).map_err(|_| {
+                    ReplayFailureV1::with_head(
+                        ReplayFailureClassV1::NonCanonicalRecord,
+                        "checkpoint Transition is not canonical".to_owned(),
+                        checkpoint_head.clone(),
+                    )
+                })?;
+            validate_stored_transition_hashes(&record).map_err(|(class, detail)| {
+                ReplayFailureV1::with_head(class, detail, checkpoint_head.clone())
+            })?;
+            record.complete_head()
+        };
+        if record_head != checkpoint_head
+            || core_state.canonical_bytes().map_err(|_| {
+                ReplayFailureV1::without_head(
+                    ReplayFailureClassV1::CanonicalEncoding,
+                    "checkpoint Core encoding failed".to_owned(),
+                )
+            })? != checkpoint.core_state_bytes()
+            || activity_state.to_bytes().map_err(|_| {
+                ReplayFailureV1::without_head(
+                    ReplayFailureClassV1::CanonicalEncoding,
+                    "checkpoint Activity encoding failed".to_owned(),
+                )
+            })? != checkpoint.activity_state_bytes()
+        {
+            return Err(ReplayFailureV1::with_head(
+                ReplayFailureClassV1::LineageHash,
+                "checkpoint record and materializations disagree".to_owned(),
+                checkpoint_head.clone(),
+            ));
+        }
+        let timers = TimerBookV1::from_checkpoint(checkpoint.timers()).map_err(|error| {
+            ReplayFailureV1::with_head(
+                ReplayFailureClassV1::CoreInvariant,
+                error.to_string(),
+                checkpoint_head.clone(),
+            )
+        })?;
+        let mut trace = Self {
+            genesis,
+            transitions: Vec::new(),
+            core_state,
+            activity_state,
+            head: checkpoint_head.clone(),
+            timers,
+            administration_results: BTreeMap::new(),
+            activity_callback_count: AtomicUsize::new(0),
+            administrative_receipt_count: 0,
+            room_seed,
+            retained_pack: Some(retained_pack),
+            preparer: transition_preparer,
+        };
+        let mut steps = Vec::new();
+        for bytes in transition_bytes {
+            let last_verified_head = trace.head.clone();
+            trace.replay_stored_transition(bytes, None)?;
+            steps.push(ReplayStepV1::transition(&trace, bytes).map_err(|error| {
+                ReplayFailureV1::with_head(
+                    ReplayFailureClassV1::CanonicalEncoding,
+                    error.to_string(),
+                    last_verified_head,
+                )
+            })?);
+        }
+        let final_state = trace.transition_state();
+        let final_head = trace.head.clone();
+        let continuation_preparer = trace.preparer.clone();
+        let activity_callback_count = trace.activity_callback_count.load(AtomicOrdering::Relaxed);
+        Ok(ReplayReportV1 {
+            final_head,
+            final_state,
+            continuation_preparer,
+            continuation_trace: trace,
+            observation_consequences: Vec::new(),
+            steps,
+            activity_callback_count,
+            external_effect_count: 0,
+            receipt_count: 0,
+        })
+    }
+
     pub(crate) fn preflight_recovery_materializations(
         genesis_bytes: &[u8],
         transition_bytes: &[Vec<u8>],
@@ -2218,6 +2413,43 @@ struct TimerBookV1 {
 }
 
 impl TimerBookV1 {
+    fn from_checkpoint(
+        rows: &[crate::RecoveredTimerMaterializationV1],
+    ) -> Result<Self, TraceErrorV1> {
+        let mut scheduled = BTreeMap::new();
+        let mut last_generation = BTreeMap::new();
+        for row in rows {
+            if last_generation
+                .insert(row.timer_id().clone(), row.generation())
+                .is_some_and(|previous| previous >= row.generation())
+            {
+                return Err(TraceErrorV1::InvalidTimerNormalization);
+            }
+            if row.state() == crate::RecoveredTimerStateV1::Scheduled {
+                let payload = CanonicalJsonV1::from_canonical_bytes(row.canonical_payload_bytes())
+                    .map_err(|_| TraceErrorV1::InvalidTimerNormalization)?;
+                if scheduled
+                    .insert(
+                        row.timer_id().clone(),
+                        ScheduledTimerV1 {
+                            timer_id: row.timer_id().clone(),
+                            generation: row.generation(),
+                            scheduled_for: row.scheduled_for().clone(),
+                            canonical_payload: payload,
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(TraceErrorV1::InvalidTimerNormalization);
+                }
+            }
+        }
+        Ok(Self {
+            scheduled,
+            last_generation,
+        })
+    }
+
     fn from_genesis(initial: &[ScheduledTimerV1], created_at: &str) -> Result<Self, TraceErrorV1> {
         if initial
             .windows(2)
@@ -2896,6 +3128,111 @@ impl ReplayObservationFrameV1 {
     #[must_use]
     pub(crate) const fn payload_hash(&self) -> &Blake3DigestV1 {
         &self.payload_hash
+    }
+}
+
+/// Maximum references returned by one external historical-evidence page.
+pub const MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1: usize = 128;
+/// Maximum encoded reference bytes returned by one external evidence page.
+pub const MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1: usize = 256 * 1024;
+/// Maximum wall-clock capture time for one external evidence page.
+pub const MAX_HISTORICAL_EVIDENCE_TIME_MS_V1: u64 = 250;
+
+/// Storage result for one bounded evidence page.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HistoricalEvidencePageOutcomeV1 {
+    Complete,
+    Exhausted,
+    Missing,
+    Pruned,
+    Retired,
+}
+
+/// One durable, privacy-safe pointer into retained historical evidence.
+///
+/// The pointer contains lineage metadata and an addressable reference only;
+/// canonical Transition/Genesis bytes and model summaries deliberately never
+/// cross this boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoricalEvidenceReferenceV1 {
+    room_seq: u64,
+    transition_id: String,
+    transition_hash: String,
+    previous_lineage_hash: String,
+    evidence_reference: String,
+}
+
+impl HistoricalEvidenceReferenceV1 {
+    /// Constructs one bounded reference from verified retained metadata.
+    pub fn new(
+        room_seq: u64,
+        transition_id: String,
+        transition_hash: String,
+        previous_lineage_hash: String,
+        evidence_reference: String,
+    ) -> Option<Self> {
+        if room_seq == 0
+            || transition_id.is_empty()
+            || transition_hash.is_empty()
+            || previous_lineage_hash.is_empty()
+            || evidence_reference.is_empty()
+            || transition_id.len() > 128
+            || transition_hash.len() > 128
+            || previous_lineage_hash.len() > 128
+            || evidence_reference.len() > 512
+            || !transition_id.bytes().all(|byte| byte.is_ascii_graphic())
+            || !transition_hash.bytes().all(|byte| byte.is_ascii_graphic())
+            || !previous_lineage_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic())
+            || !evidence_reference
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic())
+        {
+            return None;
+        }
+        Some(Self {
+            room_seq,
+            transition_id,
+            transition_hash,
+            previous_lineage_hash,
+            evidence_reference,
+        })
+    }
+
+    #[must_use]
+    pub const fn room_seq(&self) -> u64 {
+        self.room_seq
+    }
+
+    #[must_use]
+    pub fn transition_id(&self) -> &str {
+        &self.transition_id
+    }
+
+    #[must_use]
+    pub fn transition_hash(&self) -> &str {
+        &self.transition_hash
+    }
+
+    #[must_use]
+    pub fn previous_lineage_hash(&self) -> &str {
+        &self.previous_lineage_hash
+    }
+
+    #[must_use]
+    pub fn evidence_reference(&self) -> &str {
+        &self.evidence_reference
+    }
+
+    /// Encoded size used by storage adapters for the page byte fence.
+    #[must_use]
+    pub fn encoded_bytes(&self) -> usize {
+        self.transition_id.len()
+            + self.transition_hash.len()
+            + self.previous_lineage_hash.len()
+            + self.evidence_reference.len()
+            + std::mem::size_of::<u64>()
     }
 }
 

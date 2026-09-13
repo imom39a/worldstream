@@ -44,24 +44,26 @@ use worldstream_core::{
 use worldstream_postgres::{
     PostgresActivationError, PostgresAuthorityAuthenticationError,
     PostgresExternalInputPreparationErrorV1, PostgresFrameEvidenceV1,
-    PostgresObservationDeliveryV1, PostgresObservationError, PostgresObservationRetentionV1,
-    PostgresRoomCommitError, PostgresRoomDiagnosticErrorV1, PostgresRoomDiagnosticSummaryV1,
-    PostgresRoomServingFenceV1, PostgresRoomStore, PostgresSchemaVerificationError,
-    PostgresTimerStateV1,
+    PostgresHistoricalEvidenceErrorV1, PostgresObservationDeliveryV1, PostgresObservationError,
+    PostgresObservationRetentionV1, PostgresRoomCommitError, PostgresRoomDiagnosticErrorV1,
+    PostgresRoomDiagnosticSummaryV1, PostgresRoomServingFenceV1, PostgresRoomStore,
+    PostgresSchemaVerificationError, PostgresTimerStateV1,
 };
 use worldstream_protocol::{
     AccessMode, ActionAccepted, ActionRejected, ActionSubmit, ActivationClaim, ActivationDelivery,
     ActivationFrame, ActivationIntentState, ActivationLeaseOperation, ActivationOffer,
     ActivationOfferRequest, ActivationOffers, ActivationOperationReply, ActivationResultCode,
-    BearerWireV1, ClientHello, CreateRoomRequest, CreateRoomResponse, LobbyLaunchRequest,
-    LobbyLaunchResponse, MAX_MESSAGE_BYTES, MemberCapabilityProvisionRequestV1,
-    MemberCapabilityProvisionResponseV1, OPERATOR_ACTIVATION_STATUS_VERSION, ObservationAck,
-    ObservationDeliver, OperatorActivationStatusV1, OperatorActivityPhase,
-    OperatorBackupProfileStatus, OperatorBackupStorageHealth, OperatorBackupStorageProfile,
-    OperatorBackupVerification, OperatorDataFreshness, OperatorLiveBackupPrepareRequest,
-    OperatorLiveBackupStatus, OperatorRoomIntegrity, OperatorRoomIntegrityStatus,
-    OperatorRoomInventoryPage, OperatorRoomInventoryRequest, OperatorRoomSummary, PROTOCOL_VERSION,
-    PackReference, Principal, PrincipalKind, Projection, ProjectionReset, ProjectionResponse,
+    BearerWireV1, ClientHello, CreateRoomRequest, CreateRoomResponse,
+    HISTORICAL_EVIDENCE_RESPONSE_VERSION, HistoricalEvidenceOutcomeV1,
+    HistoricalEvidenceReferenceV1, LobbyLaunchRequest, LobbyLaunchResponse, MAX_MESSAGE_BYTES,
+    MemberCapabilityProvisionRequestV1, MemberCapabilityProvisionResponseV1,
+    OPERATOR_ACTIVATION_STATUS_VERSION, ObservationAck, ObservationDeliver,
+    OperatorActivationStatusV1, OperatorActivityPhase, OperatorBackupProfileStatus,
+    OperatorBackupStorageHealth, OperatorBackupStorageProfile, OperatorBackupVerification,
+    OperatorDataFreshness, OperatorLiveBackupPrepareRequest, OperatorLiveBackupStatus,
+    OperatorRoomIntegrity, OperatorRoomIntegrityStatus, OperatorRoomInventoryPage,
+    OperatorRoomInventoryRequest, OperatorRoomSummary, PROTOCOL_VERSION, PackReference, Principal,
+    PrincipalKind, Projection, ProjectionReset, ProjectionResponse,
     ROOM_ARCHIVE_RESPONSE_SCHEMA_V1, ReplayResponse, RoomArchiveRequestV1, RoomArchiveResponseV1,
     RoomAttach, RoomAttached, RoomHead, RoomSyncAck, RunnerCapabilityProvisionRequestV1,
     RunnerCapabilityProvisionResponseV1, RunnerHello, RunnerReady, ServerWelcome, SyncBranch,
@@ -76,6 +78,7 @@ use crate::{
     activity_start::{
         lobby_response_from_resolution, lobby_response_from_result, prepare_activity_start_request,
     },
+    external_input::{ingress_response_from_result, prepare_external_input_ingress},
     fill_random_bytes,
 };
 
@@ -1638,6 +1641,121 @@ impl GatewayBackend for PostgresGatewayBackend {
         self.replay_response(session, room_id, at_room_seq)
     }
 
+    fn historical_evidence(
+        &self,
+        session: &GatewaySession,
+        room_id: &str,
+        at_room_seq: u64,
+        after_room_seq: u64,
+    ) -> Result<worldstream_protocol::HistoricalEvidenceResponseV1, BackendError> {
+        let replay = self.replay_response(session, room_id, at_room_seq)?;
+        let room = RoomId::from_str(room_id).map_err(|_| BackendError::Rejected)?;
+        let page_result = self
+            .store
+            .historical_evidence_page(&room, after_room_seq, at_room_seq);
+        // Recheck current Capability and the requested historical fence after
+        // the immutable page read so a racing revocation is fail-closed.
+        let fenced = self.replay_response(session, room_id, at_room_seq)?;
+        if fenced.room_head != replay.room_head
+            || fenced.integrity_generation != replay.integrity_generation
+        {
+            return Err(BackendError::Busy);
+        }
+        let page = match page_result {
+            Ok(page) => page,
+            Err(PostgresHistoricalEvidenceErrorV1::Missing) => {
+                return Ok(worldstream_protocol::HistoricalEvidenceResponseV1 {
+                    version: HISTORICAL_EVIDENCE_RESPONSE_VERSION.to_owned(),
+                    room_id: replay.room_id,
+                    cut_room_seq: at_room_seq,
+                    after_room_seq,
+                    next_after_room_seq: None,
+                    outcome: HistoricalEvidenceOutcomeV1::Missing,
+                    references: Vec::new(),
+                    room_head: replay.room_head,
+                    room_health: replay.room_health,
+                    integrity_generation: replay.integrity_generation,
+                });
+            }
+            Err(PostgresHistoricalEvidenceErrorV1::Pruned) => {
+                return Ok(worldstream_protocol::HistoricalEvidenceResponseV1 {
+                    version: HISTORICAL_EVIDENCE_RESPONSE_VERSION.to_owned(),
+                    room_id: replay.room_id,
+                    cut_room_seq: at_room_seq,
+                    after_room_seq,
+                    next_after_room_seq: None,
+                    outcome: HistoricalEvidenceOutcomeV1::Pruned,
+                    references: Vec::new(),
+                    room_head: replay.room_head,
+                    room_health: replay.room_health,
+                    integrity_generation: replay.integrity_generation,
+                });
+            }
+            Err(PostgresHistoricalEvidenceErrorV1::Retired) => {
+                return Ok(worldstream_protocol::HistoricalEvidenceResponseV1 {
+                    version: HISTORICAL_EVIDENCE_RESPONSE_VERSION.to_owned(),
+                    room_id: replay.room_id,
+                    cut_room_seq: at_room_seq,
+                    after_room_seq,
+                    next_after_room_seq: None,
+                    outcome: HistoricalEvidenceOutcomeV1::Retired,
+                    references: Vec::new(),
+                    room_head: replay.room_head,
+                    room_health: replay.room_health,
+                    integrity_generation: replay.integrity_generation,
+                });
+            }
+            Err(PostgresHistoricalEvidenceErrorV1::BudgetExceeded) => {
+                return Err(BackendError::Busy);
+            }
+            Err(PostgresHistoricalEvidenceErrorV1::StorageUnavailable) => {
+                return Err(BackendError::StorageUnavailable);
+            }
+            Err(PostgresHistoricalEvidenceErrorV1::Corrupt) => {
+                return Err(BackendError::InvalidResult);
+            }
+        };
+        let references = page
+            .references
+            .into_iter()
+            .map(|reference| HistoricalEvidenceReferenceV1 {
+                room_seq: reference.room_seq(),
+                transition_id: reference.transition_id().to_owned(),
+                transition_hash: reference.transition_hash().to_owned(),
+                previous_lineage_hash: reference.previous_lineage_hash().to_owned(),
+                evidence_reference: reference.evidence_reference().to_owned(),
+            })
+            .collect();
+        Ok(worldstream_protocol::HistoricalEvidenceResponseV1 {
+            version: HISTORICAL_EVIDENCE_RESPONSE_VERSION.to_owned(),
+            room_id: replay.room_id,
+            cut_room_seq: at_room_seq,
+            after_room_seq,
+            next_after_room_seq: page.next_after_room_seq,
+            outcome: match page.outcome {
+                worldstream_core::HistoricalEvidencePageOutcomeV1::Complete => {
+                    HistoricalEvidenceOutcomeV1::Complete
+                }
+                worldstream_core::HistoricalEvidencePageOutcomeV1::Exhausted => {
+                    HistoricalEvidenceOutcomeV1::Exhausted
+                }
+                worldstream_core::HistoricalEvidencePageOutcomeV1::Missing => {
+                    HistoricalEvidenceOutcomeV1::Missing
+                }
+                worldstream_core::HistoricalEvidencePageOutcomeV1::Pruned => {
+                    HistoricalEvidenceOutcomeV1::Pruned
+                }
+                worldstream_core::HistoricalEvidencePageOutcomeV1::Retired => {
+                    HistoricalEvidenceOutcomeV1::Retired
+                }
+            },
+            references,
+            room_head: replay.room_head,
+            room_health: replay.room_health,
+            integrity_generation: replay.integrity_generation,
+        })
+    }
+
     fn membership_status(
         &self,
         session: &GatewaySession,
@@ -1925,6 +2043,95 @@ impl GatewayBackend for PostgresGatewayBackend {
             )
             .map_err(map_room_commit_error)?;
         timer_response_from_resolution(timer_request, &resolution)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn ingest_external_input(
+        &self,
+        session: &GatewaySession,
+        room_id: &str,
+        request: worldstream_protocol::ExternalInputIngressRequestV1,
+    ) -> Result<worldstream_protocol::ExternalInputIngressResponseV1, BackendError> {
+        let authenticated = self.authenticate(session)?;
+        let checked_at = self.checked_at()?;
+        let presented = authenticated.into_presented();
+        let room_id = RoomId::from_str(room_id).map_err(|_| BackendError::Rejected)?;
+        self.authority()
+            .authorize_diagnostic(
+                &presented,
+                DiagnosticTargetV1::Room(room_id.clone()),
+                DiagnosticOperationV1::SafeRoomSummary,
+                checked_at.clone(),
+            )
+            .map_err(map_authority_error)?;
+        let mut plan = prepare_external_input_ingress(room_id, &request, &checked_at)?;
+        let receipt_grant = self
+            .authority()
+            .authorize_receipt_read(
+                &presented,
+                plan.identity.clone(),
+                plan.request_hash.clone(),
+                Some(plan.room_id.clone()),
+                checked_at.clone(),
+            )
+            .map_err(map_authority_error)?;
+        match self
+            .store
+            .resolve_authorized(receipt_grant)
+            .map_err(map_authority_error)?
+        {
+            worldstream_core::ResolveOutcomeV1::StoredResolution(result) => {
+                return ingress_response_from_result(&plan, &result, true);
+            }
+            worldstream_core::ResolveOutcomeV1::Conflict { .. } => {
+                return Err(BackendError::Conflict);
+            }
+            worldstream_core::ResolveOutcomeV1::ResolutionUnavailable => {
+                return Err(BackendError::Indeterminate);
+            }
+            worldstream_core::ResolveOutcomeV1::KnownAbsent => {}
+        }
+        let authority = self
+            .authority()
+            .authorize_external_input(
+                &presented,
+                plan.room_id.clone(),
+                plan.request_hash.clone(),
+                checked_at,
+            )
+            .map_err(map_authority_error)?;
+        let (trace, _verification) = self.verified_trace(&plan.room_id)?;
+        if trace.head().pack_digest() != &plan.pack_digest {
+            return Err(BackendError::Conflict);
+        }
+        let _admission = self
+            .admission_lanes
+            .reserve_host_stimulus(&plan.room_id)
+            .map_err(|error| map_admission_lane_error(&error))?;
+        plan.input.recorded_at = self
+            .store
+            .reserve_external_input_recorded_at(
+                &plan.identity,
+                &plan.request_hash,
+                &plan.input.recorded_at,
+            )
+            .map_err(map_external_input_preparation_error)?;
+        let resolution = self
+            .store
+            .commit_authorized_external_input(
+                self.registry.as_ref(),
+                authority,
+                &plan.room_id,
+                plan.based_on_room_seq,
+                &plan.input,
+                next_core_id::<TransitionId>()?,
+            )
+            .map_err(map_room_commit_error)?;
+        ingress_response_from_result(
+            &plan,
+            resolution.stored_result().ok_or(BackendError::Busy)?,
+            resolution.duplicate(),
+        )
     }
 
     #[allow(clippy::too_many_lines)]
@@ -3325,6 +3532,7 @@ fn map_activation_error(error: PostgresActivationError) -> BackendError {
         PostgresActivationError::InvalidRequest => BackendError::Rejected,
         PostgresActivationError::IdempotencyConflict => BackendError::Conflict,
         PostgresActivationError::Fenced | PostgresActivationError::StaleLease => BackendError::Busy,
+        PostgresActivationError::ContextTooLarge => BackendError::Rejected,
     }
 }
 

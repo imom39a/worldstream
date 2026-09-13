@@ -11,8 +11,9 @@
 mod native_sqlite;
 
 pub use native_sqlite::{
-    NativeSqliteBundleSummaryV1, NativeSqliteRoomPolicyV1, NativeSqliteTransferAdapterV1,
-    NativeSqliteTransferError, NativeSqliteTransferSpecV1,
+    NATIVE_SQLITE_OPERATIONAL_TABLES_V2, NativeSqliteBundleSummaryV1, NativeSqliteRoomPolicyV1,
+    NativeSqliteTransferAdapterV1, NativeSqliteTransferError, NativeSqliteTransferSpecV1,
+    encode_native_sqlite_stream_row_v2,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,6 +29,19 @@ use worldstream_pack_bundle::{
 };
 
 const BUNDLE_MAGIC: &[u8; 8] = b"WSTRANS1";
+const STREAM_MAGIC_V2: &[u8; 8] = b"WSTRNS02";
+const STREAM_CHUNK_MARKER_V2: &[u8; 4] = b"CHNK";
+const STREAM_FOOTER_MARKER_V2: &[u8; 4] = b"DONE";
+// Version one is the initial chunk-only wire format.  It remains readable so
+// an interrupted pre-manifest export can be inspected or explicitly discarded.
+// Version two adds the source-authenticated manifest required for a complete
+// deployment import.
+const STREAM_LEGACY_VERSION_V2: u16 = 1;
+const STREAM_MANIFEST_VERSION_V2: u16 = 2;
+const STREAM_MANIFEST_MAGIC_V2: &[u8; 8] = b"WSSMFV02";
+const MAX_STREAM_IDENTITY_BYTES: usize = 16 * 1024;
+const MAX_STREAM_MANIFEST_BYTES: usize = 1024 * 1024;
+const MAX_STREAM_RELATIONS: usize = 256;
 const CHECKPOINT_MAGIC: &[u8; 8] = b"WSCHECK1";
 const BUNDLE_VERSION: u16 = 4;
 const PREVIOUS_BUNDLE_VERSION: u16 = 3;
@@ -370,6 +384,12 @@ impl CanonicalRecordKindV1 {
         };
         Ok(kind)
     }
+
+    /// Returns the stable wire tag used by bounded staging journals.
+    #[must_use]
+    pub const fn wire_tag(self) -> u8 {
+        self.tag()
+    }
 }
 
 const EXTERNAL_INPUT_PREPARATION_MAGIC: &[u8; 8] = b"WSXIPR01";
@@ -523,6 +543,12 @@ impl RecordKindV1 {
             Self::Canonical(kind) => kind.tag(),
             Self::Derived(kind) => kind.tag(),
         }
+    }
+
+    /// Returns the stable class and kind tags used by transfer stream staging.
+    #[must_use]
+    pub const fn wire_tags(self) -> (u8, u8) {
+        (self.class_tag(), self.kind_tag())
     }
 }
 
@@ -935,6 +961,2017 @@ pub struct LogicalRecordV1 {
     digest: DigestV1,
 }
 
+/// Stable identity captured before a streamed offline transfer begins.
+///
+/// The identity is part of every stream digest, so an interrupted import can
+/// resume only with chunks from the same source lineage and Storage Epoch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferStreamIdentityV2 {
+    stream_id: String,
+    lineage_id: String,
+    source_epoch: u64,
+    source_profile: BundleProfileV1,
+    target_profile: BundleProfileV1,
+}
+
+impl TransferStreamIdentityV2 {
+    /// Creates the identity for the only supported offline direction.
+    pub fn new(
+        stream_id: impl Into<String>,
+        lineage_id: impl Into<String>,
+        source_epoch: u64,
+        source_profile: BundleProfileV1,
+        target_profile: BundleProfileV1,
+    ) -> Result<Self, TransferError> {
+        let stream_id = stream_id.into();
+        let lineage_id = lineage_id.into();
+        validate_text(&stream_id)?;
+        validate_text(&lineage_id)?;
+        if stream_id.len() > MAX_STREAM_IDENTITY_BYTES
+            || lineage_id.len() > MAX_STREAM_IDENTITY_BYTES
+        {
+            return Err(TransferError::BoundExceeded {
+                what: "stream identity",
+            });
+        }
+        if source_epoch == 0 {
+            return Err(TransferError::InvalidValue {
+                what: "stream source epoch",
+            });
+        }
+        if source_profile != BundleProfileV1::SqliteBundled
+            || target_profile != BundleProfileV1::PostgresPrimary17
+        {
+            return Err(TransferError::UnsupportedDirection);
+        }
+        Ok(Self {
+            stream_id,
+            lineage_id,
+            source_epoch,
+            source_profile,
+            target_profile,
+        })
+    }
+
+    /// Returns the stable resumability identity.
+    #[must_use]
+    pub fn stream_id(&self) -> &str {
+        &self.stream_id
+    }
+
+    /// Returns the source deployment lineage.
+    #[must_use]
+    pub fn lineage_id(&self) -> &str {
+        &self.lineage_id
+    }
+
+    /// Returns the fenced source Storage Epoch.
+    #[must_use]
+    pub const fn source_epoch(&self) -> u64 {
+        self.source_epoch
+    }
+
+    /// Returns the digest bound to every v2 chunk and durable checkpoint.
+    pub fn digest(&self) -> Result<DigestV1, TransferError> {
+        Ok(DigestV1::hash(&self.canonical_bytes()?))
+    }
+
+    /// Computes the complete v2 stream-header digest for this identity and an
+    /// optional authenticated manifest.
+    pub fn stream_header_digest(
+        &self,
+        manifest: Option<&TransferStreamManifestV2>,
+    ) -> Result<DigestV1, TransferError> {
+        stream_header_digest(self, manifest)
+    }
+
+    fn canonical_bytes(&self) -> Result<Vec<u8>, TransferError> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"worldstream/transfer-stream-identity/v2");
+        write_string(&mut bytes, &self.stream_id)?;
+        write_string(&mut bytes, &self.lineage_id)?;
+        write_u64(&mut bytes, self.source_epoch);
+        bytes.push(self.source_profile.tag());
+        bytes.push(self.target_profile.tag());
+        Ok(bytes)
+    }
+}
+
+/// One named native relation and its source-authenticated row count.
+///
+/// The names are deliberately part of the manifest rather than inferred from
+/// a destination database.  That lets a destination reject a partial source
+/// inventory before it hydrates any serving tables.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferStreamRelationCountV2 {
+    relation: String,
+    rows: u64,
+}
+
+impl TransferStreamRelationCountV2 {
+    /// Creates one bounded relation-count witness.
+    pub fn new(relation: impl Into<String>, rows: u64) -> Result<Self, TransferError> {
+        let relation = relation.into();
+        validate_text(&relation)?;
+        if relation.len() > MAX_STREAM_IDENTITY_BYTES {
+            return Err(TransferError::BoundExceeded {
+                what: "stream relation name",
+            });
+        }
+        Ok(Self { relation, rows })
+    }
+
+    /// Returns the stable source relation name.
+    #[must_use]
+    pub fn relation(&self) -> &str {
+        &self.relation
+    }
+
+    /// Returns the exact number of source rows in this relation.
+    #[must_use]
+    pub const fn rows(&self) -> u64 {
+        self.rows
+    }
+}
+
+/// Source-authenticated native operational inventory for a streamed transfer.
+///
+/// This is a summary, not a retained vector of rows.  A source can compute it
+/// with keyset scans and a destination can compare it with bounded staged
+/// scans before the authority fence is removed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferStreamNativeSummaryV2 {
+    relations: Vec<TransferStreamRelationCountV2>,
+    row_digest: DigestV1,
+}
+
+impl TransferStreamNativeSummaryV2 {
+    /// Creates a canonical relation inventory and its exact row digest.
+    pub fn new(
+        mut relations: Vec<TransferStreamRelationCountV2>,
+        row_digest: DigestV1,
+    ) -> Result<Self, TransferError> {
+        if relations.is_empty() || relations.len() > MAX_STREAM_RELATIONS {
+            return Err(TransferError::InvalidValue {
+                what: "stream native relation inventory",
+            });
+        }
+        relations.sort_by(|left, right| left.relation.cmp(&right.relation));
+        if relations
+            .windows(2)
+            .any(|pair| pair[0].relation == pair[1].relation)
+        {
+            return Err(TransferError::DuplicateIdentity {
+                what: "stream native relation",
+            });
+        }
+        Ok(Self {
+            relations,
+            row_digest,
+        })
+    }
+
+    /// Returns the complete, sorted native relation inventory.
+    #[must_use]
+    pub fn relations(&self) -> &[TransferStreamRelationCountV2] {
+        &self.relations
+    }
+
+    /// Returns the total source rows across the inventory.
+    pub fn row_count(&self) -> Result<u64, TransferError> {
+        self.relations.iter().try_fold(0_u64, |total, relation| {
+            total
+                .checked_add(relation.rows)
+                .ok_or(TransferError::BoundExceeded {
+                    what: "stream native row count",
+                })
+        })
+    }
+
+    /// Returns the digest over the exact source native rows.
+    #[must_use]
+    pub const fn row_digest(&self) -> DigestV1 {
+        self.row_digest
+    }
+}
+
+/// Final semantic facts a streamed target must prove before it can publish.
+///
+/// The counts deliberately distinguish records from Rooms: a target can have
+/// millions of transitions while retaining only a bounded Room accumulator at
+/// a time during final semantic verification.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransferStreamSemanticExpectationsV2 {
+    canonical_record_count: u64,
+    native_operational_record_count: u64,
+    room_count: u64,
+    healthy_room_count: u64,
+    isolated_room_count: u64,
+    canonical_digest: DigestV1,
+    native_operational_digest: DigestV1,
+}
+
+/// Bounded digest/count accumulator for the source and target semantic
+/// projections. It retains no records and gives the finalizer a common
+/// definition of canonical versus native operational parity.
+#[derive(Clone, Debug)]
+pub struct TransferStreamSemanticAccumulatorV2 {
+    canonical_hasher: blake3::Hasher,
+    native_hasher: blake3::Hasher,
+    canonical_record_count: u64,
+    native_operational_record_count: u64,
+}
+
+impl TransferStreamSemanticAccumulatorV2 {
+    /// Starts empty, domain-separated semantic accumulators.
+    #[must_use]
+    pub fn new() -> Self {
+        let mut canonical_hasher = blake3::Hasher::new();
+        canonical_hasher.update(b"worldstream/transfer-stream/canonical/v2");
+        let mut native_hasher = blake3::Hasher::new();
+        native_hasher.update(b"worldstream/transfer-stream/native-operational/v2");
+        Self {
+            canonical_hasher,
+            native_hasher,
+            canonical_record_count: 0,
+            native_operational_record_count: 0,
+        }
+    }
+
+    /// Adds one exact streamed record without retaining it.
+    pub fn observe(&mut self, record: &LogicalRecordV1) -> Result<(), TransferError> {
+        let bytes = stream_record_bytes(record)?;
+        match record.kind {
+            RecordKindV1::Canonical(CanonicalRecordKindV1::NativeOperationalRow) => {
+                self.native_hasher.update(&bytes);
+                self.native_operational_record_count = self
+                    .native_operational_record_count
+                    .checked_add(1)
+                    .ok_or(TransferError::BoundExceeded {
+                        what: "stream native operational records",
+                    })?;
+            }
+            RecordKindV1::Canonical(_) => {
+                self.canonical_hasher.update(&bytes);
+                self.canonical_record_count = self.canonical_record_count.checked_add(1).ok_or(
+                    TransferError::BoundExceeded {
+                        what: "stream canonical records",
+                    },
+                )?;
+            }
+            RecordKindV1::Derived(_) => {
+                return Err(TransferError::InvalidValue {
+                    what: "derived stream record",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns the accumulated canonical record count.
+    #[must_use]
+    pub const fn canonical_record_count(&self) -> u64 {
+        self.canonical_record_count
+    }
+
+    /// Returns the accumulated native operational record count.
+    #[must_use]
+    pub const fn native_operational_record_count(&self) -> u64 {
+        self.native_operational_record_count
+    }
+
+    /// Returns the final canonical projection digest.
+    #[must_use]
+    pub fn canonical_digest(&self) -> DigestV1 {
+        DigestV1(*self.canonical_hasher.finalize().as_bytes())
+    }
+
+    /// Returns the final native operational projection digest.
+    #[must_use]
+    pub fn native_operational_digest(&self) -> DigestV1 {
+        DigestV1(*self.native_hasher.finalize().as_bytes())
+    }
+}
+
+impl Default for TransferStreamSemanticAccumulatorV2 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Bounded accumulator for the complete identity/manifest-bound stream footer.
+///
+/// It is shared by a source pre-scan and destination staged-record verifier so
+/// neither side needs to retain the whole transfer file to prove terminal
+/// parity.
+#[derive(Clone, Debug)]
+pub struct TransferStreamFooterAccumulatorV2 {
+    hasher: blake3::Hasher,
+    record_count: u64,
+    record_bytes: u64,
+}
+
+impl TransferStreamFooterAccumulatorV2 {
+    /// Starts an accumulator bound to one exact stream header.
+    pub fn new(
+        identity: &TransferStreamIdentityV2,
+        manifest: Option<&TransferStreamManifestV2>,
+    ) -> Result<Self, TransferError> {
+        Ok(Self {
+            hasher: stream_hasher(identity, manifest)?,
+            record_count: 0,
+            record_bytes: 0,
+        })
+    }
+
+    /// Adds one exact record without retaining it.
+    pub fn observe(&mut self, record: &LogicalRecordV1) -> Result<(), TransferError> {
+        self.hasher.update(&stream_record_bytes(record)?);
+        self.record_count =
+            self.record_count
+                .checked_add(1)
+                .ok_or(TransferError::BoundExceeded {
+                    what: "stream footer records",
+                })?;
+        self.record_bytes = self
+            .record_bytes
+            .checked_add(u64::try_from(record.bytes.len()).map_err(|_| {
+                TransferError::BoundExceeded {
+                    what: "stream footer bytes",
+                }
+            })?)
+            .ok_or(TransferError::BoundExceeded {
+                what: "stream footer bytes",
+            })?;
+        Ok(())
+    }
+
+    /// Returns the current exact record count.
+    #[must_use]
+    pub const fn record_count(&self) -> u64 {
+        self.record_count
+    }
+
+    /// Returns the current exact payload byte count.
+    #[must_use]
+    pub const fn record_bytes(&self) -> u64 {
+        self.record_bytes
+    }
+
+    /// Returns the complete authenticated footer digest.
+    #[must_use]
+    pub fn digest(&self) -> DigestV1 {
+        DigestV1(*self.hasher.finalize().as_bytes())
+    }
+}
+
+impl TransferStreamSemanticExpectationsV2 {
+    /// Creates the source-authenticated final semantic expectations.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        canonical_record_count: u64,
+        native_operational_record_count: u64,
+        room_count: u64,
+        healthy_room_count: u64,
+        isolated_room_count: u64,
+        canonical_digest: DigestV1,
+        native_operational_digest: DigestV1,
+    ) -> Result<Self, TransferError> {
+        if healthy_room_count.checked_add(isolated_room_count).ok_or(
+            TransferError::BoundExceeded {
+                what: "stream Room count",
+            },
+        )? != room_count
+        {
+            return Err(TransferError::InvalidValue {
+                what: "stream Room semantic expectations",
+            });
+        }
+        Ok(Self {
+            canonical_record_count,
+            native_operational_record_count,
+            room_count,
+            healthy_room_count,
+            isolated_room_count,
+            canonical_digest,
+            native_operational_digest,
+        })
+    }
+
+    /// Number of non-native exact canonical records expected by finalization.
+    #[must_use]
+    pub const fn canonical_record_count(&self) -> u64 {
+        self.canonical_record_count
+    }
+
+    /// Number of operational records expected by finalization.
+    #[must_use]
+    pub const fn native_operational_record_count(&self) -> u64 {
+        self.native_operational_record_count
+    }
+
+    /// Number of Rooms whose durable state is represented by this transfer.
+    #[must_use]
+    pub const fn room_count(&self) -> u64 {
+        self.room_count
+    }
+
+    /// Number of Rooms that must pass executable semantic replay.
+    #[must_use]
+    pub const fn healthy_room_count(&self) -> u64 {
+        self.healthy_room_count
+    }
+
+    /// Number of faulted/quarantined Rooms that must remain non-promoting.
+    #[must_use]
+    pub const fn isolated_room_count(&self) -> u64 {
+        self.isolated_room_count
+    }
+
+    /// Digest over the source canonical stream projection.
+    #[must_use]
+    pub const fn canonical_digest(&self) -> DigestV1 {
+        self.canonical_digest
+    }
+
+    /// Digest over the source operational stream projection.
+    #[must_use]
+    pub const fn native_operational_digest(&self) -> DigestV1 {
+        self.native_operational_digest
+    }
+}
+
+/// Versioned source manifest for the durable v2 transfer protocol.
+///
+/// It carries the frozen backup identity, complete pack/resource inventory,
+/// source and target schema identities, a bounded native inventory, parity,
+/// and the exact footer the source expects.  The writer and reader both
+/// authenticate it; a target receives it before accepting its first chunk.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferStreamManifestV2 {
+    deployment_identity: DeploymentIdentityV1,
+    source_backup_digest: DigestV1,
+    source_backend_digest: DigestV1,
+    target_backend_digest: DigestV1,
+    native_summary: TransferStreamNativeSummaryV2,
+    semantic_expectations: TransferStreamSemanticExpectationsV2,
+    expected_record_count: u64,
+    expected_record_bytes: u64,
+    expected_stream_digest: DigestV1,
+    session_state: SessionStatePolicyV1,
+}
+
+impl TransferStreamManifestV2 {
+    /// Creates a source-authenticated complete-deployment stream manifest.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        deployment_identity: DeploymentIdentityV1,
+        source_backup_digest: DigestV1,
+        source_backend_digest: DigestV1,
+        target_backend_digest: DigestV1,
+        native_summary: TransferStreamNativeSummaryV2,
+        semantic_expectations: TransferStreamSemanticExpectationsV2,
+        expected_record_count: u64,
+        expected_record_bytes: u64,
+        expected_stream_digest: DigestV1,
+        session_state: SessionStatePolicyV1,
+    ) -> Result<Self, TransferError> {
+        if expected_record_count == 0 || expected_record_bytes == 0 {
+            return Err(TransferError::InvalidValue {
+                what: "stream final expectations",
+            });
+        }
+        let accounted_records = semantic_expectations
+            .canonical_record_count
+            .checked_add(semantic_expectations.native_operational_record_count)
+            .ok_or(TransferError::BoundExceeded {
+                what: "stream record expectations",
+            })?;
+        if accounted_records != expected_record_count {
+            return Err(TransferError::InvalidValue {
+                what: "stream record expectations",
+            });
+        }
+        Ok(Self {
+            deployment_identity,
+            source_backup_digest,
+            source_backend_digest,
+            target_backend_digest,
+            native_summary,
+            semantic_expectations,
+            expected_record_count,
+            expected_record_bytes,
+            expected_stream_digest,
+            session_state,
+        })
+    }
+
+    /// Returns the complete retained Activity Pack/resource identity ledger.
+    #[must_use]
+    pub const fn deployment_identity(&self) -> &DeploymentIdentityV1 {
+        &self.deployment_identity
+    }
+
+    /// Returns the exact durable transfer-point digest of the frozen source.
+    #[must_use]
+    pub const fn source_backup_digest(&self) -> DigestV1 {
+        self.source_backup_digest
+    }
+
+    /// Returns the source backend/schema contract digest.
+    #[must_use]
+    pub const fn source_backend_digest(&self) -> DigestV1 {
+        self.source_backend_digest
+    }
+
+    /// Returns the required target backend/schema contract digest.
+    #[must_use]
+    pub const fn target_backend_digest(&self) -> DigestV1 {
+        self.target_backend_digest
+    }
+
+    /// Returns the source native operational inventory.
+    #[must_use]
+    pub const fn native_summary(&self) -> &TransferStreamNativeSummaryV2 {
+        &self.native_summary
+    }
+
+    /// Returns the final semantic expectations.
+    #[must_use]
+    pub const fn semantic_expectations(&self) -> &TransferStreamSemanticExpectationsV2 {
+        &self.semantic_expectations
+    }
+
+    /// Returns the source-authenticated terminal record count.
+    #[must_use]
+    pub const fn expected_record_count(&self) -> u64 {
+        self.expected_record_count
+    }
+
+    /// Returns the source-authenticated terminal record payload bytes.
+    #[must_use]
+    pub const fn expected_record_bytes(&self) -> u64 {
+        self.expected_record_bytes
+    }
+
+    /// Returns the source-authenticated terminal stream digest.
+    #[must_use]
+    pub const fn expected_stream_digest(&self) -> DigestV1 {
+        self.expected_stream_digest
+    }
+
+    /// Returns the explicit rebuild-only session-state policy.
+    #[must_use]
+    pub const fn session_state(&self) -> SessionStatePolicyV1 {
+        self.session_state
+    }
+
+    /// Returns a stable digest over the complete manifest.
+    pub fn digest(&self) -> Result<DigestV1, TransferError> {
+        Ok(DigestV1::hash(&self.canonical_bytes()?))
+    }
+
+    fn verify_footer(
+        &self,
+        record_count: u64,
+        record_bytes: u64,
+        stream_digest: DigestV1,
+    ) -> Result<(), TransferError> {
+        if record_count != self.expected_record_count || record_bytes != self.expected_record_bytes
+        {
+            return Err(TransferError::CheckpointMismatch {
+                what: "stream manifest footer expectations",
+            });
+        }
+        if stream_digest != self.expected_stream_digest {
+            return Err(TransferError::HashMismatch {
+                what: "stream manifest footer",
+                expected: self.expected_stream_digest,
+                actual: stream_digest,
+            });
+        }
+        Ok(())
+    }
+
+    /// Returns the exact canonical manifest bytes persisted by the target
+    /// journal. The encoding is versioned and rejects non-canonical decoding.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, TransferError> {
+        let mut output = Vec::new();
+        output.extend_from_slice(STREAM_MANIFEST_MAGIC_V2);
+        write_u16(&mut output, 1);
+        let deployment_identity = self.deployment_identity.canonical_bytes()?;
+        write_u64(
+            &mut output,
+            u64::try_from(deployment_identity.len()).map_err(|_| TransferError::BoundExceeded {
+                what: "stream deployment identity",
+            })?,
+        );
+        output.extend_from_slice(&deployment_identity);
+        output.extend_from_slice(&self.source_backup_digest.as_bytes());
+        output.extend_from_slice(&self.source_backend_digest.as_bytes());
+        output.extend_from_slice(&self.target_backend_digest.as_bytes());
+        output.push(SessionStatePolicyV1::tag());
+        write_count(&mut output, self.native_summary.relations.len())?;
+        for relation in &self.native_summary.relations {
+            write_string(&mut output, &relation.relation)?;
+            write_u64(&mut output, relation.rows);
+        }
+        output.extend_from_slice(&self.native_summary.row_digest.as_bytes());
+        write_u64(
+            &mut output,
+            self.semantic_expectations.canonical_record_count,
+        );
+        write_u64(
+            &mut output,
+            self.semantic_expectations.native_operational_record_count,
+        );
+        write_u64(&mut output, self.semantic_expectations.room_count);
+        write_u64(&mut output, self.semantic_expectations.healthy_room_count);
+        write_u64(&mut output, self.semantic_expectations.isolated_room_count);
+        output.extend_from_slice(&self.semantic_expectations.canonical_digest.as_bytes());
+        output.extend_from_slice(
+            &self
+                .semantic_expectations
+                .native_operational_digest
+                .as_bytes(),
+        );
+        write_u64(&mut output, self.expected_record_count);
+        write_u64(&mut output, self.expected_record_bytes);
+        output.extend_from_slice(&self.expected_stream_digest.as_bytes());
+        Ok(output)
+    }
+
+    fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, TransferError> {
+        let mut reader = Reader::new(bytes);
+        if reader.read_exact(8)? != STREAM_MANIFEST_MAGIC_V2 || reader.read_u16()? != 1 {
+            return Err(TransferError::InvalidMagic);
+        }
+        let deployment_identity = DeploymentIdentityV1::from_canonical_bytes(
+            &reader.read_blob(MAX_STREAM_MANIFEST_BYTES)?,
+        )?;
+        let source_backup_digest = reader.read_digest()?;
+        let source_backend_digest = reader.read_digest()?;
+        let target_backend_digest = reader.read_digest()?;
+        let session_state = SessionStatePolicyV1::from_tag(reader.read_u8()?)?;
+        let relation_count = reader.read_count()?;
+        if relation_count == 0 || relation_count > MAX_STREAM_RELATIONS {
+            return Err(TransferError::BoundExceeded {
+                what: "stream native relation inventory",
+            });
+        }
+        let mut relations = Vec::with_capacity(relation_count);
+        for _ in 0..relation_count {
+            relations.push(TransferStreamRelationCountV2::new(
+                reader.read_string()?,
+                reader.read_u64()?,
+            )?);
+        }
+        let native_summary = TransferStreamNativeSummaryV2::new(relations, reader.read_digest()?)?;
+        let semantic_expectations = TransferStreamSemanticExpectationsV2::new(
+            reader.read_u64()?,
+            reader.read_u64()?,
+            reader.read_u64()?,
+            reader.read_u64()?,
+            reader.read_u64()?,
+            reader.read_digest()?,
+            reader.read_digest()?,
+        )?;
+        let manifest = Self::new(
+            deployment_identity,
+            source_backup_digest,
+            source_backend_digest,
+            target_backend_digest,
+            native_summary,
+            semantic_expectations,
+            reader.read_u64()?,
+            reader.read_u64()?,
+            reader.read_digest()?,
+            session_state,
+        )?;
+        if !reader.is_done() {
+            return Err(TransferError::TrailingBytes {
+                count: reader.remaining(),
+            });
+        }
+        if manifest.canonical_bytes()? != bytes {
+            return Err(TransferError::InvalidValue {
+                what: "non-canonical stream manifest",
+            });
+        }
+        Ok(manifest)
+    }
+}
+
+/// Authenticated terminal facts from one completed v2 stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransferStreamFooterV2 {
+    chunk_count: u64,
+    record_count: u64,
+    record_bytes: u64,
+    stream_digest: DigestV1,
+}
+
+impl TransferStreamFooterV2 {
+    /// Returns the number of authenticated chunks.
+    #[must_use]
+    pub const fn chunk_count(&self) -> u64 {
+        self.chunk_count
+    }
+
+    /// Returns the exact final record count.
+    #[must_use]
+    pub const fn record_count(&self) -> u64 {
+        self.record_count
+    }
+
+    /// Returns the exact final record payload bytes.
+    #[must_use]
+    pub const fn record_bytes(&self) -> u64 {
+        self.record_bytes
+    }
+
+    /// Returns the complete identity/manifest-bound record digest.
+    #[must_use]
+    pub const fn stream_digest(&self) -> DigestV1 {
+        self.stream_digest
+    }
+}
+
+/// Explicit bounded working-set and total-work limits for a v2 stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransferStreamLimitsV2 {
+    /// Maximum records held in one decoded or encoded chunk.
+    pub max_records_per_chunk: usize,
+    /// Maximum exact encoded bytes held in one chunk.
+    pub max_chunk_bytes: usize,
+    /// Maximum exact bytes in one record payload.
+    pub max_record_bytes: usize,
+    /// Maximum records processed over the whole stream.
+    pub max_total_records: u64,
+    /// Maximum payload bytes processed over the whole stream.
+    pub max_total_record_bytes: u64,
+}
+
+impl Default for TransferStreamLimitsV2 {
+    fn default() -> Self {
+        Self {
+            max_records_per_chunk: 256,
+            max_chunk_bytes: 1024 * 1024,
+            max_record_bytes: 1024 * 1024,
+            max_total_records: 10_000_000,
+            max_total_record_bytes: 1024 * 1024 * 1024 * 1024,
+        }
+    }
+}
+
+impl TransferStreamLimitsV2 {
+    fn validate(self) -> Result<(), TransferError> {
+        if self.max_records_per_chunk == 0
+            || self.max_chunk_bytes == 0
+            || self.max_record_bytes == 0
+            || self.max_record_bytes > self.max_chunk_bytes
+            || self.max_total_records == 0
+            || self.max_total_record_bytes == 0
+        {
+            return Err(TransferError::InvalidValue {
+                what: "stream limits",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// A durable progress value for a v2 stream import.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransferStreamCheckpointV2 {
+    /// Identity-bound digest of the complete stream header.
+    pub stream_identity_digest: DigestV1,
+    /// Next chunk that has not been durably applied.
+    pub next_chunk: u64,
+    /// Next record ordinal that has not been durably applied.
+    pub next_ordinal: u64,
+}
+
+/// One verified bounded chunk returned by [`TransferStreamReaderV2`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferStreamChunkV2 {
+    index: u64,
+    records: Vec<LogicalRecordV1>,
+    digest: DigestV1,
+}
+
+impl TransferStreamChunkV2 {
+    /// Returns the monotonically increasing stream chunk index.
+    #[must_use]
+    pub const fn index(&self) -> u64 {
+        self.index
+    }
+
+    /// Returns the exact ordered records for this bounded chunk.
+    #[must_use]
+    pub fn records(&self) -> &[LogicalRecordV1] {
+        &self.records
+    }
+
+    /// Returns the identity-bound exact digest persisted for this chunk.
+    #[must_use]
+    pub const fn digest(&self) -> DigestV1 {
+        self.digest
+    }
+
+    /// Returns the first logical record ordinal covered by this chunk.
+    #[must_use]
+    pub fn start_ordinal(&self) -> u64 {
+        self.records[0].ordinal
+    }
+
+    /// Returns the exclusive logical record ordinal covered by this chunk.
+    #[must_use]
+    pub fn end_ordinal(&self) -> Result<u64, TransferError> {
+        self.start_ordinal()
+            .checked_add(u64::try_from(self.records.len()).map_err(|_| {
+                TransferError::BoundExceeded {
+                    what: "stream chunk records",
+                }
+            })?)
+            .ok_or(TransferError::BoundExceeded {
+                what: "stream record ordinal",
+            })
+    }
+
+    /// Recreates the bounded exact record bytes that the source checksummed.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, TransferError> {
+        let mut bytes = Vec::new();
+        for record in &self.records {
+            bytes.extend_from_slice(&stream_record_bytes(record)?);
+        }
+        Ok(bytes)
+    }
+
+    /// Rechecks the chunk binding before a target persists it.
+    pub fn verify(&self, identity: &TransferStreamIdentityV2) -> Result<(), TransferError> {
+        self.verify_with_header_digest(identity.stream_header_digest(None)?)
+    }
+
+    /// Rechecks the chunk against the complete authenticated stream header.
+    ///
+    /// Manifest-bearing streams use a digest over both identity and manifest;
+    /// this method is the destination-side counterpart to the reader's header
+    /// validation. The legacy identity-only helper remains available for the
+    /// original wire version.
+    pub fn verify_with_header_digest(
+        &self,
+        stream_header_digest: DigestV1,
+    ) -> Result<(), TransferError> {
+        let bytes = self.canonical_bytes()?;
+        let expected = stream_chunk_digest(stream_header_digest, self.index, &bytes);
+        if expected != self.digest {
+            return Err(TransferError::HashMismatch {
+                what: "stream chunk",
+                expected: self.digest,
+                actual: expected,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Durable target seam for one bounded v2 stream import.
+///
+/// The target must atomically retain the identity-bound chunk digest and its
+/// next checkpoint with the durable chunk mutation. It may return an existing
+/// matching checkpoint after an ambiguous caller-side interruption; a
+/// conflicting stream identity or chunk must fail closed.
+pub trait TransferStreamDestinationV2 {
+    /// Provider-specific target failure.
+    type Error: fmt::Debug + fmt::Display;
+
+    /// Loads the checkpoint atomically committed by the target, if any.
+    fn checkpoint(
+        &mut self,
+        identity: &TransferStreamIdentityV2,
+    ) -> Result<Option<TransferStreamCheckpointV2>, Self::Error>;
+
+    /// Atomically stages one exact verified chunk and its post-apply checkpoint.
+    fn apply_stream_chunk(
+        &mut self,
+        identity: &TransferStreamIdentityV2,
+        chunk: &TransferStreamChunkV2,
+    ) -> Result<TransferStreamCheckpointV2, Self::Error>;
+}
+
+/// Optional completion seam for a manifest-bearing streamed transfer.
+///
+/// Implementations must perform bounded hydration, parity checks, and full
+/// semantic verification while the existing target authority fence remains.
+/// Returning success means the target durably recorded finalization; it must
+/// not silently publish authority.
+pub trait TransferStreamFinalizationDestinationV2: TransferStreamDestinationV2 {
+    /// Completes target hydration and semantic verification after the reader
+    /// has authenticated the terminal footer.
+    fn finalize_stream(
+        &mut self,
+        identity: &TransferStreamIdentityV2,
+        manifest: &TransferStreamManifestV2,
+        footer: TransferStreamFooterV2,
+    ) -> Result<(), Self::Error>;
+}
+
+/// Source seam for a v2 export. It deliberately exposes one record at a time,
+/// allowing an adapter to retain only a keyset cursor and one record while
+/// exporting an arbitrarily large frozen backup.
+pub trait TransferStreamSourceV2 {
+    /// Provider-specific source failure.
+    type Error: fmt::Debug + fmt::Display;
+
+    /// Returns the immutable manifest computed from the same frozen source.
+    fn manifest(&self) -> &TransferStreamManifestV2;
+
+    /// Returns the next exact logical record, or None after the source cursor
+    /// reaches its authenticated end.
+    fn next_stream_record(&mut self) -> Result<Option<LogicalRecordV1>, Self::Error>;
+}
+
+/// Exact cross-provider identity for a manifest-bearing authority handoff.
+///
+/// This is deliberately separate from [`TransferBundleV1`].  It binds the
+/// authenticated stream header, complete manifest, terminal footer, frozen
+/// source backup, and target fingerprint before either provider can advance
+/// authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StreamProviderDerivedTargetBindingV2 {
+    stream_header_digest: DigestV1,
+    manifest_digest: DigestV1,
+    source_backup_digest: DigestV1,
+    footer: TransferStreamFooterV2,
+    target_fingerprint: DigestV1,
+    source_epoch: u64,
+    target_epoch: u64,
+    lineage_id: String,
+}
+
+/// Opaque source-authority binding for one exact completed v2 stream.
+///
+/// Only the stream authority coordinator constructs this value, after the
+/// destination has reconfirmed its durable semantic finalization.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferStreamSourceAuthorityBindingV2(StreamProviderDerivedTargetBindingV2);
+
+impl TransferStreamSourceAuthorityBindingV2 {
+    fn verified(
+        identity: &TransferStreamIdentityV2,
+        manifest: &TransferStreamManifestV2,
+        footer: TransferStreamFooterV2,
+        target: &TargetFingerprintV1,
+    ) -> Result<Self, TransferError> {
+        if target.profile() != BundleProfileV1::PostgresPrimary17
+            || target.lineage_id() != identity.lineage_id()
+            || target.storage_epoch()
+                != identity
+                    .source_epoch()
+                    .checked_add(1)
+                    .ok_or(TransferError::EpochMismatch)?
+            || target.backend().digest()? != manifest.target_backend_digest()
+        {
+            return Err(TransferError::TargetMismatch {
+                what: "stream authority target",
+            });
+        }
+        manifest.verify_footer(
+            footer.record_count(),
+            footer.record_bytes(),
+            footer.stream_digest(),
+        )?;
+        Ok(Self(StreamProviderDerivedTargetBindingV2 {
+            stream_header_digest: identity.stream_header_digest(Some(manifest))?,
+            manifest_digest: manifest.digest()?,
+            source_backup_digest: manifest.source_backup_digest(),
+            footer,
+            target_fingerprint: target.fingerprint_digest()?,
+            source_epoch: identity.source_epoch(),
+            target_epoch: target.storage_epoch(),
+            lineage_id: identity.lineage_id().to_owned(),
+        }))
+    }
+
+    /// Returns the authenticated header digest used by the source and target
+    /// journals as their exact transfer identity.
+    #[must_use]
+    pub const fn stream_header_digest(&self) -> DigestV1 {
+        self.0.stream_header_digest
+    }
+
+    /// Returns the digest of the complete source-authenticated manifest.
+    #[must_use]
+    pub const fn manifest_digest(&self) -> DigestV1 {
+        self.0.manifest_digest
+    }
+
+    /// Returns the exact frozen SQLite transfer-point digest.
+    #[must_use]
+    pub const fn source_backup_digest(&self) -> DigestV1 {
+        self.0.source_backup_digest
+    }
+
+    /// Returns the terminal footer already authenticated by the stream reader.
+    #[must_use]
+    pub const fn footer(&self) -> TransferStreamFooterV2 {
+        self.0.footer
+    }
+
+    /// Returns the digest of every target admission field.
+    #[must_use]
+    pub const fn target_fingerprint(&self) -> DigestV1 {
+        self.0.target_fingerprint
+    }
+
+    /// Returns the frozen source epoch.
+    #[must_use]
+    pub const fn source_epoch(&self) -> u64 {
+        self.0.source_epoch
+    }
+
+    /// Returns the required target epoch.
+    #[must_use]
+    pub const fn target_epoch(&self) -> u64 {
+        self.0.target_epoch
+    }
+
+    /// Returns the exact source deployment lineage.
+    #[must_use]
+    pub fn lineage_id(&self) -> &str {
+        &self.0.lineage_id
+    }
+}
+
+/// Durable source disposition for one exact v2 authority binding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransferStreamSourceAuthorityStateV2 {
+    /// The source remains fenced and can either finish or safely abort.
+    TransferPending,
+    /// The source was permanently retired for this exact stream/target pair.
+    SourceRetired,
+    /// The same stream was durably aborted and source authority was restored.
+    SourceAuthoritativeAfterAbort,
+}
+
+/// Opaque proof that the target has semantically finalized an exact v2 stream
+/// while its existing authority fence remains in place.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedStreamTargetFinalizationV2(TransferStreamSourceAuthorityBindingV2);
+
+impl VerifiedStreamTargetFinalizationV2 {
+    /// Returns the exact completed stream authority binding.
+    #[must_use]
+    pub const fn binding(&self) -> &TransferStreamSourceAuthorityBindingV2 {
+        &self.0
+    }
+}
+
+/// Opaque proof that the target discarded or tombstoned the exact v2 import
+/// before source authority was restored.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedStreamTargetAbortV2(TransferStreamSourceAuthorityBindingV2);
+
+impl VerifiedStreamTargetAbortV2 {
+    /// Returns the exact aborted stream authority binding.
+    #[must_use]
+    pub const fn binding(&self) -> &TransferStreamSourceAuthorityBindingV2 {
+        &self.0
+    }
+}
+
+/// Source authority seam for a manifest-bearing v2 stream.
+///
+/// Implementations must bind the stream header, manifest, footer, target
+/// fingerprint, source epoch, and frozen backup before retirement or
+/// restoration. The methods are idempotent for the same proof so a process
+/// stop between provider commits can be reconciled safely.
+pub trait TransferStreamSourceAuthorityV2 {
+    /// Provider-specific source error.
+    type Error: fmt::Debug + fmt::Display;
+
+    /// Returns the durable source state for the exact stream binding.
+    fn inspect_stream_source_authority(
+        &self,
+        binding: &TransferStreamSourceAuthorityBindingV2,
+    ) -> Result<TransferStreamSourceAuthorityStateV2, Self::Error>;
+
+    /// Permanently retires source authority after target semantic finalization.
+    fn retire_after_verified_stream_target(
+        &self,
+        proof: &VerifiedStreamTargetFinalizationV2,
+    ) -> Result<(), Self::Error>;
+
+    /// Restores source authority only after the exact target import was
+    /// discarded or tombstoned.
+    fn restore_after_verified_stream_abort(
+        &self,
+        proof: &VerifiedStreamTargetAbortV2,
+    ) -> Result<(), Self::Error>;
+}
+
+/// Target authority seam for a manifest-bearing v2 stream.
+///
+/// `confirm_stream_finalization` must re-run final semantic verification while
+/// the target fence remains present. `accept_stream_authority` performs only
+/// the final matched publication transition after the source is retired.
+pub trait TransferStreamAuthorityDestinationV2: TransferStreamFinalizationDestinationV2 {
+    /// Reconfirms the exact finalized target marker and semantic evidence.
+    fn confirm_stream_finalization(
+        &mut self,
+        binding: &TransferStreamSourceAuthorityBindingV2,
+    ) -> Result<(), Self::Error>;
+
+    /// Revokes a finalized non-serving target marker when a definite source
+    /// retirement failure leaves source authority pending.
+    fn reconcile_stream_finalization_after_definite_source_failure(
+        &mut self,
+        binding: &TransferStreamSourceAuthorityBindingV2,
+    ) -> Result<(), Self::Error>;
+
+    /// Publishes only the exact finalized stream after source retirement.
+    fn accept_stream_authority(
+        &mut self,
+        binding: &TransferStreamSourceAuthorityBindingV2,
+    ) -> Result<(), Self::Error>;
+
+    /// Discards/tombstones the exact non-authoritative stream target before
+    /// source authority may be restored.
+    fn abort_stream_import(
+        &mut self,
+        binding: &TransferStreamSourceAuthorityBindingV2,
+    ) -> Result<(), Self::Error>;
+}
+
+/// Failure from the cross-provider v2 stream authority coordinator.
+#[derive(Debug, Error)]
+pub enum WholeDeploymentStreamErrorV2<DestinationError, SourceError>
+where
+    DestinationError: fmt::Debug + fmt::Display,
+    SourceError: fmt::Debug + fmt::Display,
+{
+    /// A manifest, footer, epoch, or target binding was invalid.
+    #[error(transparent)]
+    Contract(#[from] TransferError),
+    /// The target provider rejected a required durable operation.
+    #[error("stream destination {operation} failed: {error}")]
+    Destination {
+        /// Exact target operation that failed.
+        operation: &'static str,
+        /// Provider-specific failure.
+        error: DestinationError,
+    },
+    /// The source provider rejected a required durable operation.
+    #[error("stream source {operation} failed: {error}")]
+    Source {
+        /// Exact source operation that failed.
+        operation: &'static str,
+        /// Provider-specific failure.
+        error: SourceError,
+    },
+}
+
+/// Completes the exact v2 authority handoff without materializing a bundle.
+///
+/// The source is retired only after a target has durably rechecked the
+/// authenticated manifest/footer and semantic state behind its existing fence.
+/// A retry after either provider commit first inspects durable state, then
+/// performs only the still-missing transition.
+pub fn finalize_stream_whole_deployment_v2<S, D>(
+    source: &S,
+    destination: &mut D,
+    identity: &TransferStreamIdentityV2,
+    manifest: &TransferStreamManifestV2,
+    footer: TransferStreamFooterV2,
+    target: &TargetFingerprintV1,
+) -> Result<(), WholeDeploymentStreamErrorV2<D::Error, S::Error>>
+where
+    S: TransferStreamSourceAuthorityV2,
+    D: TransferStreamAuthorityDestinationV2,
+{
+    let binding =
+        TransferStreamSourceAuthorityBindingV2::verified(identity, manifest, footer, target)?;
+    let source_state = source
+        .inspect_stream_source_authority(&binding)
+        .map_err(|error| WholeDeploymentStreamErrorV2::Source {
+            operation: "inspect source authority before stream finalization",
+            error,
+        })?;
+    if source_state == TransferStreamSourceAuthorityStateV2::SourceAuthoritativeAfterAbort {
+        return Err(TransferError::InvalidValue {
+            what: "stream finalization after verified source abort",
+        }
+        .into());
+    }
+
+    if source_state == TransferStreamSourceAuthorityStateV2::SourceRetired {
+        return destination
+            .accept_stream_authority(&binding)
+            .map_err(|error| WholeDeploymentStreamErrorV2::Destination {
+                operation: "publish stream target authority",
+                error,
+            });
+    }
+
+    destination
+        .confirm_stream_finalization(&binding)
+        .map_err(|error| WholeDeploymentStreamErrorV2::Destination {
+            operation: "confirm stream finalization",
+            error,
+        })?;
+
+    let proof = VerifiedStreamTargetFinalizationV2(binding.clone());
+    if let Err(retirement_error) = source.retire_after_verified_stream_target(&proof) {
+        match source.inspect_stream_source_authority(&binding) {
+            Ok(TransferStreamSourceAuthorityStateV2::SourceRetired) => {}
+            Ok(TransferStreamSourceAuthorityStateV2::TransferPending) => {
+                destination
+                    .reconcile_stream_finalization_after_definite_source_failure(&binding)
+                    .map_err(|error| WholeDeploymentStreamErrorV2::Destination {
+                        operation: "reconcile stream finalization after source failure",
+                        error,
+                    })?;
+                return Err(WholeDeploymentStreamErrorV2::Source {
+                    operation: "retire verified stream source",
+                    error: retirement_error,
+                });
+            }
+            Ok(TransferStreamSourceAuthorityStateV2::SourceAuthoritativeAfterAbort) => {
+                return Err(TransferError::InvalidValue {
+                    what: "stream source abort raced finalization",
+                }
+                .into());
+            }
+            Err(error) => {
+                return Err(WholeDeploymentStreamErrorV2::Source {
+                    operation: "inspect failed stream source retirement",
+                    error,
+                });
+            }
+        }
+    }
+    destination
+        .accept_stream_authority(&binding)
+        .map_err(|error| WholeDeploymentStreamErrorV2::Destination {
+            operation: "publish stream target authority",
+            error,
+        })
+}
+
+/// Safely aborts an exact v2 stream before source retirement.
+///
+/// Target tombstoning/discard commits before the source is allowed to regain
+/// authority. A retired source always refuses this path.
+pub fn abort_stream_whole_deployment_v2<S, D>(
+    source: &S,
+    destination: &mut D,
+    identity: &TransferStreamIdentityV2,
+    manifest: &TransferStreamManifestV2,
+    footer: TransferStreamFooterV2,
+    target: &TargetFingerprintV1,
+) -> Result<(), WholeDeploymentStreamErrorV2<D::Error, S::Error>>
+where
+    S: TransferStreamSourceAuthorityV2,
+    D: TransferStreamAuthorityDestinationV2,
+{
+    let binding =
+        TransferStreamSourceAuthorityBindingV2::verified(identity, manifest, footer, target)?;
+    let source_state = source
+        .inspect_stream_source_authority(&binding)
+        .map_err(|error| WholeDeploymentStreamErrorV2::Source {
+            operation: "inspect source authority before stream abort",
+            error,
+        })?;
+    if source_state == TransferStreamSourceAuthorityStateV2::SourceRetired {
+        return Err(TransferError::SourceRetired.into());
+    }
+    destination.abort_stream_import(&binding).map_err(|error| {
+        WholeDeploymentStreamErrorV2::Destination {
+            operation: "abort stream import",
+            error,
+        }
+    })?;
+    if source_state == TransferStreamSourceAuthorityStateV2::SourceAuthoritativeAfterAbort {
+        return Ok(());
+    }
+    let proof = VerifiedStreamTargetAbortV2(binding.clone());
+    if let Err(restore_error) = source.restore_after_verified_stream_abort(&proof) {
+        match source.inspect_stream_source_authority(&binding) {
+            Ok(TransferStreamSourceAuthorityStateV2::SourceAuthoritativeAfterAbort) => {
+                return Ok(());
+            }
+            Ok(TransferStreamSourceAuthorityStateV2::SourceRetired) => {
+                return Err(TransferError::SourceRetired.into());
+            }
+            Ok(TransferStreamSourceAuthorityStateV2::TransferPending) => {
+                return Err(WholeDeploymentStreamErrorV2::Source {
+                    operation: "restore stream source after verified abort",
+                    error: restore_error,
+                });
+            }
+            Err(error) => {
+                return Err(WholeDeploymentStreamErrorV2::Source {
+                    operation: "inspect failed stream source abort",
+                    error,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Failure from the bounded v2 export loop.
+#[derive(Debug, Error)]
+pub enum TransferStreamExportErrorV2<E: fmt::Debug + fmt::Display> {
+    /// The writer rejected an invalid source record or footer expectation.
+    #[error(transparent)]
+    Stream(#[from] TransferError),
+    /// The source could not advance its persistent keyset cursor.
+    #[error("stream source failed: {0}")]
+    Source(E),
+}
+
+/// Streams a source directly into an authenticated v2 file or transport.
+///
+/// No TransferBundleV1 is constructed and no full record collection is
+/// retained. The source manifest is written before the first record and the
+/// writer verifies its final footer expectations before returning the sink.
+pub fn export_stream_v2<W, S>(
+    sink: W,
+    identity: TransferStreamIdentityV2,
+    source: &mut S,
+    limits: TransferStreamLimitsV2,
+) -> Result<W, TransferStreamExportErrorV2<S::Error>>
+where
+    W: Write,
+    S: TransferStreamSourceV2,
+{
+    let mut writer = TransferStreamWriterV2::new_with_manifest(
+        sink,
+        identity,
+        source.manifest().clone(),
+        limits,
+    )?;
+    while let Some(record) = source
+        .next_stream_record()
+        .map_err(TransferStreamExportErrorV2::Source)?
+    {
+        writer.append(&record)?;
+    }
+    writer.finish().map_err(TransferStreamExportErrorV2::Stream)
+}
+
+/// Failure from the bounded v2 source-to-target import loop.
+#[derive(Debug, Error)]
+pub enum TransferStreamRunErrorV2<E: fmt::Debug + fmt::Display> {
+    /// The stream was malformed, interrupted, or exceeded a configured bound.
+    #[error(transparent)]
+    Stream(#[from] TransferError),
+    /// The destination rejected the exact chunk or durable checkpoint.
+    #[error("stream destination failed: {0}")]
+    Destination(E),
+    /// The target acknowledged a checkpoint different from the exact chunk
+    /// boundary the reader just verified.
+    #[error("stream destination returned a nonmatching durable checkpoint")]
+    CheckpointMismatch,
+}
+
+/// Drives a bounded v2 import from a verified reader into a durable target.
+///
+/// A restart starts with a fresh reader, loads the target's checkpoint, and
+/// re-verifies/discards earlier chunks with [`TransferStreamReaderV2::resume_from_checkpoint`]
+/// before sending the first uncommitted chunk. No completion is reported until
+/// the reader has authenticated the terminal footer.
+pub fn import_stream_v2<R, D>(
+    reader: &mut TransferStreamReaderV2<R>,
+    destination: &mut D,
+) -> Result<TransferStreamCheckpointV2, TransferStreamRunErrorV2<D::Error>>
+where
+    R: Read,
+    D: TransferStreamDestinationV2,
+{
+    let identity = reader.identity().clone();
+    if let Some(checkpoint) = destination
+        .checkpoint(&identity)
+        .map_err(TransferStreamRunErrorV2::Destination)?
+    {
+        reader.resume_from_checkpoint(checkpoint)?;
+    }
+    while let Some(chunk) = reader.next_chunk()? {
+        let expected = reader.checkpoint();
+        let stored = destination
+            .apply_stream_chunk(&identity, &chunk)
+            .map_err(TransferStreamRunErrorV2::Destination)?;
+        if stored != expected {
+            return Err(TransferStreamRunErrorV2::CheckpointMismatch);
+        }
+    }
+    Ok(reader.checkpoint())
+}
+
+/// Imports and then finalizes a manifest-bearing stream while the destination
+/// remains non-serving.
+///
+/// This is intentionally separate from the legacy chunk-only import helper:
+/// a v1 stream has no source-authenticated semantic expectations and therefore
+/// can never pass this authority-adjacent completion seam.
+pub fn import_and_finalize_stream_v2<R, D>(
+    reader: &mut TransferStreamReaderV2<R>,
+    destination: &mut D,
+) -> Result<TransferStreamCheckpointV2, TransferStreamRunErrorV2<D::Error>>
+where
+    R: Read,
+    D: TransferStreamFinalizationDestinationV2,
+{
+    let checkpoint = import_stream_v2(reader, destination)?;
+    let manifest = reader.manifest().ok_or(TransferError::InvalidValue {
+        what: "stream manifest required for finalization",
+    })?;
+    let footer = reader.footer().ok_or(TransferError::CheckpointMismatch {
+        what: "stream finalization footer",
+    })?;
+    let identity = reader.identity().clone();
+    destination
+        .finalize_stream(&identity, manifest, footer)
+        .map_err(TransferStreamRunErrorV2::Destination)?;
+    Ok(checkpoint)
+}
+
+/// Incremental v2 stream encoder. It retains only one bounded chunk.
+pub struct TransferStreamWriterV2<W> {
+    sink: W,
+    limits: TransferStreamLimitsV2,
+    identity_digest: DigestV1,
+    chunk_index: u64,
+    chunk_records: usize,
+    chunk_bytes: Vec<u8>,
+    next_ordinal: u64,
+    previous_order: Option<(u8, u8, String)>,
+    total_record_bytes: u64,
+    hasher: blake3::Hasher,
+    manifest: Option<TransferStreamManifestV2>,
+    finished: bool,
+}
+
+impl<W: Write> TransferStreamWriterV2<W> {
+    /// Writes the legacy identity-only v2 header and starts an empty bounded
+    /// chunk. New complete-deployment exports should use
+    /// new_with_manifest instead.
+    pub fn new(
+        sink: W,
+        identity: TransferStreamIdentityV2,
+        limits: TransferStreamLimitsV2,
+    ) -> Result<Self, TransferError> {
+        Self::new_inner(sink, identity, None, limits)
+    }
+
+    /// Writes a manifest-bearing v2 header and starts an empty bounded chunk.
+    ///
+    /// The manifest is part of the authenticated header digest, so chunks and
+    /// checkpoints from the same stream identity but a different frozen backup
+    /// or semantic expectation cannot be mixed.
+    pub fn new_with_manifest(
+        sink: W,
+        identity: TransferStreamIdentityV2,
+        manifest: TransferStreamManifestV2,
+        limits: TransferStreamLimitsV2,
+    ) -> Result<Self, TransferError> {
+        Self::new_inner(sink, identity, Some(manifest), limits)
+    }
+
+    fn new_inner(
+        mut sink: W,
+        identity: TransferStreamIdentityV2,
+        manifest: Option<TransferStreamManifestV2>,
+        limits: TransferStreamLimitsV2,
+    ) -> Result<Self, TransferError> {
+        limits.validate()?;
+        let header_bytes = stream_header_bytes(&identity)?;
+        let identity_digest = stream_header_digest(&identity, manifest.as_ref())?;
+        let hasher = stream_hasher(&identity, manifest.as_ref())?;
+        sink.write_all(STREAM_MAGIC_V2)
+            .map_err(|error| io_error("write stream header", &error))?;
+        sink.write_all(
+            &(if manifest.is_some() {
+                STREAM_MANIFEST_VERSION_V2
+            } else {
+                STREAM_LEGACY_VERSION_V2
+            })
+            .to_le_bytes(),
+        )
+        .map_err(|error| io_error("write stream header", &error))?;
+        sink.write_all(&header_bytes)
+            .map_err(|error| io_error("write stream header", &error))?;
+        if let Some(manifest) = &manifest {
+            let bytes = manifest.canonical_bytes()?;
+            if bytes.len() > MAX_STREAM_MANIFEST_BYTES {
+                return Err(TransferError::BoundExceeded {
+                    what: "stream manifest bytes",
+                });
+            }
+            sink.write_all(
+                &u32::try_from(bytes.len())
+                    .map_err(|_| TransferError::BoundExceeded {
+                        what: "stream manifest bytes",
+                    })?
+                    .to_le_bytes(),
+            )
+            .and_then(|()| sink.write_all(&DigestV1::hash(&bytes).as_bytes()))
+            .and_then(|()| sink.write_all(&bytes))
+            .map_err(|error| io_error("write stream manifest", &error))?;
+        }
+        Ok(Self {
+            sink,
+            limits,
+            identity_digest,
+            chunk_index: 0,
+            chunk_records: 0,
+            chunk_bytes: Vec::with_capacity(limits.max_chunk_bytes),
+            next_ordinal: 0,
+            previous_order: None,
+            total_record_bytes: 0,
+            hasher,
+            manifest,
+            finished: false,
+        })
+    }
+
+    /// Appends one exact record, flushing the preceding chunk when necessary.
+    pub fn append(&mut self, record: &LogicalRecordV1) -> Result<(), TransferError> {
+        if self.finished {
+            return Err(TransferError::InvalidValue {
+                what: "append after stream footer",
+            });
+        }
+        if record.ordinal != self.next_ordinal {
+            return Err(TransferError::NonDeterministicOrder {
+                what: "stream record ordinal",
+            });
+        }
+        let order = stream_record_order(record);
+        if self.manifest.is_none()
+            && self
+                .previous_order
+                .as_ref()
+                .is_some_and(|previous| previous >= &order)
+        {
+            return if self.previous_order.as_ref() == Some(&order) {
+                Err(TransferError::DuplicateIdentity {
+                    what: "stream record",
+                })
+            } else {
+                Err(TransferError::NonDeterministicOrder {
+                    what: "stream records",
+                })
+            };
+        }
+        if record.bytes.len() > self.limits.max_record_bytes {
+            return Err(TransferError::BoundExceeded {
+                what: "stream record bytes",
+            });
+        }
+        let encoded = stream_record_bytes(record)?;
+        if encoded.len() > self.limits.max_chunk_bytes {
+            return Err(TransferError::BoundExceeded {
+                what: "stream encoded record",
+            });
+        }
+        if self.chunk_records == self.limits.max_records_per_chunk
+            || self.chunk_bytes.len().saturating_add(encoded.len()) > self.limits.max_chunk_bytes
+        {
+            self.flush_chunk()?;
+        }
+        self.total_record_bytes = self
+            .total_record_bytes
+            .checked_add(u64::try_from(record.bytes.len()).map_err(|_| {
+                TransferError::BoundExceeded {
+                    what: "stream record bytes",
+                }
+            })?)
+            .ok_or(TransferError::BoundExceeded {
+                what: "stream total record bytes",
+            })?;
+        if self.next_ordinal >= self.limits.max_total_records
+            || self.total_record_bytes > self.limits.max_total_record_bytes
+        {
+            return Err(TransferError::BoundExceeded {
+                what: "stream total work",
+            });
+        }
+        self.hasher.update(&encoded);
+        self.chunk_bytes.extend_from_slice(&encoded);
+        self.chunk_records += 1;
+        self.next_ordinal =
+            self.next_ordinal
+                .checked_add(1)
+                .ok_or(TransferError::BoundExceeded {
+                    what: "stream record ordinal",
+                })?;
+        self.previous_order = Some(order);
+        Ok(())
+    }
+
+    /// Flushes the final chunk, writes the authenticated footer, and returns
+    /// the underlying sink. Calling it twice fails closed.
+    pub fn finish(mut self) -> Result<W, TransferError> {
+        self.flush_chunk()?;
+        let stream_digest = DigestV1::from_bytes(self.hasher.finalize().as_bytes())?;
+        if let Some(manifest) = &self.manifest {
+            manifest.verify_footer(self.next_ordinal, self.total_record_bytes, stream_digest)?;
+        }
+        self.sink
+            .write_all(STREAM_FOOTER_MARKER_V2)
+            .map_err(|error| io_error("write stream footer", &error))?;
+        self.sink
+            .write_all(&self.chunk_index.to_le_bytes())
+            .map_err(|error| io_error("write stream footer", &error))?;
+        self.sink
+            .write_all(&self.next_ordinal.to_le_bytes())
+            .map_err(|error| io_error("write stream footer", &error))?;
+        self.sink
+            .write_all(&self.total_record_bytes.to_le_bytes())
+            .map_err(|error| io_error("write stream footer", &error))?;
+        self.sink
+            .write_all(&stream_digest.as_bytes())
+            .map_err(|error| io_error("write stream footer", &error))?;
+        self.finished = true;
+        Ok(self.sink)
+    }
+
+    fn flush_chunk(&mut self) -> Result<(), TransferError> {
+        if self.chunk_records == 0 {
+            return Ok(());
+        }
+        let digest = stream_chunk_digest(self.identity_digest, self.chunk_index, &self.chunk_bytes);
+        self.sink
+            .write_all(STREAM_CHUNK_MARKER_V2)
+            .map_err(|error| io_error("write stream chunk", &error))?;
+        self.sink
+            .write_all(&self.chunk_index.to_le_bytes())
+            .map_err(|error| io_error("write stream chunk", &error))?;
+        self.sink
+            .write_all(
+                &u32::try_from(self.chunk_records)
+                    .map_err(|_| TransferError::BoundExceeded {
+                        what: "stream chunk records",
+                    })?
+                    .to_le_bytes(),
+            )
+            .map_err(|error| io_error("write stream chunk", &error))?;
+        self.sink
+            .write_all(
+                &u32::try_from(self.chunk_bytes.len())
+                    .map_err(|_| TransferError::BoundExceeded {
+                        what: "stream chunk bytes",
+                    })?
+                    .to_le_bytes(),
+            )
+            .map_err(|error| io_error("write stream chunk", &error))?;
+        self.sink
+            .write_all(&digest.as_bytes())
+            .and_then(|()| self.sink.write_all(&self.chunk_bytes))
+            .map_err(|error| io_error("write stream chunk", &error))?;
+        self.chunk_index = self
+            .chunk_index
+            .checked_add(1)
+            .ok_or(TransferError::BoundExceeded {
+                what: "stream chunk index",
+            })?;
+        self.chunk_records = 0;
+        self.chunk_bytes.clear();
+        Ok(())
+    }
+}
+
+/// Incremental v2 stream reader. Each call materializes at most one declared
+/// chunk and validates its order, identity, record digests, and footer.
+pub struct TransferStreamReaderV2<R> {
+    source: R,
+    identity: TransferStreamIdentityV2,
+    identity_digest: DigestV1,
+    manifest: Option<TransferStreamManifestV2>,
+    limits: TransferStreamLimitsV2,
+    next_chunk: u64,
+    next_ordinal: u64,
+    total_record_bytes: u64,
+    previous_order: Option<(u8, u8, String)>,
+    hasher: blake3::Hasher,
+    footer: Option<TransferStreamFooterV2>,
+    finished: bool,
+}
+
+impl<R: Read> TransferStreamReaderV2<R> {
+    /// Reads and validates the v2 stream header before any chunk is allocated.
+    pub fn new(mut source: R, limits: TransferStreamLimitsV2) -> Result<Self, TransferError> {
+        limits.validate()?;
+        let mut magic = [0_u8; 8];
+        read_stream_exact(&mut source, &mut magic, "read stream header")?;
+        if &magic != STREAM_MAGIC_V2 {
+            return Err(TransferError::InvalidMagic);
+        }
+        let version = read_stream_u16(&mut source, "read stream header")?;
+        if version != STREAM_LEGACY_VERSION_V2 && version != STREAM_MANIFEST_VERSION_V2 {
+            return Err(TransferError::UnsupportedBundleVersion(version));
+        }
+        let stream_id =
+            read_stream_string(&mut source, MAX_STREAM_IDENTITY_BYTES, "read stream header")?;
+        let lineage_id =
+            read_stream_string(&mut source, MAX_STREAM_IDENTITY_BYTES, "read stream header")?;
+        let source_epoch = read_stream_u64(&mut source, "read stream header")?;
+        let source_profile =
+            BundleProfileV1::from_tag(read_stream_u8(&mut source, "read stream header")?)?;
+        let target_profile =
+            BundleProfileV1::from_tag(read_stream_u8(&mut source, "read stream header")?)?;
+        let identity = TransferStreamIdentityV2::new(
+            stream_id,
+            lineage_id,
+            source_epoch,
+            source_profile,
+            target_profile,
+        )?;
+        let manifest = if version == STREAM_MANIFEST_VERSION_V2 {
+            let byte_count = usize::try_from(read_stream_u32(&mut source, "read stream manifest")?)
+                .map_err(|_| TransferError::BoundExceeded {
+                    what: "stream manifest bytes",
+                })?;
+            if byte_count == 0 || byte_count > MAX_STREAM_MANIFEST_BYTES {
+                return Err(TransferError::BoundExceeded {
+                    what: "stream manifest bytes",
+                });
+            }
+            let expected_digest = read_stream_digest(&mut source, "read stream manifest")?;
+            let mut bytes = vec![0_u8; byte_count];
+            read_stream_exact(&mut source, &mut bytes, "read stream manifest")?;
+            let actual_digest = DigestV1::hash(&bytes);
+            if actual_digest != expected_digest {
+                return Err(TransferError::HashMismatch {
+                    what: "stream manifest",
+                    expected: expected_digest,
+                    actual: actual_digest,
+                });
+            }
+            Some(TransferStreamManifestV2::from_canonical_bytes(&bytes)?)
+        } else {
+            None
+        };
+        let identity_digest = stream_header_digest(&identity, manifest.as_ref())?;
+        let hasher = stream_hasher(&identity, manifest.as_ref())?;
+        Ok(Self {
+            source,
+            identity,
+            identity_digest,
+            manifest,
+            limits,
+            next_chunk: 0,
+            next_ordinal: 0,
+            total_record_bytes: 0,
+            previous_order: None,
+            hasher,
+            footer: None,
+            finished: false,
+        })
+    }
+
+    /// Returns the frozen stream identity.
+    #[must_use]
+    pub fn identity(&self) -> &TransferStreamIdentityV2 {
+        &self.identity
+    }
+
+    /// Returns the source-authenticated manifest when this is a complete v2
+    /// stream. Legacy identity-only streams return None and cannot finalize.
+    #[must_use]
+    pub const fn manifest(&self) -> Option<&TransferStreamManifestV2> {
+        self.manifest.as_ref()
+    }
+
+    /// Returns the complete header digest used for chunk binding and durable
+    /// resumability checkpoints.
+    #[must_use]
+    pub const fn stream_header_digest(&self) -> DigestV1 {
+        self.identity_digest
+    }
+
+    /// Returns the verified footer after the reader reached terminal EOF.
+    #[must_use]
+    pub const fn footer(&self) -> Option<TransferStreamFooterV2> {
+        self.footer
+    }
+
+    /// Returns a persistable resumability checkpoint after the last verified
+    /// chunk. It must be bound to the target's own durable import state.
+    #[must_use]
+    pub const fn checkpoint(&self) -> TransferStreamCheckpointV2 {
+        TransferStreamCheckpointV2 {
+            stream_identity_digest: self.identity_digest,
+            next_chunk: self.next_chunk,
+            next_ordinal: self.next_ordinal,
+        }
+    }
+
+    /// Replays and verifies already-committed chunks until `checkpoint`.
+    ///
+    /// Callers persist this checkpoint atomically with their target mutation;
+    /// this method never applies records. It only re-establishes the reader's
+    /// bounded source position after a restart and refuses a checkpoint from
+    /// another stream or one that does not end at an exact chunk boundary.
+    pub fn resume_from_checkpoint(
+        &mut self,
+        checkpoint: TransferStreamCheckpointV2,
+    ) -> Result<(), TransferError> {
+        if checkpoint.stream_identity_digest != self.identity_digest
+            || checkpoint.next_chunk < self.next_chunk
+            || checkpoint.next_ordinal < self.next_ordinal
+        {
+            return Err(TransferError::CheckpointMismatch {
+                what: "stream resume checkpoint",
+            });
+        }
+        while self.next_chunk < checkpoint.next_chunk {
+            if self.next_chunk()?.is_none() {
+                return Err(TransferError::CheckpointMismatch {
+                    what: "stream resume checkpoint",
+                });
+            }
+        }
+        if self.next_ordinal != checkpoint.next_ordinal {
+            return Err(TransferError::CheckpointMismatch {
+                what: "stream resume checkpoint",
+            });
+        }
+        Ok(())
+    }
+
+    /// Reads the next authenticated chunk, or validates the footer and returns
+    /// `None`. Trailing bytes, duplicate/reordered chunks, and a missing footer
+    /// fail closed.
+    pub fn next_chunk(&mut self) -> Result<Option<TransferStreamChunkV2>, TransferError> {
+        if self.finished {
+            return Ok(None);
+        }
+        let mut marker = [0_u8; 4];
+        read_stream_exact(&mut self.source, &mut marker, "read stream marker")?;
+        if &marker == STREAM_FOOTER_MARKER_V2 {
+            self.read_footer()?;
+            self.finished = true;
+            return Ok(None);
+        }
+        if &marker != STREAM_CHUNK_MARKER_V2 {
+            return Err(TransferError::InvalidMagic);
+        }
+        let index = read_stream_u64(&mut self.source, "read stream chunk")?;
+        if index != self.next_chunk {
+            return Err(TransferError::NonDeterministicOrder {
+                what: "stream chunks",
+            });
+        }
+        let count = usize::try_from(read_stream_u32(&mut self.source, "read stream chunk")?)
+            .map_err(|_| TransferError::BoundExceeded {
+                what: "stream chunk records",
+            })?;
+        let byte_count = usize::try_from(read_stream_u32(&mut self.source, "read stream chunk")?)
+            .map_err(|_| TransferError::BoundExceeded {
+            what: "stream chunk bytes",
+        })?;
+        if count == 0
+            || count > self.limits.max_records_per_chunk
+            || byte_count == 0
+            || byte_count > self.limits.max_chunk_bytes
+        {
+            return Err(TransferError::BoundExceeded {
+                what: "stream chunk",
+            });
+        }
+        let expected_digest = read_stream_digest(&mut self.source, "read stream chunk")?;
+        let mut bytes = vec![0_u8; byte_count];
+        read_stream_exact(&mut self.source, &mut bytes, "read stream chunk")?;
+        let actual_digest = stream_chunk_digest(self.identity_digest, index, &bytes);
+        if actual_digest != expected_digest {
+            return Err(TransferError::HashMismatch {
+                what: "stream chunk",
+                expected: expected_digest,
+                actual: actual_digest,
+            });
+        }
+        let mut reader = Reader::new(&bytes);
+        let mut records = Vec::with_capacity(count);
+        for _ in 0..count {
+            let record = read_stream_record(&mut reader, self.limits.max_record_bytes)?;
+            if record.ordinal != self.next_ordinal {
+                return Err(TransferError::NonDeterministicOrder {
+                    what: "stream record ordinal",
+                });
+            }
+            let order = stream_record_order(&record);
+            if self.manifest.is_none()
+                && self
+                    .previous_order
+                    .as_ref()
+                    .is_some_and(|previous| previous >= &order)
+            {
+                return if self.previous_order.as_ref() == Some(&order) {
+                    Err(TransferError::DuplicateIdentity {
+                        what: "stream record",
+                    })
+                } else {
+                    Err(TransferError::NonDeterministicOrder {
+                        what: "stream records",
+                    })
+                };
+            }
+            self.total_record_bytes = self
+                .total_record_bytes
+                .checked_add(u64::try_from(record.bytes.len()).map_err(|_| {
+                    TransferError::BoundExceeded {
+                        what: "stream record bytes",
+                    }
+                })?)
+                .ok_or(TransferError::BoundExceeded {
+                    what: "stream total record bytes",
+                })?;
+            if self.next_ordinal >= self.limits.max_total_records
+                || self.total_record_bytes > self.limits.max_total_record_bytes
+            {
+                return Err(TransferError::BoundExceeded {
+                    what: "stream total work",
+                });
+            }
+            let encoded = stream_record_bytes(&record)?;
+            self.hasher.update(&encoded);
+            self.next_ordinal =
+                self.next_ordinal
+                    .checked_add(1)
+                    .ok_or(TransferError::BoundExceeded {
+                        what: "stream record ordinal",
+                    })?;
+            self.previous_order = Some(order);
+            records.push(record);
+        }
+        if !reader.is_done() {
+            return Err(TransferError::TrailingBytes {
+                count: reader.remaining(),
+            });
+        }
+        self.next_chunk = self
+            .next_chunk
+            .checked_add(1)
+            .ok_or(TransferError::BoundExceeded {
+                what: "stream chunk index",
+            })?;
+        Ok(Some(TransferStreamChunkV2 {
+            index,
+            records,
+            digest: expected_digest,
+        }))
+    }
+
+    fn read_footer(&mut self) -> Result<(), TransferError> {
+        let chunk_count = read_stream_u64(&mut self.source, "read stream footer")?;
+        let record_count = read_stream_u64(&mut self.source, "read stream footer")?;
+        let total_record_bytes = read_stream_u64(&mut self.source, "read stream footer")?;
+        let expected_digest = read_stream_digest(&mut self.source, "read stream footer")?;
+        if chunk_count != self.next_chunk
+            || record_count != self.next_ordinal
+            || total_record_bytes != self.total_record_bytes
+        {
+            return Err(TransferError::CheckpointMismatch {
+                what: "stream footer counts",
+            });
+        }
+        let actual_digest = DigestV1::from_bytes(self.hasher.finalize().as_bytes())?;
+        if actual_digest != expected_digest {
+            return Err(TransferError::HashMismatch {
+                what: "stream footer",
+                expected: expected_digest,
+                actual: actual_digest,
+            });
+        }
+        let footer = TransferStreamFooterV2 {
+            chunk_count,
+            record_count,
+            record_bytes: total_record_bytes,
+            stream_digest: actual_digest,
+        };
+        if let Some(manifest) = &self.manifest {
+            manifest.verify_footer(
+                footer.record_count,
+                footer.record_bytes,
+                footer.stream_digest,
+            )?;
+        }
+        let mut trailing = [0_u8; 1];
+        match self.source.read(&mut trailing) {
+            Ok(0) => {
+                self.footer = Some(footer);
+                Ok(())
+            }
+            Ok(_) => Err(TransferError::TrailingBytes { count: 1 }),
+            Err(error) => Err(io_error("read stream footer", &error)),
+        }
+    }
+}
+
 impl LogicalRecordV1 {
     /// Creates a canonical record and hashes its exact bytes.
     pub fn canonical(
@@ -1023,6 +3060,12 @@ impl LogicalRecordV1 {
     #[must_use]
     pub const fn kind(&self) -> RecordKindV1 {
         self.kind
+    }
+
+    /// Returns the exact stable wire tags for provider-side per-record staging.
+    #[must_use]
+    pub const fn wire_tags(&self) -> (u8, u8) {
+        self.kind.wire_tags()
     }
 
     /// Returns the stable logical identity.
@@ -4022,6 +6065,149 @@ fn write_record(output: &mut Vec<u8>, record: &LogicalRecordV1) -> Result<(), Tr
     Ok(())
 }
 
+fn stream_record_bytes(record: &LogicalRecordV1) -> Result<Vec<u8>, TransferError> {
+    let mut output = Vec::with_capacity(
+        record
+            .bytes
+            .len()
+            .saturating_add(record.identity.len())
+            .saturating_add(64),
+    );
+    write_record(&mut output, record)?;
+    Ok(output)
+}
+
+fn stream_record_order(record: &LogicalRecordV1) -> (u8, u8, String) {
+    (
+        record.kind.class_tag(),
+        record.kind.kind_tag(),
+        record.identity.clone(),
+    )
+}
+
+fn stream_header_bytes(identity: &TransferStreamIdentityV2) -> Result<Vec<u8>, TransferError> {
+    let mut bytes = Vec::new();
+    write_string(&mut bytes, &identity.stream_id)?;
+    write_string(&mut bytes, &identity.lineage_id)?;
+    write_u64(&mut bytes, identity.source_epoch);
+    bytes.push(identity.source_profile.tag());
+    bytes.push(identity.target_profile.tag());
+    Ok(bytes)
+}
+
+fn stream_header_digest(
+    identity: &TransferStreamIdentityV2,
+    manifest: Option<&TransferStreamManifestV2>,
+) -> Result<DigestV1, TransferError> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"worldstream/transfer-stream-header/v2");
+    hasher.update(&identity.canonical_bytes()?);
+    if let Some(manifest) = manifest {
+        hasher.update(&manifest.canonical_bytes()?);
+    }
+    Ok(DigestV1(*hasher.finalize().as_bytes()))
+}
+
+fn stream_hasher(
+    identity: &TransferStreamIdentityV2,
+    _manifest: Option<&TransferStreamManifestV2>,
+) -> Result<blake3::Hasher, TransferError> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"worldstream/transfer-stream/v2");
+    hasher.update(&identity.canonical_bytes()?);
+    Ok(hasher)
+}
+
+fn read_stream_record(
+    reader: &mut Reader<'_>,
+    maximum_record_bytes: usize,
+) -> Result<LogicalRecordV1, TransferError> {
+    let ordinal = reader.read_u64()?;
+    let kind = LogicalRecordV1::decode_kind(reader.read_u8()?, reader.read_u8()?)?;
+    let identity = reader.read_string()?;
+    let bytes = reader.read_blob(maximum_record_bytes)?;
+    let digest = reader.read_digest()?;
+    LogicalRecordV1::from_parts(ordinal, kind, identity, &bytes, digest)
+}
+
+fn stream_chunk_digest(identity_digest: DigestV1, index: u64, bytes: &[u8]) -> DigestV1 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"worldstream/transfer-stream-chunk/v2");
+    hasher.update(&identity_digest.as_bytes());
+    hasher.update(&index.to_le_bytes());
+    hasher.update(bytes);
+    DigestV1(*hasher.finalize().as_bytes())
+}
+
+fn read_stream_exact<R: Read>(
+    source: &mut R,
+    bytes: &mut [u8],
+    operation: &'static str,
+) -> Result<(), TransferError> {
+    source
+        .read_exact(bytes)
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::UnexpectedEof => TransferError::UnexpectedEnd,
+            _ => io_error(operation, &error),
+        })
+}
+
+fn read_stream_u8<R: Read>(source: &mut R, operation: &'static str) -> Result<u8, TransferError> {
+    let mut bytes = [0_u8; 1];
+    read_stream_exact(source, &mut bytes, operation)?;
+    Ok(bytes[0])
+}
+
+fn read_stream_u16<R: Read>(source: &mut R, operation: &'static str) -> Result<u16, TransferError> {
+    let mut bytes = [0_u8; 2];
+    read_stream_exact(source, &mut bytes, operation)?;
+    Ok(u16::from_le_bytes(bytes))
+}
+
+fn read_stream_u32<R: Read>(source: &mut R, operation: &'static str) -> Result<u32, TransferError> {
+    let mut bytes = [0_u8; 4];
+    read_stream_exact(source, &mut bytes, operation)?;
+    Ok(u32::from_le_bytes(bytes))
+}
+
+fn read_stream_u64<R: Read>(source: &mut R, operation: &'static str) -> Result<u64, TransferError> {
+    let mut bytes = [0_u8; 8];
+    read_stream_exact(source, &mut bytes, operation)?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn read_stream_digest<R: Read>(
+    source: &mut R,
+    operation: &'static str,
+) -> Result<DigestV1, TransferError> {
+    let mut bytes = [0_u8; 32];
+    read_stream_exact(source, &mut bytes, operation)?;
+    DigestV1::from_bytes(&bytes)
+}
+
+fn read_stream_string<R: Read>(
+    source: &mut R,
+    maximum_bytes: usize,
+    operation: &'static str,
+) -> Result<String, TransferError> {
+    let length = usize::try_from(read_stream_u32(source, operation)?).map_err(|_| {
+        TransferError::BoundExceeded {
+            what: "stream text",
+        }
+    })?;
+    if length == 0 || length > maximum_bytes {
+        return Err(TransferError::LengthExceeded {
+            what: "stream text",
+            length: u64::try_from(length).unwrap_or(u64::MAX),
+        });
+    }
+    let mut bytes = vec![0_u8; length];
+    read_stream_exact(source, &mut bytes, operation)?;
+    let value = std::str::from_utf8(&bytes).map_err(|_| TransferError::InvalidUtf8)?;
+    validate_text(value)?;
+    Ok(value.to_owned())
+}
+
 fn write_parity(output: &mut Vec<u8>, parity: &RecordParityV1) -> Result<(), TransferError> {
     write_count(output, parity.record_count)?;
     write_count(output, parity.canonical_record_count)?;
@@ -4154,6 +6340,8 @@ impl<'a> Reader<'a> {
 mod tests {
     #![allow(clippy::expect_used, clippy::panic)]
 
+    use std::fs::{self, File};
+    use std::io::Cursor;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
@@ -4162,14 +6350,24 @@ mod tests {
     use super::{
         BackendFingerprintV1, BundleProfileV1, CanonicalRecordKindV1, DeploymentIdentityV1,
         DerivedRecordKindV1, DigestV1, ExternalInputPreparationV1, LogicalRecordV1,
-        MigrationIdentityV1, PackIdentityV1, ResourceIdentityV1, ResourceKindV1,
-        SchemaMigrationContractV1, SessionStatePolicyV1, TargetFingerprintV1, TransferBundleV1,
-        TransferCheckpointV1, TransferChunkDispositionV1, TransferDestinationV1, TransferError,
-        TransferImportSessionV1, TransferLifecycleV1, TransferRunError, TransferScopeV1,
-        TransferSourceAuthorityBindingV1, TransferSourceAuthorityStateV1,
-        TransferSourceAuthorityV1, TransferStateV1, VerifiedTargetAbortV1,
-        VerifiedTargetFinalizationV1, WholeDeploymentTransferErrorV1, abort_whole_deployment,
-        default_backend_fingerprint, finalize_whole_deployment, validate_portable_pack_coverage,
+        MigrationIdentityV1, PackIdentityV1, RecordParityV1, ResourceIdentityV1, ResourceKindV1,
+        STREAM_CHUNK_MARKER_V2, SchemaMigrationContractV1, SessionStatePolicyV1,
+        TargetFingerprintV1, TransferBundleV1, TransferCheckpointV1, TransferChunkDispositionV1,
+        TransferDestinationV1, TransferError, TransferImportSessionV1, TransferLifecycleV1,
+        TransferRunError, TransferScopeV1, TransferSourceAuthorityBindingV1,
+        TransferSourceAuthorityStateV1, TransferSourceAuthorityV1, TransferStateV1,
+        TransferStreamAuthorityDestinationV2, TransferStreamCheckpointV2, TransferStreamChunkV2,
+        TransferStreamDestinationV2, TransferStreamFinalizationDestinationV2,
+        TransferStreamFooterAccumulatorV2, TransferStreamFooterV2, TransferStreamIdentityV2,
+        TransferStreamLimitsV2, TransferStreamManifestV2, TransferStreamNativeSummaryV2,
+        TransferStreamReaderV2, TransferStreamRelationCountV2, TransferStreamSemanticAccumulatorV2,
+        TransferStreamSemanticExpectationsV2, TransferStreamSourceAuthorityBindingV2,
+        TransferStreamSourceAuthorityStateV2, TransferStreamSourceAuthorityV2,
+        TransferStreamWriterV2, VerifiedStreamTargetAbortV2, VerifiedStreamTargetFinalizationV2,
+        VerifiedTargetAbortV1, VerifiedTargetFinalizationV1, WholeDeploymentTransferErrorV1,
+        abort_stream_whole_deployment_v2, abort_whole_deployment, default_backend_fingerprint,
+        finalize_stream_whole_deployment_v2, finalize_whole_deployment,
+        import_and_finalize_stream_v2, import_stream_v2, validate_portable_pack_coverage,
     };
 
     fn transfer_digest_from_tagged(value: &str) -> Result<DigestV1, TransferError> {
@@ -4193,6 +6391,349 @@ mod tests {
             })?;
         }
         DigestV1::from_bytes(&bytes)
+    }
+
+    #[derive(Default)]
+    struct StreamDestinationFixture {
+        checkpoint: Option<TransferStreamCheckpointV2>,
+        applied: Vec<u64>,
+    }
+
+    impl TransferStreamDestinationV2 for StreamDestinationFixture {
+        type Error = TransferError;
+
+        fn checkpoint(
+            &mut self,
+            _identity: &TransferStreamIdentityV2,
+        ) -> Result<Option<TransferStreamCheckpointV2>, Self::Error> {
+            Ok(self.checkpoint)
+        }
+
+        fn apply_stream_chunk(
+            &mut self,
+            identity: &TransferStreamIdentityV2,
+            chunk: &TransferStreamChunkV2,
+        ) -> Result<TransferStreamCheckpointV2, Self::Error> {
+            chunk.verify(identity)?;
+            self.applied.push(chunk.index());
+            let checkpoint = TransferStreamCheckpointV2 {
+                stream_identity_digest: identity.stream_header_digest(None)?,
+                next_chunk: chunk.index() + 1,
+                next_ordinal: chunk.end_ordinal()?,
+            };
+            self.checkpoint = Some(checkpoint);
+            Ok(checkpoint)
+        }
+    }
+
+    struct ManifestStreamDestinationFixture {
+        manifest: TransferStreamManifestV2,
+        checkpoint: Option<TransferStreamCheckpointV2>,
+        applied_records: u64,
+        maximum_chunk_records: usize,
+        finalized: bool,
+    }
+
+    impl TransferStreamDestinationV2 for ManifestStreamDestinationFixture {
+        type Error = TransferError;
+
+        fn checkpoint(
+            &mut self,
+            _identity: &TransferStreamIdentityV2,
+        ) -> Result<Option<TransferStreamCheckpointV2>, Self::Error> {
+            Ok(self.checkpoint)
+        }
+
+        fn apply_stream_chunk(
+            &mut self,
+            identity: &TransferStreamIdentityV2,
+            chunk: &TransferStreamChunkV2,
+        ) -> Result<TransferStreamCheckpointV2, Self::Error> {
+            chunk
+                .verify_with_header_digest(identity.stream_header_digest(Some(&self.manifest))?)?;
+            self.maximum_chunk_records = self.maximum_chunk_records.max(chunk.records().len());
+            self.applied_records = self
+                .applied_records
+                .checked_add(u64::try_from(chunk.records().len()).map_err(|_| {
+                    TransferError::BoundExceeded {
+                        what: "fixture chunk records",
+                    }
+                })?)
+                .ok_or(TransferError::BoundExceeded {
+                    what: "fixture total records",
+                })?;
+            let checkpoint = TransferStreamCheckpointV2 {
+                stream_identity_digest: identity.stream_header_digest(Some(&self.manifest))?,
+                next_chunk: chunk.index() + 1,
+                next_ordinal: chunk.end_ordinal()?,
+            };
+            self.checkpoint = Some(checkpoint);
+            Ok(checkpoint)
+        }
+    }
+
+    impl TransferStreamFinalizationDestinationV2 for ManifestStreamDestinationFixture {
+        fn finalize_stream(
+            &mut self,
+            identity: &TransferStreamIdentityV2,
+            manifest: &TransferStreamManifestV2,
+            footer: TransferStreamFooterV2,
+        ) -> Result<(), Self::Error> {
+            if manifest != &self.manifest
+                || footer.record_count() != self.applied_records
+                || footer.stream_digest() != manifest.expected_stream_digest()
+                || identity.stream_header_digest(Some(manifest))?
+                    != self
+                        .checkpoint
+                        .ok_or(TransferError::CheckpointMismatch {
+                            what: "fixture final checkpoint",
+                        })?
+                        .stream_identity_digest
+            {
+                return Err(TransferError::InvalidValue {
+                    what: "fixture manifest finalization",
+                });
+            }
+            self.finalized = true;
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum StreamAuthorityFixtureSourceState {
+        Pending,
+        Retired,
+        AuthoritativeAfterAbort,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct StreamAuthorityFixtureBinding {
+        stream_header: DigestV1,
+        manifest: DigestV1,
+        backup: DigestV1,
+        footer: DigestV1,
+        target: DigestV1,
+        source_epoch: u64,
+        target_epoch: u64,
+        lineage: String,
+    }
+
+    impl From<&TransferStreamSourceAuthorityBindingV2> for StreamAuthorityFixtureBinding {
+        fn from(binding: &TransferStreamSourceAuthorityBindingV2) -> Self {
+            Self {
+                stream_header: binding.stream_header_digest(),
+                manifest: binding.manifest_digest(),
+                backup: binding.source_backup_digest(),
+                footer: binding.footer().stream_digest(),
+                target: binding.target_fingerprint(),
+                source_epoch: binding.source_epoch(),
+                target_epoch: binding.target_epoch(),
+                lineage: binding.lineage_id().to_owned(),
+            }
+        }
+    }
+
+    #[allow(clippy::struct_excessive_bools)]
+    struct StreamAuthorityFixtureState {
+        source: StreamAuthorityFixtureSourceState,
+        binding: Option<StreamAuthorityFixtureBinding>,
+        finalized: bool,
+        authoritative: bool,
+        aborted: bool,
+        reconciled: bool,
+        fail_retire_before_commit_once: bool,
+        fail_retire_after_commit_once: bool,
+        events: Vec<&'static str>,
+    }
+
+    impl Default for StreamAuthorityFixtureState {
+        fn default() -> Self {
+            Self {
+                source: StreamAuthorityFixtureSourceState::Pending,
+                binding: None,
+                finalized: false,
+                authoritative: false,
+                aborted: false,
+                reconciled: false,
+                fail_retire_before_commit_once: false,
+                fail_retire_after_commit_once: false,
+                events: Vec::new(),
+            }
+        }
+    }
+
+    struct StreamAuthorityFixtureSource {
+        state: Arc<Mutex<StreamAuthorityFixtureState>>,
+    }
+
+    struct StreamAuthorityFixtureDestination {
+        state: Arc<Mutex<StreamAuthorityFixtureState>>,
+    }
+
+    fn note_stream_authority_fixture_binding(
+        state: &mut StreamAuthorityFixtureState,
+        binding: &TransferStreamSourceAuthorityBindingV2,
+    ) -> Result<(), String> {
+        let binding = StreamAuthorityFixtureBinding::from(binding);
+        if let Some(existing) = &state.binding {
+            if existing != &binding {
+                return Err("stream authority binding changed".to_owned());
+            }
+        } else {
+            state.binding = Some(binding);
+        }
+        Ok(())
+    }
+
+    impl TransferStreamSourceAuthorityV2 for StreamAuthorityFixtureSource {
+        type Error = String;
+
+        fn inspect_stream_source_authority(
+            &self,
+            binding: &TransferStreamSourceAuthorityBindingV2,
+        ) -> Result<TransferStreamSourceAuthorityStateV2, Self::Error> {
+            let mut state = self.state.lock().map_err(|_| "source lock".to_owned())?;
+            note_stream_authority_fixture_binding(&mut state, binding)?;
+            Ok(match state.source {
+                StreamAuthorityFixtureSourceState::Pending => {
+                    TransferStreamSourceAuthorityStateV2::TransferPending
+                }
+                StreamAuthorityFixtureSourceState::Retired => {
+                    TransferStreamSourceAuthorityStateV2::SourceRetired
+                }
+                StreamAuthorityFixtureSourceState::AuthoritativeAfterAbort => {
+                    TransferStreamSourceAuthorityStateV2::SourceAuthoritativeAfterAbort
+                }
+            })
+        }
+
+        fn retire_after_verified_stream_target(
+            &self,
+            proof: &VerifiedStreamTargetFinalizationV2,
+        ) -> Result<(), Self::Error> {
+            let mut state = self.state.lock().map_err(|_| "source lock".to_owned())?;
+            note_stream_authority_fixture_binding(&mut state, proof.binding())?;
+            state.events.push("retire source");
+            if !state.finalized || state.source != StreamAuthorityFixtureSourceState::Pending {
+                return Err("source retirement before target finalization".to_owned());
+            }
+            if state.fail_retire_before_commit_once {
+                state.fail_retire_before_commit_once = false;
+                return Err("source retirement failed before commit".to_owned());
+            }
+            state.source = StreamAuthorityFixtureSourceState::Retired;
+            if state.fail_retire_after_commit_once {
+                state.fail_retire_after_commit_once = false;
+                return Err("source retirement result lost after commit".to_owned());
+            }
+            Ok(())
+        }
+
+        fn restore_after_verified_stream_abort(
+            &self,
+            proof: &VerifiedStreamTargetAbortV2,
+        ) -> Result<(), Self::Error> {
+            let mut state = self.state.lock().map_err(|_| "source lock".to_owned())?;
+            note_stream_authority_fixture_binding(&mut state, proof.binding())?;
+            state.events.push("restore source");
+            if !state.aborted || state.source != StreamAuthorityFixtureSourceState::Pending {
+                return Err("source restore before target abort".to_owned());
+            }
+            state.source = StreamAuthorityFixtureSourceState::AuthoritativeAfterAbort;
+            Ok(())
+        }
+    }
+
+    impl TransferStreamDestinationV2 for StreamAuthorityFixtureDestination {
+        type Error = String;
+
+        fn checkpoint(
+            &mut self,
+            _identity: &TransferStreamIdentityV2,
+        ) -> Result<Option<TransferStreamCheckpointV2>, Self::Error> {
+            Ok(None)
+        }
+
+        fn apply_stream_chunk(
+            &mut self,
+            _identity: &TransferStreamIdentityV2,
+            _chunk: &TransferStreamChunkV2,
+        ) -> Result<TransferStreamCheckpointV2, Self::Error> {
+            Err("authority fixture does not stage chunks".to_owned())
+        }
+    }
+
+    impl TransferStreamFinalizationDestinationV2 for StreamAuthorityFixtureDestination {
+        fn finalize_stream(
+            &mut self,
+            _identity: &TransferStreamIdentityV2,
+            _manifest: &TransferStreamManifestV2,
+            _footer: TransferStreamFooterV2,
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    impl TransferStreamAuthorityDestinationV2 for StreamAuthorityFixtureDestination {
+        fn confirm_stream_finalization(
+            &mut self,
+            binding: &TransferStreamSourceAuthorityBindingV2,
+        ) -> Result<(), Self::Error> {
+            let mut state = self.state.lock().map_err(|_| "target lock".to_owned())?;
+            note_stream_authority_fixture_binding(&mut state, binding)?;
+            state.events.push("confirm target finalization");
+            if state.authoritative || state.source != StreamAuthorityFixtureSourceState::Pending {
+                return Err("target finalization after authority transition".to_owned());
+            }
+            state.finalized = true;
+            Ok(())
+        }
+
+        fn reconcile_stream_finalization_after_definite_source_failure(
+            &mut self,
+            binding: &TransferStreamSourceAuthorityBindingV2,
+        ) -> Result<(), Self::Error> {
+            let mut state = self.state.lock().map_err(|_| "target lock".to_owned())?;
+            note_stream_authority_fixture_binding(&mut state, binding)?;
+            state.events.push("reconcile target finalization");
+            if state.authoritative || state.source != StreamAuthorityFixtureSourceState::Pending {
+                return Err("target reconciliation after authority transition".to_owned());
+            }
+            if !state.finalized {
+                return Err("target reconciliation without finalization".to_owned());
+            }
+            state.finalized = false;
+            state.reconciled = true;
+            Ok(())
+        }
+
+        fn accept_stream_authority(
+            &mut self,
+            binding: &TransferStreamSourceAuthorityBindingV2,
+        ) -> Result<(), Self::Error> {
+            let mut state = self.state.lock().map_err(|_| "target lock".to_owned())?;
+            note_stream_authority_fixture_binding(&mut state, binding)?;
+            state.events.push("publish target authority");
+            if state.source != StreamAuthorityFixtureSourceState::Retired || !state.finalized {
+                return Err("target publication before source retirement".to_owned());
+            }
+            state.authoritative = true;
+            Ok(())
+        }
+
+        fn abort_stream_import(
+            &mut self,
+            binding: &TransferStreamSourceAuthorityBindingV2,
+        ) -> Result<(), Self::Error> {
+            let mut state = self.state.lock().map_err(|_| "target lock".to_owned())?;
+            note_stream_authority_fixture_binding(&mut state, binding)?;
+            state.events.push("abort target import");
+            if state.source == StreamAuthorityFixtureSourceState::Retired || state.authoritative {
+                return Err("target abort after source retirement".to_owned());
+            }
+            state.aborted = true;
+            Ok(())
+        }
     }
 
     #[test]
@@ -4684,6 +7225,176 @@ mod tests {
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ))
+    }
+
+    fn manifest_for_large_stream(
+        identity: &TransferStreamIdentityV2,
+        payload: &[u8],
+        record_count: u64,
+    ) -> Result<TransferStreamManifestV2, TransferError> {
+        let mut footer = TransferStreamFooterAccumulatorV2::new(identity, None)?;
+        let mut semantic = TransferStreamSemanticAccumulatorV2::new();
+        for ordinal in 0..record_count {
+            let record = LogicalRecordV1::canonical(
+                ordinal,
+                CanonicalRecordKindV1::RoomTransition,
+                format!("room/fixture/transition/{ordinal:06}"),
+                payload,
+            )?;
+            footer.observe(&record)?;
+            semantic.observe(&record)?;
+        }
+        let deployment_identity = DeploymentIdentityV1::new(
+            vec![PackIdentityV1::new(
+                "fixture-pack",
+                "stream-r1",
+                DigestV1::hash(b"fixture stream pack"),
+            )?],
+            Vec::new(),
+        )?;
+        TransferStreamManifestV2::new(
+            deployment_identity,
+            DigestV1::hash(b"verified SQLite backup"),
+            DigestV1::hash(b"SQLite source backend"),
+            DigestV1::hash(b"PostgreSQL target backend"),
+            TransferStreamNativeSummaryV2::new(
+                vec![TransferStreamRelationCountV2::new("timers", 0)?],
+                DigestV1::hash(b"empty native operational rows"),
+            )?,
+            TransferStreamSemanticExpectationsV2::new(
+                semantic.canonical_record_count(),
+                semantic.native_operational_record_count(),
+                0,
+                0,
+                0,
+                semantic.canonical_digest(),
+                semantic.native_operational_digest(),
+            )?,
+            footer.record_count(),
+            footer.record_bytes(),
+            footer.digest(),
+            SessionStatePolicyV1::InvalidateAndRebuild,
+        )
+    }
+
+    fn manifest_for_records(
+        identity: &TransferStreamIdentityV2,
+        records: &[LogicalRecordV1],
+    ) -> Result<TransferStreamManifestV2, TransferError> {
+        let mut footer = TransferStreamFooterAccumulatorV2::new(identity, None)?;
+        let mut semantic = TransferStreamSemanticAccumulatorV2::new();
+        for record in records {
+            footer.observe(record)?;
+            semantic.observe(record)?;
+        }
+        let deployment_identity = DeploymentIdentityV1::new(
+            vec![PackIdentityV1::new(
+                "fixture-pack",
+                "stream-r1",
+                DigestV1::hash(b"fixture stream pack"),
+            )?],
+            Vec::new(),
+        )?;
+        TransferStreamManifestV2::new(
+            deployment_identity,
+            DigestV1::hash(b"verified SQLite backup"),
+            DigestV1::hash(b"SQLite source backend"),
+            DigestV1::hash(b"PostgreSQL target backend"),
+            TransferStreamNativeSummaryV2::new(
+                vec![TransferStreamRelationCountV2::new("timers", 0)?],
+                DigestV1::hash(b"empty native operational rows"),
+            )?,
+            TransferStreamSemanticExpectationsV2::new(
+                semantic.canonical_record_count(),
+                semantic.native_operational_record_count(),
+                0,
+                0,
+                0,
+                semantic.canonical_digest(),
+                semantic.native_operational_digest(),
+            )?,
+            footer.record_count(),
+            footer.record_bytes(),
+            footer.digest(),
+            SessionStatePolicyV1::InvalidateAndRebuild,
+        )
+    }
+
+    fn stream_authority_fixture() -> Result<
+        (
+            TransferStreamIdentityV2,
+            TransferStreamManifestV2,
+            TransferStreamFooterV2,
+            TargetFingerprintV1,
+        ),
+        TransferError,
+    > {
+        let identity = TransferStreamIdentityV2::new(
+            "stream/authority-fixture",
+            "lineage/authority-fixture",
+            7,
+            BundleProfileV1::SqliteBundled,
+            BundleProfileV1::PostgresPrimary17,
+        )?;
+        let pack = PackIdentityV1::new(
+            "fixture-pack",
+            "authority-r1",
+            DigestV1::hash(b"fixture authority pack"),
+        )?;
+        let records = vec![LogicalRecordV1::canonical(
+            0,
+            CanonicalRecordKindV1::DeploymentLineage,
+            "deployment/authority-fixture",
+            b"lineage/authority-fixture",
+        )?];
+        let source_backend = default_backend_fingerprint(BundleProfileV1::SqliteBundled)?;
+        let target_backend = default_backend_fingerprint(BundleProfileV1::PostgresPrimary17)?;
+        let mut footer_accumulator = TransferStreamFooterAccumulatorV2::new(&identity, None)?;
+        let mut semantic = TransferStreamSemanticAccumulatorV2::new();
+        for record in &records {
+            footer_accumulator.observe(record)?;
+            semantic.observe(record)?;
+        }
+        let manifest = TransferStreamManifestV2::new(
+            DeploymentIdentityV1::new(vec![pack.clone()], Vec::new())?,
+            DigestV1::hash(b"verified SQLite authority backup"),
+            source_backend.digest()?,
+            target_backend.digest()?,
+            TransferStreamNativeSummaryV2::new(
+                vec![TransferStreamRelationCountV2::new("timers", 0)?],
+                DigestV1::hash(b"empty authority native rows"),
+            )?,
+            TransferStreamSemanticExpectationsV2::new(
+                semantic.canonical_record_count(),
+                semantic.native_operational_record_count(),
+                0,
+                0,
+                0,
+                semantic.canonical_digest(),
+                semantic.native_operational_digest(),
+            )?,
+            footer_accumulator.record_count(),
+            footer_accumulator.record_bytes(),
+            footer_accumulator.digest(),
+            SessionStatePolicyV1::InvalidateAndRebuild,
+        )?;
+        let footer = TransferStreamFooterV2 {
+            chunk_count: 1,
+            record_count: footer_accumulator.record_count(),
+            record_bytes: footer_accumulator.record_bytes(),
+            stream_digest: footer_accumulator.digest(),
+        };
+        let target = TargetFingerprintV1::observed(
+            BundleProfileV1::PostgresPrimary17,
+            8,
+            identity.lineage_id(),
+            target_backend,
+            pack,
+            Vec::new(),
+            DigestV1::hash(b"authority fixture target admission"),
+            RecordParityV1::from_records(&records)?,
+        )?;
+        Ok((identity, manifest, footer, target))
     }
 
     fn complete_fixture_import(
@@ -5774,6 +8485,611 @@ mod tests {
             lifecycle
                 .check_write(BundleProfileV1::PostgresPrimary17, 7)
                 .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_container_v2_crosses_legacy_record_and_byte_limits_with_bounded_chunks()
+    -> Result<(), TransferError> {
+        let limits = TransferStreamLimitsV2 {
+            max_records_per_chunk: 128,
+            max_chunk_bytes: 256 * 1024,
+            max_record_bytes: 1024,
+            max_total_records: 200_000,
+            max_total_record_bytes: 128 * 1024 * 1024,
+        };
+        let identity = TransferStreamIdentityV2::new(
+            "stream/large-fixture",
+            "lineage/large-fixture",
+            7,
+            BundleProfileV1::SqliteBundled,
+            BundleProfileV1::PostgresPrimary17,
+        )?;
+        let payload = vec![b'x'; 700];
+        let manifest = manifest_for_large_stream(&identity, &payload, 100_001)?;
+        let path = std::env::temp_dir().join(format!(
+            "worldstream-transfer-stream-{}-{}.bin",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = fs::remove_file(&path);
+        let file = File::create(&path)
+            .map_err(|error| super::io_error("create stream fixture", &error))?;
+        let mut writer = TransferStreamWriterV2::new_with_manifest(
+            file,
+            identity.clone(),
+            manifest.clone(),
+            limits,
+        )?;
+        for ordinal in 0..100_001_u64 {
+            let record = LogicalRecordV1::canonical(
+                ordinal,
+                CanonicalRecordKindV1::RoomTransition,
+                format!("room/fixture/transition/{ordinal:06}"),
+                &payload,
+            )?;
+            writer.append(&record)?;
+        }
+        let file = writer.finish()?;
+        let bytes = file
+            .metadata()
+            .map_err(|error| super::io_error("stat stream fixture", &error))?
+            .len();
+        assert!(bytes > 64 * 1024 * 1024);
+        drop(file);
+
+        let file =
+            File::open(&path).map_err(|error| super::io_error("open stream fixture", &error))?;
+        let mut reader = TransferStreamReaderV2::new(file, limits)?;
+        assert_eq!(reader.manifest(), Some(&manifest));
+        let mut destination = ManifestStreamDestinationFixture {
+            manifest,
+            checkpoint: None,
+            applied_records: 0,
+            maximum_chunk_records: 0,
+            finalized: false,
+        };
+        let checkpoint =
+            import_and_finalize_stream_v2(&mut reader, &mut destination).map_err(|error| {
+                match error {
+                    super::TransferStreamRunErrorV2::Stream(error)
+                    | super::TransferStreamRunErrorV2::Destination(error) => error,
+                    super::TransferStreamRunErrorV2::CheckpointMismatch => {
+                        TransferError::CheckpointMismatch {
+                            what: "large stream finalization checkpoint",
+                        }
+                    }
+                }
+            })?;
+        assert_eq!(destination.applied_records, 100_001);
+        assert!(destination.finalized);
+        assert!(destination.maximum_chunk_records <= limits.max_records_per_chunk);
+        assert_eq!(checkpoint.next_ordinal, 100_001);
+        assert_eq!(reader.checkpoint().next_ordinal, 100_001);
+        fs::remove_file(&path).map_err(|error| super::io_error("remove stream fixture", &error))?;
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_container_v2_rejects_tampered_footer_without_partial_success()
+    -> Result<(), TransferError> {
+        let identity = TransferStreamIdentityV2::new(
+            "stream/tamper",
+            "lineage/tamper",
+            7,
+            BundleProfileV1::SqliteBundled,
+            BundleProfileV1::PostgresPrimary17,
+        )?;
+        let mut writer =
+            TransferStreamWriterV2::new(Vec::new(), identity, TransferStreamLimitsV2::default())?;
+        writer.append(&LogicalRecordV1::canonical(
+            0,
+            CanonicalRecordKindV1::RoomTransition,
+            "room/fixture/transition/0",
+            b"exact bytes",
+        )?)?;
+        let complete = writer.finish()?;
+
+        let mut altered_identity = complete.clone();
+        let identity_start = altered_identity
+            .windows(b"stream/tamper".len())
+            .position(|bytes| bytes == b"stream/tamper")
+            .ok_or(TransferError::UnexpectedEnd)?;
+        altered_identity[identity_start] ^= 1;
+        let mut reader = TransferStreamReaderV2::new(
+            Cursor::new(altered_identity),
+            TransferStreamLimitsV2::default(),
+        )?;
+        assert!(matches!(
+            reader.next_chunk(),
+            Err(TransferError::HashMismatch {
+                what: "stream chunk",
+                ..
+            })
+        ));
+
+        let mut bytes = complete;
+        let last = bytes
+            .len()
+            .checked_sub(1)
+            .ok_or(TransferError::UnexpectedEnd)?;
+        bytes[last] ^= 1;
+        let mut reader =
+            TransferStreamReaderV2::new(Cursor::new(bytes), TransferStreamLimitsV2::default())?;
+        assert!(reader.next_chunk()?.is_some());
+        assert!(matches!(
+            reader.next_chunk(),
+            Err(TransferError::HashMismatch {
+                what: "stream footer",
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_container_v2_rejects_duplicate_chunks_and_interrupted_finalization()
+    -> Result<(), TransferError> {
+        let limits = TransferStreamLimitsV2 {
+            max_records_per_chunk: 1,
+            max_chunk_bytes: 1024,
+            max_record_bytes: 128,
+            ..TransferStreamLimitsV2::default()
+        };
+        let identity = TransferStreamIdentityV2::new(
+            "stream/chunk-fences",
+            "lineage/chunk-fences",
+            7,
+            BundleProfileV1::SqliteBundled,
+            BundleProfileV1::PostgresPrimary17,
+        )?;
+        let mut writer = TransferStreamWriterV2::new(Vec::new(), identity, limits)?;
+        for ordinal in 0..2 {
+            writer.append(&LogicalRecordV1::canonical(
+                ordinal,
+                CanonicalRecordKindV1::RoomTransition,
+                format!("room/fixture/transition/{ordinal}"),
+                b"exact bytes",
+            )?)?;
+        }
+        let complete = writer.finish()?;
+        let markers = complete
+            .windows(STREAM_CHUNK_MARKER_V2.len())
+            .enumerate()
+            .filter_map(|(index, bytes)| (bytes == STREAM_CHUNK_MARKER_V2).then_some(index))
+            .collect::<Vec<_>>();
+        assert_eq!(markers.len(), 2);
+
+        let mut first_attempt = TransferStreamReaderV2::new(Cursor::new(complete.clone()), limits)?;
+        assert!(first_attempt.next_chunk()?.is_some());
+        let checkpoint = first_attempt.checkpoint();
+        let mut resumed = TransferStreamReaderV2::new(Cursor::new(complete.clone()), limits)?;
+        resumed.resume_from_checkpoint(checkpoint)?;
+        assert_eq!(resumed.checkpoint(), checkpoint);
+        assert!(resumed.next_chunk()?.is_some());
+
+        let mut duplicate_chunk = complete.clone();
+        duplicate_chunk[markers[1] + STREAM_CHUNK_MARKER_V2.len()
+            ..markers[1] + STREAM_CHUNK_MARKER_V2.len() + 8]
+            .copy_from_slice(&0_u64.to_le_bytes());
+        let mut reader = TransferStreamReaderV2::new(Cursor::new(duplicate_chunk), limits)?;
+        assert!(reader.next_chunk()?.is_some());
+        assert!(matches!(
+            reader.next_chunk(),
+            Err(TransferError::NonDeterministicOrder {
+                what: "stream chunks"
+            })
+        ));
+
+        let mut interrupted = complete;
+        interrupted.truncate(interrupted.len() - 1);
+        let mut reader = TransferStreamReaderV2::new(Cursor::new(interrupted), limits)?;
+        assert!(reader.next_chunk()?.is_some());
+        assert!(reader.next_chunk()?.is_some());
+        assert!(matches!(
+            reader.next_chunk(),
+            Err(TransferError::UnexpectedEnd)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_import_revalidates_the_durable_checkpoint_before_resuming()
+    -> Result<(), TransferError> {
+        let limits = TransferStreamLimitsV2 {
+            max_records_per_chunk: 1,
+            max_chunk_bytes: 1024,
+            max_record_bytes: 128,
+            ..TransferStreamLimitsV2::default()
+        };
+        let identity = TransferStreamIdentityV2::new(
+            "stream/resume",
+            "lineage/resume",
+            7,
+            BundleProfileV1::SqliteBundled,
+            BundleProfileV1::PostgresPrimary17,
+        )?;
+        let mut writer = TransferStreamWriterV2::new(Vec::new(), identity, limits)?;
+        for ordinal in 0..2 {
+            writer.append(&LogicalRecordV1::canonical(
+                ordinal,
+                CanonicalRecordKindV1::RoomTransition,
+                format!("room/fixture/transition/{ordinal}"),
+                b"exact bytes",
+            )?)?;
+        }
+        let bytes = writer.finish()?;
+        let mut first_attempt = TransferStreamReaderV2::new(Cursor::new(bytes.clone()), limits)?;
+        assert!(first_attempt.next_chunk()?.is_some());
+        let checkpoint = first_attempt.checkpoint();
+
+        let mut destination = StreamDestinationFixture {
+            checkpoint: Some(checkpoint),
+            applied: Vec::new(),
+        };
+        let mut resumed = TransferStreamReaderV2::new(Cursor::new(bytes), limits)?;
+        let completed =
+            import_stream_v2(&mut resumed, &mut destination).map_err(|error| match error {
+                super::TransferStreamRunErrorV2::Stream(error)
+                | super::TransferStreamRunErrorV2::Destination(error) => error,
+                super::TransferStreamRunErrorV2::CheckpointMismatch => {
+                    TransferError::CheckpointMismatch {
+                        what: "stream fixture checkpoint",
+                    }
+                }
+            })?;
+        assert_eq!(completed, resumed.checkpoint());
+        assert_eq!(destination.applied, vec![1]);
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_stream_resumes_after_interruption_and_refuses_corruption_before_finalization()
+    -> Result<(), TransferError> {
+        let limits = TransferStreamLimitsV2 {
+            max_records_per_chunk: 1,
+            max_chunk_bytes: 1024,
+            max_record_bytes: 128,
+            ..TransferStreamLimitsV2::default()
+        };
+        let identity = TransferStreamIdentityV2::new(
+            "stream/manifest-resume",
+            "lineage/manifest-resume",
+            7,
+            BundleProfileV1::SqliteBundled,
+            BundleProfileV1::PostgresPrimary17,
+        )?;
+        let records = (0..2)
+            .map(|ordinal| {
+                LogicalRecordV1::canonical(
+                    ordinal,
+                    CanonicalRecordKindV1::RoomTransition,
+                    format!("room/fixture/transition/{ordinal}"),
+                    b"exact bytes",
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let manifest = manifest_for_records(&identity, &records)?;
+        let mut writer = TransferStreamWriterV2::new_with_manifest(
+            Vec::new(),
+            identity.clone(),
+            manifest.clone(),
+            limits,
+        )?;
+        for record in &records {
+            writer.append(record)?;
+        }
+        let complete = writer.finish()?;
+
+        let mut first_attempt = TransferStreamReaderV2::new(Cursor::new(complete.clone()), limits)?;
+        let first_chunk = first_attempt
+            .next_chunk()?
+            .ok_or(TransferError::CheckpointMismatch {
+                what: "manifest resume first chunk",
+            })?;
+        let mut destination = ManifestStreamDestinationFixture {
+            manifest: manifest.clone(),
+            checkpoint: None,
+            applied_records: 0,
+            maximum_chunk_records: 0,
+            finalized: false,
+        };
+        destination.apply_stream_chunk(&identity, &first_chunk)?;
+        let mut resumed = TransferStreamReaderV2::new(Cursor::new(complete.clone()), limits)?;
+        let checkpoint =
+            import_and_finalize_stream_v2(&mut resumed, &mut destination).map_err(|error| {
+                match error {
+                    super::TransferStreamRunErrorV2::Stream(error)
+                    | super::TransferStreamRunErrorV2::Destination(error) => error,
+                    super::TransferStreamRunErrorV2::CheckpointMismatch => {
+                        TransferError::CheckpointMismatch {
+                            what: "manifest resume checkpoint",
+                        }
+                    }
+                }
+            })?;
+        assert_eq!(checkpoint.next_chunk, 2);
+        assert_eq!(checkpoint.next_ordinal, 2);
+        assert_eq!(destination.applied_records, 2);
+        assert!(destination.finalized);
+
+        // A lost completion response restarts from the durable final cursor.
+        // The reader must reauthenticate its prefix/footer and invoke the
+        // finalization seam again without applying an already-checkpointed
+        // chunk or exposing a partial target.
+        let mut replay = TransferStreamReaderV2::new(Cursor::new(complete.clone()), limits)?;
+        let replayed =
+            import_and_finalize_stream_v2(&mut replay, &mut destination).map_err(|error| {
+                match error {
+                    super::TransferStreamRunErrorV2::Stream(error)
+                    | super::TransferStreamRunErrorV2::Destination(error) => error,
+                    super::TransferStreamRunErrorV2::CheckpointMismatch => {
+                        TransferError::CheckpointMismatch {
+                            what: "manifest finalized replay checkpoint",
+                        }
+                    }
+                }
+            })?;
+        assert_eq!(replayed, checkpoint);
+        assert_eq!(destination.applied_records, 2);
+        assert!(destination.finalized);
+
+        let markers = complete
+            .windows(STREAM_CHUNK_MARKER_V2.len())
+            .enumerate()
+            .filter_map(|(index, bytes)| (bytes == STREAM_CHUNK_MARKER_V2).then_some(index))
+            .collect::<Vec<_>>();
+        assert_eq!(markers.len(), 2);
+        let mut corrupted = complete;
+        let digest_start = markers[1] + STREAM_CHUNK_MARKER_V2.len() + 8 + 4 + 4;
+        corrupted[digest_start] ^= 1;
+
+        let mut interrupted_attempt =
+            TransferStreamReaderV2::new(Cursor::new(corrupted.clone()), limits)?;
+        let first_chunk =
+            interrupted_attempt
+                .next_chunk()?
+                .ok_or(TransferError::CheckpointMismatch {
+                    what: "manifest corruption first chunk",
+                })?;
+        let mut corrupt_destination = ManifestStreamDestinationFixture {
+            manifest,
+            checkpoint: None,
+            applied_records: 0,
+            maximum_chunk_records: 0,
+            finalized: false,
+        };
+        corrupt_destination.apply_stream_chunk(&identity, &first_chunk)?;
+        let mut resumed_corrupt = TransferStreamReaderV2::new(Cursor::new(corrupted), limits)?;
+        assert!(matches!(
+            import_and_finalize_stream_v2(&mut resumed_corrupt, &mut corrupt_destination),
+            Err(super::TransferStreamRunErrorV2::Stream(
+                TransferError::HashMismatch {
+                    what: "stream chunk",
+                    ..
+                }
+            ))
+        ));
+        assert_eq!(corrupt_destination.applied_records, 1);
+        assert!(!corrupt_destination.finalized);
+        Ok(())
+    }
+
+    #[test]
+    fn stream_authority_coordinator_orders_finalization_retirement_and_publication()
+    -> Result<(), TransferError> {
+        let (identity, manifest, footer, target) = stream_authority_fixture()?;
+        let state = Arc::new(Mutex::new(StreamAuthorityFixtureState::default()));
+        let source = StreamAuthorityFixtureSource {
+            state: Arc::clone(&state),
+        };
+        let mut destination = StreamAuthorityFixtureDestination {
+            state: Arc::clone(&state),
+        };
+
+        finalize_stream_whole_deployment_v2(
+            &source,
+            &mut destination,
+            &identity,
+            &manifest,
+            footer,
+            &target,
+        )
+        .map_err(|_| TransferError::InvalidValue {
+            what: "stream authority fixture finalization",
+        })?;
+
+        let state = state.lock().map_err(|_| TransferError::InvalidValue {
+            what: "stream authority fixture lock",
+        })?;
+        assert_eq!(state.source, StreamAuthorityFixtureSourceState::Retired);
+        assert!(state.finalized);
+        assert!(state.authoritative);
+        assert_eq!(
+            state.events,
+            [
+                "confirm target finalization",
+                "retire source",
+                "publish target authority",
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stream_authority_coordinator_reconciles_definite_failure_and_lost_retirement_result()
+    -> Result<(), TransferError> {
+        let (identity, manifest, footer, target) = stream_authority_fixture()?;
+        let state = Arc::new(Mutex::new(StreamAuthorityFixtureState {
+            fail_retire_before_commit_once: true,
+            ..StreamAuthorityFixtureState::default()
+        }));
+        let source = StreamAuthorityFixtureSource {
+            state: Arc::clone(&state),
+        };
+        let mut destination = StreamAuthorityFixtureDestination {
+            state: Arc::clone(&state),
+        };
+
+        assert!(
+            finalize_stream_whole_deployment_v2(
+                &source,
+                &mut destination,
+                &identity,
+                &manifest,
+                footer,
+                &target,
+            )
+            .is_err()
+        );
+        {
+            let state = state.lock().map_err(|_| TransferError::InvalidValue {
+                what: "stream authority fixture lock",
+            })?;
+            assert_eq!(state.source, StreamAuthorityFixtureSourceState::Pending);
+            assert!(!state.finalized);
+            assert!(state.reconciled);
+            assert!(!state.authoritative);
+            assert_eq!(
+                state.events,
+                [
+                    "confirm target finalization",
+                    "retire source",
+                    "reconcile target finalization",
+                ]
+            );
+        }
+
+        // The source can retry after a definite pre-commit failure. The target
+        // repeats its semantic-finalization gate before another retirement.
+        finalize_stream_whole_deployment_v2(
+            &source,
+            &mut destination,
+            &identity,
+            &manifest,
+            footer,
+            &target,
+        )
+        .map_err(|_| TransferError::InvalidValue {
+            what: "stream authority fixture retry",
+        })?;
+        assert!(
+            state
+                .lock()
+                .map_err(|_| TransferError::InvalidValue {
+                    what: "stream authority fixture lock",
+                })?
+                .authoritative
+        );
+
+        // A source commit may win while its success response is lost. The
+        // coordinator re-inspects the source, sees exact retirement, and
+        // performs only the missing target publication.
+        let lost_state = Arc::new(Mutex::new(StreamAuthorityFixtureState {
+            fail_retire_after_commit_once: true,
+            ..StreamAuthorityFixtureState::default()
+        }));
+        let lost_source = StreamAuthorityFixtureSource {
+            state: Arc::clone(&lost_state),
+        };
+        let mut lost_destination = StreamAuthorityFixtureDestination {
+            state: Arc::clone(&lost_state),
+        };
+        finalize_stream_whole_deployment_v2(
+            &lost_source,
+            &mut lost_destination,
+            &identity,
+            &manifest,
+            footer,
+            &target,
+        )
+        .map_err(|_| TransferError::InvalidValue {
+            what: "lost stream retirement result",
+        })?;
+        let lost_state = lost_state.lock().map_err(|_| TransferError::InvalidValue {
+            what: "stream authority fixture lock",
+        })?;
+        assert_eq!(
+            lost_state.source,
+            StreamAuthorityFixtureSourceState::Retired
+        );
+        assert!(lost_state.authoritative);
+        assert_eq!(
+            lost_state.events,
+            [
+                "confirm target finalization",
+                "retire source",
+                "publish target authority",
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stream_authority_abort_tombstones_before_source_restore_and_refuses_retired_source()
+    -> Result<(), TransferError> {
+        let (identity, manifest, footer, target) = stream_authority_fixture()?;
+        let state = Arc::new(Mutex::new(StreamAuthorityFixtureState::default()));
+        let source = StreamAuthorityFixtureSource {
+            state: Arc::clone(&state),
+        };
+        let mut destination = StreamAuthorityFixtureDestination {
+            state: Arc::clone(&state),
+        };
+        abort_stream_whole_deployment_v2(
+            &source,
+            &mut destination,
+            &identity,
+            &manifest,
+            footer,
+            &target,
+        )
+        .map_err(|_| TransferError::InvalidValue {
+            what: "stream authority fixture abort",
+        })?;
+        {
+            let state = state.lock().map_err(|_| TransferError::InvalidValue {
+                what: "stream authority fixture lock",
+            })?;
+            assert_eq!(
+                state.source,
+                StreamAuthorityFixtureSourceState::AuthoritativeAfterAbort
+            );
+            assert!(state.aborted);
+            assert_eq!(state.events, ["abort target import", "restore source"]);
+        }
+
+        let retired_state = Arc::new(Mutex::new(StreamAuthorityFixtureState {
+            source: StreamAuthorityFixtureSourceState::Retired,
+            finalized: true,
+            ..StreamAuthorityFixtureState::default()
+        }));
+        let retired_source = StreamAuthorityFixtureSource {
+            state: Arc::clone(&retired_state),
+        };
+        let mut retired_destination = StreamAuthorityFixtureDestination {
+            state: Arc::clone(&retired_state),
+        };
+        assert!(
+            abort_stream_whole_deployment_v2(
+                &retired_source,
+                &mut retired_destination,
+                &identity,
+                &manifest,
+                footer,
+                &target,
+            )
+            .is_err()
+        );
+        assert!(
+            retired_state
+                .lock()
+                .map_err(|_| TransferError::InvalidValue {
+                    what: "stream authority fixture lock",
+                })?
+                .events
+                .is_empty()
         );
         Ok(())
     }

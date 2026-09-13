@@ -623,6 +623,13 @@ async def measure_snapshot_tail_recovery(
             "head_room_seq": transition_count,
             "newest_snapshot_room_seq": transition_count - 2,
             "snapshot_lag_transitions": 2,
+            "tail_recovery_transition_count": fixture.get(
+                "tail_recovery_transition_count"
+            ),
+            "tail_recovery_elapsed_ms": fixture.get("tail_recovery_elapsed_ms"),
+            "tail_recovery_activity_callbacks": fixture.get(
+                "tail_recovery_activity_callbacks"
+            ),
             "complete_head": fixture.get("complete_head"),
             "projection_hash": fixture.get("projection_hash"),
             "final_membership_standing": "enabled",
@@ -635,6 +642,15 @@ async def measure_snapshot_tail_recovery(
             and fixture["complete_head"].get("room_seq") == transition_count
             and isinstance(fixture["projection_hash"], str),
             "snapshot-tail fixture observations were incomplete",
+        )
+        require(
+            type(fixture["tail_recovery_transition_count"]) is int
+            and 0 <= fixture["tail_recovery_transition_count"] <= 250
+            and type(fixture["tail_recovery_elapsed_ms"]) is int
+            and fixture["tail_recovery_elapsed_ms"] >= 0
+            and type(fixture["tail_recovery_activity_callbacks"]) is int
+            and fixture["tail_recovery_activity_callbacks"] >= 0,
+            "snapshot-tail bounded recovery measurement was incomplete",
         )
         atomic_write_exact_bytes(
             args.snapshot_fixture_report,

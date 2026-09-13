@@ -3391,6 +3391,7 @@ dependencies = [
  "thiserror 2.0.20",
  "time",
  "windows-sys 0.61.2",
+ "worldstream-backup",
  "worldstream-core",
  "worldstream-sqlite-open",
  "worldstream-transfer",

@@ -13,6 +13,59 @@ use crate::{
     MemberId, RoomSequenceV1, TimerScheduledFor, canonical::encode,
 };
 
+/// Maximum canonical byte length of one retained Invocation Context.
+///
+/// This is a transport bound, not a Runner tokenizer allowance. Runner prompt
+/// construction must select and enforce its own token budget.
+pub const MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES: usize = 512 * 1024;
+
+/// The operational policy revision for bounded Activation attention.
+pub const ACTIVATION_ATTENTION_POLICY_REVISION_V1: u64 = 1;
+/// Maximum number of pending refresh considerations for one Membership.
+pub const MAX_PENDING_REFRESH_ACTIVATIONS_V1: u64 = 64;
+/// Maximum encoded attention bytes retained for pending refresh work.
+pub const MAX_PENDING_REFRESH_BYTES_V1: u64 = 1_048_576;
+/// Maximum age of a pending refresh consideration before it is terminally retired.
+pub const MAX_PENDING_REFRESH_AGE_MS_V1: u64 = 86_400_000;
+/// Maximum completed Activation executions per Membership in one minute.
+pub const MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1: u64 = 60;
+/// Fixed estimate for the durable row envelope around reason and deduplication text.
+pub const ACTIVATION_ATTENTION_ROW_OVERHEAD_BYTES_V1: u64 = 128;
+
+/// Returns whether one more pending refresh fits the v1 count and byte budget.
+#[must_use]
+pub const fn activation_refresh_budget_allows_v1(
+    pending_count: u64,
+    pending_bytes: u64,
+    incoming_bytes: u64,
+) -> bool {
+    pending_count < MAX_PENDING_REFRESH_ACTIVATIONS_V1
+        && pending_bytes.saturating_add(incoming_bytes) <= MAX_PENDING_REFRESH_BYTES_V1
+}
+
+/// Operational classification used by the bounded attention policy.
+///
+/// Refreshable work is a request to reconsider current state and can be
+/// superseded by a newer refresh. An obligation carries a semantic deadline
+/// and remains pending until it is completed, expired, or explicitly
+/// cancelled by its governing Room/Membership lifecycle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActivationAttentionClassV1 {
+    Refreshable,
+    Obligation,
+}
+
+impl ActivationAttentionClassV1 {
+    #[must_use]
+    pub const fn from_semantic_deadline(semantic_deadline: Option<&TimerScheduledFor>) -> Self {
+        if semantic_deadline.is_some() {
+            Self::Obligation
+        } else {
+            Self::Refreshable
+        }
+    }
+}
+
 const ACTIVATION_ID_DOMAIN_V1: &str = "worldstream/activation-id/v1";
 const CROCKFORD_BASE32: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -283,6 +336,8 @@ pub enum ActivationContextErrorV1 {
     InvalidDelivery,
     #[error("activation context bytes are not canonical JSON")]
     InvalidCanonicalBytes,
+    #[error("activation context exceeds the aggregate byte budget")]
+    TooLarge,
     #[error("activation context could not be canonically encoded: {0}")]
     Canonical(#[from] CanonicalJsonError),
 }
@@ -295,6 +350,18 @@ pub enum ActivationContextErrorV1 {
 /// branch is invalid.
 pub fn prepare_activation_context(
     input: ActivationContextInputV1,
+) -> Result<ActivationInvocationContextV1, ActivationContextErrorV1> {
+    prepare_activation_context_with_byte_limit(input, MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES)
+}
+
+/// Prepares an exact context under an explicit aggregate canonical-byte limit.
+///
+/// The production claim path uses [`MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES`];
+/// the explicit form keeps boundary verification independent of that default.
+/// This is still a transport-byte bound, not a model tokenizer budget.
+pub fn prepare_activation_context_with_byte_limit(
+    input: ActivationContextInputV1,
+    maximum_bytes: usize,
 ) -> Result<ActivationInvocationContextV1, ActivationContextErrorV1> {
     if input.activation_id.is_empty()
         || input.claim_id.is_empty()
@@ -342,7 +409,7 @@ pub fn prepare_activation_context(
         }
         ActivationDeliveryV1::ProjectionReset { .. } => {}
     }
-    Ok(ActivationInvocationContextV1 {
+    let context = ActivationInvocationContextV1 {
         activation_id: input.activation_id,
         claim_id: input.claim_id,
         cause_room_seq: input.cause_room_seq,
@@ -365,7 +432,11 @@ pub fn prepare_activation_context(
         runner_limits_bytes: input.runner_limits_bytes,
         artifact_references: input.artifact_references,
         delivery: input.delivery,
-    })
+    };
+    if context.canonical_bytes()?.len() > maximum_bytes {
+        return Err(ActivationContextErrorV1::TooLarge);
+    }
+    Ok(context)
 }
 
 /// A canonical request envelope used by all Activation operation receipts.
