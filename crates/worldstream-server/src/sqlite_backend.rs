@@ -5819,6 +5819,66 @@ mod tests {
                 .unwrap_or_else(|error| panic!("warm Activation claim: {error:?}"));
             assert_eq!(reply.code, ActivationResultCode::Granted);
         }
+        if let Some(scales) = std::env::var_os("WORLDSTREAM_WARM_CLAIM_SCALES") {
+            let scales = scales
+                .to_str()
+                .unwrap_or_else(|| panic!("warm claim scales must be UTF-8"))
+                .split(',')
+                .map(|scale| {
+                    scale
+                        .parse::<usize>()
+                        .unwrap_or_else(|error| panic!("invalid warm claim scale: {error}"))
+                })
+                .collect::<Vec<_>>();
+            assert!(!scales.is_empty());
+            assert!(scales.iter().all(|scale| *scale > 0));
+            let before_history_rows: i64 = rusqlite::Connection::open(file.path())
+                .unwrap_or_else(|error| panic!("open history counter: {error}"))
+                .query_row(
+                    "SELECT count(*) FROM transitions WHERE room_id = ?1",
+                    [&room_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|error| panic!("count history rows: {error}"));
+            for scale in scales {
+                let mut samples = Vec::with_capacity(scale);
+                for _ in 0..scale {
+                    let started = Instant::now();
+                    let reply = backend
+                        .activation_claim(
+                            &runner_session,
+                            ActivationClaim {
+                                activation_id: activation_id.clone(),
+                                runner_id: runner_capability.runner_id.clone(),
+                                claim_id: "warm-claim".to_owned(),
+                                requested_lease_ms: 30_000,
+                            },
+                        )
+                        .unwrap_or_else(|error| panic!("scaled warm Activation claim: {error:?}"));
+                    assert_eq!(reply.code, ActivationResultCode::Granted);
+                    samples.push(started.elapsed());
+                }
+                samples.sort_unstable();
+                let percentile = |numerator: usize| {
+                    samples[((scale.saturating_sub(1) * numerator) / 100).min(scale - 1)]
+                };
+                eprintln!(
+                    "warm_activation_claims scale={scale} history_rows={before_history_rows} p50_us={} p95_us={} p99_us={}",
+                    percentile(50).as_micros(),
+                    percentile(95).as_micros(),
+                    percentile(99).as_micros(),
+                );
+            }
+            let after_history_rows: i64 = rusqlite::Connection::open(file.path())
+                .unwrap_or_else(|error| panic!("reopen history counter: {error}"))
+                .query_row(
+                    "SELECT count(*) FROM transitions WHERE room_id = ?1",
+                    [&room_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|error| panic!("recount history rows: {error}"));
+            assert_eq!(after_history_rows, before_history_rows);
+        }
         let after_callbacks = backend
             .trace_cache
             .with_room(
