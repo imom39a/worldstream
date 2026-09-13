@@ -46,28 +46,41 @@ existing secret, spending, maintenance, or data-preservation checks below.
 3. Create one Fly app and one volume in the same region. Keep the app name out
    of the reusable `fly.toml` and pass it with `-a`.
 4. Install the four Fly secrets listed in `.env.example`.
-5. Deploy the source-built image with an exact clean Git revision, digest-pinned
+5. From the repository root, run the revision preflight before publishing. It
+   checks that the checkout is clean and that image and runtime identities use
+   the same exact source revision:
+
+   ```text
+   REVISION=$(git rev-parse HEAD)
+   node scripts/hosted-deploy-preflight.mjs plan <fly-app> \
+     <rust-image@sha256:digest> <node-image@sha256:digest>
+   ```
+
+   Review the JSON command plan, then use its exact `docker build` and `fly
+   deploy` arguments. A failed preflight is a release stop before image
+   publication or Machine mutation.
+6. Deploy the source-built image with an exact clean Git revision, digest-pinned
    base-image build arguments, public Fly authority, and HTTPS Activity Client
    origin.
-6. Confirm `/healthz`, `/readyz`, and `/version`. Confirm ports 9410 and 9420
+7. Confirm `/healthz`, `/readyz`, and `/version`. Confirm ports 9410 and 9420
    have no Fly service.
-7. [Prepare and review the actual House Agent approvals](../../docs/hosted-house-approval.md).
+8. [Prepare and review the actual House Agent approvals](../../docs/hosted-house-approval.md).
    The initial database records stay disabled. Do not use development approval
    hashes or activate model calls before the credential and budget checks pass.
-8. While maintenance remains closed, approve and install the reviewed Midnight
+9. While maintenance remains closed, approve and install the reviewed Midnight
    Archive Bundle at `/opt/worldstream/hosted/midnight-archive.wspack`, make its
    exact Bundle digest selectable, and run `pack restart-readiness` with the
    appliance configuration. Retain those JSON receipts and the private
    `/run/worldstream/generated/initialization-import-apply.json` receipt as
    deployment evidence and House approval input.
-9. Deploy the product UI and BFF. Set
+10. Deploy the product UI and BFF. Set
    `WORLDSTREAM_INTERNAL_CANDIDATE_LISTING_DIGEST` to the exact reviewed
    Midnight Archive Listing digest only after the live Host availability probe
    succeeds. The BFF uses HTTPS requests to Fly; browser WebSockets connect
    directly to Fly.
-10. Create and record `hosted-deployment.json` with
+11. Create and record `hosted-deployment.json` with
    `scripts/hosted-checkpoint.mjs deployment create` and `deployment record`.
-11. Run the local and deployed acceptance story before advertising the preview.
+12. Run the local and deployed acceptance story before advertising the preview.
 
 The versioned `WORLDSTREAM_HOSTED_INSTALLATION_ID` must match in the Fly
 appliance, Vercel BFF, and active House approvals. A mismatch makes reviewed
@@ -93,6 +106,10 @@ docker build \
   --build-arg SOURCE_REVISION=<clean-git-commit> \
   -f packaging/hosted/Dockerfile \
   -t worldstream-hosted:<clean-git-commit> .
+
+fly deploy -a <fly-app> -c packaging/hosted/fly.toml \
+  --image worldstream-hosted:<clean-git-commit> \
+  --env WORLDSTREAM_DEPLOYMENT_VERSION=<clean-git-commit>
 ```
 
 ## Bounded Controller catalog overlay

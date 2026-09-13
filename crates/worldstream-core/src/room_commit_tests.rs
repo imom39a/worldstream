@@ -621,6 +621,75 @@ fn action_request(
     )
 }
 
+fn counter_increment_stimulus(trace: &CoreTraceV1, action_id: &str) -> RecordedStimulusV1 {
+    let action_schema = trace
+        .retained_pack()
+        .unwrap_or_else(|| unreachable!("retained Counter pack"))
+        .descriptor()
+        .actions
+        .iter()
+        .find(|action| action.action_type == "increment")
+        .unwrap_or_else(|| unreachable!("Counter increment action"))
+        .payload_schema
+        .schema_digest
+        .clone();
+    RecordedStimulusV1::ParticipantAction(ParticipantActionV1 {
+        member_id: parsed(MEMBER),
+        action_id: parsed(action_id),
+        action_type: "increment".to_owned(),
+        payload_schema_digest: action_schema,
+        canonical_payload: canonical(br"{}"),
+        exact_basis_head: trace.head().clone(),
+        admitted_at: parsed("2026-08-15T12:00:02Z"),
+    })
+}
+
+/// Exercises the same delayed-basis matrix as the external probe through the
+/// production stable admission function. Visibility and domain relation are
+/// labels only: the current contract intentionally fences on the complete Head
+/// for both private and unrelated updates.
+#[test]
+fn production_action_admission_matrix_preserves_exact_basis_fence() {
+    for delay_ms in [0_u64, 100, 500, 2_000] {
+        for update_rate in [0_u64, 2, 10] {
+            for visibility in ["visible", "hidden"] {
+                for relation in ["related", "unrelated"] {
+                    let mut trace = counter_trace();
+                    let initial = action_request(&trace, trace.head().room_seq(), br"{}");
+                    let admitted = trace
+                        .assess_stable_action_disposition(&initial, &parsed("2026-08-15T12:00:01Z"))
+                        .unwrap_or_else(|error| unreachable!("production admission: {error}"));
+                    assert!(
+                        admitted.is_none(),
+                        "synchronized action must be admissible for {visibility}/{relation}"
+                    );
+                    if update_rate != 0 && delay_ms != 0 {
+                        let update =
+                            counter_increment_stimulus(&trace, "01ARZ3NDEKTSV4RRFFQ69G5FC4");
+                        trace.advance(update).unwrap_or_else(|error| {
+                            unreachable!("intervening production update: {error}")
+                        });
+                        let stale = action_request(&trace, initial.based_on_room_seq(), br"{}");
+                        let disposition = trace
+                            .assess_stable_action_disposition(
+                                &stale,
+                                &parsed("2026-08-15T12:00:03Z"),
+                            )
+                            .unwrap_or_else(|error| {
+                                unreachable!("stale production admission: {error}")
+                            });
+                        assert_eq!(
+                            disposition.map(|value| value.code),
+                            Some("stale_room_state"),
+                            "{visibility}/{relation}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn timer_plan() -> (CoreTraceV1, PreparedRoomCommitV1) {
     let trace = CoreTraceV1::create_for_conformance(
         GenesisInputV1::new(

@@ -50,6 +50,7 @@
     "hosted-artifacts:generate": "node scripts/generate-hosted-platform-artifacts.mjs",
     "hosted-artifacts:check": "node scripts/generate-hosted-platform-artifacts.mjs --check",
     "hosted:dev": "node scripts/hosted-dev.mjs",
+    "hosted:preflight": "node scripts/hosted-deploy-preflight.mjs plan",
     "hosted:dev:check": "node scripts/hosted-dev.mjs --check",
     "hosted:dev:test": "pnpm heist-client:build && node --test scripts/hosted-dev.test.mjs scripts/hosted-fake-openrouter.test.mjs scripts/hosted-acceptance-evidence.test.mjs scripts/hosted-acceptance-prerequisites.test.mjs scripts/hosted-deployed-acceptance.test.mjs scripts/hosted-vercel-build.test.mjs",
     "hosted:acceptance:local": "node scripts/hosted-dev.mjs --acceptance",

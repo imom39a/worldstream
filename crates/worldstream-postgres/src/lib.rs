@@ -10046,7 +10046,7 @@ mod native_hydration_tests {
                 room_id: "01ARZ3NDEKTSV4RRFFQ69G5FZ0"
                     .parse()
                     .unwrap_or_else(|error| unreachable!("Room ID: {error}")),
-                source_id: "worldstream.host.lobby"
+                source_id: "01ARZ3NDEKTSV4RRFFQ69G5FH1"
                     .parse()
                     .unwrap_or_else(|error| unreachable!("Source ID: {error}")),
                 input_id: "01ARZ3NDEKTSV4RRFFQ69G5FZ1"

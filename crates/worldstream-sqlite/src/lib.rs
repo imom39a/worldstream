@@ -21446,7 +21446,11 @@ mod tests {
 
     #[test]
     fn external_input_preparation_reuses_first_semantic_time_after_restart_and_conflicts() {
-        let file = NamedTempFile::new().unwrap_or_else(|error| panic!("database file: {error}"));
+        // Keep the path itself unowned while the first store is closed. A
+        // NamedTempFile retains an independent descriptor and therefore looks
+        // like a second writer to the retained-data lease during reopen.
+        let directory = tempdir().unwrap_or_else(|error| panic!("database directory: {error}"));
+        let database = directory.path().join("worldstream.sqlite3");
         let room_id = parsed::<RoomId>(ROOM);
         let source_id = parsed::<SourceId>("01ARZ3NDEKTSV4RRFFQ69G5FH1");
         let input_id = parsed::<InputId>("01ARZ3NDEKTSV4RRFFQ69G5FJ0");
@@ -21471,15 +21475,15 @@ mod tests {
         )
         .unwrap_or_else(|error| panic!("request hash: {error}"));
         let first = parsed::<ExternalInputRecordedAt>("2026-08-24T12:00:01.123456Z");
-        let store = SqliteRoomStore::open(file.path())
-            .unwrap_or_else(|error| panic!("open store: {error}"));
+        let store =
+            SqliteRoomStore::open(&database).unwrap_or_else(|error| panic!("open store: {error}"));
         assert_eq!(
             store.reserve_external_input_recorded_at(&identity, &request_hash, &first),
             Ok(first.clone())
         );
         drop(store);
 
-        let reopened = SqliteRoomStore::open(file.path())
+        let reopened = SqliteRoomStore::open(&database)
             .unwrap_or_else(|error| panic!("reopen store: {error}"));
         let resampled = parsed("2026-08-24T12:01:00Z");
         assert_eq!(

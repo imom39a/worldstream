@@ -187,4 +187,28 @@ mod tests {
             .is_err()
         );
     }
+
+    #[test]
+    fn ingress_rejects_invalid_revision_basis_and_payload_before_room_access() {
+        let checked = worldstream_core::AuthorityCheckedAt::from_str("2026-09-12T12:00:00Z")
+            .unwrap_or_else(|_| unreachable!("canonical checked time"));
+        let room: RoomId = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+            .parse()
+            .unwrap_or_else(|_| unreachable!());
+        let invalid_revision = ExternalInputIngressRequestV1 {
+            pack_digest: "not-a-pack".to_owned(),
+            ..request(None)
+        };
+        assert!(prepare_external_input_ingress(room.clone(), &invalid_revision, &checked).is_err());
+        let invalid_basis = ExternalInputIngressRequestV1 {
+            based_on_room_seq: u64::MAX,
+            ..request(None)
+        };
+        assert!(prepare_external_input_ingress(room.clone(), &invalid_basis, &checked).is_err());
+        let oversized = ExternalInputIngressRequestV1 {
+            payload: serde_json::json!({ "source": "x".repeat(EXTERNAL_INPUT_INGRESS_MAX_PAYLOAD_BYTES) }),
+            ..request(None)
+        };
+        assert!(prepare_external_input_ingress(room, &oversized, &checked).is_err());
+    }
 }

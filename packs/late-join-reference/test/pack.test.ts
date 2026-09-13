@@ -4,7 +4,7 @@ import test from "node:test";
 import { canonicalStringify, encodeCanonical, type CanonicalJson, type CanonicalObject } from "@worldstream/pack-sdk";
 
 import { goldenFixture } from "../fixtures/golden.js";
-import pack, { MAX_OPEN_WORK, MAX_PROJECTION_BYTES } from "../src/pack.js";
+import pack, { EXTERNAL_INPUT_SOURCE_ID, EXTERNAL_INPUT_TYPE, MAX_OPEN_WORK, MAX_PROJECTION_BYTES } from "../src/pack.js";
 import { assessmentActionSchema, sourceActionSchema } from "../src/schemas.js";
 import { contextDigest, DeterministicLateJoinRunner, RunnerBudgetError, type RunnerProjection } from "../src/runner.js";
 
@@ -64,6 +64,25 @@ function reduce(
       member_id: memberId,
       payload_schema_digest: "blake3:" + "0".repeat(64),
       stimulus_type: "participant_action",
+    },
+    scheduled_timers: {},
+  }) as CanonicalObject;
+}
+
+function reduceExternal(state: CanonicalJson, payload: CanonicalObject, sequence: number, sourceId = EXTERNAL_INPUT_SOURCE_ID, inputType = EXTERNAL_INPUT_TYPE): CanonicalObject {
+  return pack.reduce({
+    core_before: core,
+    next_room_seq: sequence,
+    prior_activity_state: state,
+    proposed_core_after: core,
+    recorded_stimulus: {
+      canonical_payload: payload,
+      immutable_resource_references: [],
+      input_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      input_type: inputType,
+      recorded_at: "2026-09-12T15:03:00Z",
+      source_id: sourceId,
+      stimulus_type: "external_input",
     },
     scheduled_timers: {},
   }) as CanonicalObject;
@@ -141,6 +160,49 @@ test("source revision supersedes assessment and a reviewer can contribute curren
   assert.equal(applied.activity_disposition_type, "apply");
   const work = (applied.next_activity_state as CanonicalObject).open_work as readonly CanonicalObject[];
   assert.equal(work[0]!.last_assessment && (work[0]!.last_assessment as CanonicalObject).validity, "current");
+});
+
+test("the allowlisted external input updates the real Pack state and emits bounded reassessment work", () => {
+  const state = stateAfterSourceChange();
+  const result = reduceExternal(state, {
+    arrival_minute: 640,
+    arrival_version: 3,
+    connection_id: "C17",
+    departure_minute: 650,
+    departure_version: 1,
+    minimum_transfer_minutes: 25,
+  }, 3);
+  assert.equal(result.activity_disposition_type, "apply");
+  const next = result.next_activity_state as CanonicalObject;
+  const work = (next.open_work as readonly CanonicalObject[])[0]!;
+  assert.equal(work.revision, 3);
+  assert.equal((work.last_assessment as CanonicalObject).validity, "superseded");
+  assert.deepEqual(result.ordered_attention_signals, [{
+    action_types: ["record_assessment"], deduplication_key: "assessment:3", priority: 1,
+    reason: "assessment_required", target_member_id: null,
+  }]);
+  assert.deepEqual(result.ordered_domain_events, [{ event_type: "source_fact_replaced", connection_id: "C17", source: "external_input" }]);
+  const nextView = participantView(next, reviewer);
+  const runner = new DeterministicLateJoinRunner({
+    actionSchemas: { record_assessment: assessmentActionSchema() },
+    memberId: reviewer,
+    role: "reviewer",
+    ruleBrief: "Assess current source revisions after each accepted feed update.",
+  });
+  runner.attach(nextView as unknown as RunnerProjection);
+  assert.equal(runner.startContribution()!.canonical_payload.expected_work_revision, 3);
+  const publicView = pack.view({ activity_state: next, complete_head: { room_seq: 3 }, core, viewer: { member_id: "spectator", viewer_type: "spectator" } }) as CanonicalObject;
+  assert.equal(canonicalStringify(publicView.projection!).includes("arrival_minute"), false);
+});
+
+test("external input rejects wrong source, type, and out-of-order corrections without changing state", () => {
+  const state = initialState();
+  const payload = { arrival_minute: 601, arrival_version: 2, connection_id: "C17", departure_minute: 650, departure_version: 1, minimum_transfer_minutes: 25 };
+  assert.equal(reduceExternal(state, payload, 1, "01ARZ3NDEKTSV4RRFFQ69G5FH3").declared_code, "unsupported_stimulus");
+  assert.equal(reduceExternal(state, payload, 1, EXTERNAL_INPUT_SOURCE_ID, "other").declared_code, "unsupported_stimulus");
+  const applied = reduceExternal(state, payload, 1);
+  assert.equal(applied.activity_disposition_type, "apply");
+  assert.equal(reduceExternal(applied.next_activity_state!, payload, 2).declared_code, "stale_source_revision");
 });
 
 test("full observations replace the current view, while stale and lost replies stay fenced", () => {

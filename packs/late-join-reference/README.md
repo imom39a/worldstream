@@ -12,6 +12,16 @@ Offers. `observe` emits a complete `projection_replaced` view, so a client
 replaces its current view instead of appending another copy to a prompt. The
 public view contains only aggregate counts.
 
+The reference also declares one generic Host Stimulus Source,
+`worldstream.external_input.v1`, from source `01ARZ3NDEKTSV4RRFFQ69G5FH2`.
+Its canonical payload is the bounded source fact shape used by
+`record_source_update`. Reduction applies the same monotonic revision rules as
+an analyst Action, marks the prior assessment superseded, and emits one
+`assessment_required` Attention Signal. Wrong source/type, stale revisions,
+and oversized fields are rejected without changing current state. This is a
+Pack-level end-to-end example for the server's separately authenticated
+ingress; the Pack performs no network or provider call.
+
 `src/runner.ts` is a provider-free external Runner example. It assembles a
 versioned rule brief, current Projection, exact offered action schemas, and at
 most four bounded recent outcomes. It reports encoded bytes and a conservative

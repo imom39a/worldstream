@@ -35,6 +35,9 @@ import {
 
 export const MAX_OPEN_WORK = 16;
 export const MAX_PROJECTION_BYTES = 24576;
+/** The one Host Stimulus Source allowlisted by the generic ingress adapter. */
+export const EXTERNAL_INPUT_SOURCE_ID = "01ARZ3NDEKTSV4RRFFQ69G5FH2";
+export const EXTERNAL_INPUT_TYPE = "worldstream.external_input.v1";
 const MAX_SOURCE_TEXT_BYTES = 128;
 
 function initialConnections(): readonly SourceFact[] {
@@ -203,7 +206,29 @@ export function reduceReference(input: CanonicalObject): PackReduceOutput {
   const core = asRecord(input.core_before, "core_before");
   const memberId = typeof stimulus.member_id === "string" ? stimulus.member_id : "";
   try {
-    if (stimulus.stimulus_type !== "participant_action") throw new RuleRejection("unsupported_stimulus", "this reference Pack accepts participant Actions only");
+    if (stimulus.stimulus_type === "external_input") {
+      if (stimulus.source_id !== EXTERNAL_INPUT_SOURCE_ID || stimulus.input_type !== EXTERNAL_INPUT_TYPE ||
+        !Array.isArray(stimulus.immutable_resource_references) || stimulus.immutable_resource_references.length !== 0) {
+        throw new RuleRejection("unsupported_stimulus", "the source update is not from the allowlisted Host Stimulus Source");
+      }
+      const source = sourceFromPayload(asRecord(stimulus.canonical_payload, "external input payload"));
+      const next = { ...nextStateForSource(state, source), room_seq: nextRoomSeq };
+      validateBoundedState(next);
+      return {
+        activity_disposition_type: "apply",
+        next_activity_state: next as unknown as CanonicalJson,
+        ordered_attention_signals: next.open_work.some((work) => work.status === "needs_assessment") ? [{
+          action_types: ["record_assessment"],
+          deduplication_key: `assessment:${nextRoomSeq}`,
+          priority: 1,
+          reason: "assessment_required",
+          target_member_id: null,
+        }] : [],
+        ordered_domain_events: [{ event_type: "source_fact_replaced", connection_id: source.connection_id, source: "external_input" }],
+        timer_requests: [],
+      };
+    }
+    if (stimulus.stimulus_type !== "participant_action") throw new RuleRejection("unsupported_stimulus", "this reference Pack accepts participant Actions or its allowlisted source input");
     ensureCurrentBasis(stimulus, state);
     const role = roleFor(core, memberId);
     if (role === null) throw new RuleRejection("role_violation", "Action Membership is not an enabled participant");
@@ -296,6 +321,7 @@ export default defineActivityPack({
       { actionType: "record_assessment", payloadSchema: assessmentActionSchema() },
       { actionType: "close_work", payloadSchema: closeActionSchema() },
     ],
+    externalInputSchemas: { [EXTERNAL_INPUT_TYPE]: sourceActionSchema() },
     attentionReasons: ["assessment_required"],
     configurationSchema: configurationSchema(),
     events: [

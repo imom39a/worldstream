@@ -9,6 +9,9 @@ Run it with:
 
 ```sh
 python3 scripts/action-starvation-probe.py --output /tmp/action-starvation.json
+
+# Also execute the focused production Core admission matrix.
+python3 scripts/action-starvation-production-matrix.py --output /tmp/action-starvation-production.json
 ```
 
 The report schema is `worldstream/action-starvation-probe/v1`. Each scenario
@@ -19,10 +22,13 @@ model-equivalent wasted decisions, re-evaluations, update categories, and
 bounded pending attempts. The sample trace retains only redacted sequence and
 outcome metadata; it contains no private payloads or identities.
 
-The adapter applies the production rule exactly: `based_on_room_seq` must equal
+The fixture adapter applies the production rule exactly: `based_on_room_seq` must equal
 the Complete Head sequence at admission. The rule is mirrored from
 `crates/worldstream-core/src/trace.rs::assess_stable_action_disposition`; the
-probe does not invoke a live backend commit. A stale proposal is discarded.
+probe does not invoke a live backend commit. A stale proposal is discarded. The
+production matrix command also executes
+`CoreTraceV1::assess_stable_action_disposition` over the same delay, rate,
+visibility, and relation dimensions and fails closed if that check fails.
 The Runner refreshes, re-evaluates, and creates a new Action identity; the
 probe never auto-rebases a stale Action.
 
@@ -42,7 +48,7 @@ supports the current contract within the stated envelope and provides
 measurement evidence for a future versioned successor ADR only if a broader
 envelope is required. Participant count is included as a controlled occupancy
 dimension while the aggregate Room update rate stays fixed. This probe
-measures one target Runner's pending work and does not claim scheduler fairness
-across participants or backoff behavior. It also does not claim production
-commit throughput, storage, network, or model-quality results; IMO-217's live
-synchronization implementation remains a separate concern.
+measures one target Runner's pending work and the production check confirms the
+whole-Head fence; it does not claim scheduler fairness across participants,
+backend commit throughput, storage, network, or model-quality results. IMO-217's
+live synchronization implementation remains a separate concern.
