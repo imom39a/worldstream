@@ -4193,7 +4193,7 @@ impl PostgresRoomStore {
                     (SELECT count(*) FROM worldstream_activation_intents \
                      WHERE room_id = $1 AND target_member_id = $2 AND state = 'pending' \
                        AND semantic_deadline IS NULL), \
-                    (SELECT coalesce(sum(attention_bytes), 0) FROM worldstream_activation_intents \
+                    (SELECT coalesce(sum(attention_bytes), 0)::bigint FROM worldstream_activation_intents \
                      WHERE room_id = $1 AND target_member_id = $2 AND state = 'pending' \
                        AND semantic_deadline IS NULL), \
                     (SELECT (EXTRACT(EPOCH FROM (clock_timestamp() - min(created_at::timestamptz))) * 1000)::bigint \
