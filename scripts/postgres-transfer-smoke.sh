@@ -2749,7 +2749,10 @@ fn main() {
                  public.worldstream_schema_migrations, \
                  public.worldstream_transfer_imports, \
                  public.worldstream_transfer_chunks, \
-                 public.worldstream_transfer_target_fence FROM {runtime_role}",
+                 public.worldstream_transfer_target_fence, \
+                 public.worldstream_transfer_stream_imports_v2, \
+                 public.worldstream_transfer_stream_chunks_v2, \
+                 public.worldstream_transfer_stream_records_v2 FROM {runtime_role}",
             ))
             .is_err()
         {

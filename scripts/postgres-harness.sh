@@ -755,7 +755,7 @@ harden_managed_runtime_ledger() {
     return 0
   fi
   if ! psql_query "$admin_dsn" "$admin_password" \
-    "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations, public.worldstream_transfer_imports, public.worldstream_transfer_chunks, public.worldstream_transfer_target_fence FROM \"$runtime_user\""; then
+    "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations, public.worldstream_transfer_imports, public.worldstream_transfer_chunks, public.worldstream_transfer_target_fence, public.worldstream_transfer_stream_imports_v2, public.worldstream_transfer_stream_chunks_v2, public.worldstream_transfer_stream_records_v2 FROM \"$runtime_user\""; then
     fail "validation_failed" "$EXIT_VALIDATION" "managed_runtime_control_table_revoke_failed"
   fi
 }
