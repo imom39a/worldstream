@@ -6321,6 +6321,43 @@ fn append_operational_history_root_v2(
     Ok(())
 }
 
+#[cfg(test)]
+mod operational_history_root_v2_tests {
+    use super::*;
+
+    #[test]
+    fn each_root_domain_advances_beyond_sixteen_mebibytes_without_retaining_history() {
+        const MEBIBYTE: usize = 1024 * 1024;
+        const ENTRIES: u64 = 17;
+        let mut roots = BTreeMap::new();
+        for domain in OPERATIONAL_HISTORY_ROOT_DOMAINS_V2 {
+            roots.insert(
+                domain.to_owned(),
+                OperationalHistoryRootV2::new(domain, 0, Blake3DigestV1::hash(b""))
+                    .unwrap_or_else(|error| panic!("initialize {domain} root: {error:?}")),
+            );
+        }
+        for domain in OPERATIONAL_HISTORY_ROOT_DOMAINS_V2 {
+            for sequence in 0..ENTRIES {
+                let payload = vec![u8::try_from(sequence).unwrap_or(0); MEBIBYTE];
+                let entry = operational_history_entry_v2(&[
+                    domain.as_bytes(),
+                    &sequence.to_be_bytes(),
+                    &payload,
+                ])
+                .unwrap_or_else(|error| panic!("encode {domain} entry: {error:?}"));
+                append_operational_history_root_v2(&mut roots, domain, &entry)
+                    .unwrap_or_else(|error| panic!("advance {domain} root: {error:?}"));
+            }
+            let root = roots
+                .get(domain)
+                .unwrap_or_else(|| panic!("{domain} root remains present"));
+            assert_eq!(root.entry_count(), ENTRIES, "{domain} count");
+            assert_ne!(root.root_hash(), &Blake3DigestV1::hash(b""), "{domain} root");
+        }
+    }
+}
+
 fn recover_activation_decisions(
     canonical_transition_bytes: &[Vec<u8>],
 ) -> Result<Vec<RecoveredActivationDecisionV1>, RoomRecoveryErrorV1> {
