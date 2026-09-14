@@ -525,7 +525,15 @@ impl RoomTransitionPreparerV1 {
                 if proposal.expected_room_seq != state.head.room_seq {
                     return Err(TraceErrorV1::ExpectedSequenceMismatch);
                 }
-                return self.core_reducer.reduce(&state.core_state, proposal);
+                let prepared = self.core_reducer.reduce(&state.core_state, proposal)?;
+                let proposed_memberships = prepared.verified_state.state.memberships();
+                let introduces_member = proposed_memberships
+                    .keys()
+                    .any(|member_id| !state.core_state.state.memberships().contains_key(member_id));
+                if introduces_member && proposed_memberships.len() > MAX_ROOM_MEMBERSHIPS_V1 {
+                    return Err(TraceErrorV1::RoomMembershipLimitExceeded);
+                }
+                return Ok(prepared);
             }
             RecordedStimulusV1::ExternalInput(_) => {
                 if state.core_state.state.room_status == RoomStatusV1::Archived {
@@ -796,6 +804,9 @@ impl CoreTraceV1 {
     ) -> Result<Self, TraceErrorV1> {
         if input.initial_core_state.room_status != RoomStatusV1::Active {
             return Err(TraceErrorV1::GenesisMustBeActive);
+        }
+        if input.initial_core_state.memberships().len() > MAX_ROOM_MEMBERSHIPS_V1 {
+            return Err(TraceErrorV1::RoomMembershipLimitExceeded);
         }
         let verified_core = preparer
             .core_reducer
@@ -2439,6 +2450,11 @@ struct TimerBookV1 {
 /// including fired and cancelled Timers. This cap therefore bounds that
 /// serving-state component; it does not reinterpret historical V1 traces.
 pub const MAX_DISTINCT_TIMER_IDS_V1: usize = 1_024;
+/// Maximum distinct membership identities admitted to a newly prepared Room.
+///
+/// Stored V1 history is replayed independently of this current-admission
+/// limit, allowing older Rooms to retain their exact forensic history.
+pub const MAX_ROOM_MEMBERSHIPS_V1: usize = 1_024;
 
 impl TimerBookV1 {
     fn from_checkpoint(
@@ -3079,6 +3095,9 @@ pub enum TraceErrorV1 {
     /// A new Timer identifier would exceed the fixed serving-state budget.
     #[error("distinct Timer identifier limit exceeded")]
     DistinctTimerIdLimitExceeded,
+    /// A new membership identity would exceed the fixed serving-state budget.
+    #[error("Room membership identity limit exceeded")]
+    RoomMembershipLimitExceeded,
     /// Archive output left a scheduled Timer.
     #[error("archive must cancel every scheduled Timer")]
     ArchiveDidNotCancelAllTimers,

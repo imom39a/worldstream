@@ -48,6 +48,12 @@ operational table to retain only the current generation/state per ID in a
 future compatible migration. Existing V1 histories are replayed unchanged,
 including those above this limit, and remain ineligible for that acceleration.
 
+New rooms likewise admit at most 1,024 membership identities, and a current
+room at the cap cannot introduce another identity. The admission check does
+not reinterpret stored V1 Genesis or Transition records. It bounds the
+checkpoint frame-head and membership-generation maps for rooms eligible for
+the V2 path.
+
 ## Consequences
 
 Eligible checkpoint capture has a fixed logical row and binary-value budget;

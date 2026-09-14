@@ -10269,7 +10269,6 @@ fn persist_consequence(
                 &frame_seq,
                 &cause_room_seq,
                 frame.payload_hash().as_bytes(),
-                frame.canonical_payload_bytes(),
             ])?;
             append_operational_history_root(tx, room_id, "frames", &entry)?;
         }
@@ -10290,7 +10289,7 @@ fn persist_consequence(
                 view.viewer().member_id().to_string().as_bytes(),
                 &cause_room_seq,
                 b"reset_required",
-                payload,
+                projection_hash.as_bytes(),
             ])?;
             append_operational_history_root(tx, room_id, "consequences", &entry)?;
         }

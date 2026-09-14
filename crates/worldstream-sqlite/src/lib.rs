@@ -18219,12 +18219,14 @@ fn commit_advance(
                     &frame_seq,
                     &cause_room_seq,
                     frame.payload_hash().as_bytes(),
-                    frame.canonical_payload_bytes(),
                 ])?;
                 append_operational_history_root(transaction, &room_id, "frames", &entry)?;
             }
             PreparedObservationConsequenceV1::ResetRequired(view) => {
                 let payload = view.canonical_bytes();
+                let projection_hash = view
+                    .projection_hash()
+                    .map_err(|_| RoomCommitResolutionV1::Fault)?;
                 persist_delivery_consequence(
                     transaction,
                     &room_id,
@@ -18238,7 +18240,7 @@ fn commit_advance(
                     view.viewer().member_id().to_string().as_bytes(),
                     &cause_room_seq,
                     b"reset_required",
-                    &payload,
+                    projection_hash.as_bytes(),
                 ])?;
                 append_operational_history_root(transaction, &room_id, "consequences", &entry)?;
             }
