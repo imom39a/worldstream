@@ -10045,8 +10045,8 @@ fn initialize_operational_history_roots(
 ) -> Result<(), postgres::Error> {
     for domain in OPERATIONAL_HISTORY_ROOT_DOMAINS {
         tx.execute(
-            "INSERT INTO worldstream_room_operational_history_roots_v2(\
-             room_id, domain, entry_count, root_hash\
+            "INSERT INTO worldstream_room_operational_history_roots_v2( \
+             room_id, domain, entry_count, root_hash \
              ) VALUES ($1, $2, 0, $3)",
             &[&room_id, &domain, &([0_u8; 32]).as_slice()],
         )?;
@@ -10306,8 +10306,8 @@ fn upsert_current_timer(
     state: &str,
 ) -> Result<(), CommitDecision> {
     tx.execute(
-        "INSERT INTO worldstream_room_current_timers_v2(\
-         room_id, timer_id, generation, scheduled_for, payload_bytes, state\
+        "INSERT INTO worldstream_room_current_timers_v2( \
+         room_id, timer_id, generation, scheduled_for, payload_bytes, state \
          ) VALUES ($1, $2, $3, $4, $5, $6) \
          ON CONFLICT(room_id, timer_id) DO UPDATE SET \
          generation = EXCLUDED.generation, scheduled_for = EXCLUDED.scheduled_for, \
