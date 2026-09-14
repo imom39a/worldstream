@@ -34376,16 +34376,53 @@ mod tests {
             .unwrap_or_else(|error| panic!("checkpoint Activity bytes: {error}"));
         let connection = Connection::open(file.path())
             .unwrap_or_else(|error| panic!("open replay comparator reader: {error}"));
-        let materializations: (i64, i64, i64, i64, i64) = connection.query_row(
-            "SELECT (SELECT count(*) FROM timers WHERE room_id = ?1), \
-                    (SELECT count(*) FROM observation_frames WHERE room_id = ?1), \
-                    (SELECT count(*) FROM observation_consequences WHERE room_id = ?1), \
-                    (SELECT count(*) FROM activation_decisions WHERE room_id = ?1), \
-                    (SELECT count(*) FROM semantic_receipts WHERE room_id = ?1)",
-            [ROOM], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-        ).unwrap_or_else(|error| panic!("read replay materializations: {error}"));
-        assert!(materializations.0 > 0);
-        assert!(materializations.4 > 0);
+        let read_materializations = |connection: &Connection| {
+            macro_rules! read_rows {
+                ($sql:expr, $mapper:expr $(,)?) => {{
+                    let mut statement = connection.prepare($sql)
+                        .unwrap_or_else(|error| panic!("prepare replay materialization query: {error}"));
+                    statement.query_map([ROOM], $mapper)
+                        .unwrap_or_else(|error| panic!("read replay materialization rows: {error}"))
+                        .collect::<Result<Vec<_>, _>>()
+                        .unwrap_or_else(|error| panic!("collect replay materialization rows: {error}"))
+                }};
+            }
+            let timers = read_rows!(
+                "SELECT timer_id, generation, scheduled_for, payload_bytes, state FROM timers \
+                 WHERE room_id = ?1 ORDER BY timer_id, generation",
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, Vec<u8>>(3)?, row.get::<_, String>(4)?)),
+            );
+            let frames = read_rows!(
+                "SELECT member_id, frame_seq, cause_room_seq, payload_hash, payload_bytes FROM observation_frames \
+                 WHERE room_id = ?1 ORDER BY member_id, frame_seq",
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, Vec<u8>>(4)?)),
+            );
+            let consequences = read_rows!(
+                "SELECT member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash \
+                 FROM observation_consequences WHERE room_id = ?1 ORDER BY member_id, cause_room_seq",
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<Vec<u8>>>(3)?, row.get::<_, Option<String>>(4)?)),
+            );
+            let delivery_positions = read_rows!(
+                "SELECT member_id, membership_bytes, frame_head, retained_frame_floor, last_ack_frame_seq, reset_required_through \
+                 FROM room_members WHERE room_id = ?1 ORDER BY member_id",
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, Option<i64>>(4)?, row.get::<_, Option<i64>>(5)?)),
+            );
+            let decisions = read_rows!(
+                "SELECT cause_room_seq, decision_id, target_member_id, decision_bytes FROM activation_decisions \
+                 WHERE room_id = ?1 ORDER BY cause_room_seq, decision_id",
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Vec<u8>>(3)?)),
+            );
+            let receipts = read_rows!(
+                "SELECT operation_kind, operation_identity_bytes, canonical_request_hash, basis_complete_head_bytes, \
+                        semantic_input_bytes, semantic_time_bytes, resolution_kind, transition_seq, stored_resolution_bytes \
+                 FROM semantic_receipts WHERE room_id = ?1 ORDER BY operation_kind, operation_identity_bytes",
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?, row.get::<_, Vec<u8>>(2)?, row.get::<_, Option<Vec<u8>>>(3)?, row.get::<_, Vec<u8>>(4)?, row.get::<_, Vec<u8>>(5)?, row.get::<_, String>(6)?, row.get::<_, Option<i64>>(7)?, row.get::<_, Vec<u8>>(8)?)),
+            );
+            (timers, frames, consequences, delivery_positions, decisions, receipts)
+        };
+        let materializations = read_materializations(&connection);
+        assert!(!materializations.0.is_empty());
+        assert!(!materializations.5.is_empty());
         connection.execute(
             "UPDATE room_snapshot_operational_witnesses_v2 SET witness_hash = ?1 WHERE room_id = ?2",
             params![[0_u8; 32].as_slice(), ROOM],
@@ -34396,15 +34433,7 @@ mod tests {
         assert_eq!(full.head(), checkpoint.head());
         assert_eq!(full.core_state().canonical_bytes().unwrap_or_else(|error| panic!("full Core bytes: {error}")), checkpoint_core);
         assert_eq!(full.activity_state().to_bytes().unwrap_or_else(|error| panic!("full Activity bytes: {error}")), checkpoint_activity);
-        let after: (i64, i64, i64, i64, i64) = connection.query_row(
-            "SELECT (SELECT count(*) FROM timers WHERE room_id = ?1), \
-                    (SELECT count(*) FROM observation_frames WHERE room_id = ?1), \
-                    (SELECT count(*) FROM observation_consequences WHERE room_id = ?1), \
-                    (SELECT count(*) FROM activation_decisions WHERE room_id = ?1), \
-                    (SELECT count(*) FROM semantic_receipts WHERE room_id = ?1)",
-            [ROOM], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-        ).unwrap_or_else(|error| panic!("read full replay materializations: {error}"));
-        assert_eq!(after, materializations);
+        assert_eq!(read_materializations(&connection), materializations);
     }
 
     #[test]
