@@ -7309,6 +7309,7 @@ impl AuthorizedReceiptResolverV1 for PostgresRoomStore {
 }
 
 const MAX_CHECKPOINT_TAIL: i64 = 250;
+const MAX_V2_CHECKPOINT_STATE_BYTES: i32 = 16 * 1024 * 1024;
 
 #[allow(clippy::too_many_lines)]
 fn inspect_postgres_checkpoint_candidate(
@@ -7386,9 +7387,16 @@ fn inspect_postgres_checkpoint_candidate(
                ON witness.room_id = snapshot.room_id AND witness.room_seq = snapshot.room_seq \
              WHERE snapshot.room_id = $1 AND snapshot.room_seq <= $2 \
                AND snapshot.room_seq >= $3 \
+               AND octet_length(snapshot.core_state_bytes) <= $4 \
+               AND octet_length(snapshot.activity_state_bytes) <= $4 \
              ORDER BY snapshot.room_seq DESC LIMIT 1 \
              FOR SHARE OF snapshot, witness",
-            &[&room_id, &upper, &upper.saturating_sub(MAX_CHECKPOINT_TAIL)],
+            &[
+                &room_id,
+                &upper,
+                &upper.saturating_sub(MAX_CHECKPOINT_TAIL),
+                &MAX_V2_CHECKPOINT_STATE_BYTES,
+            ],
         )
         .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
     else {

@@ -9594,6 +9594,7 @@ fn inspect_checkpoint_candidate_at_path(
     requested_room_id: &RoomId,
 ) -> Result<Option<RoomRecoveryCandidateV1>, SqliteRoomInspectionErrorV1> {
     const MAX_CHECKPOINT_TAIL: i64 = 250;
+    const MAX_V2_CHECKPOINT_STATE_BYTES: i64 = 16 * 1024 * 1024;
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
@@ -9670,8 +9671,10 @@ fn inspect_checkpoint_candidate_at_path(
          AND EXISTS(SELECT 1 FROM room_snapshot_operational_witnesses AS witness \
                     WHERE witness.room_id = snapshot.room_id \
                     AND witness.room_seq = snapshot.room_seq) \
+         AND length(snapshot.core_state_bytes) <= ?3 \
+         AND length(snapshot.activity_state_bytes) <= ?3 \
          ORDER BY snapshot.room_seq DESC LIMIT 1",
-        params![room_id, upper], |row| Ok((
+        params![room_id, upper, MAX_V2_CHECKPOINT_STATE_BYTES], |row| Ok((
             row.get(0)?,
             (row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?,
              row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?),
