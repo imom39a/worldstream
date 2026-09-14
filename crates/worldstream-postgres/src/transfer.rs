@@ -132,6 +132,8 @@ LOCK TABLE
     worldstream_materializations,
     worldstream_members,
     worldstream_timers,
+    worldstream_room_current_timers_v2,
+    worldstream_room_operational_history_roots_v2,
     worldstream_transitions,
     worldstream_frames,
     worldstream_observation_consequences,
@@ -140,6 +142,7 @@ LOCK TABLE
     worldstream_activation_operation_receipts,
     worldstream_room_snapshots,
     worldstream_room_snapshot_operational_witnesses,
+    worldstream_room_snapshot_operational_witnesses_v2,
     worldstream_room_snapshot_schedules,
     worldstream_semantic_receipts,
     worldstream_integrity_incidents,
@@ -176,6 +179,8 @@ SELECT domain, row_count FROM (
     UNION ALL SELECT 'worldstream_materializations', count(*)::bigint FROM worldstream_materializations
     UNION ALL SELECT 'worldstream_members', count(*)::bigint FROM worldstream_members
     UNION ALL SELECT 'worldstream_timers', count(*)::bigint FROM worldstream_timers
+    UNION ALL SELECT 'worldstream_room_current_timers_v2', count(*)::bigint FROM worldstream_room_current_timers_v2
+    UNION ALL SELECT 'worldstream_room_operational_history_roots_v2', count(*)::bigint FROM worldstream_room_operational_history_roots_v2
     UNION ALL SELECT 'worldstream_transitions', count(*)::bigint FROM worldstream_transitions
     UNION ALL SELECT 'worldstream_frames', count(*)::bigint FROM worldstream_frames
     UNION ALL SELECT 'worldstream_observation_consequences', count(*)::bigint FROM worldstream_observation_consequences
@@ -184,6 +189,7 @@ SELECT domain, row_count FROM (
     UNION ALL SELECT 'worldstream_activation_operation_receipts', count(*)::bigint FROM worldstream_activation_operation_receipts
     UNION ALL SELECT 'worldstream_room_snapshots', count(*)::bigint FROM worldstream_room_snapshots
     UNION ALL SELECT 'worldstream_room_snapshot_operational_witnesses', count(*)::bigint FROM worldstream_room_snapshot_operational_witnesses
+    UNION ALL SELECT 'worldstream_room_snapshot_operational_witnesses_v2', count(*)::bigint FROM worldstream_room_snapshot_operational_witnesses_v2
     UNION ALL SELECT 'worldstream_room_snapshot_schedules', count(*)::bigint FROM worldstream_room_snapshot_schedules
     UNION ALL SELECT 'worldstream_semantic_receipts', count(*)::bigint FROM worldstream_semantic_receipts
     UNION ALL SELECT 'worldstream_integrity_incidents', count(*)::bigint FROM worldstream_integrity_incidents
@@ -226,6 +232,8 @@ TRUNCATE TABLE
     worldstream_materializations,
     worldstream_members,
     worldstream_timers,
+    worldstream_room_current_timers_v2,
+    worldstream_room_operational_history_roots_v2,
     worldstream_transitions,
     worldstream_frames,
     worldstream_observation_consequences,
@@ -234,6 +242,7 @@ TRUNCATE TABLE
     worldstream_activation_operation_receipts,
     worldstream_room_snapshots,
     worldstream_room_snapshot_operational_witnesses,
+    worldstream_room_snapshot_operational_witnesses_v2,
     worldstream_room_snapshot_schedules,
     worldstream_semantic_receipts,
     worldstream_integrity_incidents,
@@ -1521,13 +1530,14 @@ fn stream_record_page(
         .query(
             "WITH candidates AS (\
                 SELECT ordinal, class_tag, kind_tag, identity, record_bytes, record_digest, \
-                       sum(octet_length(record_bytes)) OVER (ORDER BY ordinal) AS cumulative_bytes \
+                       sum(octet_length(record_bytes)) OVER (ORDER BY ordinal) AS cumulative_bytes, \
+                       row_number() OVER (ORDER BY ordinal) AS page_row \
                 FROM (SELECT ordinal, class_tag, kind_tag, identity, record_bytes, record_digest \
                       FROM worldstream_transfer_stream_records_v2 \
                       WHERE stream_header_digest = $1 AND ordinal > $2 \
                       ORDER BY ordinal LIMIT $3) bounded_rows\
              ) SELECT ordinal, class_tag, kind_tag, identity, record_bytes, record_digest \
-             FROM candidates WHERE cumulative_bytes <= $4 ORDER BY ordinal",
+             FROM candidates WHERE cumulative_bytes <= $4 OR page_row = 1 ORDER BY ordinal",
             &[
                 &stream_key.as_slice(),
                 &after_ordinal,
@@ -1579,13 +1589,14 @@ fn stream_records_of_kind_page(
         .query(
             "WITH candidates AS (\
                 SELECT ordinal, identity, record_bytes, record_digest, \
-                       sum(octet_length(record_bytes)) OVER (ORDER BY ordinal) AS cumulative_bytes \
+                       sum(octet_length(record_bytes)) OVER (ORDER BY ordinal) AS cumulative_bytes, \
+                       row_number() OVER (ORDER BY ordinal) AS page_row \
                 FROM (SELECT ordinal, identity, record_bytes, record_digest \
                       FROM worldstream_transfer_stream_records_v2 \
                       WHERE stream_header_digest = $1 AND class_tag = 1 AND kind_tag = $2 AND ordinal > $3 \
                       ORDER BY ordinal LIMIT $4) bounded_rows\
              ) SELECT ordinal, identity, record_bytes, record_digest \
-             FROM candidates WHERE cumulative_bytes <= $5 ORDER BY ordinal",
+             FROM candidates WHERE cumulative_bytes <= $5 OR page_row = 1 ORDER BY ordinal",
             &[
                 &stream_key.as_slice(),
                 &i16::from(kind.wire_tag()),
@@ -2195,7 +2206,7 @@ fn native_stream_receipt(
         _ => {
             return Err(PostgresTransferError::Canonical(
                 "native receipt transition",
-            ))
+            ));
         }
     };
     Ok(StreamNativeReceiptPageRow {
@@ -6590,7 +6601,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let fingerprint = postgres_backend_fingerprint()?;
         assert_eq!(fingerprint.profile(), BundleProfileV1::PostgresPrimary17);
-        assert_eq!(fingerprint.schema().migrations().len(), 18);
+        assert_eq!(fingerprint.schema().migrations().len(), 21);
         assert_eq!(fingerprint.schema().migrations()[5].version(), 6);
         assert_eq!(fingerprint.schema().migrations()[10].version(), 11);
         assert_eq!(fingerprint.schema().migrations()[11].version(), 12);
@@ -6598,6 +6609,9 @@ mod tests {
         assert_eq!(fingerprint.schema().migrations()[15].version(), 16);
         assert_eq!(fingerprint.schema().migrations()[16].version(), 17);
         assert_eq!(fingerprint.schema().migrations()[17].version(), 18);
+        assert_eq!(fingerprint.schema().migrations()[18].version(), 19);
+        assert_eq!(fingerprint.schema().migrations()[19].version(), 20);
+        assert_eq!(fingerprint.schema().migrations()[20].version(), 21);
         Ok(())
     }
 
@@ -6652,6 +6666,8 @@ mod tests {
             "worldstream_materializations",
             "worldstream_members",
             "worldstream_timers",
+            "worldstream_room_current_timers_v2",
+            "worldstream_room_operational_history_roots_v2",
             "worldstream_transitions",
             "worldstream_frames",
             "worldstream_observation_consequences",
@@ -6660,6 +6676,7 @@ mod tests {
             "worldstream_activation_operation_receipts",
             "worldstream_room_snapshots",
             "worldstream_room_snapshot_operational_witnesses",
+            "worldstream_room_snapshot_operational_witnesses_v2",
             "worldstream_room_snapshot_schedules",
             "worldstream_semantic_receipts",
             "worldstream_integrity_incidents",

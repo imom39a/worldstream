@@ -86,6 +86,9 @@ const REQUIRED_MIGRATIONS: &[&str] = &[
     "0016-activation-backlog-policy-v1",
     "0017-stream-transfer-v2",
     "0018-checkpoint-operational-witness-v1",
+    "0019-operational-history-roots-v2",
+    "0020-current-timers-v2",
+    "0021-checkpoint-operational-witness-v2",
 ];
 const REQUIRED_MIGRATION_CHECKSUMS: &[&str] = &[
     "blake3:dd07208c71d7165b93861883b25411b1e7c33a6be36fc2be28a638e1ab5cd763",
@@ -105,11 +108,14 @@ const REQUIRED_MIGRATION_CHECKSUMS: &[&str] = &[
     "blake3:495d58fdc81fee0b6b87d8973f4445b4892da22608e459033eaa333c0d4078a4",
     "blake3:aaa152c1107748f774197bd8a59600150e9d209c7e4eb14ec5e911394b23c3e2",
     "blake3:95b31dc300e31bbdafada55d7d7d9f6b3c05d0dd2e067c3f41e3f39a27655847",
+    "blake3:7977311c54cfcdbec65d3846ddbd2071f53ca830464f5721092f5de958e0b98d",
+    "blake3:00116356f2c4490438c9e923b8197ab7a3704c22d32f4d0d9e3912dfa41f8471",
+    "blake3:52c9dbd493d058e5553c5b77a3ee4a5a1feecf8e6f881aedce36a4644662b8db",
 ];
 // These are reviewed shipped prefixes, rather than an arbitrary version
 // range. A retained backup must present one exact contiguous ledger through
 // the corresponding release boundary.
-const SUPPORTED_MIGRATION_COUNTS: &[usize] = &[13, 15, 16, 17];
+const SUPPORTED_MIGRATION_COUNTS: &[usize] = &[13, 15, 16, 17, 18, 19, 20];
 
 /// The `SQLite` engine selected by the workspace's bundled rusqlite build.
 pub const BUNDLED_SQLITE_VERSION: &str = "3.53.4";
@@ -6445,6 +6451,19 @@ mod tests {
         );
         let _ = fs::remove_file(path);
         Ok(())
+    }
+
+    #[test]
+    fn streaming_retained_verifier_accepts_the_current_reviewed_migration_tail() {
+        assert_eq!(REQUIRED_MIGRATIONS.len(), 20);
+        assert_eq!(REQUIRED_MIGRATION_CHECKSUMS.len(), 20);
+        assert_eq!(REQUIRED_MIGRATIONS[17], "0019-operational-history-roots-v2");
+        assert_eq!(REQUIRED_MIGRATIONS[18], "0020-current-timers-v2");
+        assert_eq!(
+            REQUIRED_MIGRATIONS[19],
+            "0021-checkpoint-operational-witness-v2"
+        );
+        assert!(SUPPORTED_MIGRATION_COUNTS.contains(&20));
     }
 
     #[test]
