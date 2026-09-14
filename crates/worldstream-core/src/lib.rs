@@ -174,15 +174,14 @@ pub use registry::builtin_worldstream_registry;
 pub use room_commit::{
     ActionAdmissionContextV1, ActionOfferWitnessV1, ActionOffersUnavailableReasonV1,
     ActorInstallationV1, AuthorizedReceiptResolverV1, CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V1,
-    CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2,
-    CREATE_ROOM_OPERATION_KIND, CanonicalRequestHashV1, CoreAdministrationIngressV1,
-    CoreAdministrationRequestV1, ExistingRoomCommitOutcomeV1, ExistingRoomPendingAttemptV1,
-    ExistingRoomReprepareV1, ExistingRoomResolveV1, ExistingRoomRetryV1,
-    ExternalInputOperationIdentityV1, InitialMembershipProposalV1, OperationIdentityV1,
-    ParticipantActionIngressErrorV1, ParticipantActionIngressV1,
-    ParticipantActionOperationIdentityV1, ParticipantActionReprepareV1, ParticipantActionRequestV1,
-    PrepareRoomWriteErrorV1, PreparedActionInputWitnessV1, PreparedActivationDecisionV1,
-    PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1,
+    CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2, CREATE_ROOM_OPERATION_KIND, CanonicalRequestHashV1,
+    CoreAdministrationIngressV1, CoreAdministrationRequestV1, ExistingRoomCommitOutcomeV1,
+    ExistingRoomPendingAttemptV1, ExistingRoomReprepareV1, ExistingRoomResolveV1,
+    ExistingRoomRetryV1, ExternalInputOperationIdentityV1, InitialMembershipProposalV1,
+    OperationIdentityV1, OperationalHistoryRootV2, ParticipantActionIngressErrorV1,
+    ParticipantActionIngressV1, ParticipantActionOperationIdentityV1, ParticipantActionReprepareV1,
+    ParticipantActionRequestV1, PrepareRoomWriteErrorV1, PreparedActionInputWitnessV1,
+    PreparedActivationDecisionV1, PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1,
     PreparedCoreAdministrationInputWitnessV1, PreparedCreationPersistenceV1,
     PreparedExistingIntentV1, PreparedExternalInputWitnessV1, PreparedMembershipMaterializationV1,
     PreparedObservationConsequenceV1, PreparedObservationFrameV1, PreparedOperationInputWitnessV1,
@@ -191,19 +190,18 @@ pub use room_commit::{
     ReceiptSemanticInputV1, ReceiptSemanticTimeV1, RecoveredActivationDecisionV1,
     RecoveredObservationConsequenceV1, RecoveredObservationFrameV1, RecoveredRoomExecutionV1,
     RecoveredRoomMaterializationsV1, RecoveredTimerMaterializationV1, RecoveredTimerStateV1,
-    OperationalHistoryRootV2, RecoveryIntegrityDispositionV1, ResolutionStatusV1,
-    ResolveOutcomeV1, RoomCheckpointOperationalWitnessV1, RoomCheckpointOperationalWitnessV2,
-    RoomCommitResolutionV1, RoomCommitStorageV1,
-    RoomCreationCommitOutcomeV1, RoomCreationIngressV1, RoomCreationPendingAttemptV1,
-    RoomCreationReprepareV1, RoomCreationRequestV1, RoomCreationResolveV1, RoomCreationRetryV1,
-    RoomOperationIngressErrorV1, RoomRecoveryCandidateV1, RoomRecoveryCheckpointV1,
-    RoomRecoveryErrorV1, RoomRecoveryExecutionPathV1, RoomRecoveryExecutionReceiptV1,
-    RoomRecoveryStorageV1, SemanticResultV1, StoredSemanticResultV1, TimerFiredReprepareV1,
-    TimerFiredRequestV1, TimerOperationIdentityV1, TimerReprepareOutcomeV1,
-    VerifiedCurrentRoomMaterializationV1, authorize_core_administration_operation,
-    authorize_participant_action_operation, authorize_room_creation_operation,
-    commit_existing_room, commit_room_creation, external_input_request_hash,
-    resolve_authorized_room_operation_for_adapter,
+    RecoveryIntegrityDispositionV1, ResolutionStatusV1, ResolveOutcomeV1,
+    RoomCheckpointOperationalWitnessV1, RoomCheckpointOperationalWitnessV2, RoomCommitResolutionV1,
+    RoomCommitStorageV1, RoomCreationCommitOutcomeV1, RoomCreationIngressV1,
+    RoomCreationPendingAttemptV1, RoomCreationReprepareV1, RoomCreationRequestV1,
+    RoomCreationResolveV1, RoomCreationRetryV1, RoomOperationIngressErrorV1,
+    RoomRecoveryCandidateV1, RoomRecoveryCheckpointV1, RoomRecoveryErrorV1,
+    RoomRecoveryExecutionPathV1, RoomRecoveryExecutionReceiptV1, RoomRecoveryStorageV1,
+    SemanticResultV1, StoredSemanticResultV1, TimerFiredReprepareV1, TimerFiredRequestV1,
+    TimerOperationIdentityV1, TimerReprepareOutcomeV1, VerifiedCurrentRoomMaterializationV1,
+    authorize_core_administration_operation, authorize_participant_action_operation,
+    authorize_room_creation_operation, commit_existing_room, commit_room_creation,
+    external_input_request_hash, resolve_authorized_room_operation_for_adapter,
 };
 #[doc(hidden)]
 pub use room_commit::{
@@ -244,4 +242,8 @@ mod session_tests;
 #[cfg(test)]
 mod tests;
 
-pub use operational_mmr::{OperationalMmrProofV1, OperationalMmrV1};
+pub use operational_mmr::{
+    OperationalMmrAppendV1, OperationalMmrErrorV1, OperationalMmrNodeCoordinateV1,
+    OperationalMmrNodeV1, OperationalMmrProofNodeV1, OperationalMmrProofPlanV1,
+    OperationalMmrProofV1, OperationalMmrV1,
+};
