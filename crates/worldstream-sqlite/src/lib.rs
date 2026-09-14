@@ -36142,6 +36142,148 @@ mod tests {
         assert_eq!(disposition, "refresh_age_exceeded");
     }
 
+    #[test]
+    fn sustained_refresh_burst_keeps_live_attention_bounded_and_preserves_obligations() {
+        const ARRIVALS: i64 = 10_000;
+        const ATTENTION_BYTES: i64 = 128;
+        let mut connection = Connection::open_in_memory().expect("in-memory policy database");
+        connection
+            .execute_batch(
+                "CREATE TABLE activation_intents(
+                    activation_id TEXT PRIMARY KEY,
+                    room_id TEXT NOT NULL,
+                    target_member_id TEXT NOT NULL,
+                    cause_room_seq INTEGER NOT NULL,
+                    semantic_deadline TEXT,
+                    state TEXT NOT NULL,
+                    intent_generation INTEGER NOT NULL,
+                    lease_generation INTEGER NOT NULL,
+                    runner_id TEXT,
+                    claim_id TEXT,
+                    lease_until TEXT,
+                    created_at TEXT NOT NULL,
+                    attention_bytes INTEGER NOT NULL,
+                    terminal_disposition TEXT,
+                    superseded_by_activation_id TEXT,
+                    terminal_at TEXT
+                );
+                CREATE TABLE timers(
+                    room_id TEXT NOT NULL,
+                    timer_id TEXT NOT NULL,
+                    state TEXT NOT NULL
+                );
+                INSERT INTO activation_intents(
+                    activation_id, room_id, target_member_id, cause_room_seq,
+                    semantic_deadline, state, intent_generation, lease_generation,
+                    created_at, attention_bytes
+                ) VALUES (
+                    'obligation', 'room-1', '01ARZ3NDEKTSV4RRFFQ69G5FC0', 10001,
+                    '2099-01-01T00:00:00Z', 'pending', 1, 0,
+                    '2026-09-13T00:00:00Z', 128
+                );
+                INSERT INTO activation_intents(
+                    activation_id, room_id, target_member_id, cause_room_seq,
+                    semantic_deadline, state, intent_generation, lease_generation,
+                    runner_id, claim_id, lease_until, created_at, attention_bytes
+                ) VALUES (
+                    'leased-refresh', 'room-1', '01ARZ3NDEKTSV4RRFFQ69G5FC0', 10002,
+                    NULL, 'leased', 1, 7, 'runner-1', 'claim-1',
+                    '2099-01-01T00:00:00Z', '2026-09-13T00:00:00Z', 128
+                );
+                INSERT INTO timers(room_id, timer_id, state)
+                    VALUES ('room-1', 'timer-1', 'scheduled');",
+            )
+            .expect("policy schema and obligations");
+
+        let started = std::time::Instant::now();
+        let mut maximum_pending = 0_i64;
+        let mut maximum_pending_bytes = 0_i64;
+        for sequence in 1..=ARRIVALS {
+            let activation_id = format!("refresh-{sequence:05}");
+            let transaction = connection.transaction().expect("arrival transaction");
+            supersede_refresh_intents(
+                &transaction,
+                "room-1",
+                PARTICIPANT,
+                &activation_id,
+                u64::try_from(ATTENTION_BYTES).expect("attention bytes"),
+            )
+            .expect("bounded supersession");
+            transaction
+                .execute(
+                    "INSERT INTO activation_intents(
+                        activation_id, room_id, target_member_id, cause_room_seq,
+                        semantic_deadline, state, intent_generation, lease_generation,
+                        created_at, attention_bytes
+                    ) VALUES (?1, 'room-1', ?2, ?3, NULL, 'pending', 1, 0,
+                              strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?4)",
+                    rusqlite::params![activation_id, PARTICIPANT, sequence, ATTENTION_BYTES],
+                )
+                .expect("arrival intent");
+            let (pending, bytes): (i64, i64) = transaction
+                .query_row(
+                    "SELECT count(*), coalesce(sum(attention_bytes), 0)
+                     FROM activation_intents
+                     WHERE room_id = 'room-1' AND target_member_id = ?1
+                       AND state = 'pending' AND semantic_deadline IS NULL",
+                    [PARTICIPANT],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("bounded live queue");
+            maximum_pending = maximum_pending.max(pending);
+            maximum_pending_bytes = maximum_pending_bytes.max(bytes);
+            transaction.commit().expect("arrival commit");
+        }
+
+        let summary: (i64, i64, i64, String, String, i64, i64) = connection
+            .query_row(
+                "SELECT
+                    (SELECT count(*) FROM activation_intents
+                     WHERE state = 'pending' AND semantic_deadline IS NULL),
+                    (SELECT coalesce(sum(attention_bytes), 0) FROM activation_intents
+                     WHERE state = 'pending' AND semantic_deadline IS NULL),
+                    (SELECT count(*) FROM activation_intents
+                     WHERE terminal_disposition = 'superseded_refresh'),
+                    (SELECT state FROM activation_intents WHERE activation_id = 'obligation'),
+                    (SELECT state FROM activation_intents WHERE activation_id = 'leased-refresh'),
+                    (SELECT lease_generation FROM activation_intents
+                     WHERE activation_id = 'leased-refresh'),
+                    (SELECT count(*) FROM timers WHERE state = 'scheduled')",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .expect("burst summary");
+        assert_eq!(summary.0, 64);
+        assert_eq!(summary.1, 64 * ATTENTION_BYTES);
+        assert_eq!(summary.2, ARRIVALS - 64);
+        assert_eq!(summary.3, "pending");
+        assert_eq!(summary.4, "leased");
+        assert_eq!(summary.5, 7);
+        assert_eq!(summary.6, 1);
+        assert_eq!(maximum_pending, 64);
+        assert_eq!(maximum_pending_bytes, 64 * ATTENTION_BYTES);
+        eprintln!(
+            "ACTIVATION_BACKLOG_SQLITE arrivals={ARRIVALS} pending={} pending_bytes={} superseded={} obligation={} leased={} timer_scheduled={} elapsed_ms={}",
+            summary.0,
+            summary.1,
+            summary.2,
+            summary.3,
+            summary.4,
+            summary.6,
+            started.elapsed().as_millis()
+        );
+    }
+
     fn fixture_deployment_identity() -> DeploymentIdentityV1 {
         DeploymentIdentityV1::new(
             vec![

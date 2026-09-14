@@ -92,9 +92,9 @@ use worldstream_core::{
     HistoricalReplayProjectionV1, HostClockSampleV1, IntegrityGenerationV1,
     MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1, MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES,
     MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1,
-    MAX_HISTORICAL_EVIDENCE_TIME_MS_V1, MAX_PENDING_REFRESH_AGE_MS_V1,
-    MAX_PENDING_REFRESH_BYTES_V1, MemberId, MembershipStandingV1, MembershipV1,
-    OperationIdentityV1, PackRegistryV1, PackRevisionLockV1, PackViewerV1,
+    MAX_HISTORICAL_EVIDENCE_TIME_MS_V1, MAX_PENDING_REFRESH_ACTIVATIONS_V1,
+    MAX_PENDING_REFRESH_AGE_MS_V1, MAX_PENDING_REFRESH_BYTES_V1, MemberId, MembershipStandingV1,
+    MembershipV1, OperationIdentityV1, PackRegistryV1, PackRevisionLockV1, PackViewerV1,
     ParticipantActionAuthorityV1, ParticipantActionRequestV1, ParticipantActionV1,
     PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1, PreparedCreationPersistenceV1,
     PreparedExistingIntentV1, PreparedMembershipMaterializationV1,
@@ -9895,7 +9895,7 @@ fn supersede_refresh_intents(
     loop {
         let row = tx
             .query_one(
-                "SELECT count(*), coalesce(sum(attention_bytes), 0) FROM worldstream_activation_intents \
+                "SELECT count(*), coalesce(sum(attention_bytes), 0)::bigint FROM worldstream_activation_intents \
                  WHERE room_id = $1 AND target_member_id = $2 AND state = 'pending' \
                  AND semantic_deadline IS NULL",
                 &[&room_id, &target_member_id],
@@ -10794,6 +10794,254 @@ fn fixture_apply_witnesses(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod activation_backlog_provider_tests {
+    use super::*;
+
+    #[test]
+    fn live_sustained_refresh_burst_is_bounded_and_preserves_leases_obligations_and_timers() {
+        const ARRIVALS: i64 = 10_000;
+        const ATTENTION_BYTES: i64 = 128;
+        const ROOM: &str = "activation-backlog-room";
+        const MEMBER: &str = "activation-backlog-member";
+
+        let Ok(dsn) = std::env::var("WORLDSTREAM_POSTGRES_TEST_DSN") else {
+            return;
+        };
+        let store = PostgresRoomStore::new(
+            PostgresConnectionConfig::runtime(dsn, PostgresConnectionPath::Direct)
+                .unwrap_or_else(|error| panic!("live runtime config: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("live runtime store: {error}"));
+        let mut client = store
+            .connect()
+            .unwrap_or_else(|error| panic!("live provider connection: {error}"));
+        client
+            .batch_execute(
+                r#"
+                CREATE TEMP TABLE worldstream_activation_intents(
+                    activation_id text PRIMARY KEY,
+                    room_id text NOT NULL,
+                    cause_room_seq bigint NOT NULL,
+                    decision_id text NOT NULL,
+                    target_member_id text NOT NULL,
+                    reason_code text NOT NULL,
+                    deduplication_key text NOT NULL,
+                    priority bigint NOT NULL,
+                    semantic_deadline text,
+                    policy_revision bigint NOT NULL,
+                    state text NOT NULL,
+                    intent_generation bigint NOT NULL,
+                    lease_generation bigint NOT NULL,
+                    runner_id text,
+                    claim_id text,
+                    lease_until text,
+                    context_hash bytea,
+                    context_bytes bytea,
+                    context_retired boolean NOT NULL DEFAULT false,
+                    created_at text NOT NULL,
+                    attention_bytes bigint NOT NULL,
+                    terminal_disposition text,
+                    superseded_by_activation_id text,
+                    terminal_at text
+                );
+                CREATE UNIQUE INDEX worldstream_activation_one_live_lease_fixture
+                    ON worldstream_activation_intents(room_id, target_member_id)
+                    WHERE state = 'leased';
+                CREATE TEMP TABLE worldstream_timers(
+                    room_id text NOT NULL,
+                    timer_id text NOT NULL,
+                    state text NOT NULL
+                );
+                INSERT INTO worldstream_activation_intents(
+                    activation_id, room_id, cause_room_seq, decision_id,
+                    target_member_id, reason_code, deduplication_key, priority,
+                    semantic_deadline, policy_revision, state, intent_generation,
+                    lease_generation, created_at, attention_bytes
+                ) VALUES (
+                    'obligation', 'activation-backlog-room', 10001, 'obligation-decision',
+                    'activation-backlog-member', 'required-work', 'required-work', 10,
+                    '2099-01-01T00:00:00Z', 1, 'pending', 1, 0,
+                    to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), 128
+                );
+                INSERT INTO worldstream_activation_intents(
+                    activation_id, room_id, cause_room_seq, decision_id,
+                    target_member_id, reason_code, deduplication_key, priority,
+                    semantic_deadline, policy_revision, state, intent_generation,
+                    lease_generation, runner_id, claim_id, lease_until, created_at,
+                    attention_bytes
+                ) VALUES (
+                    'leased-refresh', 'activation-backlog-room', 10002, 'leased-decision',
+                    'activation-backlog-member', 'refresh', 'leased-refresh', 1,
+                    NULL, 1, 'leased', 1, 7, 'runner-1', 'claim-1',
+                    '2099-01-01T00:00:00Z',
+                    to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), 128
+                );
+                INSERT INTO worldstream_timers(room_id, timer_id, state)
+                    VALUES ('activation-backlog-room', 'timer-1', 'scheduled');
+                "#,
+            )
+            .unwrap_or_else(|error| panic!("temporary policy schema: {error}"));
+
+        let started = std::time::Instant::now();
+        let mut transaction = client
+            .transaction()
+            .unwrap_or_else(|error| panic!("burst transaction: {error}"));
+        let mut maximum_pending = 0_i64;
+        let mut maximum_pending_bytes = 0_i64;
+        for sequence in 1..=ARRIVALS {
+            let activation_id = format!("refresh-{sequence:05}");
+            supersede_refresh_intents(
+                &mut transaction,
+                ROOM,
+                MEMBER,
+                &activation_id,
+                u64::try_from(ATTENTION_BYTES).unwrap_or_else(|_| unreachable!()),
+            )
+            .unwrap_or_else(|error| match error {
+                CommitDecision::Provider(error) => {
+                    panic!("bounded supersession failed at {sequence}: {error}")
+                }
+                CommitDecision::Resolution(_) => {
+                    panic!("bounded supersession was fenced at {sequence}")
+                }
+            });
+            transaction
+                .execute(
+                    r#"INSERT INTO worldstream_activation_intents(
+                        activation_id, room_id, cause_room_seq, decision_id,
+                        target_member_id, reason_code, deduplication_key, priority,
+                        semantic_deadline, policy_revision, state, intent_generation,
+                        lease_generation, created_at, attention_bytes
+                    ) VALUES (
+                        $1, $2, $3, $1, $4, 'refresh', $1, 1,
+                        NULL, 1, 'pending', 1, 0,
+                        to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), $5
+                    )"#,
+                    &[&activation_id, &ROOM, &sequence, &MEMBER, &ATTENTION_BYTES],
+                )
+                .unwrap_or_else(|error| panic!("arrival intent: {error}"));
+            let row = transaction
+                .query_one(
+                    "SELECT count(*), coalesce(sum(attention_bytes), 0)::bigint
+                     FROM worldstream_activation_intents
+                     WHERE room_id = $1 AND target_member_id = $2
+                       AND state = 'pending' AND semantic_deadline IS NULL",
+                    &[&ROOM, &MEMBER],
+                )
+                .unwrap_or_else(|error| panic!("bounded live queue: {error}"));
+            let pending: i64 = row
+                .try_get(0)
+                .unwrap_or_else(|error| panic!("pending count: {error}"));
+            let bytes: i64 = row
+                .try_get(1)
+                .unwrap_or_else(|error| panic!("pending bytes: {error}"));
+            maximum_pending = maximum_pending.max(pending);
+            maximum_pending_bytes = maximum_pending_bytes.max(bytes);
+        }
+        transaction
+            .execute(
+                r#"INSERT INTO worldstream_activation_intents(
+                    activation_id, room_id, cause_room_seq, decision_id,
+                    target_member_id, reason_code, deduplication_key, priority,
+                    semantic_deadline, policy_revision, state, intent_generation,
+                    lease_generation, created_at, attention_bytes,
+                    terminal_disposition, terminal_at
+                )
+                SELECT 'completed-' || value, $1, 20000 + value,
+                       'completed-' || value, $2, 'refresh', 'completed-' || value,
+                       1, NULL, 1, 'completed', 1, 0,
+                       to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+                       128, 'completed',
+                       to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+                FROM generate_series(1, 60) AS value"#,
+                &[&ROOM, &MEMBER],
+            )
+            .unwrap_or_else(|error| panic!("execution-rate fixtures: {error}"));
+        transaction
+            .execute(
+                "UPDATE worldstream_activation_intents
+                 SET created_at = '2000-01-01T00:00:00Z'
+                 WHERE activation_id = 'refresh-09937'",
+                &[],
+            )
+            .unwrap_or_else(|error| panic!("old refresh fixture: {error}"));
+        let offers = postgres_activation_offers(&mut transaction, ROOM, MEMBER)
+            .unwrap_or_else(|error| panic!("bounded offer path: {error:?}"));
+        assert!(
+            offers.is_empty(),
+            "60 recent executions must stop another offer batch"
+        );
+
+        let row = transaction
+            .query_one(
+                "SELECT
+                    (SELECT count(*) FROM worldstream_activation_intents
+                     WHERE state = 'pending' AND semantic_deadline IS NULL),
+                    (SELECT coalesce(sum(attention_bytes), 0)::bigint
+                     FROM worldstream_activation_intents
+                     WHERE state = 'pending' AND semantic_deadline IS NULL),
+                    (SELECT count(*) FROM worldstream_activation_intents
+                     WHERE terminal_disposition = 'superseded_refresh'),
+                    (SELECT count(*) FROM worldstream_activation_intents
+                     WHERE terminal_disposition = 'refresh_age_exceeded'),
+                    (SELECT state FROM worldstream_activation_intents
+                     WHERE activation_id = 'obligation'),
+                    (SELECT state FROM worldstream_activation_intents
+                     WHERE activation_id = 'leased-refresh'),
+                    (SELECT lease_generation FROM worldstream_activation_intents
+                     WHERE activation_id = 'leased-refresh'),
+                    (SELECT count(*) FROM worldstream_timers WHERE state = 'scheduled')",
+                &[],
+            )
+            .unwrap_or_else(|error| panic!("burst summary: {error}"));
+        let pending: i64 = row
+            .try_get(0)
+            .unwrap_or_else(|error| panic!("pending: {error}"));
+        let pending_bytes: i64 = row
+            .try_get(1)
+            .unwrap_or_else(|error| panic!("pending bytes: {error}"));
+        let superseded: i64 = row
+            .try_get(2)
+            .unwrap_or_else(|error| panic!("superseded: {error}"));
+        let age_retired: i64 = row
+            .try_get(3)
+            .unwrap_or_else(|error| panic!("age retired: {error}"));
+        let obligation: String = row
+            .try_get(4)
+            .unwrap_or_else(|error| panic!("obligation: {error}"));
+        let leased: String = row
+            .try_get(5)
+            .unwrap_or_else(|error| panic!("leased: {error}"));
+        let lease_generation: i64 = row
+            .try_get(6)
+            .unwrap_or_else(|error| panic!("lease generation: {error}"));
+        let scheduled_timers: i64 = row
+            .try_get(7)
+            .unwrap_or_else(|error| panic!("scheduled Timers: {error}"));
+        assert_eq!(pending, 63);
+        assert_eq!(pending_bytes, 63 * ATTENTION_BYTES);
+        assert_eq!(
+            superseded,
+            ARRIVALS - i64::try_from(MAX_PENDING_REFRESH_ACTIVATIONS_V1).unwrap_or(-1)
+        );
+        assert_eq!(age_retired, 1);
+        assert_eq!(obligation, "pending");
+        assert_eq!(leased, "leased");
+        assert_eq!(lease_generation, 7);
+        assert_eq!(scheduled_timers, 1);
+        assert_eq!(maximum_pending, 64);
+        assert_eq!(maximum_pending_bytes, 64 * ATTENTION_BYTES);
+        eprintln!(
+            "ACTIVATION_BACKLOG_POSTGRES arrivals={ARRIVALS} max_pending={maximum_pending} max_pending_bytes={maximum_pending_bytes} superseded={superseded} age_retired={age_retired} executions_last_minute=60 offers=0 obligation={obligation} leased={leased} timer_scheduled={scheduled_timers} elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+        transaction
+            .rollback()
+            .unwrap_or_else(|error| panic!("temporary policy rollback: {error}"));
+    }
 }
 
 #[cfg(test)]
