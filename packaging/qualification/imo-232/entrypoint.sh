@@ -4,6 +4,8 @@ set -euo pipefail
 readonly evidence=/data/imo-232-linux-1m.json
 readonly status_file=/data/status
 readonly manifest=/data/runtime-manifest.json
+readonly retained_fixture_archive=/data/fixture-1000000.sqlite.gz
+readonly retained_fixture_report=/data/fixture-1000000.json
 readonly started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 mkdir -p /data/tmp
@@ -51,10 +53,21 @@ report = {
 Path(destination).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
 PY
 
-/opt/worldstream/imo-220-warm-claim-qualification.sh \
-  --evidence "${evidence}.tmp" \
-  --samples 1000 \
-  --tier 1000000
+if [[ -f "$retained_fixture_archive" && -f "$retained_fixture_report" ]]; then
+  reused_source=/data/tmp/reused-history-1000000.sqlite
+  gzip -dc "$retained_fixture_archive" > "$reused_source"
+  /opt/worldstream/imo-220-warm-claim-qualification.sh \
+    --evidence "${evidence}.tmp" \
+    --samples 1000 \
+    --tier 1000000 \
+    --source-database "$reused_source" \
+    --fixture-report "$retained_fixture_report"
+else
+  /opt/worldstream/imo-220-warm-claim-qualification.sh \
+    --evidence "${evidence}.tmp" \
+    --samples 1000 \
+    --tier 1000000
+fi
 mv "${evidence}.tmp" "$evidence"
 for leaves in 1000 10000 100000 1000000; do
   /usr/local/bin/operational_mmr_qualification \

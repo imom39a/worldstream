@@ -15,3 +15,10 @@ can copy them before deleting the disposable Machine, app, and volume. The JSON 
 Both base-image indexes, Rust 1.97.1, the source revision, and the three executed
 binary SHA-256 digests are bound into the image or output artifacts. The build
 must pass `SOURCE_REVISION=$(git rev-parse HEAD)` and must use a clean checkout.
+
+An interrupted operator rerun may retain a verified disposable 1m source as
+`/data/fixture-1000000.sqlite.gz` with its original
+`/data/fixture-1000000.json` report. When both are present, the entrypoint
+decompresses a mutable working copy and repeats only the warm phase. The report
+still validates the exact requested count and original fixture pass before it
+can publish success.

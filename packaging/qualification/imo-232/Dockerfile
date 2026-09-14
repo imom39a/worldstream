@@ -38,7 +38,7 @@ LABEL org.opencontainers.image.title="WorldStream IMO-232 one-million qualificat
       io.worldstream.release-evidence="false"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates procps python3 \
+    && apt-get install -y --no-install-recommends bash ca-certificates gzip procps python3 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /out/history_qualification_fixture /usr/local/bin/
 COPY --from=builder /out/operational_mmr_qualification /usr/local/bin/
