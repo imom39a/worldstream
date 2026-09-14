@@ -24,6 +24,7 @@ warm_test_bin="${WORLDSTREAM_WARM_TEST_BIN:-}"
 evidence_file=""
 samples="$DEFAULT_SAMPLES"
 temp_root=""
+temp_parent="${WORLDSTREAM_IMO220_TEMP_ROOT:-/tmp}"
 tiers=()
 history_fixture_mode="cargo-release"
 history_fixture_sha256=""
@@ -101,6 +102,10 @@ done
 [[ "$samples" =~ ^[1-9][0-9]*$ ]] || { printf '%s\n' 'IMO-220 samples must be a positive integer' >&2; exit 2; }
 [[ ! -e "$evidence_file" ]] || { printf '%s\n' 'IMO-220 evidence destination already exists' >&2; exit 2; }
 command -v "$python_bin" >/dev/null || { printf '%s\n' 'IMO-220 Python executable is unavailable' >&2; exit 127; }
+[[ -d "$temp_parent" && -w "$temp_parent" ]] || {
+  printf '%s\n' 'IMO-220 temporary parent must be a writable directory' >&2
+  exit 2
+}
 if [[ -z "$history_fixture_bin" || -z "$warm_test_bin" ]]; then
   command -v "$cargo_bin" >/dev/null || { printf '%s\n' 'IMO-220 cargo executable is unavailable' >&2; exit 127; }
 fi
@@ -139,9 +144,10 @@ if [[ "$(printf '%s\n' "${tiers[@]}" | sort -n | uniq -d)" != "" ]]; then
 fi
 
 umask 077
-temp_root="$("$python_bin" - <<'PY'
+temp_root="$("$python_bin" - "$temp_parent" <<'PY'
+import sys
 import tempfile
-print(tempfile.mkdtemp(prefix='worldstream-imo220-warm-', dir='/tmp'))
+print(tempfile.mkdtemp(prefix='worldstream-imo220-warm-', dir=sys.argv[1]))
 PY
 )"
 
