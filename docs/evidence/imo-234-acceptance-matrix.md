@@ -11,10 +11,12 @@ when the named command has passed against the stated provider.
 | PostgreSQL V2 direct recovery scale | disposable PG17 adapter log: 1k and 10k checkpoint rows, exact state/core/activity and root-backed operational counts | Passed before cadence audit; final clean matrix pending |
 | PostgreSQL cadence direct and PgBouncer | `scripts/postgres-live-evidence.sh` after `964f610e` | Pending clean rerun |
 | 100k transfer-backed PostgreSQL recovery | live script transfer-backed lane | Pending IMO-225 rerun and clean matrix |
-| Every operational domain independently beyond 16 MiB | dedicated Frames, consequences, timers, memberships, and activation-decision generators with bound assertions | Missing |
-| Per-domain omit/reorder/duplicate/stale tamper | provider parity tests for every root domain | Missing |
-| Full-replay equivalence of timers, delivery, decisions, and receipts | independent full-replay comparator | Missing |
+| Independently scaled Frames, consequences, and activation-decision roots beyond 16 MiB | `cargo test -p worldstream-core each_root_domain_advances_beyond_sixteen_mebibytes_without_retaining_history -- --nocapture` | SQLite/Core passed |
+| Timer-ledger and membership source bytes beyond 16 MiB with bounded serving caches | `cargo test -p worldstream-sqlite v2_checkpoint_capture_declines_timer_and_member_serving_cache_overflow -- --nocapture` inserts 17 MiB in each retained source while V2 captures only bounded current timers and member heads; the same test rejects 1,025 current timer or member rows | SQLite passed |
+| Per-domain root-hash tamper fallback | `cargo test -p worldstream-sqlite each_v2_operational_root_tamper_falls_back_without_quarantine -- --nocapture` for Frames, consequences, and activation decisions | SQLite passed; omit/reorder/duplicate/stale matrix remains open |
+| Full-replay equivalence of timers, delivery, decisions, and receipts | `cargo test -p worldstream-sqlite checkpoint_and_forced_full_replay_preserve_timer_delivery_and_receipt_materializations -- --nocapture` compares exact persisted tuples after a forced V2 fallback; `counter_v4_human_ack_commits_two_targeted_activation_decisions_and_recovers_lineage` proves a nonempty decision set | SQLite passed |
 
-The outstanding rows deliberately remain open. Existing 100k fixture output
-only independently exceeds 16 MiB for consequences and must not be used to
-claim the other domains.
+The outstanding rows deliberately remain open. The serving cache contract is
+intentionally different from the retained forensic ledger: timers and
+members are capped at 1,024 current entries, while historical timer and
+membership source bytes can exceed 16 MiB without entering the V2 witness.

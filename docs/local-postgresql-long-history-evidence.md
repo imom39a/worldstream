@@ -71,6 +71,74 @@ remained zero. Capture and verification omit the
 checkpoint when its canonical witness would exceed 16 MiB. ADR 0031 records
 this limit; IMO-234 tracks compact or partitioned operational accumulators.
 
+## IMO-225 bounded stream-transfer closure
+
+On 2026-09-14, the current-source PostgreSQL 17.11 closure harness reran the
+100,001-Transition production SQLite fixture after native operational
+publication was changed to bounded, typed transaction-local staging and
+set-based publication. Canonical replay verification now keysets the Room's
+Transitions twice: first for structural preflight and then for executable
+replay. It retains only the current Head and executable state, rather than a
+vector of every Transition byte string.
+
+The [committed compact report](evidence/imo-225-stream-closure-2026-09-14.json)
+was copied from the harness output before it removed its PostgreSQL container
+and temporary source, backup, restored backup, and stream tree on exit. It
+reported the following exact result:
+
+| Measurement | Result |
+| --- | ---: |
+| SQLite Transitions | 100,001 |
+| Canonical records | 100,010 |
+| Native operational records | 200,010 |
+| Total stream records | 300,020 |
+| Exact retained record bytes | 785,670,211 |
+| Stream file bytes | 869,347,584 |
+| Chunks | 335 |
+| Maximum records / chunk limit | 1,000 / 1,000 |
+| Maximum encoded chunk bytes / limit | 4,193,184 / 4,194,304 |
+| Restored SQLite backup pages | 249,226 |
+| PostgreSQL hydrated Transitions | 100,001 |
+| Resume checkpoint next chunk | 1 |
+| RSS before export | 2,850,816 bytes |
+| RSS after export | 19,333,120 bytes |
+| RSS after resume import | 149,323,776 bytes |
+| RSS after corruption probe | 64,618,496 bytes |
+| RSS after authority finalization | 251,133,952 bytes |
+| Maximum measured transfer-process delta | 248,283,136 bytes |
+
+The RSS rows are emitted from the transfer example after each named phase.
+The enclosing `/usr/bin/time -l` process reported 2,098,511,872 bytes because
+it also compiled the release workspace before executing the example; it is not
+used as the transfer working-set measurement. The phase samples show that the
+working process remains bounded by page buffers and current executable state,
+rather than retaining the 785 MB record set or 869 MB stream.
+
+The closure report also passed exact backup streaming and restore, resume
+import, full source-to-target native row equality, canonical replay,
+operation-guarded semantic receipts, final target authority, and source
+retirement. Its disk-full export probe rejected the write while retaining
+source authority. Its one-byte corrupted-stream probe rejected the stream with
+zero hydrated Rooms and zero published authority.
+
+The focused release transfer tests completed the remaining fail-closed matrix:
+
+| Case | Evidence |
+| --- | --- |
+| Over 100k records and over 64 MiB while preserving legacy stream limits | `streaming_container_v2_crosses_legacy_record_and_byte_limits_with_bounded_chunks` passed. |
+| Malformed identity or footer | `streaming_container_v2_rejects_tampered_footer_without_partial_success` passed. |
+| Reordered or duplicate chunks; interrupted finalization | `streaming_container_v2_rejects_duplicate_chunks_and_interrupted_finalization` passed. |
+| Interrupted import with a missing durable destination chunk | `persisted_checkpoint_reconfirms_or_repairs_missing_destination_chunk` passed. |
+| Corrupted manifest during resumed import | `manifest_stream_resumes_after_interruption_and_refuses_corruption_before_finalization` passed. |
+| Disk-full export | Current-source closure report: rejected, source remained pending. |
+| Ambiguous finalization after lost source-retirement result | `stream_authority_coordinator_reconciles_definite_failure_and_lost_retirement_result` passed. |
+
+These tests retain legacy identity-only v2 stream parsing, but do not permit an
+old stream without a source-authenticated manifest to cross the
+authority-adjacent finalization seam. That boundary preserves old bundle
+compatibility without treating weaker historical evidence as publication
+authority.
+
 ## PostgreSQL environment
 
 The disposable test environment used these pinned images:
@@ -235,11 +303,11 @@ Those tests could not be rerun in this worktree while IMO-234's new migration
 was between implementation and its expected inventory update; the test target
 failed to compile on the 20-versus-19 migration array mismatch.
 
-The high import RSS is material. The transfer iterates source records and chunks
-with bounded cursors, but the observed 1.54 GB process peak is comparable to the
-complete 870 MB stream. This does not yet prove IMO-225's requirement that peak
-memory be bounded by declared working buffers and state rather than bundle size.
-It is recorded as a limit and leaves the issue open.
+The earlier 1.54 GB import sample was material: it exposed retained canonical
+Transition vectors and row-wise native publication despite bounded source
+cursors. The 2026-09-14 post-fix closure below replaces that disposition with
+phase-specific transfer-process measurements after set-based native pages and
+incremental canonical replay were installed.
 
 ## Ticket disposition
 
@@ -252,7 +320,7 @@ remaining work:
 | IMO-220 | Production warm-claim path preserves four history rows and reducer counters; 1,000 claims measured p50 9,602 us, p95 11,159 us, p99 15,439 us. | Keep open. Run the 10k/100k warm-claim scales, PostgreSQL parity, and the requested contention matrix. |
 | IMO-222 | SQLite and PostgreSQL persist and verify cut-consistent operational witnesses; both adapters completed receipt-confirmed 1k/10k/100k checkpoint recoveries with zero prefix delivery and zero reducer callbacks; PostgreSQL 17.11/PgBouncer passed corrupt-snapshot and canonical-witness fallbacks, missing-materialization rebuild, malformed-Head quarantine, and the stale-Head failure fence. | Close from local implementation evidence. Hosted-provider qualification is tracked separately and the 16 MiB operational-witness limit remains explicit future work. |
 | IMO-223 | Production SQLite cadence count/retention was measured at 1k, 10k, and 100,001 with three retained rows; the 1k run now reports exact serialized-byte samples with bounded memory and explicit CPU/WAL attribution limits. A PostgreSQL 17 audit path is implemented, but the live run did not produce an accepted marker because the enclosing adapter/full-gate run failed. | Keep open. Complete the restart/write-failure/duplicate/concurrent-Head matrix and obtain accepted PostgreSQL scale-parity evidence. |
-| IMO-225 | 100,001-transition production source, bounded 5,299-chunk stream, resumable PostgreSQL import, corruption/disk-full rejection, exact digests, and final authority all passed. The new 100k recovery lane also exposed row-wise PostgreSQL staging and hydration across high-cardinality relations. | Keep open. Replace per-row round trips with bounded in-memory chunks, durable chunk commits, `COPY`/set-based validation, and a final publication fence; also resolve or bound the measured peak RSS and complete the malformed-stream matrix. |
+| IMO-225 | The 2026-09-14 current-source closure passed 100,001 Transitions and 785,670,211 exact record bytes through 335 bounded chunks. It verifies page-bounded native staging and equality, incremental canonical replay, resume, source retirement, final target authority, disk-full and corruption rejection, and the focused malformed/interrupted/missing/duplicate/ambiguous-finalization matrix. Its transfer-process RSS peak was 251,133,952 bytes, a 248,283,136-byte phase delta. | Close from committed local evidence. The report remains explicitly non-release evidence and does not replace hosted-provider qualification tracked elsewhere. |
 | IMO-226 | Observation-frame retention passed live PostgreSQL age/count/bytes, busy-Room cursor, and bounded deletion checks. | Keep open. Measure actual Activation backlog behavior during sustained arrivals, outages, and bursts, including pending age, supersession, execution, oldest-useful latency, and Timer behavior. |
 | IMO-227 | A deterministic 99-scenario no-model matrix now uses production admission and reports stale rate, useful latency, starvation, attempts, successful actions, and model-equivalent waste. The stated low-rate/short-delay envelope passed. | Keep open. Measure scheduler fairness/backoff and record the post-IMO-217 fixed-baseline comparison; high-rate/long-delay scenarios currently show complete starvation. |
 | IMO-230 | External input first execution and restart recovery passed live PostgreSQL, and package-level tests pass. | Keep open. Exercise a real Pack with concurrent Actions and Timers, SQLite/PostgreSQL parity, and overload behavior. |

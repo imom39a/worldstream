@@ -1,0 +1,75 @@
+{
+  "schema": "worldstream/imo-225-local-stream-closure-evidence/v1",
+  "status": "pass",
+  "release_evidence": false,
+  "source": {
+    "backup_streaming_verifier": "verified_retained_file_streaming_v2",
+    "backup_streaming_restore": "restore_file_streaming_v2",
+    "restored_backup_page_count": 249226,
+    "source_epoch": 7,
+    "transition_minimum": 100000,
+    "canonical_record_count": 100010,
+    "native_operational_record_count": 200010,
+    "operational_relation_counts": {
+      "activation_decisions": 0,
+      "activation_intents": 0,
+      "activation_operation_receipts": 0,
+      "authority_audit": 1,
+      "authority_change_receipts": 1,
+      "capabilities": 1,
+      "capability_scopes": 1,
+      "external_input_preparations": 0,
+      "integrity_incidents": 0,
+      "observation_consequences": 100001,
+      "observation_frames": 0,
+      "principals": 1,
+      "retired_authority_fences_v1": 0,
+      "room_integrity": 1,
+      "room_members": 1,
+      "runner_capability_memberships": 0,
+      "runners": 0,
+      "semantic_receipts": 100002,
+      "timers": 0
+    },
+    "backup_digest": "065b48b18970fa193d4d96e473f0aad9af641f1f7f6f28b58de7a3b2a1bbaa60"
+  },
+  "stream": {
+    "expected_record_count": 300020,
+    "expected_record_bytes": 785670211,
+    "stream_file_bytes": 869347584,
+    "chunk_count": 335,
+    "max_chunk_records_observed": 1000,
+    "max_chunk_encoded_bytes_observed": 4193184,
+    "max_records_per_chunk_limit": 1000,
+    "max_chunk_bytes_limit": 4194304,
+    "transition_threshold_passed": true,
+    "byte_threshold_passed": true
+  },
+  "destination": {
+    "partial_checkpoint_next_chunk": 1,
+    "resume_import_finalized": true,
+    "final_authority_published": true,
+    "source_retired": true,
+    "target_stream_state": "authoritative",
+    "hydrated_room_count": 1,
+    "hydrated_transition_count": 100001,
+    "staged_stream_record_count": 300020
+  },
+  "safety": {
+    "disk_full_export_rejected": true,
+    "disk_full_left_source_pending": true,
+    "corrupted_stream_rejected": true,
+    "corrupted_stream_hydrated_room_count": 0,
+    "corrupted_stream_published_authority": false
+  },
+  "bounded_working_set": {
+    "source_rss_before_bytes": 2850816,
+    "source_rss_after_export_bytes": 19333120,
+    "source_rss_after_resume_import_bytes": 149323776,
+    "source_rss_after_corruption_probe_bytes": 64618496,
+    "source_rss_after_authority_bytes": 251133952,
+    "source_rss_peak_delta_bytes": 248283136,
+    "source_record_collection": "keyset_cursor_and_bounded_chunks_only",
+    "backup_image": "not_constructed"
+  }
+}
