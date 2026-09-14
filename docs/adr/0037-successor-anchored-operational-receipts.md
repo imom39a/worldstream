@@ -63,6 +63,10 @@ Rows may be pruned while their immutable MMR nodes and receipt remain. A pruned
 Frame range therefore causes the existing explicit Reset behavior; a retained
 row remains independently provable. Node compaction may happen only if it
 preserves every proof needed by retained rows. This version keeps the nodes.
+The administrative verifier rebuilds every parent and peak from the complete
+height-zero commitment inventory, compares each still-retained row with its
+domain-and-index-bound leaf, and rejects missing, extra, or altered nodes. It
+does not require a pruned payload to remain in the serving table.
 
 Pre-V3 Rooms have no trusted MMR receipt. They remain readable through the
 existing V1/V2 full-verification and reset fallback. No serving request scans
@@ -72,9 +76,10 @@ new V3 checkpoint and MMR inventory atomically.
 Backup, native restore, and streamed SQLite-to-PostgreSQL transfer include leaf
 indices, MMR receipts, and nodes. Admission verifies uniqueness, coordinate
 alignment, node hashes, receipt roots, and exact source/destination equality
-before the destination serves the Room. The full verifier recomputes both the
-frozen V2 roots and the MMR from ordered retained rows when the complete row set
-is available.
+before the destination serves the Room. When all rows remain, the full verifier
+recomputes every leaf from the ordered row bytes. After retention, it recomputes
+the MMR from the immutable leaf commitments and still verifies every retained
+row against its corresponding leaf.
 
 ## Consequences
 
