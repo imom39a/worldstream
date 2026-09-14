@@ -103,7 +103,7 @@ release_verified_patches_status = "resolved"
 
 [migrations]
 logical_history_id = "worldstream-storage-v1"
-schema_contract_fingerprint = "blake3:4c5ec1d25273f4a7ae1d899a1c7df4655d0d0b1d3a44e73a359adc79800c4398"
+schema_contract_fingerprint = "blake3:3cdc135353791f8a362ecc6da4d08872d4ae2dff28f0b72481f99e9acc05262d"
 schema_contract_fingerprint_status = "implementation_verified"
 direction = "forward_only"
 backend_specific_execution = true
@@ -220,6 +220,12 @@ status = "implementation_verified"
 id = "0017-stream-transfer-v2"
 sqlite_checksum = "blake3:aaa152c1107748f774197bd8a59600150e9d209c7e4eb14ec5e911394b23c3e2"
 postgresql_checksum = "blake3:df27084594ef32d55f5beb6f6e6a5d750bcdd9775296ecbaed7e580e582bf0d4"
+status = "implementation_verified"
+
+[[migrations.entries]]
+id = "0018-checkpoint-operational-witness-v1"
+sqlite_checksum = "blake3:95b31dc300e31bbdafada55d7d7d9f6b3c05d0dd2e067c3f41e3f39a27655847"
+postgresql_checksum = "blake3:d4cb185480765df6970248624e81b37c361cfd7dd2a38b4b3d73a598bc286c08"
 status = "implementation_verified"
 
 [[migrations.entries]]

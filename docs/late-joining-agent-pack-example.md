@@ -21,12 +21,13 @@ These are accepted semantics in
 or an explicitly authorized historical view. It is not a conversation that
 an agent must read before participating.
 
-There is an implementation caveat: the inspected SQLite Activation preparation
-path reaches full-history recovery. Thus the model can receive only a current
-Projection while the server still performs work proportional to history.
-The [primitives proposal](long-running-room-primitives-proposal.md#implementation-findings)
-records that gap. We need to fix server recovery cost independently of model
-context size, preserving the accepted integrity requirements.
+Activation preparation reuses an installed serving trace. After a restart, both
+storage adapters can recover from a verified checkpoint with at most 250 tail
+Transitions; missing or untrusted checkpoints fall back to full Genesis replay.
+The model still receives a bounded current Projection rather than recovery
+history. The remaining resource caveat is operational-witness capture and
+verification, which scales with currently retained operational rows and falls
+back when its canonical witness would exceed 16 MiB.
 
 A new Membership does not inherit another Membership's Cursor, private
 observations, or historical visibility. Its current Projection follows the

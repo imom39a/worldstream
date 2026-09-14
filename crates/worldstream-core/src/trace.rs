@@ -1455,6 +1455,7 @@ impl CoreTraceV1 {
     /// checkpoint is never trusted for lineage: its record, Head, hashes,
     /// materializations, timer ledger, and retained pack are checked before
     /// the first tail reduction.
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn replay_checkpoint_for_recovery(
         registry: &PackRegistryV1,
         genesis_bytes: &[u8],
@@ -1516,7 +1517,7 @@ impl CoreTraceV1 {
                 checkpoint_head.clone(),
             )
         })? != *checkpoint_head.core_state_hash()
-            || hash_activity_state(&checkpoint_head.pack_digest(), &activity_state).map_err(
+            || hash_activity_state(checkpoint_head.pack_digest(), &activity_state).map_err(
                 |error| {
                     ReplayFailureV1::with_head(
                         ReplayFailureClassV1::CanonicalEncoding,
@@ -1526,7 +1527,7 @@ impl CoreTraceV1 {
                 },
             )? != *checkpoint_head.activity_state_hash()
             || hash_authoritative_state(
-                &checkpoint_head.pack_digest(),
+                checkpoint_head.pack_digest(),
                 checkpoint_head.core_state_hash(),
                 checkpoint_head.activity_state_hash(),
             )
@@ -1617,9 +1618,27 @@ impl CoreTraceV1 {
             preparer: transition_preparer,
         };
         let mut steps = Vec::new();
+        let mut frame_heads = checkpoint.observation_frame_heads().clone();
+        if frame_heads.len() != trace.core_state.memberships().len()
+            || trace
+                .core_state
+                .memberships()
+                .keys()
+                .any(|member_id| !frame_heads.contains_key(member_id))
+        {
+            return Err(ReplayFailureV1::with_head(
+                ReplayFailureClassV1::CoreInvariant,
+                "checkpoint observation positions disagree with Memberships".to_owned(),
+                checkpoint_head,
+            ));
+        }
+        let mut observation_consequences = Vec::new();
         for bytes in transition_bytes {
             let last_verified_head = trace.head.clone();
-            trace.replay_stored_transition(bytes, None)?;
+            trace.replay_stored_transition(
+                bytes,
+                Some((&mut frame_heads, &mut observation_consequences)),
+            )?;
             steps.push(ReplayStepV1::transition(&trace, bytes).map_err(|error| {
                 ReplayFailureV1::with_head(
                     ReplayFailureClassV1::CanonicalEncoding,
@@ -1637,7 +1656,7 @@ impl CoreTraceV1 {
             final_state,
             continuation_preparer,
             continuation_trace: trace,
-            observation_consequences: Vec::new(),
+            observation_consequences,
             steps,
             activity_callback_count,
             external_effect_count: 0,
@@ -3164,6 +3183,7 @@ pub struct HistoricalEvidenceReferenceV1 {
 
 impl HistoricalEvidenceReferenceV1 {
     /// Constructs one bounded reference from verified retained metadata.
+    #[must_use]
     pub fn new(
         room_seq: u64,
         transition_id: String,

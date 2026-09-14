@@ -1,17 +1,23 @@
 #![allow(clippy::panic)]
 
-use std::{collections::BTreeMap, fmt::Display, str::FromStr, sync::Arc, thread};
+use std::{
+    collections::BTreeMap, fmt::Display, process::Command, str::FromStr, sync::Arc, thread,
+    time::Instant,
+};
 
 #[cfg(feature = "conformance-tracer")]
 use postgres::{Client, NoTls};
 
 use worldstream_core::{
-    AccessModeV1, AdministrationOperationIdentityV1, CanonicalJsonV1, CoreRoomStateV1, CoreTraceV1,
-    InitialMembershipProposalV1, MembershipStandingV1, MembershipV1, PackGenesisRequestV1,
-    ParticipantActionRequestV1, ParticipantActionV1, PreparedAuthorityWitnessV1,
-    PreparedRoomCommitV1, PreparedRoomCreationV1, PreparedRoomWriteV1, PrincipalKindV1,
-    RecordedStimulusV1, ResolutionStatusV1, RoomCommitResolutionV1, RoomCommitStorageV1,
-    RoomCreationRequestV1, RoomSeedV1, TransitionId, builtin_counter_registry, counter_v2_digest,
+    AccessModeV1, AdministrationOperationIdentityV1, CanonicalJsonV1, CompleteHeadV1,
+    CoreAdministrationRequestV1, CoreChangeSetV1, CoreProposedKindV1, CoreRoomStateV1, CoreTraceV1,
+    InitialMembershipProposalV1, MembershipChangeV1, MembershipStandingV1, MembershipV1,
+    PackGenesisRequestV1, ParticipantActionRequestV1, ParticipantActionV1,
+    PreparedAuthorityWitnessV1, PreparedRoomCommitV1, PreparedRoomCreationV1, PreparedRoomWriteV1,
+    PrincipalKindV1, RecordedStimulusV1, ResolutionStatusV1, RoomCheckpointOperationalWitnessV1,
+    RoomCommitResolutionV1, RoomCommitStorageV1, RoomCreationRequestV1, RoomRecoveryStorageV1,
+    RoomSeedV1, TransitionId, builtin_counter_registry, commit_existing_room, counter_v2_digest,
+    recover_room_from_storage_with_receipt,
 };
 use worldstream_postgres::conformance::{
     ConformanceResolutionKind, ConformanceResolveKind, run_vector,
@@ -32,6 +38,16 @@ const PRINCIPAL: &str = "01ARZ3NDEKTSV4RRFFQ69G5FD0";
 const SERVING_FENCE_ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
 const SERVING_FENCE_MEMBER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB1";
 const SERVING_FENCE_PRINCIPAL: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB2";
+const FULL_RECOVERY_ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FY0";
+const FULL_RECOVERY_MEMBER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FY1";
+const FULL_RECOVERY_PRINCIPAL: &str = "01ARZ3NDEKTSV4RRFFQ69G5FY2";
+const MALFORMED_HEAD_ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FX0";
+const MALFORMED_HEAD_MEMBER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FX1";
+const MALFORMED_HEAD_PRINCIPAL: &str = "01ARZ3NDEKTSV4RRFFQ69G5FX2";
+const MALFORMED_REBUILD_HEAD_ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FW0";
+const MALFORMED_REBUILD_HEAD_MEMBER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FW1";
+const MALFORMED_REBUILD_HEAD_PRINCIPAL: &str = "01ARZ3NDEKTSV4RRFFQ69G5FW2";
+const RECOVERY_SCALE_ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FZ0";
 const SEED: &str = "hex:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 
 fn parsed<T>(value: &str) -> T
@@ -192,6 +208,420 @@ fn prepared_increment_with_frame_head(
         &BTreeMap::from([(parsed(MEMBER), previous_frame_head)]),
     )
     .unwrap_or_else(|error| panic!("seal increment: {error}"))
+}
+
+#[cfg(feature = "conformance-tracer")]
+fn recovery_scale_transition_id(index: u64) -> TransitionId {
+    let mut suffix = [b'0'; 8];
+    let alphabet = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let mut value = index;
+    for byte in suffix.iter_mut().rev() {
+        *byte = alphabet[usize::try_from(value & 31)
+            .unwrap_or_else(|_| panic!("scale transition index exceeds platform capacity"))];
+        value >>= 5;
+    }
+    parsed(&format!(
+        "01ARZ3NDEKTSV4RRFF{}",
+        std::str::from_utf8(&suffix)
+            .unwrap_or_else(|_| panic!("scale transition suffix must be UTF-8"))
+    ))
+}
+
+#[cfg(feature = "conformance-tracer")]
+fn current_rss_bytes() -> Option<u64> {
+    let output = Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let kib = std::str::from_utf8(&output.stdout)
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    kib.checked_mul(1024)
+}
+
+#[cfg(feature = "conformance-tracer")]
+fn requested_recovery_scale_tiers() -> Vec<u64> {
+    let Some(value) = std::env::var_os("WORLDSTREAM_POSTGRES_RECOVERY_SCALES") else {
+        return Vec::new();
+    };
+    let tiers = value
+        .to_string_lossy()
+        .split(',')
+        .map(|tier| {
+            tier.parse::<u64>()
+                .unwrap_or_else(|_| panic!("invalid WORLDSTREAM_POSTGRES_RECOVERY_SCALES tier"))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        tiers == vec![1_000, 10_000] || tiers == vec![1_000, 10_000, 100_000],
+        "the direct scale lane accepts 1k/10k, with 100k supplied by the transfer-backed lane"
+    );
+    tiers
+}
+
+/// Runs the production PostgreSQL store through a long alternating Core
+/// administration lineage.  The Counter fixture intentionally has a small
+/// value domain, so alternating Suspend/Resume provides accepted transitions
+/// without weakening the real retained-pack schema limits.
+#[cfg(feature = "conformance-tracer")]
+#[allow(clippy::too_many_lines)]
+fn qualify_bounded_recovery_scales(
+    runtime: &PostgresRoomStore,
+    runtime_client: &mut Client,
+    tiers: &[u64],
+) {
+    if tiers.is_empty() {
+        return;
+    }
+
+    let (genesis, request, creation_witness, identity) = creation_fixture_for(
+        RECOVERY_SCALE_ROOM,
+        MEMBER,
+        PRINCIPAL,
+        0,
+        "live-recovery-scale",
+    );
+    let (trace_genesis, _, _, _) = creation_fixture_for(
+        RECOVERY_SCALE_ROOM,
+        MEMBER,
+        PRINCIPAL,
+        0,
+        "live-recovery-scale",
+    );
+    runtime
+        .seed_conformance_authority(&creation_witness, true)
+        .unwrap_or_else(|error| panic!("scale creation authority seed: {error:?}"));
+    let administration_witness = PreparedAuthorityWitnessV1::mint_for_conformance(
+        "postgres-recovery-scale-administration",
+        parsed(PRINCIPAL),
+        1,
+        &canonical(br#"{"scope":"core_administration","revoked":false}"#),
+    )
+    .unwrap_or_else(|error| panic!("scale administration authority: {error}"));
+    runtime
+        .seed_conformance_authority(&administration_witness, true)
+        .unwrap_or_else(|error| panic!("scale administration authority seed: {error:?}"));
+    let creation = PreparedRoomCreationV1::from_registry_genesis_for_conformance(
+        identity,
+        &request,
+        creation_witness,
+        genesis,
+    )
+    .unwrap_or_else(|error| panic!("scale creation plan: {error}"));
+    assert!(matches!(
+        runtime.commit(&PreparedRoomWriteV1::from(creation)),
+        RoomCommitResolutionV1::GenesisCreated {
+            status: ResolutionStatusV1::New,
+            ..
+        }
+    ));
+    let mut trace = CoreTraceV1::create_from_retained_for_conformance(trace_genesis)
+        .unwrap_or_else(|error| panic!("scale trace: {error}"));
+    let registry = builtin_counter_registry()
+        .unwrap_or_else(|error| panic!("scale recovery registry: {error}"));
+    let mut transitions_since_fixture_reset = 0_u64;
+
+    for sequence in 1..=*tiers
+        .last()
+        .unwrap_or_else(|| panic!("scale tiers are nonempty"))
+    {
+        let membership = trace
+            .core_state()
+            .membership(&parsed(MEMBER))
+            .unwrap_or_else(|| panic!("scale Member disappeared"))
+            .clone();
+        let suspend = sequence % 2 == 1;
+        let request = CoreAdministrationRequestV1::new(
+            parsed(RECOVERY_SCALE_ROOM),
+            AdministrationOperationIdentityV1 {
+                authenticated_principal: parsed(PRINCIPAL),
+                versioned_operation_kind: worldstream_core::CORE_OPERATION_KIND.to_owned(),
+                idempotency_key: format!("live-recovery-scale-{sequence}"),
+            },
+            if suspend {
+                CoreProposedKindV1::Suspend
+            } else {
+                CoreProposedKindV1::Resume
+            },
+            trace.head().room_seq(),
+            "bounded_recovery_qualification",
+            CoreChangeSetV1::one(if suspend {
+                MembershipChangeV1::suspend(membership)
+            } else {
+                MembershipChangeV1::resume(membership)
+            }),
+        )
+        .unwrap_or_else(|error| panic!("scale administration request {sequence}: {error}"));
+        let frame_heads = trace
+            .core_state()
+            .memberships()
+            .keys()
+            .cloned()
+            .map(|member_id| (member_id, 0))
+            .collect();
+        if tiers.contains(&sequence) {
+            // This qualification measures cold recovery at three exact cuts,
+            // not the cost of producing 400 redundant growing cache rows.
+            // Keep ordinary production commits and checkpoint persistence, but
+            // make only the requested tier commits cadence-due. The schedule
+            // row is disposable cache metadata and is not canonical history.
+            runtime_client
+                .execute(
+                    "UPDATE worldstream_room_snapshot_schedules \
+                     SET transitions_since_snapshot = 249, active_started_at = NULL \
+                     WHERE room_id = $1",
+                    &[&RECOVERY_SCALE_ROOM],
+                )
+                .unwrap_or_else(|error| panic!("arm scale checkpoint at {sequence}: {error}"));
+        }
+        let prepared = PreparedRoomCommitV1::for_core_administration_for_conformance(
+            &trace,
+            &request,
+            parsed("2026-08-15T12:00:00Z"),
+            recovery_scale_transition_id(sequence),
+            worldstream_core::IntegrityGenerationV1::new(1)
+                .unwrap_or_else(|error| panic!("scale integrity generation: {error}")),
+            administration_witness.clone(),
+            &frame_heads,
+        )
+        .unwrap_or_else(|error| panic!("scale administration plan {sequence}: {error}"));
+        let outcome = commit_existing_room(runtime, &mut trace, prepared);
+        assert!(matches!(
+            outcome.resolution(),
+            RoomCommitResolutionV1::TransitionCommitted {
+                status: ResolutionStatusV1::New,
+                ..
+            }
+        ));
+
+        if !tiers.contains(&sequence) {
+            transitions_since_fixture_reset += 1;
+            if transitions_since_fixture_reset == 249 {
+                runtime_client
+                    .execute(
+                        "UPDATE worldstream_room_snapshot_schedules \
+                         SET transitions_since_snapshot = 0, active_started_at = NULL \
+                         WHERE room_id = $1",
+                        &[&RECOVERY_SCALE_ROOM],
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("suppress intermediate scale checkpoint at {sequence}: {error}")
+                    });
+                transitions_since_fixture_reset = 0;
+            }
+            continue;
+        }
+        transitions_since_fixture_reset = 0;
+        let candidate = RoomRecoveryStorageV1::inspect_recovery_candidate(
+            runtime,
+            &parsed(RECOVERY_SCALE_ROOM),
+        )
+        .unwrap_or_else(|error| panic!("scale bounded candidate {sequence}: {error:?}"))
+        .unwrap_or_else(|| panic!("scale Room disappeared at {sequence}"));
+        assert!(candidate.has_checkpoint());
+        assert!(candidate.tail_transition_count() <= 250);
+        assert_eq!(candidate.tail_transition_count(), 0);
+
+        let recovery_started = Instant::now();
+        let execution = recover_room_from_storage_with_receipt(
+            runtime,
+            &registry,
+            &parsed(RECOVERY_SCALE_ROOM),
+        )
+        .unwrap_or_else(|error| panic!("scale recovery {sequence}: {error:?}"))
+        .unwrap_or_else(|| panic!("scale Room disappeared during recovery {sequence}"));
+        let recovery_ms = recovery_started.elapsed().as_millis();
+        let receipt = execution.receipt();
+        assert!(receipt.used_checkpoint());
+        assert_eq!(
+            receipt.checkpoint_room_seq().map(|value| value.get()),
+            Some(sequence)
+        );
+        assert_eq!(receipt.prefix_transition_records_delivered(), 0);
+        assert_eq!(receipt.prefix_transitions_skipped(), sequence);
+        assert_eq!(
+            receipt.tail_transition_records_delivered(),
+            u64::try_from(candidate.tail_transition_count())
+                .unwrap_or_else(|_| panic!("scale tail exceeds u64"))
+        );
+        let recovered = execution.into_trace();
+        assert_eq!(recovered.head(), trace.head());
+        assert_eq!(
+            recovered
+                .core_state()
+                .canonical_bytes()
+                .unwrap_or_else(|error| panic!("scale recovered Core bytes: {error}")),
+            trace
+                .core_state()
+                .canonical_bytes()
+                .unwrap_or_else(|error| panic!("scale expected Core bytes: {error}"))
+        );
+        assert_eq!(
+            recovered
+                .activity_state()
+                .to_bytes()
+                .unwrap_or_else(|error| panic!("scale recovered Activity bytes: {error}")),
+            trace
+                .activity_state()
+                .to_bytes()
+                .unwrap_or_else(|error| panic!("scale expected Activity bytes: {error}"))
+        );
+        assert_eq!(
+            recovered.activity_callback_count(),
+            usize::try_from(receipt.tail_transition_records_delivered())
+                .unwrap_or_else(|_| panic!("scale tail exceeds platform capacity"))
+        );
+
+        let checkpoint_row = runtime_client
+            .query_one(
+                "SELECT snapshots.room_seq, snapshots.complete_head_bytes, witness.witness_hash, witness.witness_bytes \
+                 FROM worldstream_room_snapshots AS snapshots \
+                 JOIN worldstream_room_snapshot_operational_witnesses AS witness \
+                   ON witness.room_id = snapshots.room_id AND witness.room_seq = snapshots.room_seq \
+                 WHERE snapshots.room_id = $1 ORDER BY snapshots.room_seq DESC LIMIT 1",
+                &[&RECOVERY_SCALE_ROOM],
+            )
+            .unwrap_or_else(|error| panic!("scale checkpoint witness {sequence}: {error}"));
+        let checkpoint_seq: i64 = checkpoint_row.get(0);
+        let checkpoint_head_bytes: Vec<u8> = checkpoint_row.get(1);
+        let witness_hash: Vec<u8> = checkpoint_row.get(2);
+        let witness_bytes: Vec<u8> = checkpoint_row.get(3);
+        let checkpoint_head =
+            CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&checkpoint_head_bytes)
+                .unwrap_or_else(|error| panic!("scale checkpoint Head {sequence}: {error}"));
+        let witness = RoomCheckpointOperationalWitnessV1::from_canonical_bytes(
+            &witness_bytes,
+            &checkpoint_head,
+        )
+        .unwrap_or_else(|error| panic!("scale operational witness {sequence}: {error:?}"));
+        assert_eq!(u64::try_from(checkpoint_seq).ok(), Some(sequence));
+        assert_eq!(&checkpoint_head, trace.head());
+        assert_eq!(witness.checkpoint_head(), trace.head());
+        assert_eq!(
+            witness_hash.as_slice(),
+            worldstream_core::Blake3DigestV1::hash(&witness_bytes).as_bytes()
+        );
+        assert_eq!(
+            witness
+                .canonical_bytes()
+                .unwrap_or_else(|error| panic!("scale canonical witness {sequence}: {error:?}")),
+            witness_bytes
+        );
+
+        let counts = runtime_client
+            .query_one(
+                "SELECT \
+                   (SELECT count(*) FROM worldstream_transitions WHERE room_id = $1), \
+                   (SELECT count(*) FROM worldstream_timers WHERE room_id = $1), \
+                   (SELECT count(*) FROM worldstream_frames WHERE room_id = $1), \
+                   (SELECT count(*) FROM worldstream_observation_consequences WHERE room_id = $1), \
+                   (SELECT count(*) FROM worldstream_activation_decisions WHERE room_id = $1), \
+                   (SELECT count(*) FROM worldstream_members WHERE room_id = $1), \
+                   (SELECT count(*) FROM worldstream_semantic_receipts WHERE room_id = $1)",
+                &[&RECOVERY_SCALE_ROOM],
+            )
+            .unwrap_or_else(|error| panic!("scale operational counts {sequence}: {error}"));
+        let transition_rows: i64 = counts.get(0);
+        let timer_rows: i64 = counts.get(1);
+        let frame_rows: i64 = counts.get(2);
+        let consequence_rows: i64 = counts.get(3);
+        let activation_rows: i64 = counts.get(4);
+        let membership_rows: i64 = counts.get(5);
+        let semantic_receipt_rows: i64 = counts.get(6);
+        assert_eq!(u64::try_from(transition_rows).ok(), Some(sequence));
+        assert_eq!(
+            usize::try_from(timer_rows).ok(),
+            Some(witness.timers().len())
+        );
+        assert_eq!(
+            usize::try_from(frame_rows).ok(),
+            Some(witness.observation_frames().len())
+        );
+        assert_eq!(
+            usize::try_from(consequence_rows).ok(),
+            Some(witness.observation_consequences().len())
+        );
+        assert_eq!(
+            usize::try_from(activation_rows).ok(),
+            Some(witness.activation_decisions().len())
+        );
+        assert_eq!(
+            usize::try_from(membership_rows).ok(),
+            Some(witness.membership_generations().len())
+        );
+        let membership_rows = runtime_client
+            .query(
+                "SELECT member_id, frame_head, membership_generation \
+                 FROM worldstream_members WHERE room_id = $1 ORDER BY member_id",
+                &[&RECOVERY_SCALE_ROOM],
+            )
+            .unwrap_or_else(|error| panic!("scale membership witness rows {sequence}: {error}"));
+        let membership_row_count = membership_rows.len();
+        for membership in membership_rows {
+            let member_id: String = membership.get(0);
+            let frame_head: i64 = membership.get(1);
+            let generation: i64 = membership.get(2);
+            assert_eq!(
+                witness.membership_generations().get(&member_id),
+                Some(&generation)
+            );
+            assert_eq!(
+                witness.observation_frame_heads().get(&parsed(&member_id)),
+                Some(
+                    &u64::try_from(frame_head)
+                        .unwrap_or_else(|_| { panic!("scale frame Head cannot be negative") })
+                )
+            );
+        }
+        assert!(semantic_receipt_rows >= transition_rows);
+        println!(
+            "LIVE_POSTGRES_RECOVERY_SCALE={}",
+            serde_json::json!({
+                "history_transition_rows": transition_rows,
+                "head_room_seq": sequence,
+                "checkpoint_room_seq": checkpoint_seq,
+                "checkpoint_tail_transition_count": candidate.tail_transition_count(),
+                "recovery_execution_path": "checkpoint",
+                "checkpoint_boundary_transition_records_read_by_adapter": 1,
+                "prefix_transition_records_delivered_to_core": receipt.prefix_transition_records_delivered(),
+                "tail_transition_records_delivered_to_core": receipt.tail_transition_records_delivered(),
+                "prefix_transition_range_reads": 0,
+                "prefix_transitions_skipped": receipt.prefix_transitions_skipped(),
+                "transition_records_read_by_adapter_total": 1_u64
+                    .checked_add(receipt.tail_transition_records_delivered())
+                    .unwrap_or_else(|| panic!("scale Transition read count overflow")),
+                "checkpoint_witness_bytes": witness_bytes.len(),
+                "checkpoint_witness_under_16_mib": witness_bytes.len() <= 16 * 1024 * 1024,
+                "reducer_callback_count": recovered.activity_callback_count(),
+                "recovery_ms": recovery_ms,
+                "rss_bytes": current_rss_bytes(),
+                "state": {
+                    "head_exact": true,
+                    "core_exact": true,
+                    "activity_exact": true,
+                    "checkpoint_hash_exact": true,
+                },
+                "operational_witness": {
+                    "timers": {"live_rows": timer_rows, "witness_entries": witness.timers().len(), "exact": true},
+                    "frames": {"live_rows": frame_rows, "witness_entries": witness.observation_frames().len(), "exact": true},
+                    "consequences": {"live_rows": consequence_rows, "witness_entries": witness.observation_consequences().len(), "exact": true},
+                    "membership_generations": {"live_rows": membership_row_count, "witness_entries": witness.membership_generations().len(), "exact": true},
+                    "frame_heads": {"live_rows": membership_row_count, "witness_entries": witness.observation_frame_heads().len(), "exact": true},
+                    "activation_decisions": {"live_rows": activation_rows, "witness_entries": witness.activation_decisions().len(), "exact": true},
+                },
+                "semantic_receipts": {
+                    "live_rows": semantic_receipt_rows,
+                    "read_by_bounded_recovery": false,
+                },
+                "qualification_checkpoint_schedule": "requested_tiers_only",
+            })
+        );
+    }
 }
 
 #[test]
@@ -688,7 +1118,7 @@ fn interrupted_migration_restarts_without_duplicate_history() {
 
 #[test]
 fn kernel_conformance_migration_is_reviewed_and_forward_only() {
-    assert_eq!(migration_history().len(), 17);
+    assert_eq!(migration_history().len(), 18);
     assert_eq!(
         migration_history()[2].id,
         worldstream_postgres::KERNEL_CONFORMANCE_MIGRATION_ID
@@ -696,6 +1126,10 @@ fn kernel_conformance_migration_is_reviewed_and_forward_only() {
     assert!(migration_sql().contains("worldstream_timers"));
     assert!(worldstream_postgres::MIGRATION_0003_SQL.contains("worldstream_activation_intents"));
     assert!(worldstream_postgres::MIGRATION_0003_SQL.contains("worldstream_room_snapshots"));
+    assert!(
+        worldstream_postgres::MIGRATION_0018_SQL
+            .contains("worldstream_room_snapshot_operational_witnesses")
+    );
     assert!(worldstream_postgres::MIGRATION_0003_SQL.contains("worldstream_semantic_receipts"));
     assert!(
         worldstream_postgres::MIGRATION_0004_SQL
@@ -828,6 +1262,312 @@ fn live_serving_fence_rejects_corrupt_current_materialization_and_membership() {
         )
         .unwrap_or_else(|error| panic!("restore current materialization: {error}"));
     println!("LIVE_POSTGRES_SERVING_FENCE=PASS current-record+materialization+membership");
+}
+
+#[cfg(feature = "conformance-tracer")]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn live_full_recovery_corruption_quarantines_and_stale_head_is_fenced() {
+    let (Some(admin_dsn), Some(runtime_dsn)) = (
+        std::env::var_os("WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN"),
+        std::env::var_os("WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN"),
+    ) else {
+        println!("LIVE_POSTGRES_RECOVERY_FALLBACK=SKIP reason=dsn_unset");
+        return;
+    };
+    let admin = PostgresAdmin::new(
+        PostgresConnectionConfig::direct_admin(admin_dsn.to_string_lossy())
+            .unwrap_or_else(|error| panic!("recovery-fallback admin config: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("recovery-fallback admin handle: {error}"));
+    admin
+        .migrate()
+        .unwrap_or_else(|error| panic!("recovery-fallback migration: {error}"));
+    let runtime = PostgresRoomStore::new(
+        PostgresConnectionConfig::runtime(
+            runtime_dsn.to_string_lossy(),
+            PostgresConnectionPath::Direct,
+        )
+        .unwrap_or_else(|error| panic!("recovery-fallback runtime config: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("recovery-fallback runtime handle: {error}"));
+    let (genesis, request, witness, identity) = creation_fixture_for(
+        FULL_RECOVERY_ROOM,
+        FULL_RECOVERY_MEMBER,
+        FULL_RECOVERY_PRINCIPAL,
+        0,
+        "live-recovery-fallback",
+    );
+    runtime
+        .seed_conformance_authority(&witness, true)
+        .unwrap_or_else(|error| panic!("recovery-fallback authority: {error:?}"));
+    let creation = PreparedRoomCreationV1::from_registry_genesis_for_conformance(
+        identity, &request, witness, genesis,
+    )
+    .unwrap_or_else(|error| panic!("recovery-fallback creation plan: {error}"));
+    assert!(matches!(
+        runtime.commit(&PreparedRoomWriteV1::from(creation)),
+        RoomCommitResolutionV1::GenesisCreated {
+            status: ResolutionStatusV1::New,
+            ..
+        }
+    ));
+
+    let (stale_genesis, _, _, _) = creation_fixture_for(
+        FULL_RECOVERY_ROOM,
+        FULL_RECOVERY_MEMBER,
+        FULL_RECOVERY_PRINCIPAL,
+        1,
+        "live-recovery-fallback-stale",
+    );
+    let stale_trace = CoreTraceV1::create_from_retained_for_conformance(stale_genesis)
+        .unwrap_or_else(|error| panic!("recovery-fallback stale trace: {error}"));
+    assert!(matches!(
+        worldstream_core::RoomRecoveryStorageV1::record_recovery_failure(
+            &runtime,
+            &parsed(FULL_RECOVERY_ROOM),
+            stale_trace.head(),
+            worldstream_core::IntegrityGenerationV1::new(1)
+                .unwrap_or_else(|error| panic!("recovery-fallback generation: {error}")),
+            worldstream_core::RecoveryIntegrityDispositionV1::Quarantined,
+        ),
+        Err(worldstream_core::RoomRecoveryErrorV1::ConcurrentChange)
+    ));
+
+    let registry = builtin_counter_registry()
+        .unwrap_or_else(|error| panic!("recovery-fallback registry: {error}"));
+    let mut client = Client::connect(&admin_dsn.to_string_lossy(), NoTls)
+        .unwrap_or_else(|error| panic!("recovery-fallback admin client: {error}"));
+
+    assert_eq!(
+        admin
+            .corrupt_snapshot_cache_for_conformance(FULL_RECOVERY_ROOM)
+            .unwrap_or_else(|error| panic!("corrupt disposable snapshot: {error}")),
+        1
+    );
+    let snapshot_fallback = runtime
+        .recover_room(&registry, FULL_RECOVERY_ROOM)
+        .unwrap_or_else(|error| panic!("recover through corrupt snapshot fallback: {error}"))
+        .unwrap_or_else(|| panic!("corrupt snapshot fallback returned no room"));
+    assert_eq!(snapshot_fallback.head().room_seq().get(), 0);
+    let integrity_after_snapshot_fallback = client
+        .query_one(
+            "SELECT integrity_status, integrity_generation \
+             FROM worldstream_room_roots WHERE room_id = $1",
+            &[&FULL_RECOVERY_ROOM],
+        )
+        .unwrap_or_else(|error| panic!("read snapshot-fallback integrity: {error}"));
+    assert_eq!(
+        integrity_after_snapshot_fallback.get::<_, String>(0),
+        "healthy"
+    );
+    assert_eq!(integrity_after_snapshot_fallback.get::<_, i64>(1), 1);
+
+    client
+        .execute(
+            "DELETE FROM worldstream_room_snapshot_operational_witnesses WHERE room_id = $1",
+            &[&FULL_RECOVERY_ROOM],
+        )
+        .unwrap_or_else(|error| panic!("delete recovery-fallback snapshot witness: {error}"));
+    client
+        .execute(
+            "DELETE FROM worldstream_room_snapshots WHERE room_id = $1",
+            &[&FULL_RECOVERY_ROOM],
+        )
+        .unwrap_or_else(|error| panic!("delete recovery-fallback snapshot: {error}"));
+    client
+        .execute(
+            "DELETE FROM worldstream_room_snapshot_schedules WHERE room_id = $1",
+            &[&FULL_RECOVERY_ROOM],
+        )
+        .unwrap_or_else(|error| panic!("delete recovery-fallback snapshot schedule: {error}"));
+    client
+        .execute(
+            "DELETE FROM worldstream_materializations WHERE room_id = $1",
+            &[&FULL_RECOVERY_ROOM],
+        )
+        .unwrap_or_else(|error| panic!("delete recovery-fallback materialization: {error}"));
+    let rebuilt = runtime
+        .recover_room(&registry, FULL_RECOVERY_ROOM)
+        .unwrap_or_else(|error| panic!("recover missing materialization: {error}"))
+        .unwrap_or_else(|| panic!("recover missing materialization returned no room"));
+    let rebuilt_materialization = client
+        .query_one(
+            "SELECT core_state_bytes, activity_state_bytes \
+             FROM worldstream_materializations WHERE room_id = $1",
+            &[&FULL_RECOVERY_ROOM],
+        )
+        .unwrap_or_else(|error| panic!("read rebuilt materialization: {error}"));
+    assert_eq!(
+        rebuilt_materialization.get::<_, Vec<u8>>(0),
+        rebuilt
+            .core_state()
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("encode rebuilt Core state: {error}"))
+    );
+    assert_eq!(
+        rebuilt_materialization.get::<_, Vec<u8>>(1),
+        rebuilt
+            .activity_state()
+            .to_bytes()
+            .unwrap_or_else(|error| panic!("encode rebuilt Activity state: {error}"))
+    );
+
+    let genesis_bytes: Vec<u8> = client
+        .query_one(
+            "SELECT genesis_bytes FROM worldstream_genesis WHERE room_id = $1",
+            &[&FULL_RECOVERY_ROOM],
+        )
+        .unwrap_or_else(|error| panic!("read recovery-fallback Genesis: {error}"))
+        .get(0);
+    let malformed_genesis = b"{}".to_vec();
+    client
+        .execute(
+            "UPDATE worldstream_genesis SET genesis_bytes = $1 WHERE room_id = $2",
+            &[&malformed_genesis, &FULL_RECOVERY_ROOM],
+        )
+        .unwrap_or_else(|error| panic!("corrupt recovery-fallback Genesis: {error}"));
+    assert!(matches!(
+        runtime.recover_room(&registry, FULL_RECOVERY_ROOM),
+        Err(worldstream_core::RoomRecoveryErrorV1::Corrupt)
+    ));
+    let integrity = client
+        .query_one(
+            "SELECT integrity_status, integrity_generation FROM worldstream_room_roots WHERE room_id = $1",
+            &[&FULL_RECOVERY_ROOM],
+        )
+        .unwrap_or_else(|error| panic!("read recovery-fallback integrity: {error}"));
+    assert_eq!(integrity.get::<_, String>(0), "quarantined");
+    assert_eq!(integrity.get::<_, i64>(1), 2);
+    client
+        .execute(
+            "UPDATE worldstream_genesis SET genesis_bytes = $1 WHERE room_id = $2",
+            &[&genesis_bytes, &FULL_RECOVERY_ROOM],
+        )
+        .unwrap_or_else(|error| panic!("restore recovery-fallback Genesis: {error}"));
+
+    let (malformed_genesis, malformed_request, malformed_witness, malformed_identity) =
+        creation_fixture_for(
+            MALFORMED_HEAD_ROOM,
+            MALFORMED_HEAD_MEMBER,
+            MALFORMED_HEAD_PRINCIPAL,
+            0,
+            "live-recovery-malformed-head",
+        );
+    runtime
+        .seed_conformance_authority(&malformed_witness, true)
+        .unwrap_or_else(|error| panic!("malformed-head authority: {error:?}"));
+    let malformed_creation = PreparedRoomCreationV1::from_registry_genesis_for_conformance(
+        malformed_identity,
+        &malformed_request,
+        malformed_witness,
+        malformed_genesis,
+    )
+    .unwrap_or_else(|error| panic!("malformed-head creation plan: {error}"));
+    assert!(matches!(
+        runtime.commit(&PreparedRoomWriteV1::from(malformed_creation)),
+        RoomCommitResolutionV1::GenesisCreated {
+            status: ResolutionStatusV1::New,
+            ..
+        }
+    ));
+    client
+        .execute(
+            "UPDATE worldstream_room_roots SET head_bytes = '{}'::bytea WHERE room_id = $1",
+            &[&MALFORMED_HEAD_ROOM],
+        )
+        .unwrap_or_else(|error| panic!("corrupt recovery Head: {error}"));
+    assert!(matches!(
+        runtime.recover_room(&registry, MALFORMED_HEAD_ROOM),
+        Err(worldstream_core::RoomRecoveryErrorV1::Corrupt)
+    ));
+    let malformed_integrity = client
+        .query_one(
+            "SELECT integrity_status, integrity_generation \
+             FROM worldstream_room_roots WHERE room_id = $1",
+            &[&MALFORMED_HEAD_ROOM],
+        )
+        .unwrap_or_else(|error| panic!("read malformed-head integrity: {error}"));
+    assert_eq!(malformed_integrity.get::<_, String>(0), "quarantined");
+    assert_eq!(malformed_integrity.get::<_, i64>(1), 2);
+
+    println!(
+        "LIVE_POSTGRES_RECOVERY_FALLBACK=PASS \
+         corrupt-snapshot-full-fallback+missing-materialization-rebuild+malformed-head-quarantine+corrupt-full-history+stale-head-fence"
+    );
+}
+
+#[cfg(feature = "conformance-tracer")]
+#[test]
+fn live_checkpoint_rebuild_malformed_head_quarantines() {
+    let (Some(admin_dsn), Some(runtime_dsn)) = (
+        std::env::var_os("WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN"),
+        std::env::var_os("WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN"),
+    ) else {
+        println!("LIVE_POSTGRES_REBUILD_MALFORMED_HEAD=SKIP reason=dsn_unset");
+        return;
+    };
+    let admin = PostgresAdmin::new(
+        PostgresConnectionConfig::direct_admin(admin_dsn.to_string_lossy())
+            .unwrap_or_else(|error| panic!("rebuild-malformed-head admin config: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("rebuild-malformed-head admin handle: {error}"));
+    admin
+        .migrate()
+        .unwrap_or_else(|error| panic!("rebuild-malformed-head migration: {error}"));
+    let runtime = PostgresRoomStore::new(
+        PostgresConnectionConfig::runtime(
+            runtime_dsn.to_string_lossy(),
+            PostgresConnectionPath::Direct,
+        )
+        .unwrap_or_else(|error| panic!("rebuild-malformed-head runtime config: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("rebuild-malformed-head runtime handle: {error}"));
+    let (genesis, request, witness, identity) = creation_fixture_for(
+        MALFORMED_REBUILD_HEAD_ROOM,
+        MALFORMED_REBUILD_HEAD_MEMBER,
+        MALFORMED_REBUILD_HEAD_PRINCIPAL,
+        0,
+        "live-rebuild-malformed-head",
+    );
+    runtime
+        .seed_conformance_authority(&witness, true)
+        .unwrap_or_else(|error| panic!("rebuild-malformed-head authority: {error:?}"));
+    let creation = PreparedRoomCreationV1::from_registry_genesis_for_conformance(
+        identity, &request, witness, genesis,
+    )
+    .unwrap_or_else(|error| panic!("rebuild-malformed-head creation plan: {error}"));
+    assert!(matches!(
+        runtime.commit(&PreparedRoomWriteV1::from(creation)),
+        RoomCommitResolutionV1::GenesisCreated {
+            status: ResolutionStatusV1::New,
+            ..
+        }
+    ));
+    let mut client = Client::connect(&admin_dsn.to_string_lossy(), NoTls)
+        .unwrap_or_else(|error| panic!("rebuild-malformed-head admin client: {error}"));
+    client
+        .execute(
+            "UPDATE worldstream_room_roots SET head_bytes = '{}'::bytea WHERE room_id = $1",
+            &[&MALFORMED_REBUILD_HEAD_ROOM],
+        )
+        .unwrap_or_else(|error| panic!("corrupt checkpoint-rebuild Head: {error}"));
+    let registry = builtin_counter_registry()
+        .unwrap_or_else(|error| panic!("rebuild-malformed-head registry: {error}"));
+    assert!(matches!(
+        runtime.rebuild_verified_recovery_checkpoint(&registry, MALFORMED_REBUILD_HEAD_ROOM),
+        Err(worldstream_core::RoomRecoveryErrorV1::Corrupt)
+    ));
+    let integrity = client
+        .query_one(
+            "SELECT integrity_status, integrity_generation \
+             FROM worldstream_room_roots WHERE room_id = $1",
+            &[&MALFORMED_REBUILD_HEAD_ROOM],
+        )
+        .unwrap_or_else(|error| panic!("read rebuild-malformed-head integrity: {error}"));
+    assert_eq!(integrity.get::<_, String>(0), "quarantined");
+    assert_eq!(integrity.get::<_, i64>(1), 2);
+    println!("LIVE_POSTGRES_REBUILD_MALFORMED_HEAD=PASS exact-raw-fence+quarantine");
 }
 
 #[cfg(feature = "conformance-tracer")]
@@ -1173,6 +1913,158 @@ fn live_direct_runtime_and_optional_pooler_conformance() {
     println!("LIVE_POSTGRES=PASS runtime=direct authority-fence=known-absent");
     println!(
         "LIVE_POSTGRES=PASS normalized=create+commit+duplicate+conflict+stale+fence+rollback+unknown-resolution"
+    );
+
+    let bounded =
+        <PostgresRoomStore as worldstream_core::RoomRecoveryStorageV1>::inspect_recovery_candidate(
+            &runtime,
+            &parsed(ROOM),
+        )
+        .unwrap_or_else(|error| panic!("live bounded recovery candidate: {error:?}"))
+        .unwrap_or_else(|| panic!("live bounded recovery Room disappeared"));
+    assert!(bounded.has_checkpoint());
+    assert_eq!(bounded.tail_transition_count(), 2);
+    let recovery_registry = builtin_counter_registry()
+        .unwrap_or_else(|error| panic!("live recovery registry: {error}"));
+    let recovered = runtime
+        .recover_room(&recovery_registry, ROOM)
+        .unwrap_or_else(|error| panic!("live bounded checkpoint recovery: {error:?}"))
+        .unwrap_or_else(|| panic!("live bounded checkpoint Room disappeared"));
+    assert_eq!(recovered.head().room_seq().get(), 2);
+    assert!(recovered.activity_callback_count() > 0);
+
+    let witness_row = runtime_client
+        .query_one(
+            "SELECT witness_hash, witness_bytes \
+             FROM worldstream_room_snapshot_operational_witnesses \
+             WHERE room_id = $1 AND room_seq = 0",
+            &[&ROOM],
+        )
+        .unwrap_or_else(|error| panic!("read live checkpoint witness: {error}"));
+    let witness_hash: Vec<u8> = witness_row.get(0);
+    let witness_bytes: Vec<u8> = witness_row.get(1);
+    let malformed_witness = br"{}".to_vec();
+    let malformed_hash = worldstream_core::Blake3DigestV1::hash(&malformed_witness);
+    runtime_client
+        .execute(
+            "UPDATE worldstream_room_snapshot_operational_witnesses \
+             SET witness_hash = $1, witness_bytes = $2 \
+             WHERE room_id = $3 AND room_seq = 0",
+            &[
+                &malformed_hash.as_bytes().as_slice(),
+                &malformed_witness,
+                &ROOM,
+            ],
+        )
+        .unwrap_or_else(|error| panic!("tamper live checkpoint witness: {error}"));
+    let fallback =
+        <PostgresRoomStore as worldstream_core::RoomRecoveryStorageV1>::inspect_recovery_candidate(
+            &runtime,
+            &parsed(ROOM),
+        )
+        .unwrap_or_else(|error| panic!("live malformed-witness fallback: {error:?}"))
+        .unwrap_or_else(|| panic!("live malformed-witness Room disappeared"));
+    assert!(!fallback.has_checkpoint());
+    assert_eq!(fallback.tail_transition_count(), 2);
+    runtime_client
+        .execute(
+            "UPDATE worldstream_room_snapshot_operational_witnesses \
+             SET witness_hash = $1, witness_bytes = $2 \
+             WHERE room_id = $3 AND room_seq = 0",
+            &[&witness_hash, &witness_bytes, &ROOM],
+        )
+        .unwrap_or_else(|error| panic!("restore live checkpoint witness: {error}"));
+
+    let mut forged_witness: serde_json::Value = serde_json::from_slice(&witness_bytes)
+        .unwrap_or_else(|error| panic!("decode live checkpoint witness: {error}"));
+    assert_eq!(
+        forged_witness["membership_generations"][MEMBER].as_i64(),
+        Some(1)
+    );
+    forged_witness["membership_generations"][MEMBER] = serde_json::Value::from(2);
+    let forged_json = serde_json::to_vec(&forged_witness)
+        .unwrap_or_else(|error| panic!("serialize forged live checkpoint witness: {error}"));
+    let forged_bytes = CanonicalJsonV1::parse(&forged_json)
+        .unwrap_or_else(|error| panic!("canonicalize forged live checkpoint witness: {error}"))
+        .to_bytes()
+        .unwrap_or_else(|error| panic!("encode forged live checkpoint witness: {error}"));
+    let forged_hash = worldstream_core::Blake3DigestV1::hash(&forged_bytes);
+    runtime_client
+        .execute(
+            "UPDATE worldstream_room_snapshot_operational_witnesses \
+             SET witness_hash = $1, witness_bytes = $2 \
+             WHERE room_id = $3 AND room_seq = 0",
+            &[&forged_hash.as_bytes().as_slice(), &forged_bytes, &ROOM],
+        )
+        .unwrap_or_else(|error| panic!("install forged live checkpoint witness: {error}"));
+    let forged_candidate =
+        <PostgresRoomStore as worldstream_core::RoomRecoveryStorageV1>::inspect_recovery_candidate(
+            &runtime,
+            &parsed(ROOM),
+        )
+        .unwrap_or_else(|error| panic!("inspect forged live checkpoint: {error:?}"))
+        .unwrap_or_else(|| panic!("live forged-witness Room disappeared"));
+    assert!(forged_candidate.has_checkpoint());
+    let recovered_after_forgery = runtime
+        .recover_room(&recovery_registry, ROOM)
+        .unwrap_or_else(|error| panic!("live forged-witness full fallback: {error:?}"))
+        .unwrap_or_else(|| panic!("live forged-witness fallback Room disappeared"));
+    assert_eq!(recovered_after_forgery.head().room_seq().get(), 2);
+    let integrity = runtime_client
+        .query_one(
+            "SELECT integrity_status, integrity_generation \
+             FROM worldstream_room_roots WHERE room_id = $1",
+            &[&ROOM],
+        )
+        .unwrap_or_else(|error| panic!("read post-fallback live integrity: {error}"));
+    assert_eq!(integrity.get::<_, String>(0), "healthy");
+    assert_eq!(integrity.get::<_, i64>(1), 1);
+    runtime_client
+        .execute(
+            "UPDATE worldstream_room_snapshot_operational_witnesses \
+             SET witness_hash = $1, witness_bytes = $2 \
+             WHERE room_id = $3 AND room_seq = 0",
+            &[&witness_hash, &witness_bytes, &ROOM],
+        )
+        .unwrap_or_else(|error| panic!("restore forged live checkpoint witness: {error}"));
+
+    let stale_recovery_head = trace.head().clone();
+    assert_eq!(stale_recovery_head.room_seq().get(), 0);
+    assert!(matches!(
+        worldstream_core::RoomRecoveryStorageV1::record_recovery_failure(
+            &runtime,
+            &parsed(ROOM),
+            &stale_recovery_head,
+            worldstream_core::IntegrityGenerationV1::new(1)
+                .unwrap_or_else(|error| panic!("live integrity generation: {error}")),
+            worldstream_core::RecoveryIntegrityDispositionV1::Quarantined,
+        ),
+        Err(worldstream_core::RoomRecoveryErrorV1::ConcurrentChange)
+    ));
+    let post_race_integrity = runtime_client
+        .query_one(
+            "SELECT head_bytes, integrity_status, integrity_generation \
+             FROM worldstream_room_roots WHERE room_id = $1",
+            &[&ROOM],
+        )
+        .unwrap_or_else(|error| panic!("read post-race live integrity: {error}"));
+    assert_eq!(
+        post_race_integrity.get::<_, Vec<u8>>(0),
+        recovered_after_forgery
+            .head()
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("post-race Head bytes: {error}"))
+    );
+    assert_eq!(post_race_integrity.get::<_, String>(1), "healthy");
+    assert_eq!(post_race_integrity.get::<_, i64>(2), 1);
+    println!(
+        "LIVE_POSTGRES=PASS recovery=checkpoint-tail-2+operational-guard+malformed-witness-fallback+canonical-witness-full-fallback+stale-head-failure-fence"
+    );
+
+    qualify_bounded_recovery_scales(
+        &runtime,
+        &mut runtime_client,
+        &requested_recovery_scale_tiers(),
     );
 
     let Some(pooler_dsn) = std::env::var_os("WORLDSTREAM_POSTGRES_TEST_POOLER_DSN") else {

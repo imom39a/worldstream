@@ -283,11 +283,13 @@ in its Activity Pack and choose any qualified external Runner.
 
 ## What to build and measure next
 
-1. **Close bounded-cost gaps under current contracts.** Activation preparation
-   currently reaches full-history recovery, retained context can collect an
-   entire cursor-to-head range, and recovery replays from Genesis. Establish
-   shared current-executor use, total context limits, and an explicitly
-   verified checkpoint/recovery contract. Checkpoints must not silently weaken
+1. **Close the remaining bounded-cost gaps under current contracts.** Activation
+   preparation reuses a serving trace when one is installed. Cold recovery now
+   uses verified checkpoints with at most 250 tail Transitions for both storage
+   adapters, with full Genesis replay as the fail-closed fallback. Retained
+   context can still collect a large cursor-to-head range, and operational
+   witness work scales with currently retained operational rows. Establish
+   total context limits and compact operational accumulators without weakening
    the accepted corruption-detection requirements.
 2. **Build one reference Activity Pack and replaceable Runner integration.**
    Use a nonterminal changing-world scenario with source revisions, attributed

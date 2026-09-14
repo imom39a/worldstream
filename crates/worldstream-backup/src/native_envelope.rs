@@ -56,7 +56,7 @@ const REQUIRED_COVERAGE_TABLES: [&str; 19] = [
 ];
 
 const TRUSTED_COMPATIBILITY_JSON_DIGEST: &str =
-    "f2d51e83fec8d82d695edfc423aecfea7666b0ae5cc8046d3b827b1755fb20bd";
+    "195eaa6343ff7624f83fed65f36dbdcf91e49417920b627a35eae359d58fed10";
 
 type RequestKey = (NativeSqliteRequestLedgerV1, Vec<u8>);
 type RequestMap = BTreeMap<RequestKey, Vec<u8>>;

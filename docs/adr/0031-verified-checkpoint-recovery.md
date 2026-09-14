@@ -24,7 +24,10 @@ succeed in one read transaction:
 * its Core and Activity bytes are canonical, hash to that Head, and agree with
   the canonical Genesis/Transition row at the checkpoint sequence;
 * the retained pack revision lock agrees with Genesis and the current Head;
-* the complete Timer generation ledger is canonical and internally ordered;
+* a canonical, hash-bound operational witness at the same checkpoint cut
+  contains the complete Timer ledger, retained observation Frames and
+  consequences, per-Membership generations and frame Heads, and Activation
+  decisions;
 * the immutable tail is read in sequence order from the checkpoint through the
   captured current Head.
 
@@ -44,33 +47,29 @@ while a full forensic verification is run when required. Deployments that
 require prefix verification before serving must select the full Genesis path,
 or add an independently durable semantic accumulator in a future ADR.
 
-Checkpoint rows contain no authority to publish data or mutate history. Timer,
-membership, delivery, and frame projections remain operational witnesses and
-are checked by the guarded install transaction; if the bounded path cannot
-prove those witnesses, it falls back to full replay. Concurrent Head or
-integrity changes abort installation and retry through the normal recovery
-boundary.
-
-The current SQLite schema stores Timer, observation-frame/consequence, and
-membership-generation projections only at the live Head; it has no
-checkpoint-keyed witness rows. Consequently a Room with Timers, observation
-rows, or a noninitial Membership generation treats even a current-Head
-checkpoint as a cache miss and uses Genesis replay. That rule prevents a
-checkpoint from authenticating operational rows it does not contain. Supporting
-bounded recovery for those ordinary active Rooms remains an open schema
-follow-up: adding it requires cut-consistent witness rows and verification in
-the same read transaction. The fallback is retained until that evidence
-exists.
-
-PostgreSQL remains the parity reference for the cold contract: its recovery
-adapter currently captures and verifies the complete canonical history in one
-transaction and does not yet persist an equivalent operational checkpoint
-witness. It therefore keeps full prefix verification on every recovery until
-the same witness schema and fencing rules are implemented there.
+Checkpoint rows contain no authority to publish data or mutate history. SQLite
+migration 17 and PostgreSQL migration 18 persist the same canonical operational
+witness at the checkpoint sequence. Each adapter reads that witness and the
+bounded immutable tail in one database transaction. The guarded install then
+compares the replay-derived operational facts with the current live
+projections. A missing, stale, malformed, oversized, hash-invalid, or
+internally invalid witness is a cache miss. A canonical witness that fails the
+live operational comparison causes one full Genesis replay; the Room is
+quarantined only if that authoritative path also proves corruption. Concurrent
+Head or integrity changes abort failure recording and installation.
 
 ## Consequences
 
-Eligible warm recovery reads one checkpoint plus at most 250 Transition rows
-and runs the retained reducer only for that tail. Cold recovery retains the
-stronger full replay path and its complete forensic diagnostics. Snapshots
-remain replaceable caches and never become canonical history.
+Eligible cold recovery reads one checkpoint plus at most 250 Transition rows
+and runs the retained reducer only for that tail. Cold fallback retains the
+stronger full replay path and its complete forensic diagnostics. Snapshots and
+their operational witnesses remain replaceable caches and never become
+canonical history.
+
+The Transition and reducer work is bounded, while operational witness capture
+and verification still scan the Room's currently retained Timer, Frame,
+consequence, Membership, and Activation-decision rows. A witness larger than
+16 MiB is not written, so that Room uses full replay. Compact accumulators or
+partitioned operational witnesses require a separate design before claiming a
+history-independent byte and query bound for Rooms with unbounded retained
+operational state.

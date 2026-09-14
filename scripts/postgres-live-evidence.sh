@@ -69,6 +69,10 @@ cargo_bin="${WORLDSTREAM_PG_LIVE_CARGO:-}"
 python_bin="${WORLDSTREAM_PG_LIVE_PYTHON:-}"
 sqlite_source="${WORLDSTREAM_PG_LIVE_SQLITE:-}"
 evidence_file="${WORLDSTREAM_PG_LIVE_EVIDENCE_FILE:-}"
+# 1k/10k exercise ordinary production commits. The 100k tier uses a fresh
+# SQLite source and the public v2 whole-deployment transfer because direct
+# PostgreSQL commits at that size take hours on the disposable Docker lane.
+recovery_scale_tiers="${WORLDSTREAM_POSTGRES_RECOVERY_SCALES:-1000,10000}"
 
 temp_root=""
 network_name=""
@@ -87,9 +91,13 @@ pooler_dsn=""
 transfer_admin_dsn=""
 transfer_runtime_dsn=""
 transfer_abort_admin_dsn=""
+recovery_scale_admin_dsn=""
+recovery_scale_runtime_dsn=""
 transfer_admin_dsn_file=""
 transfer_runtime_dsn_file=""
 transfer_abort_admin_dsn_file=""
+recovery_scale_admin_dsn_file=""
+recovery_scale_runtime_dsn_file=""
 source_mode="not_supplied"
 imo50_shared_direct_status="not_run"
 imo50_shared_pooler_status="not_run"
@@ -107,6 +115,10 @@ live_marker_migrate="not_observed"
 live_marker_restart="not_observed"
 live_marker_runtime_ddl="not_observed"
 live_marker_normalized="not_observed"
+live_marker_checkpoint_recovery="not_observed"
+live_marker_full_recovery_fallback="not_observed"
+live_marker_checkpoint_recovery_scales="not_observed"
+live_recovery_scale_summary="[]"
 pooler_marker_duplicate_resolve="not_observed"
 transfer_status="not_run"
 transfer_reason="not_run"
@@ -232,6 +244,10 @@ json_report() {
     POSTGRES_LIVE_MARKER_RESTART="$live_marker_restart" \
     POSTGRES_LIVE_MARKER_RUNTIME_DDL="$live_marker_runtime_ddl" \
     POSTGRES_LIVE_MARKER_NORMALIZED="$live_marker_normalized" \
+    POSTGRES_LIVE_MARKER_CHECKPOINT_RECOVERY="$live_marker_checkpoint_recovery" \
+    POSTGRES_LIVE_MARKER_FULL_RECOVERY_FALLBACK="$live_marker_full_recovery_fallback" \
+    POSTGRES_LIVE_MARKER_CHECKPOINT_RECOVERY_SCALES="$live_marker_checkpoint_recovery_scales" \
+    POSTGRES_LIVE_RECOVERY_SCALE_SUMMARY="$live_recovery_scale_summary" \
     POSTGRES_LIVE_MARKER_POOLER="$pooler_marker_duplicate_resolve" \
     POSTGRES_LIVE_TRANSFER_STATUS="$transfer_status" \
     POSTGRES_LIVE_TRANSFER_REASON="$transfer_reason" \
@@ -254,6 +270,7 @@ pooler_status = os.environ.get("POSTGRES_LIVE_POOLER_STATUS", "not_checked")
 transfer_status = os.environ.get("POSTGRES_LIVE_TRANSFER_STATUS", "not_run")
 transfer_summary = json.loads(os.environ.get("POSTGRES_LIVE_TRANSFER_SUMMARY", "{}"))
 harness_summary = json.loads(os.environ.get("POSTGRES_LIVE_HARNESS_SUMMARY", "{}"))
+recovery_scale_summary = json.loads(os.environ.get("POSTGRES_LIVE_RECOVERY_SCALE_SUMMARY", "[]"))
 report = {
     "schema": os.environ["POSTGRES_LIVE_SCHEMA"],
     "status": os.environ["POSTGRES_LIVE_STATUS"],
@@ -286,8 +303,12 @@ report = {
         "direct_admin_restart_idempotent": os.environ.get("POSTGRES_LIVE_MARKER_RESTART", "not_observed"),
         "runtime_ddl_create_denied": os.environ.get("POSTGRES_LIVE_MARKER_RUNTIME_DDL", "not_observed"),
         "normalized_commit_conflict_fence_rollback": os.environ.get("POSTGRES_LIVE_MARKER_NORMALIZED", "not_observed"),
+        "bounded_checkpoint_recovery_and_tamper_fallback": os.environ.get("POSTGRES_LIVE_MARKER_CHECKPOINT_RECOVERY", "not_observed"),
+        "full_recovery_rebuild_and_malformed_head_quarantine": os.environ.get("POSTGRES_LIVE_MARKER_FULL_RECOVERY_FALLBACK", "not_observed"),
+        "bounded_checkpoint_recovery_1k_10k_100k": os.environ.get("POSTGRES_LIVE_MARKER_CHECKPOINT_RECOVERY_SCALES", "not_observed"),
         "pooler_duplicate_resolve": os.environ.get("POSTGRES_LIVE_MARKER_POOLER", "not_observed"),
     },
+    "bounded_checkpoint_recovery_scales": recovery_scale_summary,
     "imo_50_shared_conformance": {
         "catalog": "worldstream-conformance::SCENARIOS",
         "scenario_count": 7,
@@ -317,12 +338,17 @@ PY
 
 cleanup() {
   local failed=0
-  local dsn_file
-  for dsn_file in "$transfer_admin_dsn_file" "$transfer_runtime_dsn_file" "$transfer_abort_admin_dsn_file"; do
-    if [[ -n "$dsn_file" && -f "$dsn_file" && ! -L "$dsn_file" ]]; then
-      : >"$dsn_file" || failed=1
-    fi
-  done
+  local secret_file
+  if [[ -n "$temp_root" && -d "$temp_root" ]]; then
+    for secret_file in "$temp_root"/*.dsn "$temp_root"/userlist.txt; do
+      [[ -e "$secret_file" ]] || continue
+      if [[ -f "$secret_file" && ! -L "$secret_file" ]]; then
+        : >"$secret_file" || failed=1
+      else
+        failed=1
+      fi
+    done
+  fi
   if [[ -n "${WORLDSTREAM_PG_LIVE_DEBUG_DIR:-}" && -n "$temp_root" && -d "$temp_root" ]]; then
     mkdir -p "$WORLDSTREAM_PG_LIVE_DEBUG_DIR"
     cp -R "$temp_root"/. "$WORLDSTREAM_PG_LIVE_DEBUG_DIR"/ 2>/dev/null || failed=1
@@ -392,6 +418,12 @@ if [[ -z "$cargo_bin" || ! -x "$cargo_bin" ]]; then
   add_error "cargo_unavailable"
   finish "$EXIT_UNAVAILABLE"
 fi
+if [[ "$recovery_scale_tiers" != "1000,10000" ]]; then
+  overall_status="incomplete"
+  overall_reason="bounded_recovery_direct_scales_must_be_1k_10k"
+  add_error "bounded_recovery_direct_scales_must_be_1k_10k"
+  finish "$EXIT_INCOMPLETE"
+fi
 umask 077
 temp_root="$(mktemp -d "${TMPDIR:-/tmp}/worldstream-pg-live.XXXXXX")"
 network_name="worldstream-pg-live-$$"
@@ -448,13 +480,19 @@ runtime_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream user=runtime 
 transfer_admin_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream_transfer user=admin password=$admin_password"
 transfer_runtime_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream_transfer user=runtime password=$runtime_password"
 transfer_abort_admin_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream_transfer_abort user=admin password=$admin_password"
+recovery_scale_admin_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream_recovery_scale user=admin password=$admin_password"
+recovery_scale_runtime_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream_recovery_scale user=runtime password=$runtime_password"
 transfer_admin_dsn_file="$temp_root/transfer-admin.dsn"
 transfer_runtime_dsn_file="$temp_root/transfer-runtime.dsn"
 transfer_abort_admin_dsn_file="$temp_root/transfer-abort-admin.dsn"
+recovery_scale_admin_dsn_file="$temp_root/recovery-scale-admin.dsn"
+recovery_scale_runtime_dsn_file="$temp_root/recovery-scale-runtime.dsn"
 printf '%s' "$transfer_admin_dsn" >"$transfer_admin_dsn_file"
 printf '%s' "$transfer_runtime_dsn" >"$transfer_runtime_dsn_file"
 printf '%s' "$transfer_abort_admin_dsn" >"$transfer_abort_admin_dsn_file"
-chmod 600 "$transfer_admin_dsn_file" "$transfer_runtime_dsn_file" "$transfer_abort_admin_dsn_file"
+printf '%s' "$recovery_scale_admin_dsn" >"$recovery_scale_admin_dsn_file"
+printf '%s' "$recovery_scale_runtime_dsn" >"$recovery_scale_runtime_dsn_file"
+chmod 600 "$transfer_admin_dsn_file" "$transfer_runtime_dsn_file" "$transfer_abort_admin_dsn_file" "$recovery_scale_admin_dsn_file" "$recovery_scale_runtime_dsn_file"
 
 run_admin_sql() {
   printf '%s\n' "$1" | PGPASSWORD="$admin_password" "$psql_bin" "host=127.0.0.1 port=$postgres_port dbname=postgres user=admin" --no-psqlrc --quiet --no-align --tuples-only --no-password --set=ON_ERROR_STOP=1 >/dev/null 2>&1
@@ -465,7 +503,8 @@ run_db_admin_sql() {
 
 if ! run_admin_sql "CREATE ROLE runtime LOGIN PASSWORD '$runtime_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS" \
   || ! run_admin_sql "CREATE DATABASE worldstream_transfer OWNER admin" \
-  || ! run_admin_sql "CREATE DATABASE worldstream_transfer_abort OWNER admin"; then
+  || ! run_admin_sql "CREATE DATABASE worldstream_transfer_abort OWNER admin" \
+  || ! run_admin_sql "CREATE DATABASE worldstream_recovery_scale OWNER admin"; then
   overall_status="unavailable"; overall_reason="role_or_transfer_database_setup_failed"; add_error "role_or_transfer_database_setup_failed"; finish "$EXIT_UNAVAILABLE"
 fi
 
@@ -473,7 +512,7 @@ fi
 # access. Granting default table privileges before migration would also grant
 # DML on the migration ledger, which the reviewed runtime-role contract must
 # reject. The owner-only DSN files keep credentials out of argv and logs.
-for database in worldstream worldstream_transfer worldstream_transfer_abort; do
+for database in worldstream worldstream_transfer worldstream_transfer_abort worldstream_recovery_scale; do
   database_admin_dsn_file="$temp_root/$database-admin.dsn"
   printf '%s\n' "host=127.0.0.1 port=$postgres_port dbname=$database user=admin password=$admin_password" >"$database_admin_dsn_file"
   chmod 600 "$database_admin_dsn_file"
@@ -551,7 +590,9 @@ fi
 # both direct and transaction-pooled runtime paths.
 adapter_log="$temp_root/live-adapter.log"
 if [[ "$pooler_status" == "pass" ]]; then
-  if WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN="$admin_dsn" WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN="$runtime_dsn" WORLDSTREAM_POSTGRES_TEST_POOLER_DSN="$pooler_dsn" "$cargo_bin" test --locked -p worldstream-postgres --features conformance-tracer --test postgres_commit live_direct_runtime_and_optional_pooler_conformance -- --nocapture >"$adapter_log" 2>&1; then
+  if WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN="$admin_dsn" WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN="$runtime_dsn" WORLDSTREAM_POSTGRES_TEST_POOLER_DSN="$pooler_dsn" WORLDSTREAM_POSTGRES_RECOVERY_SCALES="$recovery_scale_tiers" "$cargo_bin" test --locked -p worldstream-postgres --features conformance-tracer --test postgres_commit live_direct_runtime_and_optional_pooler_conformance -- --nocapture >"$adapter_log" 2>&1 \
+    && WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN="$admin_dsn" WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN="$runtime_dsn" "$cargo_bin" test --locked -p worldstream-postgres --features conformance-tracer --test postgres_commit live_full_recovery_corruption_quarantines_and_stale_head_is_fenced -- --nocapture >>"$adapter_log" 2>&1 \
+    && WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN="$admin_dsn" WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN="$runtime_dsn" "$cargo_bin" test --locked -p worldstream-postgres --features conformance-tracer --test postgres_commit live_checkpoint_rebuild_malformed_head_quarantines -- --nocapture >>"$adapter_log" 2>&1; then
     live_adapter_status="pass"
   else
     live_adapter_status="failed"; add_error "live_adapter_conformance_failed"
@@ -578,6 +619,117 @@ if grep -Fq 'LIVE_POSTGRES=PASS normalized=create+commit+duplicate+conflict+stal
   live_marker_normalized="pass"
 else
   add_error "live_marker_missing"
+fi
+if grep -Fq 'LIVE_POSTGRES=PASS recovery=checkpoint-tail-2+operational-guard+malformed-witness-fallback' "$adapter_log" 2>/dev/null; then
+  live_marker_checkpoint_recovery="pass"
+else
+  add_error "live_checkpoint_recovery_marker_missing"
+fi
+if grep -Fq 'LIVE_POSTGRES_RECOVERY_FALLBACK=PASS corrupt-snapshot-full-fallback+missing-materialization-rebuild+malformed-head-quarantine+corrupt-full-history+stale-head-fence' "$adapter_log" 2>/dev/null; then
+  live_marker_full_recovery_fallback="pass"
+else
+  add_error "live_full_recovery_fallback_marker_missing"
+fi
+# Build a fresh SQLite 100k source with its current operational checkpoint
+# witness, then use only the public SQLite-to-PostgreSQL v2 transfer and the
+# production PostgreSQL adapter to capture and measure the target checkpoint.
+# The helper appends the same marker schema as the direct 1k/10k test above.
+recovery_scale_source="$temp_root/recovery-scale-source.sqlite"
+recovery_scale_report="$temp_root/recovery-scale-source.json"
+recovery_scale_backup="$temp_root/recovery-scale-source.backup.sqlite"
+recovery_scale_stream="$temp_root/recovery-scale-source.stream"
+recovery_scale_marker="$temp_root/recovery-scale-100000.json"
+if [[ "$live_adapter_status" == "pass" ]]; then
+  if "$cargo_bin" build --quiet --locked --release -p worldstream-sqlite --example history_qualification_fixture \
+    && "$cargo_bin" build --quiet --locked --release -p worldstream-server --example postgres_recovery_scale_transfer \
+    && ./target/release/examples/history_qualification_fixture \
+      --database "$recovery_scale_source" --transition-count 100000 --stream-metadata \
+      --output "$recovery_scale_report" \
+    && ./target/release/examples/postgres_recovery_scale_transfer \
+      --source "$recovery_scale_source" --backup "$recovery_scale_backup" \
+      --stream "$recovery_scale_stream" --output "$recovery_scale_marker" \
+      --admin-dsn-file "$recovery_scale_admin_dsn_file" \
+      --runtime-dsn-file "$recovery_scale_runtime_dsn_file" \
+      --stream-id "imo-222-postgres-recovery-scale-$(date +%s)-${RANDOM}" \
+      >>"$adapter_log" 2>&1; then
+    :
+  else
+    add_error "live_transfer_backed_100k_recovery_scale_failed"
+  fi
+else
+  add_error "live_transfer_backed_100k_recovery_scale_requires_adapter"
+fi
+if live_recovery_scale_summary="$("$python_bin" - "$adapter_log" <<'PY'
+import json
+import sys
+
+expected = [1000, 10000, 100000]
+prefix = "LIVE_POSTGRES_RECOVERY_SCALE="
+reports = []
+with open(sys.argv[1], encoding="utf-8") as source:
+    for line in source:
+        if line.startswith(prefix):
+            reports.append(json.loads(line[len(prefix):]))
+if len(reports) != len(expected):
+    raise SystemExit(1)
+reports.sort(key=lambda report: report.get("history_transition_rows"))
+for report, tier in zip(reports, expected, strict=True):
+    if report.get("history_transition_rows") != tier:
+        raise SystemExit(1)
+    if report.get("head_room_seq") != tier or report.get("checkpoint_room_seq") != tier:
+        raise SystemExit(1)
+    if not isinstance(report.get("checkpoint_tail_transition_count"), int) or not 0 <= report["checkpoint_tail_transition_count"] <= 250:
+        raise SystemExit(1)
+    if report.get("recovery_execution_path") != "checkpoint":
+        raise SystemExit(1)
+    if report.get("checkpoint_boundary_transition_records_read_by_adapter") != 1:
+        raise SystemExit(1)
+    if report.get("prefix_transition_range_reads") != 0:
+        raise SystemExit(1)
+    if report.get("prefix_transition_records_delivered_to_core") != 0:
+        raise SystemExit(1)
+    if report.get("prefix_transitions_skipped") != tier:
+        raise SystemExit(1)
+    if report.get("tail_transition_records_delivered_to_core") != report["checkpoint_tail_transition_count"]:
+        raise SystemExit(1)
+    if report.get("transition_records_read_by_adapter_total") != 1 + report["checkpoint_tail_transition_count"]:
+        raise SystemExit(1)
+    if report.get("reducer_callback_count") != report["checkpoint_tail_transition_count"]:
+        raise SystemExit(1)
+    if not isinstance(report.get("checkpoint_witness_bytes"), int) or report["checkpoint_witness_bytes"] <= 0:
+        raise SystemExit(1)
+    if report.get("checkpoint_witness_under_16_mib") is not True:
+        raise SystemExit(1)
+    if report.get("state") != {
+        "head_exact": True,
+        "core_exact": True,
+        "activity_exact": True,
+        "checkpoint_hash_exact": True,
+    }:
+        raise SystemExit(1)
+    operational = report.get("operational_witness")
+    if not isinstance(operational, dict) or set(operational) != {
+        "timers", "frames", "consequences", "membership_generations", "frame_heads", "activation_decisions"
+    }:
+        raise SystemExit(1)
+    if any(
+        not isinstance(value, dict)
+        or not isinstance(value.get("live_rows"), int)
+        or not isinstance(value.get("witness_entries"), int)
+        or value.get("exact") is not True
+        for value in operational.values()
+    ):
+        raise SystemExit(1)
+    receipts = report.get("semantic_receipts")
+    if not isinstance(receipts, dict) or not isinstance(receipts.get("live_rows"), int) or receipts.get("read_by_bounded_recovery") is not False:
+        raise SystemExit(1)
+print(json.dumps(reports, sort_keys=True, separators=(",", ":")))
+PY
+)"; then
+  live_marker_checkpoint_recovery_scales="pass"
+else
+  live_recovery_scale_summary="[]"
+  add_error "live_checkpoint_recovery_scale_evidence_missing_or_invalid"
 fi
 if [[ "$pooler_status" == "pass" ]] && grep -Fq 'LIVE_POSTGRES_POOLER=PASS path=transaction_pool duplicate+resolve' "$adapter_log" 2>/dev/null; then
   pooler_marker_duplicate_resolve="pass"

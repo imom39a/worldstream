@@ -2,10 +2,74 @@
 
 This note records the local operational evidence collected on 2026-09-13 for
 WorldStream's PostgreSQL paths and the 1k, 10k, and 100k history exercises. The
-tested source revision was `680c38d9c6b3c82696cf95722b601f20a2a5fa2d`.
-Every generated report sets `release_evidence=false`: these results support
+earlier provider audit started at revision
+`680c38d9c6b3c82696cf95722b601f20a2a5fa2d`; the bounded-recovery follow-up was
+regenerated from the implementation documented in the closure commit. Every
+generated report sets `release_evidence=false`: these results support
 local engineering decisions and Linear closure audits, but they do not claim a
 Fly.io or other hosted-provider qualification.
+
+## Bounded-recovery follow-up
+
+The later bounded-recovery implementation adds cut-consistent operational
+witnesses to both adapters. SQLite physical migration 17 and PostgreSQL
+physical migration 18 bind each retained checkpoint to the exact Timer ledger,
+observation Frames and consequences, Membership generations and frame Heads,
+and Activation decisions at that cut. The recovery coordinator verifies and
+replays at most 250 tail Transitions, then checks those facts under the exact
+Head and integrity-generation install fence.
+
+Fresh production-path SQLite runs completed on the receipt-confirmed
+`checkpoint` path with zero prefix ranges, zero Transition records delivered to
+Core, zero tail Transitions, and zero reducer callbacks at all three scales:
+
+| Transitions | Recovery | RSS | Reducer callbacks | Consequence witnesses | Witness | DB bytes |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 8 ms | 23,314,432 | 0 | 1,000 | 135,280 bytes | 10,625,024 |
+| 10,000 | 79 ms | 127,107,072 | 0 | 10,000 | 1,354,783 bytes | 105,857,024 |
+| 100,000 | 843 ms | 775,733,248 | 0 | 100,000 | 13,639,786 bytes | 1,075,195,904 |
+
+The complete reports are checked in under
+[`docs/evidence/bounded-recovery`](evidence/bounded-recovery). The fresh local
+PostgreSQL 17.11 and PgBouncer lane additionally proves a bounded checkpoint
+tail, guarded operational comparison, malformed-witness cache miss,
+hash-consistent canonical-witness full fallback without quarantine, and an
+exact stale-Head failure-record fence. It also proves missing-materialization
+rebuild and malformed-Head quarantine. Its receipt-backed scale results were:
+
+| PostgreSQL transitions | Setup | Recovery | RSS | Prefix delivered | Adapter Transition reads | Reducers |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | direct commits | 192 ms | 26,787,840 | 0 | 1 | 0 |
+| 10,000 | direct commits | 887 ms | 59,097,088 | 0 | 1 | 0 |
+| 100,000 | public v2 transfer + verified checkpoint rebuild | 1,185 ms | 1,419,444,224 | 0 | 1 | 0 |
+
+The 100k setup includes one explicit full verified replay to create the
+disposable checkpoint after transfer. The measured recovery is the subsequent
+ordinary checkpoint path. All six SQLite/PostgreSQL scale measurements were
+under the five-second local reference target.
+
+Authoritative full recovery now treats a missing current Core/Activity
+materialization as rebuildable while continuing to reject a present mismatch.
+The exact recovered bytes are inserted only after the locked healthy Head,
+integrity generation, and operational projections all match. Fresh PostgreSQL
+17 containers verified raw malformed-Head quarantine at generation 2 through
+both ordinary recovery and the explicit checkpoint-rebuild maintenance API.
+They also verified that a corrupt newest snapshot falls back to authoritative
+full replay without changing the healthy integrity generation.
+
+The scale report was captured immediately before that final cache-isolation
+follow-up. The patch removes snapshot validation and its expected-snapshot
+vector only from the one-time full-recovery setup. It does not alter the
+subsequent measured checkpoint path or its receipt/read counts. The focused
+fresh-container tests exercise the final code; the reported 100k RSS is a
+conservative pre-optimization measurement.
+
+The remaining resource limitation is narrower than Transition history: this
+workload retained one observation consequence per Transition, so its witness
+grew from 135 KB to 13.64 MB even though prefix reads and reducer callbacks
+remained zero. Capture and verification omit the
+checkpoint when its canonical witness would exceed 16 MiB. ADR 0031 records
+this limit; IMO-234 tracks compact or partitioned operational accumulators.
 
 ## PostgreSQL environment
 
@@ -146,14 +210,15 @@ remaining work:
 | Issue | Local evidence | Disposition and remaining check |
 | --- | --- | --- |
 | IMO-220 | Production warm-claim path preserves four history rows and reducer counters; 1,000 claims measured p50 9,602 us, p95 11,159 us, p99 15,439 us. | Keep open. Run the 10k/100k warm-claim scales, PostgreSQL parity, and the requested contention matrix. |
-| IMO-222 | SQLite verified checkpoints replay a bounded tail and all invalid-checkpoint cases are covered. | Keep open. PostgreSQL still performs Genesis-to-Head replay because checkpoint-keyed operational witnesses have not been implemented. |
+| IMO-222 | SQLite and PostgreSQL persist and verify cut-consistent operational witnesses; both adapters completed receipt-confirmed 1k/10k/100k checkpoint recoveries with zero prefix delivery and zero reducer callbacks; PostgreSQL 17.11/PgBouncer passed corrupt-snapshot and canonical-witness fallbacks, missing-materialization rebuild, malformed-Head quarantine, and the stale-Head failure fence. | Close from local implementation evidence. Hosted-provider qualification is tracked separately and the 16 MiB operational-witness limit remains explicit future work. |
 | IMO-223 | Production SQLite snapshot cadence was measured at 1k, 10k, and 100,001 with three retained rows. | Keep open. Attribute CPU/bytes/WAL specifically to snapshots versus canonical transitions, cover the full failure matrix, and run PostgreSQL scale parity. |
-| IMO-225 | 100,001-transition production source, bounded 5,299-chunk stream, resumable PostgreSQL import, corruption/disk-full rejection, exact digests, and final authority all passed. | Keep open. Resolve or bound the measured 1.54 GB peak RSS and run the complete malformed/missing/reordered/duplicate large-stream matrix. |
+| IMO-225 | 100,001-transition production source, bounded 5,299-chunk stream, resumable PostgreSQL import, corruption/disk-full rejection, exact digests, and final authority all passed. The new 100k recovery lane also exposed row-wise PostgreSQL staging and hydration across high-cardinality relations. | Keep open. Replace per-row round trips with bounded in-memory chunks, durable chunk commits, `COPY`/set-based validation, and a final publication fence; also resolve or bound the measured peak RSS and complete the malformed-stream matrix. |
 | IMO-226 | Observation-frame retention passed live PostgreSQL age/count/bytes, busy-Room cursor, and bounded deletion checks. | Keep open. Measure actual Activation backlog behavior during sustained arrivals, outages, and bursts, including pending age, supersession, execution, oldest-useful latency, and Timer behavior. |
 | IMO-227 | A deterministic 99-scenario no-model matrix now uses production admission and reports stale rate, useful latency, starvation, attempts, successful actions, and model-equivalent waste. The stated low-rate/short-delay envelope passed. | Keep open. Measure scheduler fairness/backoff and record the post-IMO-217 fixed-baseline comparison; high-rate/long-delay scenarios currently show complete starvation. |
 | IMO-230 | External input first execution and restart recovery passed live PostgreSQL, and package-level tests pass. | Keep open. Exercise a real Pack with concurrent Actions and Timers, SQLite/PostgreSQL parity, and overload behavior. |
 | IMO-232 | 1k, 10k, and 100k local component evidence is available. | Keep open. The requested 72-hour soak and one-million-transition/model comparison were deliberately not run in this local session. |
 | IMO-233 | Packaged preflight, OCI, native-package, runbook, and daemon checks pass locally. | Keep open for the manual Fly.io fresh boot/restart and hosted-provider evidence. |
+| IMO-234 | ADR 0031 and the bounded-recovery scale runs isolate an O(retained operational rows) witness scan and a 16 MiB cache cutoff. | Keep open. Design and qualify compact or partitioned operational proofs independently of canonical Transition history. |
 
 IMO-221, IMO-224, IMO-228, IMO-229, and IMO-231 were already closed with their
 separate implementation and test evidence. The 72-hour soak and Fly.io checks

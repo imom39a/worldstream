@@ -85,6 +85,7 @@ const REQUIRED_MIGRATIONS: &[&str] = &[
     "0015-snapshot-cadence-v1",
     "0016-activation-backlog-policy-v1",
     "0017-stream-transfer-v2",
+    "0018-checkpoint-operational-witness-v1",
 ];
 const REQUIRED_MIGRATION_CHECKSUMS: &[&str] = &[
     "blake3:dd07208c71d7165b93861883b25411b1e7c33a6be36fc2be28a638e1ab5cd763",
@@ -103,11 +104,12 @@ const REQUIRED_MIGRATION_CHECKSUMS: &[&str] = &[
     "blake3:db914b00013cc9d7a341eabe081411f6583893f036547ed9db2c35be3866e9d6",
     "blake3:495d58fdc81fee0b6b87d8973f4445b4892da22608e459033eaa333c0d4078a4",
     "blake3:aaa152c1107748f774197bd8a59600150e9d209c7e4eb14ec5e911394b23c3e2",
+    "blake3:95b31dc300e31bbdafada55d7d7d9f6b3c05d0dd2e067c3f41e3f39a27655847",
 ];
 // These are reviewed shipped prefixes, rather than an arbitrary version
 // range. A retained backup must present one exact contiguous ledger through
 // the corresponding release boundary.
-const SUPPORTED_MIGRATION_COUNTS: &[usize] = &[13, 15, 16];
+const SUPPORTED_MIGRATION_COUNTS: &[usize] = &[13, 15, 16, 17];
 
 /// The `SQLite` engine selected by the workspace's bundled rusqlite build.
 pub const BUNDLED_SQLITE_VERSION: &str = "3.53.4";
@@ -123,7 +125,7 @@ pub struct NativeSqliteLimits {
 
 /// Per-row and schema bounds for the streaming retained-backup verifier.
 ///
-/// Unlike NativeSqliteLimits, these bounds do not cap total rows or total
+/// Unlike `NativeSqliteLimits`, these bounds do not cap total rows or total
 /// database bytes. The verifier advances each relation cursor incrementally,
 /// so a complete deployment larger than the legacy bundle limits remains
 /// verifiable without retaining all rows.
@@ -145,12 +147,12 @@ impl Default for NativeSqliteStreamingLimitsV2 {
 }
 
 /// Source-side evidence produced by a retained, incrementally verified
-/// SQLite backup. It contains only bounded summaries; no BackupImageV1 or
+/// `SQLite` backup. It contains only bounded summaries; no `BackupImageV1` or
 /// all-record collection is constructed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeSqliteStreamingVerificationV2 {
     /// Exact durable transfer-point digest, compatible with the source
-    /// lifecycle backup_digest witness.
+    /// lifecycle `backup_digest` witness.
     transfer_point_digest: [u8; 32],
     /// Count of every modeled operational relation.
     operational_relation_counts: BTreeMap<String, u64>,
@@ -1783,10 +1785,10 @@ pub fn durable_transfer_point_digest_retained(
     Ok(digest)
 }
 
-/// Incrementally verifies one retained SQLite backup and derives the exact
+/// Incrementally verifies one retained `SQLite` backup and derives the exact
 /// transfer-point/native-operational manifest inputs for a v2 stream export.
 ///
-/// The scan never constructs BackupImageV1, NativeSqliteOperationalRowsV1, or
+/// The scan never constructs `BackupImageV1`, `NativeSqliteOperationalRowsV1`, or
 /// a full record vector. It hashes rows as they are read and applies only
 /// per-row/schema bounds, allowing a source to exceed legacy 100k/64 MiB
 /// bundle limits while still proving that its named backup object stayed
@@ -3029,12 +3031,10 @@ fn verify_operational_rows(
                                                     | "cancelled"
                                             )
                                         ))
-                                    && (text_value_or_null(&row.values, 22).is_none()
-                                        || text_value_or_null(&row.values, 22)
-                                            .is_some_and(|value| !value.is_empty()))
-                                    && (text_value_or_null(&row.values, 23).is_none()
-                                        || text_value_or_null(&row.values, 23)
-                                            .is_some_and(|value| !value.is_empty()))))
+                                    && text_value_or_null(&row.values, 22)
+                                        .is_none_or(|value| !value.is_empty())
+                                    && text_value_or_null(&row.values, 23)
+                                        .is_none_or(|value| !value.is_empty())))
                             && (!leased
                                 || integer_value(&row.values, 12).is_some_and(|value| value > 0))
                     })
@@ -6055,7 +6055,7 @@ mod tests {
             migration_contract: MigrationContractV1 {
                 logical_history_id: "worldstream-storage-v1".to_owned(),
                 schema_contract_fingerprint: DigestV1::parse(
-                    "4c5ec1d25273f4a7ae1d899a1c7df4655d0d0b1d3a44e73a359adc79800c4398".to_owned(),
+                    "3cdc135353791f8a362ecc6da4d08872d4ae2dff28f0b72481f99e9acc05262d".to_owned(),
                 )
                 .unwrap(),
                 records,

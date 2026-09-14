@@ -6,6 +6,7 @@
 //! never be promoted to a qualification pass by the Python harness.
 
 use std::{
+    collections::BTreeMap,
     env, fs,
     io::Write,
     path::{Path, PathBuf},
@@ -19,14 +20,18 @@ use rusqlite::Connection;
 use serde::Serialize;
 use worldstream_core::{
     AccessModeV1, AdministrationOperationIdentityV1, AuthorityBootstrapV1, AuthorityV1,
-    CapabilityBearerV1, CoreAdministrationIngressV1, CoreAdministrationRequestV1, CoreChangeSetV1,
-    CoreProposedKindV1, CoreRoomStateV1, InitialMembershipProposalV1, MembershipChangeV1,
-    MembershipStandingV1, MembershipV1, PackGenesisRequestV1, PackViewerV1, PreparedRoomCommitV1,
-    PreparedRoomCreationV1, PresentedCapabilityV1, PrincipalKindV1, ResolutionStatusV1,
-    RoomCommitResolutionV1, RoomCreationIngressV1, RoomCreationRequestV1, RoomId, RoomSeedV1,
-    ViewInputV1, authorize_core_administration_operation, authorize_room_creation_operation,
-    builtin_counter_registry, commit_existing_room, commit_room_creation, counter_v2_digest,
-    recover_room_from_storage,
+    Blake3DigestV1, CapabilityBearerV1, CompleteHeadV1, CoreAdministrationIngressV1,
+    CoreAdministrationRequestV1, CoreChangeSetV1, CoreProposedKindV1, CoreRoomStateV1,
+    InitialMembershipProposalV1, MembershipChangeV1, MembershipStandingV1, MembershipV1,
+    PackGenesisRequestV1, PackViewerV1, PreparedRoomCommitV1, PreparedRoomCreationV1,
+    PresentedCapabilityV1, PrincipalKindV1, RecoveredActivationDecisionV1,
+    RecoveredObservationConsequenceV1, RecoveredObservationFrameV1,
+    RecoveredTimerMaterializationV1, RecoveredTimerStateV1, ResolutionStatusV1,
+    RoomCheckpointOperationalWitnessV1, RoomCommitResolutionV1, RoomCreationIngressV1,
+    RoomCreationRequestV1, RoomId, RoomRecoveryStorageV1, RoomSeedV1, RoomSequenceV1,
+    TimerGenerationV1, ViewInputV1, authorize_core_administration_operation,
+    authorize_room_creation_operation, builtin_counter_registry, commit_existing_room,
+    commit_room_creation, counter_v2_digest, recover_room_from_storage_with_receipt,
 };
 use worldstream_sqlite::SqliteRoomStore;
 use worldstream_transfer::{
@@ -49,6 +54,7 @@ struct Report {
     history: History,
     storage: Storage,
     snapshots: SnapshotMetrics,
+    checkpoint: CheckpointEvidence,
     scenarios: Scenarios,
     transfer_metadata_initialized: bool,
     pass: bool,
@@ -97,6 +103,35 @@ struct SnapshotMetrics {
     retained_row_count: u64,
     last_snapshot_room_seq: u64,
     transitions_since_snapshot: u64,
+}
+
+#[derive(Serialize)]
+struct WitnessCollectionEvidence {
+    live_rows: usize,
+    witness_entries: usize,
+    exact: bool,
+}
+
+#[derive(Serialize)]
+struct CheckpointEvidence {
+    recovery_execution_path: &'static str,
+    checkpoint_room_seq: u64,
+    checkpoint_boundary_transition_records_read_by_adapter: u64,
+    prefix_transition_range_reads: u64,
+    prefix_transition_records_delivered_to_core: u64,
+    prefix_transitions_skipped: u64,
+    tail_transition_records_delivered_to_core: u64,
+    transition_records_read_by_adapter_total: u64,
+    witness_bytes: usize,
+    witness_hash_exact: bool,
+    witness_head_exact: bool,
+    timer_ledger: WitnessCollectionEvidence,
+    observation_frame_heads: WitnessCollectionEvidence,
+    observation_frames: WitnessCollectionEvidence,
+    observation_consequences: WitnessCollectionEvidence,
+    membership_generations: WitnessCollectionEvidence,
+    activation_decisions: WitnessCollectionEvidence,
+    all_operational_witnesses_exact: bool,
 }
 
 #[derive(Serialize)]
@@ -202,6 +237,250 @@ fn read_and_remove_snapshot_observer(database: &Path, room_id: &RoomId) -> Resul
         retained_row_count,
         last_snapshot_room_seq: u64::try_from(last_snapshot_room_seq)?,
         transitions_since_snapshot: u64::try_from(transitions_since_snapshot)?,
+    })
+}
+
+fn read_checkpoint_evidence(
+    database: &Path,
+    room_id: &RoomId,
+    current_head: &CompleteHeadV1,
+    receipt: worldstream_core::RoomRecoveryExecutionReceiptV1,
+) -> Result<CheckpointEvidence> {
+    let connection = Connection::open(database)?;
+    let room_id_text = room_id.to_string();
+    let (checkpoint_room_seq, checkpoint_head_bytes, witness_hash, witness_bytes): (
+        i64,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+    ) = connection.query_row(
+        "SELECT snapshots.room_seq, snapshots.complete_head_bytes, witness.witness_hash, \
+         witness.witness_bytes FROM room_snapshots AS snapshots \
+         JOIN room_snapshot_operational_witnesses AS witness \
+           ON witness.room_id = snapshots.room_id AND witness.room_seq = snapshots.room_seq \
+         WHERE snapshots.room_id = ?1 ORDER BY snapshots.room_seq DESC LIMIT 1",
+        [&room_id_text],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let checkpoint_head = worldstream_core::CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(
+        &checkpoint_head_bytes,
+    )?;
+    let witness =
+        RoomCheckpointOperationalWitnessV1::from_canonical_bytes(&witness_bytes, &checkpoint_head)
+            .map_err(|error| format!("decode checkpoint witness: {error:?}"))?;
+
+    let mut timers = Vec::new();
+    {
+        let mut statement = connection.prepare(
+            "SELECT timer_id, generation, scheduled_for, payload_bytes, state FROM timers \
+             WHERE room_id = ?1 ORDER BY timer_id, generation",
+        )?;
+        let rows = statement.query_map([&room_id_text], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        for row in rows {
+            let (timer_id, generation, scheduled_for, payload, state) = row?;
+            let state = match state.as_str() {
+                "scheduled" => RecoveredTimerStateV1::Scheduled,
+                "fired" => RecoveredTimerStateV1::Fired,
+                "cancelled" => RecoveredTimerStateV1::Cancelled,
+                _ => return Err(format!("unknown Timer state {state}").into()),
+            };
+            timers.push(RecoveredTimerMaterializationV1::new(
+                parsed(&timer_id)?,
+                TimerGenerationV1::new(u64::try_from(generation)?)?,
+                parsed(&scheduled_for)?,
+                payload,
+                state,
+            ));
+        }
+    }
+
+    let mut observation_frame_heads = BTreeMap::new();
+    let mut membership_generations = BTreeMap::new();
+    {
+        let mut statement = connection.prepare(
+            "SELECT member_id, frame_head, membership_generation FROM room_members \
+             WHERE room_id = ?1 ORDER BY member_id",
+        )?;
+        let rows = statement.query_map([&room_id_text], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (member_id, frame_head, generation) = row?;
+            observation_frame_heads.insert(parsed(&member_id)?, u64::try_from(frame_head)?);
+            membership_generations.insert(member_id, generation);
+        }
+    }
+
+    let mut observation_frames = Vec::new();
+    {
+        let mut statement = connection.prepare(
+            "SELECT member_id, frame_seq, cause_room_seq, payload_hash FROM observation_frames \
+             WHERE room_id = ?1 ORDER BY member_id, frame_seq",
+        )?;
+        let rows = statement.query_map([&room_id_text], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (member_id, frame_seq, cause_room_seq, payload_hash) = row?;
+            observation_frames.push(RecoveredObservationFrameV1::from_replay(
+                parsed(&member_id)?,
+                u64::try_from(frame_seq)?,
+                RoomSequenceV1::new(u64::try_from(cause_room_seq)?)?,
+                parsed(&payload_hash)?,
+            ));
+        }
+    }
+
+    let mut observation_consequences = Vec::new();
+    {
+        let mut statement = connection.prepare(
+            "SELECT member_id, cause_room_seq, consequence_kind, projection_hash \
+             FROM observation_consequences WHERE room_id = ?1 \
+             ORDER BY member_id, cause_room_seq",
+        )?;
+        let rows = statement.query_map([&room_id_text], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (member_id, cause_room_seq, kind, projection_hash) = row?;
+            let member_id = parsed(&member_id)?;
+            let cause_room_seq = RoomSequenceV1::new(u64::try_from(cause_room_seq)?)?;
+            observation_consequences.push(match kind.as_str() {
+                "reset_required" => RecoveredObservationConsequenceV1::reset_required(
+                    member_id,
+                    cause_room_seq,
+                    parsed(&projection_hash.ok_or("reset consequence lacks projection hash")?)?,
+                ),
+                "visibility_lost" if projection_hash.is_none() => {
+                    RecoveredObservationConsequenceV1::visibility_lost(member_id, cause_room_seq)
+                }
+                _ => return Err(format!("invalid observation consequence {kind}").into()),
+            });
+        }
+    }
+
+    let mut activation_decisions = Vec::new();
+    {
+        let mut statement = connection.prepare(
+            "SELECT cause_room_seq, decision_id, target_member_id, decision_bytes \
+             FROM activation_decisions WHERE room_id = ?1 \
+             ORDER BY cause_room_seq, decision_id",
+        )?;
+        let rows = statement.query_map([&room_id_text], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (cause_room_seq, decision_id, target_member_id, decision_bytes) = row?;
+            activation_decisions.push(RecoveredActivationDecisionV1::new(
+                RoomSequenceV1::new(u64::try_from(cause_room_seq)?)?,
+                decision_id,
+                target_member_id.map(|value| parsed(&value)).transpose()?,
+                decision_bytes,
+            ));
+        }
+    }
+
+    let timer_ledger_exact = witness.timers() == timers;
+    let observation_frame_heads_exact =
+        witness.observation_frame_heads() == &observation_frame_heads;
+    let observation_frames_exact = witness.observation_frames() == observation_frames;
+    let observation_consequences_exact =
+        witness.observation_consequences() == observation_consequences;
+    let membership_generations_exact = witness.membership_generations() == &membership_generations;
+    let activation_decisions_exact = witness.activation_decisions() == activation_decisions;
+    let witness_hash_exact =
+        witness_hash.as_slice() == Blake3DigestV1::hash(&witness_bytes).as_bytes();
+    let witness_head_exact = witness.checkpoint_head() == current_head;
+    let all_operational_witnesses_exact = timer_ledger_exact
+        && observation_frame_heads_exact
+        && observation_frames_exact
+        && observation_consequences_exact
+        && membership_generations_exact
+        && activation_decisions_exact;
+    let checkpoint_room_seq = u64::try_from(checkpoint_room_seq)?;
+    if !receipt.used_checkpoint()
+        || receipt.checkpoint_room_seq().map(|value| value.get()) != Some(checkpoint_room_seq)
+        || receipt.prefix_transition_records_delivered() != 0
+        || receipt.prefix_transitions_skipped() != checkpoint_room_seq
+    {
+        return Err("recovery receipt did not prove the selected checkpoint path".into());
+    }
+    let checkpoint_boundary_transition_records_read_by_adapter = u64::from(checkpoint_room_seq > 0);
+    let tail_transition_records_delivered_to_core = receipt.tail_transition_records_delivered();
+
+    Ok(CheckpointEvidence {
+        recovery_execution_path: "checkpoint",
+        checkpoint_room_seq,
+        checkpoint_boundary_transition_records_read_by_adapter,
+        prefix_transition_range_reads: 0,
+        prefix_transition_records_delivered_to_core: receipt.prefix_transition_records_delivered(),
+        prefix_transitions_skipped: receipt.prefix_transitions_skipped(),
+        tail_transition_records_delivered_to_core,
+        transition_records_read_by_adapter_total:
+            checkpoint_boundary_transition_records_read_by_adapter
+                .checked_add(tail_transition_records_delivered_to_core)
+                .ok_or("checkpoint Transition read count overflow")?,
+        witness_bytes: witness_bytes.len(),
+        witness_hash_exact,
+        witness_head_exact,
+        timer_ledger: WitnessCollectionEvidence {
+            live_rows: timers.len(),
+            witness_entries: witness.timers().len(),
+            exact: timer_ledger_exact,
+        },
+        observation_frame_heads: WitnessCollectionEvidence {
+            live_rows: observation_frame_heads.len(),
+            witness_entries: witness.observation_frame_heads().len(),
+            exact: observation_frame_heads_exact,
+        },
+        observation_frames: WitnessCollectionEvidence {
+            live_rows: observation_frames.len(),
+            witness_entries: witness.observation_frames().len(),
+            exact: observation_frames_exact,
+        },
+        observation_consequences: WitnessCollectionEvidence {
+            live_rows: observation_consequences.len(),
+            witness_entries: witness.observation_consequences().len(),
+            exact: observation_consequences_exact,
+        },
+        membership_generations: WitnessCollectionEvidence {
+            live_rows: membership_generations.len(),
+            witness_entries: witness.membership_generations().len(),
+            exact: membership_generations_exact,
+        },
+        activation_decisions: WitnessCollectionEvidence {
+            live_rows: activation_decisions.len(),
+            witness_entries: witness.activation_decisions().len(),
+            exact: activation_decisions_exact,
+        },
+        all_operational_witnesses_exact,
     })
 }
 
@@ -428,11 +707,26 @@ fn run(database: &Path, count: u64, stream_metadata: bool) -> Result<Report> {
     )?)?;
     drop(connection);
     let reopened = SqliteRoomStore::open(database)?;
+    let candidate = <SqliteRoomStore as RoomRecoveryStorageV1>::inspect_recovery_candidate(
+        &reopened, &room_id,
+    )?
+    .ok_or("recovery candidate returned no Room")?;
+    if !candidate.has_checkpoint() {
+        return Err("history qualification did not select a checkpoint".into());
+    }
     let recovery_started = Instant::now();
-    let recovered = recover_room_from_storage(&reopened, &registry, &room_id)?
+    let execution = recover_room_from_storage_with_receipt(&reopened, &registry, &room_id)?
         .ok_or("recovery returned no Room")?;
     let recovery_ms = recovery_started.elapsed().as_millis();
+    let receipt = execution.receipt();
+    if receipt.tail_transition_records_delivered()
+        != u64::try_from(candidate.tail_transition_count())?
+    {
+        return Err("recovery receipt and inspected checkpoint tail disagree".into());
+    }
+    let recovered = execution.into_trace();
     let callbacks = recovered.activity_callback_count();
+    let checkpoint = read_checkpoint_evidence(database, &room_id, trace.head(), receipt)?;
     drop(reopened);
     let runner_scenarios = Scenarios {
         crash_restart: Scenario {
@@ -456,6 +750,14 @@ fn run(database: &Path, count: u64, stream_metadata: bool) -> Result<Report> {
             source: "driver_scope",
         },
     };
+    let pass = transition_rows == count
+        && u64::try_from(callbacks)? == checkpoint.tail_transition_records_delivered_to_core
+        && checkpoint.recovery_execution_path == "checkpoint"
+        && checkpoint.prefix_transition_range_reads == 0
+        && checkpoint.prefix_transition_records_delivered_to_core == 0
+        && checkpoint.witness_hash_exact
+        && checkpoint.witness_head_exact
+        && checkpoint.all_operational_witnesses_exact;
     Ok(Report {
         schema: "worldstream/room-history-qualification/sqlite-v1",
         source: "production_sqlite_core_storage",
@@ -483,13 +785,14 @@ fn run(database: &Path, count: u64, stream_metadata: bool) -> Result<Report> {
             frames: frame_rows,
         },
         snapshots,
+        checkpoint,
         scenarios: runner_scenarios,
         transfer_metadata_initialized: stream_metadata,
         // The counter Pack intentionally emits no observation frames for this
         // administration-only workload.  A zero frame count is measured
         // evidence, while transfer/backup and Runner scenarios remain
         // explicitly not exercised below.
-        pass: transition_rows == count,
+        pass,
     })
 }
 

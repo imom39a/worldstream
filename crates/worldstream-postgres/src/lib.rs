@@ -29,20 +29,21 @@ mod transfer;
 pub use authority::{PostgresAuthenticatedCapabilityV1, PostgresAuthorityAuthenticationError};
 pub use migrations::{
     ACTIVATION_BACKLOG_POLICY_MIGRATION_ID, AUTHORITY_FACTS_MIGRATION_ID, AUTHORITY_MIGRATION_ID,
-    DEPLOYMENT_IDENTITY_MIGRATION_ID, DEPLOYMENT_METADATA_MIGRATION_ID,
-    EXTERNAL_INPUT_PREPARATION_MIGRATION_ID, FixtureMigrationProvider, INITIAL_MIGRATION_ID,
-    KERNEL_CONFORMANCE_MIGRATION_ID, KERNEL_PARITY_MIGRATION_ID, LOGICAL_HISTORY_ID,
-    MIGRATION_0002_SQL, MIGRATION_0003_SQL, MIGRATION_0004_SQL, MIGRATION_0005_SQL,
-    MIGRATION_0006_SQL, MIGRATION_0007_SQL, MIGRATION_0008_SQL, MIGRATION_0009_SQL,
-    MIGRATION_0010_SQL, MIGRATION_0011_SQL, MIGRATION_0012_SQL, MIGRATION_0013_SQL,
-    MIGRATION_0014_SQL, MIGRATION_0015_SQL, MIGRATION_0016_SQL, MIGRATION_0017_SQL,
-    MigrationDescriptor, MigrationFailpoint, MigrationRecord, MigrationVerification,
-    MigrationVerificationError, OBSERVATION_RESET_GENERATION_MIGRATION_ID,
-    OBSERVATION_RETENTION_MIGRATION_ID, SCHEMA_CONTRACT_ID, SCHEMA_FINGERPRINT_MATERIAL,
-    SNAPSHOT_CADENCE_MIGRATION_ID, STREAM_TRANSFER_V2_MIGRATION_ID,
-    TRANSFER_PUBLICATION_MIGRATION_ID, TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID,
-    TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID, migration_history, schema_contract_fingerprint,
-    verify_migration_prefix, verify_runtime_migration_history,
+    CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID, DEPLOYMENT_IDENTITY_MIGRATION_ID,
+    DEPLOYMENT_METADATA_MIGRATION_ID, EXTERNAL_INPUT_PREPARATION_MIGRATION_ID,
+    FixtureMigrationProvider, INITIAL_MIGRATION_ID, KERNEL_CONFORMANCE_MIGRATION_ID,
+    KERNEL_PARITY_MIGRATION_ID, LOGICAL_HISTORY_ID, MIGRATION_0002_SQL, MIGRATION_0003_SQL,
+    MIGRATION_0004_SQL, MIGRATION_0005_SQL, MIGRATION_0006_SQL, MIGRATION_0007_SQL,
+    MIGRATION_0008_SQL, MIGRATION_0009_SQL, MIGRATION_0010_SQL, MIGRATION_0011_SQL,
+    MIGRATION_0012_SQL, MIGRATION_0013_SQL, MIGRATION_0014_SQL, MIGRATION_0015_SQL,
+    MIGRATION_0016_SQL, MIGRATION_0017_SQL, MIGRATION_0018_SQL, MigrationDescriptor,
+    MigrationFailpoint, MigrationRecord, MigrationVerification, MigrationVerificationError,
+    OBSERVATION_RESET_GENERATION_MIGRATION_ID, OBSERVATION_RETENTION_MIGRATION_ID,
+    SCHEMA_CONTRACT_ID, SCHEMA_FINGERPRINT_MATERIAL, SNAPSHOT_CADENCE_MIGRATION_ID,
+    STREAM_TRANSFER_V2_MIGRATION_ID, TRANSFER_PUBLICATION_MIGRATION_ID,
+    TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID, TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID,
+    migration_history, schema_contract_fingerprint, verify_migration_prefix,
+    verify_runtime_migration_history,
 };
 pub use retention::PostgresObservationRetentionV1;
 pub use telemetry::{
@@ -84,27 +85,30 @@ use worldstream_core::{
     AuthorityStoreV1, AuthorizedCoreAdministrationV1, AuthorizedDiagnosticV1,
     AuthorizedExternalInputV1, AuthorizedReceiptReadV1, AuthorizedReceiptResolverV1,
     AuthorizedReplayV1, AuthorizedRunnerControlV1, AuthorizedTimerFiredV1, Blake3DigestV1,
-    CanonicalJsonV1, CanonicalRequestHashV1, CompleteHeadV1, CoreAdministrationRequestV1,
-    CoreRecordedAt, CoreTraceV1, DiagnosticOperationV1, DiagnosticTargetV1,
-    ExternalInputRecordedAt, ExternalInputV1, GenesisV1, HistoricalEvidencePageOutcomeV1,
-    HistoricalEvidenceReferenceV1, HistoricalReplayErrorV1, HistoricalReplayProjectionV1,
-    HostClockSampleV1, IntegrityGenerationV1, MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1,
-    MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES, MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1,
-    MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_TIME_MS_V1,
-    MAX_PENDING_REFRESH_AGE_MS_V1, MAX_PENDING_REFRESH_BYTES_V1, MemberId, MembershipStandingV1,
-    MembershipV1, OperationIdentityV1, PackRegistryV1, PackRevisionLockV1, PackViewerV1,
+    CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V1, CanonicalJsonV1, CanonicalRequestHashV1,
+    CompleteHeadV1, CoreAdministrationRequestV1, CoreRecordedAt, CoreTraceV1,
+    DiagnosticOperationV1, DiagnosticTargetV1, ExternalInputRecordedAt, ExternalInputV1, GenesisV1,
+    HistoricalEvidencePageOutcomeV1, HistoricalEvidenceReferenceV1, HistoricalReplayErrorV1,
+    HistoricalReplayProjectionV1, HostClockSampleV1, IntegrityGenerationV1,
+    MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1, MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES,
+    MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1,
+    MAX_HISTORICAL_EVIDENCE_TIME_MS_V1, MAX_PENDING_REFRESH_AGE_MS_V1,
+    MAX_PENDING_REFRESH_BYTES_V1, MemberId, MembershipStandingV1, MembershipV1,
+    OperationIdentityV1, PackRegistryV1, PackRevisionLockV1, PackViewerV1,
     ParticipantActionAuthorityV1, ParticipantActionRequestV1, ParticipantActionV1,
     PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1, PreparedCreationPersistenceV1,
     PreparedExistingIntentV1, PreparedMembershipMaterializationV1,
     PreparedObservationConsequenceV1, PreparedRoomCommitV1, PreparedRoomWriteV1,
-    PreparedTimerMutationKindV1, RecordedStimulusV1, RecoveredObservationConsequenceV1,
-    RecoveredRoomMaterializationsV1, RecoveredTimerStateV1, RecoveryIntegrityDispositionV1,
-    ReplayFailureClassV1, ReplayStorageVerificationV1, ResolutionStatusV1, ResolveOutcomeV1,
+    PreparedTimerMutationKindV1, RecordedStimulusV1, RecoveredActivationDecisionV1,
+    RecoveredObservationConsequenceV1, RecoveredObservationFrameV1,
+    RecoveredRoomMaterializationsV1, RecoveredTimerMaterializationV1, RecoveredTimerStateV1,
+    RecoveryIntegrityDispositionV1, ReplayFailureClassV1, ReplayStorageVerificationV1,
+    ResolutionStatusV1, ResolveOutcomeV1, RoomCheckpointOperationalWitnessV1,
     RoomCommitResolutionV1, RoomCommitStorageV1, RoomId, RoomIntegrityStateV1,
-    RoomIntegrityStatusV1, RoomRecoveryCandidateV1, RoomRecoveryErrorV1, RoomRecoveryStorageV1,
-    RoomSequenceV1, RoomStatusV1, RunnerControlAdapterInputV1, RunnerControlOperationV1,
-    StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, TimerId,
-    TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1,
+    RoomIntegrityStatusV1, RoomRecoveryCandidateV1, RoomRecoveryCheckpointV1, RoomRecoveryErrorV1,
+    RoomRecoveryStorageV1, RoomSequenceV1, RoomStatusV1, RunnerControlAdapterInputV1,
+    RunnerControlOperationV1, StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1,
+    TimerGenerationV1, TimerId, TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1,
     VerifiedCurrentRoomMaterializationV1, ViewerAdapterInputV1,
     activation_refresh_budget_allows_v1, commit_existing_room, prepare_activation_context,
     projection_hash_for_canonical_bytes,
@@ -356,7 +360,7 @@ pub(crate) fn verify_room_for_native_restore<C: GenericClient>(
     budget: &mut ProviderReadBudgetV1,
 ) -> Result<PostgresRoomVerification, PostgresRoomVerificationError> {
     preflight_native_room_provider_reads(client, room_id, budget)?;
-    PostgresAdmin::verify_room_with_client(client, room_id)
+    PostgresAdmin::verify_room_with_client(client, room_id, false, true)
 }
 
 /// Statements available to runtime schema verification. This list is kept
@@ -1081,7 +1085,7 @@ impl PostgresAdmin {
                 let fingerprint = schema_contract_fingerprint();
                 transaction
                     .execute(
-                        "UPDATE worldstream_schema_migrations SET logical_history_id = $1, schema_contract_fingerprint = $2 WHERE version = 1",
+                        "UPDATE worldstream_schema_migrations SET logical_history_id = $1, schema_contract_fingerprint = $2",
                         &[&LOGICAL_HISTORY_ID, &fingerprint.as_bytes().as_slice()],
                     )
                     .map_err(PostgresMigrationError::Sql)?;
@@ -1229,8 +1233,9 @@ impl PostgresAdmin {
                 .map_err(|_| PostgresPackReplayErrorV1::Corrupt)?;
             match integrity.as_str() {
                 "healthy" => {
-                    let verification = Self::verify_room_with_client(&mut transaction, &room_id)
-                        .map_err(|_| PostgresPackReplayErrorV1::Corrupt)?;
+                    let verification =
+                        Self::verify_room_with_client(&mut transaction, &room_id, false, true)
+                            .map_err(|_| PostgresPackReplayErrorV1::Corrupt)?;
                     verification
                         .verify_executable_replay(registry)
                         .map_err(|_| PostgresPackReplayErrorV1::Replay)?;
@@ -1270,7 +1275,9 @@ impl PostgresAdmin {
     ) -> Result<PostgresRoomVerification, PostgresRoomVerificationError> {
         let result = Client::connect(&self.config.dsn, self.config.tls.clone())
             .map_err(PostgresRoomVerificationError::Connection)
-            .and_then(|mut client| Self::verify_room_with_client(&mut client, room_id));
+            .and_then(|mut client| {
+                Self::verify_room_with_client(&mut client, room_id, false, true)
+            });
         if let Err(error) = &result {
             let kind = match error {
                 PostgresRoomVerificationError::Connection(_) => {
@@ -1585,6 +1592,8 @@ impl PostgresAdmin {
     fn verify_room_with_client<C: GenericClient>(
         client: &mut C,
         room_id: &str,
+        allow_missing_materialization: bool,
+        verify_disposable_snapshots: bool,
     ) -> Result<PostgresRoomVerification, PostgresRoomVerificationError> {
         let parsed_room_id = room_id
             .parse::<RoomId>()
@@ -1673,30 +1682,36 @@ impl PostgresAdmin {
                 &[&room_id],
             )
             .map_err(PostgresRoomVerificationError::Sql)?
-            .ok_or(PostgresRoomVerificationError::Corrupt {
-                what: "materialization",
-            })?;
-        let core_state_bytes: Vec<u8> =
-            materialization
-                .try_get(0)
+            .map(|row| {
+                let core_state_bytes: Vec<u8> = row.try_get(0).map_err(|_| {
+                    PostgresRoomVerificationError::Corrupt {
+                        what: "Core materialization",
+                    }
+                })?;
+                let activity_state_bytes: Vec<u8> = row.try_get(1).map_err(|_| {
+                    PostgresRoomVerificationError::Corrupt {
+                        what: "Activity materialization",
+                    }
+                })?;
+                CanonicalJsonV1::decode_canonical::<worldstream_core::CoreRoomStateV1>(
+                    &core_state_bytes,
+                )
                 .map_err(|_| PostgresRoomVerificationError::Corrupt {
                     what: "Core materialization",
                 })?;
-        let activity_state_bytes: Vec<u8> =
-            materialization
-                .try_get(1)
-                .map_err(|_| PostgresRoomVerificationError::Corrupt {
-                    what: "Activity materialization",
+                CanonicalJsonV1::from_canonical_bytes(&activity_state_bytes).map_err(|_| {
+                    PostgresRoomVerificationError::Corrupt {
+                        what: "Activity materialization",
+                    }
                 })?;
-        CanonicalJsonV1::decode_canonical::<worldstream_core::CoreRoomStateV1>(&core_state_bytes)
-            .map_err(|_| PostgresRoomVerificationError::Corrupt {
-            what: "Core materialization",
-        })?;
-        CanonicalJsonV1::from_canonical_bytes(&activity_state_bytes).map_err(|_| {
-            PostgresRoomVerificationError::Corrupt {
-                what: "Activity materialization",
-            }
-        })?;
+                Ok((core_state_bytes, activity_state_bytes))
+            })
+            .transpose()?;
+        if materialization.is_none() && !allow_missing_materialization {
+            return Err(PostgresRoomVerificationError::Corrupt {
+                what: "materialization",
+            });
+        }
 
         let transition_rows = client
             .query(
@@ -1728,16 +1743,20 @@ impl PostgresAdmin {
                     what: "Genesis Activity state",
                 }
             })?;
-        let mut expected_snapshots = vec![(
-            0_u64,
-            genesis.complete_head().canonical_bytes().map_err(|_| {
-                PostgresRoomVerificationError::Corrupt {
-                    what: "Genesis Head",
-                }
-            })?,
-            final_core_bytes.clone(),
-            final_activity_bytes.clone(),
-        )];
+        let mut expected_snapshots = if verify_disposable_snapshots {
+            vec![(
+                0_u64,
+                genesis.complete_head().canonical_bytes().map_err(|_| {
+                    PostgresRoomVerificationError::Corrupt {
+                        what: "Genesis Head",
+                    }
+                })?,
+                final_core_bytes.clone(),
+                final_activity_bytes.clone(),
+            )]
+        } else {
+            Vec::new()
+        };
         for (index, row) in transition_rows.iter().enumerate() {
             let stored_seq: i64 =
                 row.try_get(0)
@@ -1784,127 +1803,136 @@ impl PostgresAdmin {
                     .map_err(|_| PostgresRoomVerificationError::Corrupt {
                         what: "Transition Activity state",
                     })?;
-            expected_snapshots.push((
-                u64::try_from(expected_seq).map_err(|_| {
-                    PostgresRoomVerificationError::Corrupt {
-                        what: "Transition sequence",
-                    }
-                })?,
-                transition_head.canonical_bytes().map_err(|_| {
-                    PostgresRoomVerificationError::Corrupt {
-                        what: "Transition Head",
-                    }
-                })?,
-                final_core_bytes.clone(),
-                final_activity_bytes.clone(),
-            ));
+            if verify_disposable_snapshots {
+                expected_snapshots.push((
+                    u64::try_from(expected_seq).map_err(|_| {
+                        PostgresRoomVerificationError::Corrupt {
+                            what: "Transition sequence",
+                        }
+                    })?,
+                    transition_head.canonical_bytes().map_err(|_| {
+                        PostgresRoomVerificationError::Corrupt {
+                            what: "Transition Head",
+                        }
+                    })?,
+                    final_core_bytes.clone(),
+                    final_activity_bytes.clone(),
+                ));
+            }
         }
         if head.genesis_or_transition_hash() != &previous_hash
             || (head.room_seq().get() == 0 && head != genesis.complete_head())
-            || final_core_bytes != core_state_bytes
-            || final_activity_bytes != activity_state_bytes
+            || materialization.as_ref().is_some_and(|(core, activity)| {
+                final_core_bytes != *core || final_activity_bytes != *activity
+            })
         {
             return Err(PostgresRoomVerificationError::Corrupt {
                 what: "Head/materialization agreement",
             });
         }
-        let snapshot_rows = client
-            .query(
-                "SELECT room_seq, genesis_or_transition_hash, core_schema_version, pack_digest, core_state_hash, activity_state_hash, authoritative_state_hash, complete_head_bytes, core_state_bytes, activity_state_bytes FROM worldstream_room_snapshots WHERE room_id = $1 ORDER BY room_seq",
-                &[&room_id],
-            )
-            .map_err(PostgresRoomVerificationError::Sql)?;
-        let mut snapshots = Vec::with_capacity(snapshot_rows.len());
-        for row in snapshot_rows {
-            let room_seq: i64 =
-                row.try_get(0)
-                    .map_err(|_| PostgresRoomVerificationError::Corrupt {
-                        what: "Snapshot room sequence",
-                    })?;
-            let room_seq = u64::try_from(room_seq)
-                .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?;
-            let complete_head_bytes: Vec<u8> =
-                row.try_get(7)
-                    .map_err(|_| PostgresRoomVerificationError::Corrupt {
-                        what: "Snapshot head column",
-                    })?;
-            let snapshot_head = CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(
-                &complete_head_bytes,
-            )
-            .map_err(|_| PostgresRoomVerificationError::Corrupt {
-                what: "Snapshot head decode",
-            })?;
-            if snapshot_head.canonical_bytes().ok().as_deref()
-                != Some(complete_head_bytes.as_slice())
-                || snapshot_head.room_id() != &parsed_room_id
-                || snapshot_head.room_seq().get() != room_seq
-                || row
-                    .try_get::<_, String>(1)
-                    .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?
-                    != snapshot_head.genesis_or_transition_hash().to_string()
-                || row
-                    .try_get::<_, String>(2)
-                    .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?
-                    != snapshot_head.core_schema_version()
-                || row
-                    .try_get::<_, String>(3)
-                    .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?
-                    != snapshot_head.pack_digest().to_string()
-                || row
-                    .try_get::<_, String>(4)
-                    .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?
-                    != snapshot_head.core_state_hash().to_string()
-                || row
-                    .try_get::<_, String>(5)
-                    .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?
-                    != snapshot_head.activity_state_hash().to_string()
-                || row
-                    .try_get::<_, String>(6)
-                    .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?
-                    != snapshot_head.authoritative_state_hash().to_string()
-            {
-                return Err(PostgresRoomVerificationError::Corrupt {
-                    what: "Snapshot head fields",
+        let (core_state_bytes, activity_state_bytes) = materialization
+            .unwrap_or_else(|| (final_core_bytes.clone(), final_activity_bytes.clone()));
+        let snapshots = if verify_disposable_snapshots {
+            let snapshot_rows = client
+                .query(
+                    "SELECT room_seq, genesis_or_transition_hash, core_schema_version, pack_digest, core_state_hash, activity_state_hash, authoritative_state_hash, complete_head_bytes, core_state_bytes, activity_state_bytes FROM worldstream_room_snapshots WHERE room_id = $1 ORDER BY room_seq",
+                    &[&room_id],
+                )
+                .map_err(PostgresRoomVerificationError::Sql)?;
+            let mut snapshots = Vec::with_capacity(snapshot_rows.len());
+            for row in snapshot_rows {
+                let room_seq: i64 =
+                    row.try_get(0)
+                        .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                            what: "Snapshot room sequence",
+                        })?;
+                let room_seq = u64::try_from(room_seq)
+                    .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?;
+                let complete_head_bytes: Vec<u8> =
+                    row.try_get(7)
+                        .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                            what: "Snapshot head column",
+                        })?;
+                let snapshot_head =
+                    CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&complete_head_bytes)
+                        .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                            what: "Snapshot head decode",
+                        })?;
+                if snapshot_head.canonical_bytes().ok().as_deref()
+                    != Some(complete_head_bytes.as_slice())
+                    || snapshot_head.room_id() != &parsed_room_id
+                    || snapshot_head.room_seq().get() != room_seq
+                    || row
+                        .try_get::<_, String>(1)
+                        .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?
+                        != snapshot_head.genesis_or_transition_hash().to_string()
+                    || row
+                        .try_get::<_, String>(2)
+                        .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?
+                        != snapshot_head.core_schema_version()
+                    || row
+                        .try_get::<_, String>(3)
+                        .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?
+                        != snapshot_head.pack_digest().to_string()
+                    || row
+                        .try_get::<_, String>(4)
+                        .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?
+                        != snapshot_head.core_state_hash().to_string()
+                    || row
+                        .try_get::<_, String>(5)
+                        .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?
+                        != snapshot_head.activity_state_hash().to_string()
+                    || row
+                        .try_get::<_, String>(6)
+                        .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?
+                        != snapshot_head.authoritative_state_hash().to_string()
+                {
+                    return Err(PostgresRoomVerificationError::Corrupt {
+                        what: "Snapshot head fields",
+                    });
+                }
+                let snapshot_core_bytes: Vec<u8> = row
+                    .try_get(8)
+                    .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?;
+                CanonicalJsonV1::decode_canonical::<worldstream_core::CoreRoomStateV1>(
+                    &snapshot_core_bytes,
+                )
+                .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                    what: "Snapshot Core bytes",
+                })?;
+                let snapshot_activity_bytes: Vec<u8> =
+                    row.try_get(9)
+                        .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                            what: "Snapshot Activity bytes",
+                        })?;
+                CanonicalJsonV1::from_canonical_bytes(&snapshot_activity_bytes)
+                    .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?;
+                let Some((_, expected_head_bytes, expected_core_bytes, expected_activity_bytes)) =
+                    expected_snapshots.iter().find(|(seq, ..)| *seq == room_seq)
+                else {
+                    return Err(PostgresRoomVerificationError::Corrupt {
+                        what: "Snapshot revision missing",
+                    });
+                };
+                if &complete_head_bytes != expected_head_bytes
+                    || &snapshot_core_bytes != expected_core_bytes
+                    || &snapshot_activity_bytes != expected_activity_bytes
+                {
+                    return Err(PostgresRoomVerificationError::Corrupt {
+                        what: "Snapshot retained bytes",
+                    });
+                }
+                snapshots.push(PostgresSnapshotEvidenceV1 {
+                    room_seq,
+                    complete_head_bytes,
+                    core_state_bytes: snapshot_core_bytes,
+                    activity_state_bytes: snapshot_activity_bytes,
                 });
             }
-            let snapshot_core_bytes: Vec<u8> = row
-                .try_get(8)
-                .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?;
-            CanonicalJsonV1::decode_canonical::<worldstream_core::CoreRoomStateV1>(
-                &snapshot_core_bytes,
-            )
-            .map_err(|_| PostgresRoomVerificationError::Corrupt {
-                what: "Snapshot Core bytes",
-            })?;
-            let snapshot_activity_bytes: Vec<u8> =
-                row.try_get(9)
-                    .map_err(|_| PostgresRoomVerificationError::Corrupt {
-                        what: "Snapshot Activity bytes",
-                    })?;
-            CanonicalJsonV1::from_canonical_bytes(&snapshot_activity_bytes)
-                .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Snapshot" })?;
-            let Some((_, expected_head_bytes, expected_core_bytes, expected_activity_bytes)) =
-                expected_snapshots.iter().find(|(seq, ..)| *seq == room_seq)
-            else {
-                return Err(PostgresRoomVerificationError::Corrupt {
-                    what: "Snapshot revision missing",
-                });
-            };
-            if &complete_head_bytes != expected_head_bytes
-                || &snapshot_core_bytes != expected_core_bytes
-                || &snapshot_activity_bytes != expected_activity_bytes
-            {
-                return Err(PostgresRoomVerificationError::Corrupt {
-                    what: "Snapshot retained bytes",
-                });
-            }
-            snapshots.push(PostgresSnapshotEvidenceV1 {
-                room_seq,
-                complete_head_bytes,
-                core_state_bytes: snapshot_core_bytes,
-                activity_state_bytes: snapshot_activity_bytes,
-            });
-        }
+            snapshots
+        } else {
+            Vec::new()
+        };
         let member_rows = client
             .query(
                 "SELECT member_id, membership_bytes, frame_head, retained_frame_floor, last_ack_frame_seq, reset_required_through, reset_generation FROM worldstream_members WHERE room_id = $1 ORDER BY member_id",
@@ -3179,6 +3207,7 @@ const SCHEMA_TABLE_ORDER: &[&str] = &[
     "worldstream_activation_intents",
     "worldstream_activation_operation_receipts",
     "worldstream_room_snapshots",
+    "worldstream_room_snapshot_operational_witnesses",
     "worldstream_room_snapshot_schedules",
     "worldstream_semantic_receipts",
     "worldstream_integrity_incidents",
@@ -3247,7 +3276,7 @@ const GLOBAL_RESOURCE_IDENTITY_INDEXES: [(&str, &str); 2] = [
     ),
 ];
 
-const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 32] = [
+const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 33] = [
     (
         "worldstream_transfer_fence_operation_guards",
         "worldstream_operation_guards",
@@ -3291,6 +3320,10 @@ const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 32] = [
     (
         "worldstream_transfer_fence_room_snapshots",
         "worldstream_room_snapshots",
+    ),
+    (
+        "worldstream_transfer_fence_snapshot_operational_witnesses",
+        "worldstream_room_snapshot_operational_witnesses",
     ),
     (
         "worldstream_transfer_fence_snapshot_schedules",
@@ -4555,6 +4588,142 @@ impl PostgresRoomStore {
         worldstream_core::recover_room_from_storage(self, registry, &room_id)
     }
 
+    /// Rebuilds this Room's disposable recovery checkpoint from verified
+    /// Genesis-to-Head history. This is an operator maintenance operation for
+    /// a Room that has no usable cache, such as a newly finalized stream
+    /// transfer; it does not mutate canonical history.
+    ///
+    /// PostgreSQL first captures the exact Head and integrity generation that
+    /// the full replay must preserve. Core then performs its ordinary full
+    /// replay and guarded materialization install. PostgreSQL locks the same
+    /// Root, confirms that exact healthy fence is still current, and captures
+    /// the paired snapshot plus its operational witness in one transaction.
+    /// An absent or invalid witness fails closed instead of publishing a
+    /// partial cache.
+    #[allow(clippy::too_many_lines)]
+    pub fn rebuild_verified_recovery_checkpoint(
+        &self,
+        registry: &worldstream_core::PackRegistryV1,
+        room_id: &str,
+    ) -> Result<Option<CoreTraceV1>, RoomRecoveryErrorV1> {
+        let room_id = room_id
+            .parse::<RoomId>()
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let Some(fence) = capture_postgres_recovery_fence(self, &room_id)? else {
+            return Ok(None);
+        };
+        let fenced_head =
+            match CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&fence.head_bytes) {
+                Ok(head) => head,
+                Err(_) => {
+                    quarantine_postgres_recovery_fence(self, &room_id, &fence)?;
+                    return Err(RoomRecoveryErrorV1::Corrupt);
+                }
+            };
+        let fenced_integrity_generation = fence.integrity_generation;
+        let Some(trace) =
+            worldstream_core::recover_room_from_full_storage(self, registry, &room_id)?
+        else {
+            return Ok(None);
+        };
+        let head = trace.head().clone();
+        if head != fenced_head {
+            return Err(RoomRecoveryErrorV1::ConcurrentChange);
+        }
+        let head_bytes = head
+            .canonical_bytes()
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let core_state_bytes = trace
+            .core_state()
+            .canonical_bytes()
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let activity_state_bytes = trace
+            .activity_state()
+            .to_bytes()
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let mut client = self
+            .connect()
+            .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+        let mut tx = client
+            .transaction()
+            .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+        let root = tx
+            .query_opt(
+                "SELECT head_bytes, integrity_generation, integrity_status FROM worldstream_room_roots \
+                 WHERE room_id = $1 FOR UPDATE",
+                &[&room_id.as_str()],
+            )
+            .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+            .ok_or(RoomRecoveryErrorV1::ConcurrentChange)?;
+        let stored_head: Vec<u8> = root.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let stored_integrity_generation: i64 =
+            root.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let stored_integrity_generation = IntegrityGenerationV1::new(
+            u64::try_from(stored_integrity_generation).map_err(|_| RoomRecoveryErrorV1::Corrupt)?,
+        )
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let integrity_status: String = root.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        if stored_head != head_bytes || stored_integrity_generation != fenced_integrity_generation {
+            return Err(RoomRecoveryErrorV1::ConcurrentChange);
+        }
+        if integrity_status != "healthy" {
+            return Err(RoomRecoveryErrorV1::IntegrityUnavailable);
+        }
+        persist_snapshot(
+            &mut tx,
+            room_id.as_str(),
+            &head,
+            &head_bytes,
+            &core_state_bytes,
+            &activity_state_bytes,
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+        let room_seq =
+            i64::try_from(head.room_seq().get()).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        // A same-Head operational mutation can make a previous witness stale.
+        // Replace it only after the full guarded replay above has verified the
+        // current serving materializations.
+        tx.execute(
+            "DELETE FROM worldstream_room_snapshot_operational_witnesses \
+             WHERE room_id = $1 AND room_seq = $2",
+            &[&room_id.as_str(), &room_seq],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+        persist_checkpoint_operational_witness(&mut tx, room_id.as_str(), &head, &head_bytes)
+            .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+        let witness_present: bool = tx
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM worldstream_room_snapshot_operational_witnesses \
+                 WHERE room_id = $1 AND room_seq = $2)",
+                &[&room_id.as_str(), &room_seq],
+            )
+            .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+            .try_get(0)
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        if !witness_present {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+        tx.execute(
+            "DELETE FROM worldstream_room_snapshots WHERE room_id = $1 \
+             AND room_seq NOT IN (SELECT room_seq FROM worldstream_room_snapshots \
+             WHERE room_id = $1 ORDER BY room_seq DESC LIMIT 3)",
+            &[&room_id.as_str()],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+        tx.execute(
+            "INSERT INTO worldstream_room_snapshot_schedules( \
+                 room_id, last_snapshot_room_seq, transitions_since_snapshot, active_started_at \
+             ) VALUES ($1, $2, 0, NULL) \
+             ON CONFLICT (room_id) DO UPDATE SET last_snapshot_room_seq = EXCLUDED.last_snapshot_room_seq, \
+             transitions_since_snapshot = 0, active_started_at = NULL",
+            &[&room_id.as_str(), &room_seq],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+        tx.commit()
+            .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+        Ok(Some(trace))
+    }
+
     /// Runs the present-authorized historical projection path against exact
     /// verified PostgreSQL lineage. The authority fence is checked before and
     /// after the immutable read; the returned projection is produced solely
@@ -5201,7 +5370,7 @@ impl PostgresRoomStore {
         transaction: &mut Transaction<'_>,
         room_id: &str,
     ) -> Result<PostgresRoomVerification, PostgresRoomVerificationError> {
-        PostgresAdmin::verify_room_with_client(transaction, room_id)
+        PostgresAdmin::verify_room_with_client(transaction, room_id, false, true)
     }
 
     /// Performs the same read-only deployment identity probe as the admin
@@ -7128,30 +7297,806 @@ impl AuthorizedReceiptResolverV1 for PostgresRoomStore {
     }
 }
 
+const MAX_CHECKPOINT_TAIL: i64 = 250;
+
+#[allow(clippy::too_many_lines)]
+fn inspect_postgres_checkpoint_candidate(
+    store: &PostgresRoomStore,
+    requested_room_id: &RoomId,
+) -> Result<Option<RoomRecoveryCandidateV1>, RoomRecoveryErrorV1> {
+    let mut client = store
+        .connect()
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    let mut tx = client
+        .build_transaction()
+        .isolation_level(IsolationLevel::RepeatableRead)
+        .start()
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    let room_id = requested_room_id.as_str();
+    let Some(root) = tx
+        .query_opt(
+            "SELECT head_bytes, integrity_generation, integrity_status \
+             FROM worldstream_room_roots WHERE room_id = $1 FOR SHARE",
+            &[&room_id],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+    else {
+        return Ok(None);
+    };
+    let head_bytes: Vec<u8> = root.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let head = CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&head_bytes)
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    if head.room_id() != requested_room_id
+        || head
+            .canonical_bytes()
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?
+            != head_bytes
+    {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    let integrity_generation: i64 = root.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let integrity_generation = IntegrityGenerationV1::new(
+        u64::try_from(integrity_generation).map_err(|_| RoomRecoveryErrorV1::Corrupt)?,
+    )
+    .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let integrity_status: String = root.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    if integrity_status != "healthy" {
+        return Err(RoomRecoveryErrorV1::IntegrityUnavailable);
+    }
+    let genesis_row = tx
+        .query_opt(
+            "SELECT pack_revision_lock_bytes, genesis_bytes FROM worldstream_genesis \
+             WHERE room_id = $1 FOR SHARE",
+            &[&room_id],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+        .ok_or(RoomRecoveryErrorV1::Corrupt)?;
+    let pack_lock_bytes: Vec<u8> = genesis_row
+        .try_get(0)
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let genesis_bytes: Vec<u8> = genesis_row
+        .try_get(1)
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    PackRevisionLockV1::from_canonical_bytes(&pack_lock_bytes, head.pack_digest())
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+
+    let upper = i64::try_from(head.room_seq().get()).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let Some(snapshot) = tx
+        .query_opt(
+            "SELECT snapshot.room_seq, snapshot.snapshot_schema_version, \
+                    snapshot.genesis_or_transition_hash, snapshot.core_schema_version, \
+                    snapshot.pack_digest, snapshot.core_state_hash, \
+                    snapshot.activity_state_hash, snapshot.authoritative_state_hash, \
+                    snapshot.complete_head_bytes, snapshot.core_state_bytes, \
+                    snapshot.activity_state_bytes, witness.witness_schema_version, \
+                    witness.witness_hash, witness.witness_bytes \
+             FROM worldstream_room_snapshots AS snapshot \
+             JOIN worldstream_room_snapshot_operational_witnesses AS witness \
+               ON witness.room_id = snapshot.room_id AND witness.room_seq = snapshot.room_seq \
+             WHERE snapshot.room_id = $1 AND snapshot.room_seq <= $2 \
+               AND snapshot.room_seq >= $3 \
+             ORDER BY snapshot.room_seq DESC LIMIT 1 \
+             FOR SHARE OF snapshot, witness",
+            &[&room_id, &upper, &upper.saturating_sub(MAX_CHECKPOINT_TAIL)],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+    else {
+        return Ok(None);
+    };
+    let checkpoint_seq: i64 = snapshot
+        .try_get(0)
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let snapshot_schema: String = snapshot
+        .try_get(1)
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let checkpoint_head_bytes: Vec<u8> = snapshot
+        .try_get(8)
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let Ok(checkpoint_head) =
+        CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&checkpoint_head_bytes)
+    else {
+        return Ok(None);
+    };
+    let snapshot_matches = snapshot_schema == "worldstream/paired-snapshot/v1"
+        && checkpoint_head.room_id() == requested_room_id
+        && i64::try_from(checkpoint_head.room_seq().get()).ok() == Some(checkpoint_seq)
+        && upper.saturating_sub(checkpoint_seq) <= MAX_CHECKPOINT_TAIL
+        && snapshot.try_get::<_, String>(2).ok().as_deref()
+            == Some(
+                checkpoint_head
+                    .genesis_or_transition_hash()
+                    .to_string()
+                    .as_str(),
+            )
+        && snapshot.try_get::<_, String>(3).ok().as_deref()
+            == Some(checkpoint_head.core_schema_version())
+        && snapshot.try_get::<_, String>(4).ok().as_deref()
+            == Some(checkpoint_head.pack_digest().to_string().as_str())
+        && snapshot.try_get::<_, String>(5).ok().as_deref()
+            == Some(checkpoint_head.core_state_hash().to_string().as_str())
+        && snapshot.try_get::<_, String>(6).ok().as_deref()
+            == Some(checkpoint_head.activity_state_hash().to_string().as_str())
+        && snapshot.try_get::<_, String>(7).ok().as_deref()
+            == Some(
+                checkpoint_head
+                    .authoritative_state_hash()
+                    .to_string()
+                    .as_str(),
+            )
+        && checkpoint_head.canonical_bytes().ok().as_deref()
+            == Some(checkpoint_head_bytes.as_slice());
+    if !snapshot_matches {
+        return Ok(None);
+    }
+    let checkpoint_core_bytes: Vec<u8> = snapshot
+        .try_get(9)
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let checkpoint_activity_bytes: Vec<u8> = snapshot
+        .try_get(10)
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let record_bytes: Vec<u8> = if checkpoint_seq == 0 {
+        genesis_bytes.clone()
+    } else {
+        tx.query_opt(
+            "SELECT transition_bytes FROM worldstream_transitions \
+             WHERE room_id = $1 AND room_seq = $2 FOR SHARE",
+            &[&room_id, &checkpoint_seq],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+        .ok_or(RoomRecoveryErrorV1::Corrupt)?
+        .try_get(0)
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?
+    };
+    if VerifiedCurrentRoomMaterializationV1::verify_for_storage(
+        &checkpoint_head,
+        &record_bytes,
+        &checkpoint_core_bytes,
+        &checkpoint_activity_bytes,
+    )
+    .is_err()
+    {
+        return Ok(None);
+    }
+    let witness_schema: String = snapshot
+        .try_get(11)
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let witness_hash: Vec<u8> = snapshot
+        .try_get(12)
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let witness_bytes: Vec<u8> = snapshot
+        .try_get(13)
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    if witness_schema != CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V1
+        || witness_bytes.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_BYTES
+        || witness_hash != Blake3DigestV1::hash(&witness_bytes).as_bytes()
+    {
+        return Ok(None);
+    }
+    let Ok(witness) =
+        RoomCheckpointOperationalWitnessV1::from_canonical_bytes(&witness_bytes, &checkpoint_head)
+    else {
+        return Ok(None);
+    };
+
+    let transition_rows = tx
+        .query(
+            "SELECT room_seq, transition_bytes FROM worldstream_transitions \
+             WHERE room_id = $1 AND room_seq > $2 AND room_seq <= $3 ORDER BY room_seq FOR SHARE",
+            &[&room_id, &checkpoint_seq, &upper],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    let mut transitions = Vec::with_capacity(transition_rows.len());
+    let mut expected_sequence = checkpoint_seq.saturating_add(1);
+    for row in transition_rows {
+        let sequence: i64 = row.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        if sequence != expected_sequence {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+        transitions.push(row.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?);
+        expected_sequence = expected_sequence.saturating_add(1);
+    }
+    if expected_sequence != upper.saturating_add(1) {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    let materialization = tx
+        .query_opt(
+            "SELECT core_state_bytes, activity_state_bytes FROM worldstream_materializations \
+             WHERE room_id = $1 FOR SHARE",
+            &[&room_id],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+        .ok_or(RoomRecoveryErrorV1::Corrupt)?;
+    let core_state_bytes: Vec<u8> = materialization
+        .try_get(0)
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let activity_state_bytes: Vec<u8> = materialization
+        .try_get(1)
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let checkpoint = RoomRecoveryCheckpointV1::new(
+        checkpoint_head,
+        record_bytes,
+        checkpoint_core_bytes,
+        checkpoint_activity_bytes,
+        witness.timers().to_vec(),
+    )
+    .with_operational_witnesses(
+        witness.observation_frames().to_vec(),
+        witness.observation_consequences().to_vec(),
+        witness.membership_generations().clone(),
+    )
+    .with_bounded_operational_witnesses(
+        witness.observation_frame_heads().clone(),
+        witness.activation_decisions().to_vec(),
+    );
+    tx.commit()
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    Ok(Some(RoomRecoveryCandidateV1::new_with_checkpoint(
+        head,
+        integrity_generation,
+        head_bytes,
+        pack_lock_bytes,
+        genesis_bytes,
+        transitions,
+        Some(core_state_bytes),
+        Some(activity_state_bytes),
+        checkpoint,
+    )))
+}
+
+fn recovery_i64(value: u64) -> Result<i64, RoomRecoveryErrorV1> {
+    i64::try_from(value).map_err(|_| RoomRecoveryErrorV1::Corrupt)
+}
+
+const fn recovered_postgres_timer_state(state: RecoveredTimerStateV1) -> &'static str {
+    match state {
+        RecoveredTimerStateV1::Scheduled => "scheduled",
+        RecoveredTimerStateV1::Fired => "fired",
+        RecoveredTimerStateV1::Cancelled => "cancelled",
+    }
+}
+
+type PostgresRecoveryFramePosition = (i64, i64);
+
+fn verify_postgres_recovery_memberships(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    recovered: &RecoveredRoomMaterializationsV1,
+) -> Result<BTreeMap<String, PostgresRecoveryFramePosition>, RoomRecoveryErrorV1> {
+    let expected = recovered
+        .memberships()
+        .iter()
+        .map(|member| {
+            (
+                member.membership.member_id().to_string(),
+                member.canonical_membership_bytes.as_slice(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    if expected.len() != recovered.memberships().len() {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    let expected_heads = recovered
+        .observation_frame_heads()
+        .iter()
+        .map(|(member_id, frame_head)| Ok((member_id.to_string(), recovery_i64(*frame_head)?)))
+        .collect::<Result<BTreeMap<_, _>, RoomRecoveryErrorV1>>()?;
+    if expected_heads.len() != expected.len() {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    let rows = tx
+        .query(
+            "SELECT member_id, membership_bytes, membership_generation, frame_head, \
+                    retained_frame_floor, last_ack_frame_seq, reset_required_through, \
+                    reset_generation \
+             FROM worldstream_members WHERE room_id = $1 ORDER BY member_id FOR SHARE",
+            &[&room_id],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    if rows.len() != expected.len() {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    let expected_generations = recovered.membership_generations();
+    let mut positions = BTreeMap::new();
+    for row in rows {
+        let member_id: String = row.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let membership_bytes: Vec<u8> = row.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let generation: i64 = row.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let frame_head: i64 = row.try_get(3).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let retained_floor: i64 = row.try_get(4).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let last_ack: Option<i64> = row.try_get(5).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let reset_through: Option<i64> =
+            row.try_get(6).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let reset_generation: i64 = row.try_get(7).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let expected_generation =
+            expected_generations.and_then(|generations| generations.get(&member_id).copied());
+        if expected.get(&member_id).copied() != Some(membership_bytes.as_slice())
+            || expected_heads.get(&member_id).copied() != Some(frame_head)
+            || generation < 1
+            || expected_generation.is_some_and(|expected| generation != expected)
+            || frame_head < 0
+            || retained_floor < 1
+            || retained_floor > frame_head.saturating_add(1)
+            || last_ack.is_some_and(|cursor| cursor < 1 || cursor > frame_head)
+            || reset_through.is_some_and(|marker| marker < 0 || marker > frame_head)
+            || reset_generation < 0
+            || positions
+                .insert(member_id, (frame_head, retained_floor))
+                .is_some()
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+    }
+    Ok(positions)
+}
+
+fn verify_postgres_recovery_timers(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    recovered: &RecoveredRoomMaterializationsV1,
+) -> Result<(), RoomRecoveryErrorV1> {
+    let rows = tx
+        .query(
+            "SELECT timer_id, generation, scheduled_for, payload_bytes, state \
+             FROM worldstream_timers WHERE room_id = $1 ORDER BY timer_id, generation FOR SHARE",
+            &[&room_id],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    if rows.len() != recovered.timers().len() {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    for (row, expected) in rows.iter().zip(recovered.timers()) {
+        let timer_id: String = row.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let generation: i64 = row.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let scheduled_for: String = row.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let payload_bytes: Vec<u8> = row.try_get(3).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let state: String = row.try_get(4).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        if timer_id != expected.timer_id().to_string()
+            || generation != recovery_i64(expected.generation().get())?
+            || scheduled_for != expected.scheduled_for().as_str()
+            || payload_bytes != expected.canonical_payload_bytes()
+            || CanonicalJsonV1::from_canonical_bytes(&payload_bytes).is_err()
+            || state != recovered_postgres_timer_state(expected.state())
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+    }
+    Ok(())
+}
+
+fn verify_postgres_recovery_frames(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    expected_head: &CompleteHeadV1,
+    recovered: &RecoveredRoomMaterializationsV1,
+    positions: &BTreeMap<String, PostgresRecoveryFramePosition>,
+) -> Result<(), RoomRecoveryErrorV1> {
+    let expected_frames = recovered
+        .observation_frames()
+        .iter()
+        .map(|frame| {
+            Ok((
+                (
+                    frame.member_id().to_string(),
+                    recovery_i64(frame.frame_seq())?,
+                ),
+                (
+                    recovery_i64(frame.cause_room_seq().get())?,
+                    frame.payload_hash().as_bytes().to_vec(),
+                ),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, RoomRecoveryErrorV1>>()?;
+    if expected_frames.len() != recovered.observation_frames().len() {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    let rows = tx
+        .query(
+            "SELECT member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash \
+             FROM worldstream_frames WHERE room_id = $1 ORDER BY member_id, frame_seq FOR SHARE",
+            &[&room_id],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    let maximum_cause = recovery_i64(expected_head.room_seq().get())?;
+    let mut previous = positions
+        .iter()
+        .map(|(member_id, (_, floor))| (member_id.clone(), floor.saturating_sub(1)))
+        .collect::<BTreeMap<_, _>>();
+    let mut stored = BTreeMap::new();
+    for row in rows {
+        let member_id: String = row.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let frame_seq: i64 = row.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let cause_room_seq: i64 = row.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let payload_bytes: Vec<u8> = row.try_get(3).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let payload_hash: Vec<u8> = row.try_get(4).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let prior = previous
+            .get_mut(&member_id)
+            .ok_or(RoomRecoveryErrorV1::Corrupt)?;
+        if prior.checked_add(1) != Some(frame_seq)
+            || cause_room_seq < 1
+            || cause_room_seq > maximum_cause
+            || CanonicalJsonV1::from_canonical_bytes(&payload_bytes).is_err()
+            || payload_hash != Blake3DigestV1::hash(&payload_bytes).as_bytes()
+            || expected_frames.get(&(member_id.clone(), frame_seq))
+                != Some(&(cause_room_seq, payload_hash.clone()))
+            || stored
+                .insert((member_id, frame_seq), (cause_room_seq, payload_hash))
+                .is_some()
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+        *prior = frame_seq;
+    }
+    if previous.iter().any(|(member_id, last)| {
+        positions
+            .get(member_id)
+            .is_none_or(|(frame_head, _)| last != frame_head)
+    }) {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    for ((member_id, frame_seq), expected) in expected_frames {
+        if stored.get(&(member_id.clone(), frame_seq)) != Some(&expected)
+            && frame_seq
+                >= positions
+                    .get(&member_id)
+                    .ok_or(RoomRecoveryErrorV1::Corrupt)?
+                    .1
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+    }
+    Ok(())
+}
+
+fn verify_postgres_recovery_consequences(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    expected_head: &CompleteHeadV1,
+    recovered: &RecoveredRoomMaterializationsV1,
+    positions: &BTreeMap<String, PostgresRecoveryFramePosition>,
+) -> Result<(), RoomRecoveryErrorV1> {
+    let expected = recovered
+        .observation_consequences()
+        .iter()
+        .map(|consequence| match consequence {
+            RecoveredObservationConsequenceV1::ResetRequired {
+                member_id,
+                cause_room_seq,
+                projection_hash,
+            } => Ok((
+                (member_id.to_string(), recovery_i64(cause_room_seq.get())?),
+                (
+                    "reset_required".to_owned(),
+                    Some(projection_hash.as_bytes().to_vec()),
+                ),
+            )),
+            RecoveredObservationConsequenceV1::VisibilityLost {
+                member_id,
+                cause_room_seq,
+            } => Ok((
+                (member_id.to_string(), recovery_i64(cause_room_seq.get())?),
+                ("visibility_lost".to_owned(), None),
+            )),
+        })
+        .collect::<Result<BTreeMap<_, _>, RoomRecoveryErrorV1>>()?;
+    if expected.len() != recovered.observation_consequences().len() {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    let rows = tx
+        .query(
+            "SELECT member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash \
+             FROM worldstream_observation_consequences WHERE room_id = $1 \
+             ORDER BY member_id, cause_room_seq FOR SHARE",
+            &[&room_id],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    let maximum_cause = recovery_i64(expected_head.room_seq().get())?;
+    let mut stored = BTreeMap::new();
+    for row in rows {
+        let member_id: String = row.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let cause_room_seq: i64 = row.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let kind: String = row.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let payload_bytes: Option<Vec<u8>> =
+            row.try_get(3).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let projection_hash: Option<Vec<u8>> =
+            row.try_get(4).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        if !positions.contains_key(&member_id)
+            || cause_room_seq < 1
+            || cause_room_seq > maximum_cause
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+        let verified_hash = match (kind.as_str(), payload_bytes.as_deref(), projection_hash) {
+            ("reset_required", Some(bytes), Some(hash))
+                if projection_hash_for_canonical_bytes(bytes)
+                    .is_ok_and(|computed| computed.as_bytes() == hash.as_slice()) =>
+            {
+                Some(hash)
+            }
+            ("visibility_lost", None, None) => None,
+            _ => return Err(RoomRecoveryErrorV1::Corrupt),
+        };
+        if stored
+            .insert((member_id, cause_room_seq), (kind, verified_hash))
+            .is_some()
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+    }
+    if stored != expected {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    Ok(())
+}
+
+fn verify_postgres_recovery_activation_decisions(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    expected_head: &CompleteHeadV1,
+    recovered: &RecoveredRoomMaterializationsV1,
+) -> Result<(), RoomRecoveryErrorV1> {
+    let expected = recovered
+        .activation_decisions()
+        .iter()
+        .map(|decision| {
+            Ok((
+                (
+                    recovery_i64(decision.cause_room_seq().get())?,
+                    decision.decision_id().to_owned(),
+                ),
+                (
+                    decision.target_member_id().map(ToString::to_string),
+                    decision.canonical_decision_bytes().to_vec(),
+                ),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, RoomRecoveryErrorV1>>()?;
+    if expected.len() != recovered.activation_decisions().len() {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    let rows = tx
+        .query(
+            "SELECT cause_room_seq, decision_id, target_member_id, decision_bytes \
+             FROM worldstream_activation_decisions WHERE room_id = $1 \
+             ORDER BY cause_room_seq, decision_id FOR SHARE",
+            &[&room_id],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    let maximum_cause = recovery_i64(expected_head.room_seq().get())?;
+    let mut stored = BTreeMap::new();
+    for row in rows {
+        let cause_room_seq: i64 = row.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let decision_id: String = row.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let target_member_id: Option<String> =
+            row.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let decision_bytes: Vec<u8> = row.try_get(3).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let decision = CanonicalJsonV1::decode_canonical::<worldstream_core::ActivationDecisionV1>(
+            &decision_bytes,
+        )
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        if cause_room_seq < 1
+            || cause_room_seq > maximum_cause
+            || recovery_i64(decision.cause_room_seq.get())? != cause_room_seq
+            || decision.decision_id != decision_id
+            || target_member_id.as_deref() != Some(decision.attention.target_member_id.as_str())
+            || stored
+                .insert(
+                    (cause_room_seq, decision_id),
+                    (target_member_id, decision_bytes),
+                )
+                .is_some()
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+    }
+    if stored != expected {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    Ok(())
+}
+
+fn verify_postgres_recovery_install(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    expected_head: &CompleteHeadV1,
+    recovered: &RecoveredRoomMaterializationsV1,
+) -> Result<bool, RoomRecoveryErrorV1> {
+    let materialization = tx
+        .query_opt(
+            "SELECT core_state_bytes, activity_state_bytes \
+             FROM worldstream_materializations WHERE room_id = $1 FOR SHARE",
+            &[&room_id],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    let rebuild_materialization = match materialization {
+        Some(row) => {
+            let core: Vec<u8> = row.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+            let activity: Vec<u8> = row.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+            if core != recovered.canonical_core_state_bytes()
+                || activity != recovered.canonical_activity_state_bytes()
+            {
+                return Err(RoomRecoveryErrorV1::Corrupt);
+            }
+            false
+        }
+        None => true,
+    };
+    let positions = verify_postgres_recovery_memberships(tx, room_id, recovered)?;
+    verify_postgres_recovery_timers(tx, room_id, recovered)?;
+    verify_postgres_recovery_frames(tx, room_id, expected_head, recovered, &positions)?;
+    verify_postgres_recovery_consequences(tx, room_id, expected_head, recovered, &positions)?;
+    verify_postgres_recovery_activation_decisions(tx, room_id, expected_head, recovered)?;
+    Ok(rebuild_materialization)
+}
+
+struct PostgresRecoveryFenceV1 {
+    head_bytes: Vec<u8>,
+    integrity_generation: IntegrityGenerationV1,
+}
+
+fn capture_postgres_recovery_fence(
+    store: &PostgresRoomStore,
+    room_id: &RoomId,
+) -> Result<Option<PostgresRecoveryFenceV1>, RoomRecoveryErrorV1> {
+    let mut client = store
+        .connect()
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    let Some(row) = client
+        .query_opt(
+            "SELECT head_bytes, integrity_generation FROM worldstream_room_roots \
+             WHERE room_id = $1 FOR SHARE",
+            &[&room_id.as_str()],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+    else {
+        return Ok(None);
+    };
+    let head_bytes: Vec<u8> = row.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let integrity_generation: i64 = row.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let integrity_generation = IntegrityGenerationV1::new(
+        u64::try_from(integrity_generation).map_err(|_| RoomRecoveryErrorV1::Corrupt)?,
+    )
+    .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    Ok(Some(PostgresRecoveryFenceV1 {
+        head_bytes,
+        integrity_generation,
+    }))
+}
+
+fn quarantine_postgres_recovery_fence(
+    store: &PostgresRoomStore,
+    room_id: &RoomId,
+    expected: &PostgresRecoveryFenceV1,
+) -> Result<(), RoomRecoveryErrorV1> {
+    let expected_generation = i64::try_from(expected.integrity_generation.get())
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let mut client = store
+        .connect()
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    let mut tx = client
+        .transaction()
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    let root = tx
+        .query_opt(
+            "SELECT head_bytes, integrity_generation, integrity_status \
+             FROM worldstream_room_roots WHERE room_id = $1 FOR UPDATE",
+            &[&room_id.as_str()],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+        .ok_or(RoomRecoveryErrorV1::ConcurrentChange)?;
+    let head_bytes: Vec<u8> = root.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let generation: i64 = root.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    let status: String = root.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    if head_bytes != expected.head_bytes || generation != expected_generation {
+        return Err(RoomRecoveryErrorV1::ConcurrentChange);
+    }
+    if status != "healthy" {
+        return Err(RoomRecoveryErrorV1::IntegrityUnavailable);
+    }
+    quarantine_postgres_recovery_in_transaction(&mut tx, room_id.as_str(), generation)?;
+    tx.commit()
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)
+}
+
+fn quarantine_postgres_recovery_in_transaction(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    current_generation: i64,
+) -> Result<(), RoomRecoveryErrorV1> {
+    let next_generation = current_generation
+        .checked_add(1)
+        .ok_or(RoomRecoveryErrorV1::Corrupt)?;
+    let incident_seq: i64 = tx
+        .query_one(
+            "SELECT coalesce(max(incident_seq), 0) + 1 \
+             FROM worldstream_integrity_incidents WHERE room_id = $1",
+            &[&room_id],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+        .try_get(0)
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    tx.execute(
+        "INSERT INTO worldstream_integrity_incidents( \
+             room_id, incident_seq, generation, status, reason_code, details_bytes \
+         ) VALUES ($1, $2, $3, 'quarantined', 'room_recovery_failed', NULL)",
+        &[&room_id, &incident_seq, &next_generation],
+    )
+    .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    let changed = tx
+        .execute(
+            "UPDATE worldstream_room_roots \
+             SET integrity_generation = $2, integrity_status = 'quarantined' \
+             WHERE room_id = $1 AND integrity_generation = $3 AND integrity_status = 'healthy'",
+            &[&room_id, &next_generation, &current_generation],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    if changed != 1 {
+        return Err(RoomRecoveryErrorV1::ConcurrentChange);
+    }
+    Ok(())
+}
+
+fn inspect_postgres_full_recovery_candidate(
+    store: &PostgresRoomStore,
+    room_id: &RoomId,
+) -> Result<Option<RoomRecoveryCandidateV1>, RoomRecoveryErrorV1> {
+    let observed_fence = capture_postgres_recovery_fence(store, room_id)?;
+    let mut client = store
+        .connect()
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    let verification =
+        match PostgresAdmin::verify_room_with_client(&mut client, room_id.as_str(), true, false) {
+            Ok(value) => value,
+            Err(PostgresRoomVerificationError::MissingRoom { .. }) => return Ok(None),
+            Err(
+                PostgresRoomVerificationError::InvalidRoomId
+                | PostgresRoomVerificationError::Corrupt { .. },
+            ) => {
+                let Some(expected_fence) = observed_fence else {
+                    return Err(RoomRecoveryErrorV1::ConcurrentChange);
+                };
+                quarantine_postgres_recovery_fence(store, room_id, &expected_fence)?;
+                return Err(RoomRecoveryErrorV1::Corrupt);
+            }
+            Err(
+                PostgresRoomVerificationError::Connection(_)
+                | PostgresRoomVerificationError::Sql(_),
+            ) => return Err(RoomRecoveryErrorV1::StorageUnavailable),
+        };
+    if verification.integrity_status != "healthy" {
+        return Err(RoomRecoveryErrorV1::IntegrityUnavailable);
+    }
+    Ok(Some(RoomRecoveryCandidateV1::new(
+        verification.head,
+        IntegrityGenerationV1::new(verification.integrity_generation)
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?,
+        verification.head_bytes,
+        verification.pack_revision_lock_bytes,
+        verification.genesis_bytes,
+        verification.transition_bytes,
+        Some(verification.core_state_bytes),
+        Some(verification.activity_state_bytes),
+    )))
+}
+
 impl RoomRecoveryStorageV1 for PostgresRoomStore {
     fn inspect_recovery_candidate(
         &self,
         room_id: &RoomId,
     ) -> Result<Option<RoomRecoveryCandidateV1>, RoomRecoveryErrorV1> {
-        let verification = match self.verify_room(room_id.as_str()) {
-            Ok(value) => value,
-            Err(PostgresRoomVerificationError::MissingRoom { .. }) => return Ok(None),
-            Err(_) => return Err(RoomRecoveryErrorV1::StorageUnavailable),
-        };
-        if verification.integrity_status != "healthy" {
-            return Err(RoomRecoveryErrorV1::IntegrityUnavailable);
+        match inspect_postgres_checkpoint_candidate(self, room_id) {
+            Ok(Some(candidate)) => Ok(Some(candidate)),
+            Ok(None) | Err(RoomRecoveryErrorV1::Corrupt) => {
+                inspect_postgres_full_recovery_candidate(self, room_id)
+            }
+            Err(error) => Err(error),
         }
-        Ok(Some(RoomRecoveryCandidateV1::new(
-            verification.head,
-            IntegrityGenerationV1::new(verification.integrity_generation)
-                .map_err(|_| RoomRecoveryErrorV1::Corrupt)?,
-            verification.head_bytes,
-            verification.pack_revision_lock_bytes,
-            verification.genesis_bytes,
-            verification.transition_bytes,
-            Some(verification.core_state_bytes),
-            Some(verification.activity_state_bytes),
-        )))
+    }
+
+    fn inspect_full_recovery_candidate(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<Option<RoomRecoveryCandidateV1>, RoomRecoveryErrorV1> {
+        inspect_postgres_full_recovery_candidate(self, room_id)
     }
 
     fn guard_recovery_install(
@@ -7177,8 +8122,10 @@ impl RoomRecoveryStorageV1 for PostgresRoomStore {
         let head_bytes: Vec<u8> = row.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let generation: i64 = row.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let status: String = row.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-        if status != "healthy"
-            || generation != i64::try_from(expected_integrity_generation.get()).unwrap_or(-1)
+        if status != "healthy" {
+            return Err(RoomRecoveryErrorV1::IntegrityUnavailable);
+        }
+        if generation != i64::try_from(expected_integrity_generation.get()).unwrap_or(-1)
             || head_bytes
                 != expected_head
                     .canonical_bytes()
@@ -7186,22 +8133,36 @@ impl RoomRecoveryStorageV1 for PostgresRoomStore {
         {
             return Err(RoomRecoveryErrorV1::ConcurrentChange);
         }
-        tx.execute(
-            "UPDATE worldstream_materializations SET core_state_bytes = $1, activity_state_bytes = $2 WHERE room_id = $3",
-            &[
-                &recovered_materializations.canonical_core_state_bytes(),
-                &recovered_materializations.canonical_activity_state_bytes(),
-                &room_id.as_str(),
-            ],
-        )
-        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
-        for membership in recovered_materializations.memberships() {
+        let rebuild_materialization = match verify_postgres_recovery_install(
+            &mut tx,
+            room_id.as_str(),
+            expected_head,
+            recovered_materializations,
+        ) {
+            Ok(rebuild_materialization) => rebuild_materialization,
+            Err(RoomRecoveryErrorV1::Corrupt) => {
+                if recovered_materializations
+                    .membership_generations()
+                    .is_some()
+                {
+                    return Err(RoomRecoveryErrorV1::Corrupt);
+                }
+                quarantine_postgres_recovery_in_transaction(&mut tx, room_id.as_str(), generation)?;
+                tx.commit()
+                    .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+                return Err(RoomRecoveryErrorV1::Corrupt);
+            }
+            Err(error) => return Err(error),
+        };
+        if rebuild_materialization {
             tx.execute(
-                "UPDATE worldstream_members SET membership_bytes = $1 WHERE room_id = $2 AND member_id = $3",
+                "INSERT INTO worldstream_materializations( \
+                     room_id, core_state_bytes, activity_state_bytes \
+                 ) VALUES ($1, $2, $3)",
                 &[
-                    &membership.canonical_membership_bytes,
                     &room_id.as_str(),
-                    &membership.membership.member_id().as_str(),
+                    &recovered_materializations.canonical_core_state_bytes(),
+                    &recovered_materializations.canonical_activity_state_bytes(),
                 ],
             )
             .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
@@ -7213,7 +8174,7 @@ impl RoomRecoveryStorageV1 for PostgresRoomStore {
     fn record_recovery_failure(
         &self,
         room_id: &RoomId,
-        _expected_head: &CompleteHeadV1,
+        expected_head: &CompleteHeadV1,
         expected_integrity_generation: IntegrityGenerationV1,
         disposition: RecoveryIntegrityDispositionV1,
     ) -> Result<(), RoomRecoveryErrorV1> {
@@ -7221,19 +8182,93 @@ impl RoomRecoveryStorageV1 for PostgresRoomStore {
             RecoveryIntegrityDispositionV1::Faulted => "faulted",
             RecoveryIntegrityDispositionV1::Quarantined => "quarantined",
         };
-        PostgresAdmin {
-            config: self.config.clone(),
-            telemetry: self.telemetry.clone(),
+        let expected_generation = i64::try_from(expected_integrity_generation.get())
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let expected_head_bytes = expected_head
+            .canonical_bytes()
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let mut client = self
+            .connect()
+            .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+        let mut tx = client
+            .transaction()
+            .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+        let root = tx
+            .query_opt(
+                "SELECT head_bytes, integrity_generation, integrity_status \
+                 FROM worldstream_room_roots WHERE room_id = $1 FOR UPDATE",
+                &[&room_id.as_str()],
+            )
+            .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+            .ok_or(RoomRecoveryErrorV1::ConcurrentChange)?;
+        let head_bytes: Vec<u8> = root.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let generation: i64 = root.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let current_status: String = root.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        if generation != expected_generation || head_bytes != expected_head_bytes {
+            return Err(RoomRecoveryErrorV1::ConcurrentChange);
         }
-        .record_integrity_incident(
-            room_id.as_str(),
-            expected_integrity_generation.get(),
-            status,
-            "room_recovery_failed",
-            None,
+        match current_status.as_str() {
+            "healthy" => {}
+            "faulted" if disposition == RecoveryIntegrityDispositionV1::Quarantined => {}
+            "faulted" if disposition == RecoveryIntegrityDispositionV1::Faulted => {
+                tx.commit()
+                    .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+                return Ok(());
+            }
+            "quarantined" => return Err(RoomRecoveryErrorV1::IntegrityUnavailable),
+            _ => return Err(RoomRecoveryErrorV1::Corrupt),
+        }
+        let next_generation = generation
+            .checked_add(1)
+            .ok_or(RoomRecoveryErrorV1::Corrupt)?;
+        let incident_seq: i64 = tx
+            .query_one(
+                "SELECT coalesce(max(incident_seq), 0) + 1 \
+                 FROM worldstream_integrity_incidents WHERE room_id = $1",
+                &[&room_id.as_str()],
+            )
+            .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+            .try_get(0)
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        tx.execute(
+            "INSERT INTO worldstream_integrity_incidents( \
+                 room_id, incident_seq, generation, status, reason_code, details_bytes \
+             ) VALUES ($1, $2, $3, $4, 'room_recovery_failed', NULL)",
+            &[&room_id.as_str(), &incident_seq, &next_generation, &status],
         )
-        .map(|_| ())
-        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+        let changed = tx
+            .execute(
+                "UPDATE worldstream_room_roots \
+                 SET integrity_generation = $2, integrity_status = $3 \
+                 WHERE room_id = $1 AND head_bytes = $4 \
+                   AND integrity_generation = $5 AND integrity_status = $6",
+                &[
+                    &room_id.as_str(),
+                    &next_generation,
+                    &status,
+                    &expected_head_bytes,
+                    &expected_generation,
+                    &current_status,
+                ],
+            )
+            .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+        if changed != 1 {
+            return Err(RoomRecoveryErrorV1::ConcurrentChange);
+        }
+        tx.commit()
+            .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+        let telemetry_status = match disposition {
+            RecoveryIntegrityDispositionV1::Faulted => PostgresIntegrityStatusV1::Faulted,
+            RecoveryIntegrityDispositionV1::Quarantined => PostgresIntegrityStatusV1::Quarantined,
+        };
+        emit_postgres_telemetry(
+            self.telemetry.as_deref(),
+            PostgresTelemetryEventV1::Integrity {
+                status: telemetry_status,
+            },
+        );
+        Ok(())
     }
 }
 
@@ -7710,9 +8745,9 @@ fn postgres_activation_offers(
     .map_err(PostgresActivationError::Sql)?;
     let executions: i64 = tx
         .query_one(
-            r#"SELECT count(*) FROM worldstream_activation_intents
+            r"SELECT count(*) FROM worldstream_activation_intents
              WHERE room_id = $1 AND target_member_id = $2 AND state = 'completed'
-             AND terminal_at::timestamptz >= clock_timestamp() - interval '1 minute'"#,
+             AND terminal_at::timestamptz >= clock_timestamp() - interval '1 minute'",
             &[&room_id, &member_id],
         )
         .map_err(PostgresActivationError::Sql)?
@@ -8328,6 +9363,7 @@ fn insert_creation(
         &p.canonical_core_state_bytes,
         &p.canonical_activity_state_bytes,
     )?;
+    persist_checkpoint_operational_witness(tx, &head, &p.complete_head, &p.canonical_head_bytes)?;
     tx.execute(
         "INSERT INTO worldstream_room_snapshot_schedules(room_id, last_snapshot_room_seq, transitions_since_snapshot, active_started_at) VALUES ($1, 0, 0, NULL) ON CONFLICT (room_id) DO NOTHING",
         &[&head],
@@ -8360,6 +9396,248 @@ fn persist_snapshot(
             &activity_state_bytes,
         ],
     )?;
+    Ok(())
+}
+
+const MAX_CHECKPOINT_OPERATIONAL_WITNESS_BYTES: usize = 16 * 1024 * 1024;
+
+#[allow(clippy::too_many_lines)]
+fn capture_checkpoint_operational_witness(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    expected_head: &CompleteHeadV1,
+    expected_head_bytes: &[u8],
+) -> Result<Option<(Vec<u8>, Blake3DigestV1)>, postgres::Error> {
+    let Some(root) = tx.query_opt(
+        "SELECT head_bytes FROM worldstream_room_roots WHERE room_id = $1 FOR SHARE",
+        &[&room_id],
+    )?
+    else {
+        return Ok(None);
+    };
+    let current_head_bytes: Vec<u8> = root.try_get(0)?;
+    if current_head_bytes != expected_head_bytes {
+        return Ok(None);
+    }
+
+    let mut timers = Vec::new();
+    for row in tx.query(
+        "SELECT timer_id, generation, scheduled_for, payload_bytes, state \
+         FROM worldstream_timers WHERE room_id = $1 ORDER BY timer_id, generation",
+        &[&room_id],
+    )? {
+        let timer_id: String = row.try_get(0)?;
+        let generation: i64 = row.try_get(1)?;
+        let scheduled_for: String = row.try_get(2)?;
+        let payload: Vec<u8> = row.try_get(3)?;
+        let state: String = row.try_get(4)?;
+        let Ok(timer_id) = timer_id.parse() else {
+            return Ok(None);
+        };
+        let Some(generation) = u64::try_from(generation)
+            .ok()
+            .and_then(|value| TimerGenerationV1::new(value).ok())
+        else {
+            return Ok(None);
+        };
+        let Ok(scheduled_for) = scheduled_for.parse() else {
+            return Ok(None);
+        };
+        let state = match state.as_str() {
+            "scheduled" => RecoveredTimerStateV1::Scheduled,
+            "fired" => RecoveredTimerStateV1::Fired,
+            "cancelled" => RecoveredTimerStateV1::Cancelled,
+            _ => return Ok(None),
+        };
+        timers.push(RecoveredTimerMaterializationV1::new(
+            timer_id,
+            generation,
+            scheduled_for,
+            payload,
+            state,
+        ));
+    }
+
+    let mut observation_frame_heads = BTreeMap::new();
+    let mut membership_generations = BTreeMap::new();
+    for row in tx.query(
+        "SELECT member_id, frame_head, membership_generation FROM worldstream_members \
+         WHERE room_id = $1 ORDER BY member_id",
+        &[&room_id],
+    )? {
+        let member_id: String = row.try_get(0)?;
+        let frame_head: i64 = row.try_get(1)?;
+        let generation: i64 = row.try_get(2)?;
+        let Ok(parsed_member_id) = member_id.parse::<MemberId>() else {
+            return Ok(None);
+        };
+        let Ok(frame_head) = u64::try_from(frame_head) else {
+            return Ok(None);
+        };
+        if observation_frame_heads
+            .insert(parsed_member_id, frame_head)
+            .is_some()
+            || membership_generations
+                .insert(member_id, generation)
+                .is_some()
+        {
+            return Ok(None);
+        }
+    }
+
+    let mut observation_frames = Vec::new();
+    for row in tx.query(
+        "SELECT member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash \
+         FROM worldstream_frames WHERE room_id = $1 ORDER BY member_id, frame_seq",
+        &[&room_id],
+    )? {
+        let member_id: String = row.try_get(0)?;
+        let frame_seq: i64 = row.try_get(1)?;
+        let cause_room_seq: i64 = row.try_get(2)?;
+        let payload_bytes: Vec<u8> = row.try_get(3)?;
+        let payload_hash: Vec<u8> = row.try_get(4)?;
+        let computed_hash = Blake3DigestV1::hash(&payload_bytes);
+        let Some((member_id, frame_seq, cause_room_seq)) = member_id
+            .parse()
+            .ok()
+            .zip(u64::try_from(frame_seq).ok())
+            .zip(
+                u64::try_from(cause_room_seq)
+                    .ok()
+                    .and_then(|value| RoomSequenceV1::new(value).ok()),
+            )
+            .map(|((member_id, frame_seq), cause_room_seq)| (member_id, frame_seq, cause_room_seq))
+        else {
+            return Ok(None);
+        };
+        if payload_hash != computed_hash.as_bytes() {
+            return Ok(None);
+        }
+        observation_frames.push(RecoveredObservationFrameV1::from_replay(
+            member_id,
+            frame_seq,
+            cause_room_seq,
+            computed_hash,
+        ));
+    }
+
+    let mut observation_consequences = Vec::new();
+    for row in tx.query(
+        "SELECT member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash \
+         FROM worldstream_observation_consequences WHERE room_id = $1 \
+         ORDER BY member_id, cause_room_seq",
+        &[&room_id],
+    )? {
+        let member_id: String = row.try_get(0)?;
+        let cause_room_seq: i64 = row.try_get(1)?;
+        let kind: String = row.try_get(2)?;
+        let payload_bytes: Option<Vec<u8>> = row.try_get(3)?;
+        let projection_hash: Option<Vec<u8>> = row.try_get(4)?;
+        let Some((member_id, cause_room_seq)) = member_id.parse().ok().zip(
+            u64::try_from(cause_room_seq)
+                .ok()
+                .and_then(|value| RoomSequenceV1::new(value).ok()),
+        ) else {
+            return Ok(None);
+        };
+        let consequence = match (kind.as_str(), payload_bytes, projection_hash) {
+            ("reset_required", Some(payload), Some(stored_hash)) => {
+                let Ok(computed_hash) = projection_hash_for_canonical_bytes(&payload) else {
+                    return Ok(None);
+                };
+                if stored_hash != computed_hash.as_bytes() {
+                    return Ok(None);
+                }
+                RecoveredObservationConsequenceV1::reset_required(
+                    member_id,
+                    cause_room_seq,
+                    computed_hash,
+                )
+            }
+            ("visibility_lost", None, None) => {
+                RecoveredObservationConsequenceV1::visibility_lost(member_id, cause_room_seq)
+            }
+            _ => return Ok(None),
+        };
+        observation_consequences.push(consequence);
+    }
+
+    let mut activation_decisions = Vec::new();
+    for row in tx.query(
+        "SELECT cause_room_seq, decision_id, target_member_id, decision_bytes \
+         FROM worldstream_activation_decisions WHERE room_id = $1 \
+         ORDER BY cause_room_seq, decision_id",
+        &[&room_id],
+    )? {
+        let cause_room_seq: i64 = row.try_get(0)?;
+        let decision_id: String = row.try_get(1)?;
+        let target_member_id: Option<String> = row.try_get(2)?;
+        let decision_bytes: Vec<u8> = row.try_get(3)?;
+        let Some(cause_room_seq) = u64::try_from(cause_room_seq)
+            .ok()
+            .and_then(|value| RoomSequenceV1::new(value).ok())
+        else {
+            return Ok(None);
+        };
+        let Some(target_member_id) = target_member_id
+            .map(|value| value.parse::<MemberId>())
+            .transpose()
+            .ok()
+        else {
+            return Ok(None);
+        };
+        activation_decisions.push(RecoveredActivationDecisionV1::new(
+            cause_room_seq,
+            decision_id,
+            target_member_id,
+            decision_bytes,
+        ));
+    }
+
+    let Ok(witness) = RoomCheckpointOperationalWitnessV1::new(
+        expected_head.clone(),
+        timers,
+        observation_frame_heads,
+        observation_frames,
+        observation_consequences,
+        membership_generations,
+        activation_decisions,
+    ) else {
+        return Ok(None);
+    };
+    let Ok(bytes) = witness.canonical_bytes() else {
+        return Ok(None);
+    };
+    if bytes.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_BYTES {
+        return Ok(None);
+    }
+    let hash = Blake3DigestV1::hash(&bytes);
+    Ok(Some((bytes, hash)))
+}
+
+fn persist_checkpoint_operational_witness(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    head: &CompleteHeadV1,
+    head_bytes: &[u8],
+) -> Result<(), postgres::Error> {
+    if let Some((witness_bytes, witness_hash)) =
+        capture_checkpoint_operational_witness(tx, room_id, head, head_bytes)?
+    {
+        let room_seq = i64::try_from(head.room_seq().get()).unwrap_or(-1);
+        tx.execute(
+            "INSERT INTO worldstream_room_snapshot_operational_witnesses( \
+             room_id, room_seq, witness_schema_version, witness_hash, witness_bytes \
+             ) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (room_id, room_seq) DO NOTHING",
+            &[
+                &room_id,
+                &room_seq,
+                &CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V1,
+                &witness_hash.as_bytes().as_slice(),
+                &witness_bytes,
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -8439,6 +9717,13 @@ impl PostgresRoomStore {
             &work.head_bytes,
             &work.core_state_bytes,
             &work.activity_state_bytes,
+        )
+        .map_err(|_| ())?;
+        persist_checkpoint_operational_witness(
+            &mut tx,
+            &work.room_id,
+            &work.head,
+            &work.head_bytes,
         )
         .map_err(|_| ())?;
         tx.execute(
@@ -9527,8 +10812,9 @@ mod native_hydration_tests {
 
     #[test]
     fn transfer_safety_catalog_contract_matches_the_reviewed_migration() {
-        let transfer_fence_migrations =
-            format!("{MIGRATION_0011_SQL}{MIGRATION_0012_SQL}{MIGRATION_0015_SQL}");
+        let transfer_fence_migrations = format!(
+            "{MIGRATION_0011_SQL}{MIGRATION_0012_SQL}{MIGRATION_0015_SQL}{MIGRATION_0018_SQL}"
+        );
         for (index, table) in GLOBAL_RESOURCE_IDENTITY_INDEXES {
             assert!(
                 MIGRATION_0011_SQL.contains(&format!("CREATE UNIQUE INDEX {index}")),

@@ -817,13 +817,26 @@ struct ScriptedStorage {
 
 struct RecoveryStorage {
     candidate: RoomRecoveryCandidateV1,
+    full_candidate: RoomRecoveryCandidateV1,
     recorded: Mutex<Vec<RecoveryIntegrityDispositionV1>>,
 }
 
 impl RecoveryStorage {
     fn new(candidate: RoomRecoveryCandidateV1) -> Self {
         Self {
+            full_candidate: candidate.clone(),
             candidate,
+            recorded: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn with_full_candidate(
+        candidate: RoomRecoveryCandidateV1,
+        full_candidate: RoomRecoveryCandidateV1,
+    ) -> Self {
+        Self {
+            candidate,
+            full_candidate,
             recorded: Mutex::new(Vec::new()),
         }
     }
@@ -842,6 +855,13 @@ impl RoomRecoveryStorageV1 for RecoveryStorage {
         _room_id: &RoomId,
     ) -> Result<Option<RoomRecoveryCandidateV1>, RoomRecoveryErrorV1> {
         Ok(Some(self.candidate.clone()))
+    }
+
+    fn inspect_full_recovery_candidate(
+        &self,
+        _room_id: &RoomId,
+    ) -> Result<Option<RoomRecoveryCandidateV1>, RoomRecoveryErrorV1> {
+        Ok(Some(self.full_candidate.clone()))
     }
 
     fn guard_recovery_install(
@@ -926,6 +946,161 @@ fn recovery_candidate(
                 .unwrap_or_else(|error| unreachable!("Activity bytes: {error}")),
         ),
     )
+}
+
+fn checkpoint_candidate(
+    trace: &CoreTraceV1,
+    checkpoint_core_bytes: Vec<u8>,
+) -> RoomRecoveryCandidateV1 {
+    let genesis = trace.genesis();
+    let head = trace.head().clone();
+    let registry = builtin_counter_registry()
+        .unwrap_or_else(|error| unreachable!("fixture Counter registry: {error}"));
+    let lock = registry
+        .load_retained(head.pack_digest())
+        .unwrap_or_else(|error| unreachable!("retained Counter revision: {error}"))
+        .revision_lock()
+        .canonical_bytes()
+        .unwrap_or_else(|error| unreachable!("revision lock bytes: {error}"));
+    let checkpoint = RoomRecoveryCheckpointV1::new(
+        head.clone(),
+        trace.transitions().last().map_or_else(
+            || {
+                genesis
+                    .canonical_bytes()
+                    .unwrap_or_else(|error| unreachable!("fixture Genesis bytes: {error}"))
+            },
+            |transition| {
+                transition
+                    .canonical_bytes()
+                    .unwrap_or_else(|error| unreachable!("fixture Transition bytes: {error}"))
+            },
+        ),
+        checkpoint_core_bytes,
+        trace
+            .activity_state()
+            .to_bytes()
+            .unwrap_or_else(|error| unreachable!("fixture checkpoint Activity bytes: {error}")),
+        Vec::new(),
+    )
+    .with_operational_witnesses(
+        Vec::new(),
+        Vec::new(),
+        trace
+            .core_state()
+            .memberships()
+            .keys()
+            .map(|member_id| (member_id.to_string(), 1))
+            .collect(),
+    )
+    .with_bounded_operational_witnesses(
+        trace
+            .core_state()
+            .memberships()
+            .keys()
+            .cloned()
+            .map(|member_id| (member_id, 0))
+            .collect(),
+        Vec::new(),
+    );
+    RoomRecoveryCandidateV1::new_with_checkpoint(
+        head.clone(),
+        IntegrityGenerationV1::new(1)
+            .unwrap_or_else(|error| unreachable!("fixture integrity generation: {error}")),
+        head.canonical_bytes()
+            .unwrap_or_else(|error| unreachable!("Head bytes: {error}")),
+        lock,
+        genesis
+            .canonical_bytes()
+            .unwrap_or_else(|error| unreachable!("Genesis bytes: {error}")),
+        Vec::new(),
+        Some(
+            trace
+                .core_state()
+                .canonical_bytes()
+                .unwrap_or_else(|error| unreachable!("Core bytes: {error}")),
+        ),
+        Some(
+            trace
+                .activity_state()
+                .to_bytes()
+                .unwrap_or_else(|error| unreachable!("Activity bytes: {error}")),
+        ),
+        checkpoint,
+    )
+}
+
+#[test]
+fn recovery_execution_receipt_reports_completed_full_delivery() {
+    let trace = counter_action_trace();
+    let storage = RecoveryStorage::new(recovery_candidate(trace.genesis(), trace.transitions()));
+    let registry = builtin_counter_registry()
+        .unwrap_or_else(|error| unreachable!("fixture Counter registry: {error}"));
+    let execution = recover_room_from_storage_with_receipt(&storage, &registry, &parsed(ROOM))
+        .unwrap_or_else(|error| unreachable!("full recovery: {error:?}"))
+        .unwrap_or_else(|| unreachable!("fixture Room exists"));
+    assert_eq!(execution.trace().head(), trace.head());
+    assert_eq!(
+        execution.receipt().path(),
+        RoomRecoveryExecutionPathV1::Full
+    );
+    assert!(!execution.receipt().used_checkpoint());
+    assert_eq!(execution.receipt().checkpoint_room_seq(), None);
+    assert_eq!(execution.receipt().prefix_transition_records_delivered(), 1);
+    assert_eq!(execution.receipt().prefix_transitions_skipped(), 0);
+    assert_eq!(execution.receipt().tail_transition_records_delivered(), 0);
+}
+
+#[test]
+fn recovery_execution_receipt_reports_completed_checkpoint_delivery() {
+    let trace = counter_action_trace();
+    let checkpoint_core_bytes = trace
+        .core_state()
+        .canonical_bytes()
+        .unwrap_or_else(|error| unreachable!("fixture checkpoint Core bytes: {error}"));
+    let storage = RecoveryStorage::new(checkpoint_candidate(&trace, checkpoint_core_bytes));
+    let registry = builtin_counter_registry()
+        .unwrap_or_else(|error| unreachable!("fixture Counter registry: {error}"));
+    let execution = recover_room_from_storage_with_receipt(&storage, &registry, &parsed(ROOM))
+        .unwrap_or_else(|error| unreachable!("checkpoint recovery: {error:?}"))
+        .unwrap_or_else(|| unreachable!("fixture Room exists"));
+    assert_eq!(execution.trace().head(), trace.head());
+    assert_eq!(
+        execution.receipt().path(),
+        RoomRecoveryExecutionPathV1::Checkpoint
+    );
+    assert!(execution.receipt().used_checkpoint());
+    assert_eq!(
+        execution.receipt().checkpoint_room_seq(),
+        Some(
+            RoomSequenceV1::new(1)
+                .unwrap_or_else(|error| unreachable!("fixture checkpoint sequence: {error}"))
+        )
+    );
+    assert_eq!(execution.receipt().prefix_transition_records_delivered(), 0);
+    assert_eq!(execution.receipt().prefix_transitions_skipped(), 1);
+    assert_eq!(execution.receipt().tail_transition_records_delivered(), 0);
+}
+
+#[test]
+fn recovery_execution_receipt_reports_full_after_checkpoint_fallback() {
+    let trace = counter_action_trace();
+    let full = recovery_candidate(trace.genesis(), trace.transitions());
+    let malformed_checkpoint = checkpoint_candidate(&trace, b"{}".to_vec());
+    let storage = RecoveryStorage::with_full_candidate(malformed_checkpoint, full);
+    let registry = builtin_counter_registry()
+        .unwrap_or_else(|error| unreachable!("fixture Counter registry: {error}"));
+    let execution = recover_room_from_storage_with_receipt(&storage, &registry, &parsed(ROOM))
+        .unwrap_or_else(|error| unreachable!("fallback recovery: {error:?}"))
+        .unwrap_or_else(|| unreachable!("fixture Room exists"));
+    assert_eq!(execution.trace().head(), trace.head());
+    assert_eq!(
+        execution.receipt().path(),
+        RoomRecoveryExecutionPathV1::Full
+    );
+    assert_eq!(execution.receipt().prefix_transition_records_delivered(), 1);
+    assert_eq!(execution.receipt().tail_transition_records_delivered(), 0);
+    assert!(storage.recorded().is_empty());
 }
 
 fn assert_candidate_quarantines(candidate: RoomRecoveryCandidateV1, registry: &PackRegistryV1) {

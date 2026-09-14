@@ -890,15 +890,15 @@ Direct, session-pooled, and bounded transaction-scoped runtime connections are s
 
 One ordered logical migration history and schema-contract fingerprint govern both adapters. A logical migration has a stable ID and checksum plus backend-specific DDL/execution; it upgrades an empty store or any earlier v0.1 schema, and is atomic or explicitly restart-safe. Production is forward-only: there are no down migrations, mixed-version serving, rolling multi-version operation, or old-binary start after migration. Rollback restores the pre-upgrade backend backup and previous binary together.
 
-The shared tail retains `0015-snapshot-cadence-v1`,
+The shared logical tail retains `0015-snapshot-cadence-v1`,
 `0016-activation-backlog-policy-v1`, `0017-stream-transfer-v2`, and
-`0018-postgresql-snapshot-cadence-v1` in that order. PostgreSQL's historical
-`0015` execution is a reviewed no-op; its later physical cadence table is
-installed at `0018`. SQLite's `0017` stream-journal and `0018` PostgreSQL
-cadence executions are reviewed no-ops because SQLite is the verified source
-and already installed its local cadence cursor at `0015`. Those no-ops remain
-in each ledger so a logical migration ID never means different history on the
-two profiles.
+`0018-checkpoint-operational-witness-v1` in that order. Because earlier
+backend-specific histories have different physical version counts, the
+checkpoint witness is SQLite physical version 17 and PostgreSQL physical
+version 18. SQLite's stream-journal execution remains a reviewed no-op because
+SQLite is the verified transfer source. Backend-specific no-ops remain in each
+ledger so a logical migration ID never means different history on the two
+profiles.
 
 SQLite automatic migration occurs only during exclusive locked startup after creation and verification of a recoverable backup. Production PostgreSQL migration is an explicit offline `worldstreamctl` maintenance operation over a direct admin connection while no WorldStream process serves; daemon startup only checks engine, manifest, schema fingerprint, migration checksums, and runtime capabilities. A development auto-migration option is not production evidence.
 
