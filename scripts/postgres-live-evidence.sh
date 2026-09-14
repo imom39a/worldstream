@@ -599,7 +599,8 @@ adapter_log="$temp_root/live-adapter.log"
 if [[ "$pooler_status" == "pass" ]]; then
   if WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN="$admin_dsn" WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN="$runtime_dsn" WORLDSTREAM_POSTGRES_TEST_POOLER_DSN="$pooler_dsn" WORLDSTREAM_POSTGRES_RECOVERY_SCALES="$recovery_scale_tiers" "$cargo_bin" test --locked -p worldstream-postgres --features conformance-tracer --test postgres_commit live_direct_runtime_and_optional_pooler_conformance -- --nocapture >"$adapter_log" 2>&1 \
     && WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN="$admin_dsn" WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN="$runtime_dsn" "$cargo_bin" test --locked -p worldstream-postgres --features conformance-tracer --test postgres_commit live_full_recovery_corruption_quarantines_and_stale_head_is_fenced -- --nocapture >>"$adapter_log" 2>&1 \
-    && WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN="$admin_dsn" WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN="$runtime_dsn" "$cargo_bin" test --locked -p worldstream-postgres --features conformance-tracer --test postgres_commit live_checkpoint_rebuild_malformed_head_quarantines -- --nocapture >>"$adapter_log" 2>&1; then
+    && WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN="$admin_dsn" WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN="$runtime_dsn" "$cargo_bin" test --locked -p worldstream-postgres --features conformance-tracer --test postgres_commit live_checkpoint_rebuild_malformed_head_quarantines -- --nocapture >>"$adapter_log" 2>&1 \
+    && WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN="$admin_dsn" WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN="$runtime_dsn" "$cargo_bin" test --locked -p worldstream-postgres --features conformance-tracer --test postgres_commit live_postgres_snapshot_cadence_direct -- --nocapture >>"$adapter_log" 2>&1; then
     live_adapter_status="pass"
   else
     live_adapter_status="failed"; add_error "live_adapter_conformance_failed"
