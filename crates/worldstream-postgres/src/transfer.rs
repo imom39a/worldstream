@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use postgres::Transaction;
+use postgres::{Transaction, binary_copy::BinaryCopyInWriter, types::Type};
 use thiserror::Error;
 use worldstream_transfer::{
     BackendFingerprintV1, BundleProfileV1, CanonicalRecordKindV1, DeploymentIdentityV1, DigestV1,
@@ -117,6 +117,7 @@ pub enum PostgresTransferError {
 }
 
 const TARGET_PREFLIGHT_ADVISORY_KEY: i64 = 6_291_328_795_568_100_166;
+const STREAM_RECORD_STAGING_COPY_SQL: &str = "COPY worldstream_transfer_stream_records_v2(stream_header_digest, ordinal, class_tag, kind_tag, identity, record_bytes, record_digest) FROM STDIN BINARY";
 const AUTHORITY_STATE_COUNT_SQL: &str =
     "SELECT count(*)::bigint FROM worldstream_authority_state WHERE authority_id = true";
 
@@ -736,6 +737,62 @@ impl<'a> PostgresStreamDestinationV2<'a> {
         })
     }
 
+    /// Stages one already-authenticated chunk through PostgreSQL's binary COPY
+    /// path. The caller owns the surrounding transaction, which also contains
+    /// the durable chunk row and resume cursor update. Therefore a failed or
+    /// interrupted COPY cannot expose a partial chunk or advance the cursor.
+    fn copy_manifest_chunk_records(
+        transaction: &mut Transaction<'_>,
+        stream_key: &[u8; 32],
+        chunk: &TransferStreamChunkV2,
+    ) -> Result<(), PostgresTransferError> {
+        let expected_rows = u64::try_from(chunk.records().len()).map_err(|_| {
+            PostgresTransferError::InvalidProviderValue("stream chunk record count")
+        })?;
+        let copy = transaction
+            .copy_in(STREAM_RECORD_STAGING_COPY_SQL)
+            .map_err(PostgresTransferError::Sql)?;
+        let mut writer = BinaryCopyInWriter::new(
+            copy,
+            &[
+                Type::BYTEA,
+                Type::INT8,
+                Type::INT2,
+                Type::INT2,
+                Type::TEXT,
+                Type::BYTEA,
+                Type::BYTEA,
+            ],
+        );
+        for record in chunk.records() {
+            let ordinal = i64::try_from(record.ordinal()).map_err(|_| {
+                PostgresTransferError::InvalidProviderValue("stream record ordinal")
+            })?;
+            let (class_tag, kind_tag) = record.wire_tags();
+            let class_tag = i16::from(class_tag);
+            let kind_tag = i16::from(kind_tag);
+            let identity = record.identity();
+            let bytes = record.bytes();
+            let digest = record.digest().as_bytes();
+            writer
+                .write(&[
+                    &stream_key.as_slice(),
+                    &ordinal,
+                    &class_tag,
+                    &kind_tag,
+                    &identity,
+                    &bytes,
+                    &digest.as_slice(),
+                ])
+                .map_err(PostgresTransferError::Sql)?;
+        }
+        let copied = writer.finish().map_err(PostgresTransferError::Sql)?;
+        if copied != expected_rows {
+            return Err(PostgresTransferError::Canonical("stream COPY row count"));
+        }
+        Ok(())
+    }
+
     fn apply_manifest_chunk(
         &self,
         chunk: &TransferStreamChunkV2,
@@ -794,20 +851,7 @@ impl<'a> PostgresStreamDestinationV2<'a> {
                 &[&stream_key.as_slice(), &index, &start, &end, &chunk.digest().as_bytes().as_slice(), &bytes],
             )
             .map_err(PostgresTransferError::Sql)?;
-        for record in chunk.records() {
-            let ordinal = i64::try_from(record.ordinal()).map_err(|_| {
-                PostgresTransferError::InvalidProviderValue("stream record ordinal")
-            })?;
-            let (class_tag, kind_tag) = record.wire_tags();
-            let class_tag = i16::from(class_tag);
-            let kind_tag = i16::from(kind_tag);
-            transaction
-                .execute(
-                    "INSERT INTO worldstream_transfer_stream_records_v2(stream_header_digest, ordinal, class_tag, kind_tag, identity, record_bytes, record_digest) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                    &[&stream_key.as_slice(), &ordinal, &class_tag, &kind_tag, &record.identity(), &record.bytes(), &record.digest().as_bytes().as_slice()],
-                )
-                .map_err(PostgresTransferError::Sql)?;
-        }
+        Self::copy_manifest_chunk_records(&mut transaction, &stream_key, chunk)?;
         let next_chunk =
             chunk
                 .index()
@@ -1884,13 +1928,27 @@ fn hydrate_stream_room(
             "stream materialization bytes",
         ));
     }
+    hydrate_stream_room_transitions(transaction, stream_digest, room_id)?;
+    Ok(())
+}
+
+/// Validates one Room's staged transition identities in bounded pages, then
+/// performs their publication in one server-side insert. The target is held
+/// behind the deployment-wide empty-target fence, so a unique conflict is
+/// evidence of an invalid import rather than an idempotent retry to ignore.
+fn hydrate_stream_room_transitions(
+    transaction: &mut Transaction<'_>,
+    stream_digest: DigestV1,
+    room_id: &str,
+) -> Result<(), PostgresTransferError> {
     let prefix = format!("room/{room_id}/transition/");
     let stream_key = stream_digest.as_bytes();
     let mut after = -1_i64;
+    let mut expected_rows = 0_u64;
     loop {
         let rows = transaction
             .query(
-                "SELECT ordinal, identity, record_bytes FROM worldstream_transfer_stream_records_v2 WHERE stream_header_digest = $1 AND class_tag = 1 AND kind_tag = $2 AND ordinal > $3 AND left(identity, char_length($4)) = $4 ORDER BY ordinal LIMIT $5",
+                "SELECT ordinal, identity FROM worldstream_transfer_stream_records_v2 WHERE stream_header_digest = $1 AND class_tag = 1 AND kind_tag = $2 AND ordinal > $3 AND left(identity, char_length($4)) = $4 ORDER BY ordinal LIMIT $5",
                 &[
                     &stream_key.as_slice(),
                     &i16::from(CanonicalRecordKindV1::RoomTransition.wire_tag()),
@@ -1906,27 +1964,49 @@ fn hydrate_stream_room(
         for row in &rows {
             let ordinal: i64 = row.try_get(0).map_err(PostgresTransferError::Sql)?;
             let identity: String = row.try_get(1).map_err(PostgresTransferError::Sql)?;
-            let transition: Vec<u8> = row.try_get(2).map_err(PostgresTransferError::Sql)?;
-            let sequence = canonical_room_sequence(&identity)?;
-            transaction
-                .execute(
-                    "INSERT INTO worldstream_transitions(room_id, room_seq, transition_bytes) VALUES ($1, $2, $3) ON CONFLICT (room_id, room_seq) DO NOTHING",
-                    &[&room_id, &sequence, &transition],
-                )
-                .map_err(PostgresTransferError::Sql)?;
-            let stored = transaction
-                .query_one(
-                    "SELECT transition_bytes FROM worldstream_transitions WHERE room_id = $1 AND room_seq = $2 FOR UPDATE",
-                    &[&room_id, &sequence],
-                )
-                .map_err(PostgresTransferError::Sql)?
-                .try_get::<_, Vec<u8>>(0)
-                .map_err(PostgresTransferError::Sql)?;
-            if stored != transition {
-                return Err(PostgresTransferError::Canonical("stream transition bytes"));
-            }
+            validate_stream_transition_identity(&identity, &prefix)?;
+            expected_rows =
+                expected_rows
+                    .checked_add(1)
+                    .ok_or(PostgresTransferError::InvalidProviderValue(
+                        "stream Room transition count",
+                    ))?;
             after = ordinal;
         }
+    }
+    let inserted = transaction
+        .execute(
+            "INSERT INTO worldstream_transitions(room_id, room_seq, transition_bytes) \
+             SELECT $2, substring(identity FROM char_length($3) + 1)::bigint, record_bytes \
+             FROM worldstream_transfer_stream_records_v2 \
+             WHERE stream_header_digest = $1 AND class_tag = 1 AND kind_tag = $4 \
+               AND left(identity, char_length($3)) = $3 \
+             ORDER BY ordinal",
+            &[
+                &stream_key.as_slice(),
+                &room_id,
+                &prefix,
+                &i16::from(CanonicalRecordKindV1::RoomTransition.wire_tag()),
+            ],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    if inserted != expected_rows {
+        return Err(PostgresTransferError::Canonical(
+            "stream transition row count",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_stream_transition_identity(
+    identity: &str,
+    prefix: &str,
+) -> Result<(), PostgresTransferError> {
+    let sequence = canonical_room_sequence(identity)?;
+    if identity != format!("{prefix}{sequence}") {
+        return Err(PostgresTransferError::Canonical(
+            "stream transition identity",
+        ));
     }
     Ok(())
 }
@@ -6541,6 +6621,30 @@ mod tests {
         assert!(canonical_room_sequence("room/r-1/transition/0").is_err());
         assert!(canonical_room_sequence("room/r-1/transition/not-a-sequence").is_err());
         assert!(canonical_room_sequence("room/r-1/head/1").is_err());
+    }
+
+    #[test]
+    fn stream_transition_batch_requires_the_exact_room_identity_shape() {
+        let prefix = "room/r-1/transition/";
+        assert!(validate_stream_transition_identity("room/r-1/transition/1", prefix).is_ok());
+        assert!(
+            validate_stream_transition_identity("room/r-1/transition/1/extra", prefix).is_err()
+        );
+        assert!(matches!(
+            validate_stream_transition_identity("room/r-2/transition/1", prefix),
+            Err(PostgresTransferError::Canonical(
+                "stream transition identity"
+            ))
+        ));
+    }
+
+    #[test]
+    fn stream_record_staging_uses_one_binary_copy_relation_contract() {
+        assert!(STREAM_RECORD_STAGING_COPY_SQL.starts_with("COPY "));
+        assert!(STREAM_RECORD_STAGING_COPY_SQL.contains(
+            "worldstream_transfer_stream_records_v2(stream_header_digest, ordinal, class_tag, kind_tag, identity, record_bytes, record_digest)"
+        ));
+        assert!(STREAM_RECORD_STAGING_COPY_SQL.ends_with("FROM STDIN BINARY"));
     }
 
     #[test]

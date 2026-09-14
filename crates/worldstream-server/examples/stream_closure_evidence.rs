@@ -227,8 +227,12 @@ fn read_dsn(path: &Path) -> Result<String> {
 
 fn limits() -> TransferStreamLimitsV2 {
     TransferStreamLimitsV2 {
-        max_records_per_chunk: 64,
-        max_chunk_bytes: 256 * 1024,
+        // The target commits exactly one authenticated chunk and its resume
+        // cursor in a transaction. A 1k/4MiB cap keeps that working set
+        // replaceable while avoiding thousands of round trips for a 100k
+        // history with ordinary multi-kilobyte records.
+        max_records_per_chunk: 1_000,
+        max_chunk_bytes: 4 * 1024 * 1024,
         max_record_bytes: 64 * 1024,
         max_total_records: 2_000_000,
         max_total_record_bytes: 4 * 1024 * 1024 * 1024,
