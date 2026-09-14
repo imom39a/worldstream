@@ -318,20 +318,22 @@ impl RuntimeControl for ProcessRuntimeControl {
             RuntimeObservation::Ready => return Ok(()),
             RuntimeObservation::Stopped => {}
             RuntimeObservation::Unmanaged => {
-                // A coordinator can die after reserving a generation but before
-                // publishing launch facts or spawning. Explicit start may fence
-                // that exact generation only while its permanent lease is free.
-                // The child must claim it before storage, so a delayed child can
-                // no longer start after cancellation. No PID implies ownership.
+                // A process host can die either while a launch is still starting
+                // or after the Runtime published Ready. Explicit start may fence
+                // that exact generation only while its permanent lease is free
+                // and its selected endpoint is closed. The child must claim the
+                // lease before storage, so a delayed or surviving child prevents
+                // cancellation. Retained PID and phase never imply ownership.
                 let abandoned = self
                     .ownership
                     .snapshot(ProcessRole::Runtime)
                     .map_err(|_| LifecycleError::Unavailable)?
                     .ok_or(LifecycleError::Unavailable)?;
-                if abandoned.phase != ProcessPhase::Starting
-                    || self.ownership.is_leased(ProcessRole::Runtime) != Ok(false)
-                    || stopped_or_foreign(facts.endpoint) != RuntimeObservation::Stopped
-                {
+                if !recoverable_abandoned_runtime(
+                    &abandoned,
+                    self.ownership.is_leased(ProcessRole::Runtime),
+                    stopped_or_foreign(facts.endpoint),
+                ) {
                     return Err(LifecycleError::Unavailable);
                 }
                 self.ownership
@@ -468,6 +470,16 @@ fn stopped_or_foreign(endpoint: SocketAddr) -> RuntimeObservation {
     }
 }
 
+fn recoverable_abandoned_runtime(
+    snapshot: &ProcessSnapshot,
+    leased: Result<bool, crate::process_ownership::OwnershipError>,
+    endpoint: RuntimeObservation,
+) -> bool {
+    matches!(snapshot.phase, ProcessPhase::Starting | ProcessPhase::Ready)
+        && leased == Ok(false)
+        && endpoint == RuntimeObservation::Stopped
+}
+
 fn reap(mut child: Child) {
     // Reap eventual exit without making Runtime lifetime depend on this thread
     // or on Controller survival. No kill-on-drop behavior is installed.
@@ -510,4 +522,53 @@ fn is_worldstream_override(key: &std::ffi::OsStr) -> bool {
 #[cfg(not(any(unix, windows)))]
 fn is_worldstream_override(_: &std::ffi::OsStr) -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProcessPhase, ProcessSnapshot, RuntimeObservation, recoverable_abandoned_runtime};
+    use crate::process_ownership::OwnershipError;
+
+    fn snapshot(phase: ProcessPhase) -> ProcessSnapshot {
+        ProcessSnapshot {
+            generation: "a".repeat(64),
+            phase,
+            pid: Some(42),
+            endpoint: Some("127.0.0.1:9410".parse().expect("fixture endpoint")),
+        }
+    }
+
+    #[test]
+    fn released_ready_runtime_with_closed_endpoint_is_recoverable_after_host_restart() {
+        assert!(recoverable_abandoned_runtime(
+            &snapshot(ProcessPhase::Starting),
+            Ok(false),
+            RuntimeObservation::Stopped,
+        ));
+        assert!(recoverable_abandoned_runtime(
+            &snapshot(ProcessPhase::Ready),
+            Ok(false),
+            RuntimeObservation::Stopped,
+        ));
+        assert!(!recoverable_abandoned_runtime(
+            &snapshot(ProcessPhase::Ready),
+            Ok(true),
+            RuntimeObservation::Stopped,
+        ));
+        assert!(!recoverable_abandoned_runtime(
+            &snapshot(ProcessPhase::Ready),
+            Ok(false),
+            RuntimeObservation::Unmanaged,
+        ));
+        assert!(!recoverable_abandoned_runtime(
+            &snapshot(ProcessPhase::Ready),
+            Err(OwnershipError::Unavailable),
+            RuntimeObservation::Stopped,
+        ));
+        assert!(!recoverable_abandoned_runtime(
+            &snapshot(ProcessPhase::Stopped),
+            Ok(false),
+            RuntimeObservation::Stopped,
+        ));
+    }
 }
