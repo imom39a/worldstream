@@ -347,8 +347,19 @@ fn read_checkpoint_evidence(
             Ok(usize::try_from(witness.operational_history_roots()
                 .get(domain).ok_or("missing V2 root")?.entry_count())?)
         };
+        let stored_roots = connection.prepare(
+            "SELECT domain, entry_count, root_hash FROM room_operational_history_roots_v2 \
+             WHERE room_id = ?1 ORDER BY domain",
+        )?.query_map([&room_id_text], |row| Ok((
+            row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, Vec<u8>>(2)?,
+        )))?.collect::<std::result::Result<Vec<_>, _>>()?;
+        let roots_exact = stored_roots.len() == witness.operational_history_roots().len()
+            && stored_roots.iter().all(|(domain, count, hash)| witness
+                .operational_history_roots().get(domain).is_some_and(|root|
+                    i64::try_from(root.entry_count()).ok() == Some(*count)
+                    && root.root_hash().as_bytes().as_slice() == hash));
         let exact = witness_hash.as_slice() == Blake3DigestV1::hash(&witness_bytes).as_bytes()
-            && witness.checkpoint_head() == current_head;
+            && witness.checkpoint_head() == current_head && roots_exact;
         let collection = |live_rows, witness_entries| WitnessCollectionEvidence {
             live_rows, witness_entries, exact,
         };
