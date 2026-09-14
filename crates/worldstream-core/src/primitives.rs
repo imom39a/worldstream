@@ -73,6 +73,12 @@ impl Blake3DigestV1 {
         Self(*blake3::hash(bytes).as_bytes())
     }
 
+    /// Constructs a digest from a verified 32-byte storage receipt.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
     /// Returns the digest bytes.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8; 32] {

@@ -147,6 +147,8 @@ pub const SCHEMA_FINGERPRINT_MATERIAL: &str = concat!(
     "worldstream_room_current_timers_v2(",
     "room_id:text:NO,timer_id:text:NO,generation:bigint:NO,scheduled_for:text:NO,",
     "payload_bytes:bytea:NO,state:text:NO);",
+    "worldstream_room_operational_history_roots_v2(",
+    "room_id:text:NO,domain:text:NO,entry_count:bigint:NO,root_hash:bytea:NO);",
     "worldstream_transitions(",
     "room_id:text:NO,room_seq:bigint:NO,transition_bytes:bytea:NO);",
     "worldstream_frames(",
@@ -1320,7 +1322,7 @@ mod identity_tests {
         );
         assert_eq!(
             schema_contract_fingerprint().to_string(),
-            "blake3:b38a1e68b9ffbaa02d98ed0583caefc3897c2e31c552a758b5fd1507cdb41b06"
+            "blake3:28e9765429afc17fa678ffafcd4be898520a4e716bbeb25995993bb8136cab04"
         );
     }
 
