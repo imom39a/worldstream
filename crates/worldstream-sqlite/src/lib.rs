@@ -34313,6 +34313,44 @@ mod tests {
         assert!(super::capture_checkpoint_operational_witness_v2(&transaction, &snapshot)
             .unwrap_or_else(|error| panic!("capture member-boundary witness: {error}"))
             .is_none());
+        drop(transaction);
+
+        let (file, _store, trace, _witness) = committed_history_fixture();
+        let snapshot = snapshot_for(&trace);
+        let mut connection = Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open source-byte fixture: {error}"));
+        let transaction = connection
+            .transaction()
+            .unwrap_or_else(|error| panic!("start source-byte transaction: {error}"));
+        let large = vec![0x5A_u8; 1024 * 1024];
+        for generation in 1_i64..=17 {
+            transaction.execute(
+                "INSERT INTO timers(room_id, timer_id, generation, scheduled_for, payload_bytes, state) \
+                 VALUES (?1, '01ARZ3NDEKTSV4RRFFQ0999999', ?2, '2026-08-15T12:00:00Z', ?3, 'cancelled')",
+                params![ROOM, generation, &large],
+            ).unwrap_or_else(|error| panic!("insert historical timer {generation}: {error}"));
+        }
+        transaction.execute(
+            "INSERT INTO room_current_timers_v2( \
+             room_id, timer_id, generation, scheduled_for, payload_bytes, state \
+             ) VALUES (?1, '01ARZ3NDEKTSV4RRFFQ0999999', 18, '2026-08-15T12:00:00Z', X'7B7D', 'scheduled')",
+            [ROOM],
+        ).unwrap_or_else(|error| panic!("insert bounded current timer: {error}"));
+        for sequence in 0..17 {
+            let member_id = format!("01ARZ3NDEKTSV4RRFFA0{sequence:06}");
+            let principal_id = format!("01ARZ3NDEKTSV4RRFFB0{sequence:06}");
+            transaction.execute(
+                "INSERT INTO room_members( \
+                 room_id, member_id, principal_id, principal_kind, standing, access_mode, \
+                 role, membership_bytes, frame_head, membership_generation \
+                 ) VALUES (?1, ?2, ?3, 'human', 'enabled', 'participant', 'counter', ?4, 0, 1)",
+                params![ROOM, member_id, principal_id, &large],
+            ).unwrap_or_else(|error| panic!("insert source member {sequence}: {error}"));
+        }
+        let captured = super::capture_checkpoint_operational_witness_v2(&transaction, &snapshot)
+            .unwrap_or_else(|error| panic!("capture source-byte witness: {error}"))
+            .unwrap_or_else(|| panic!("bounded cache must ignore historical source bytes"));
+        assert!(captured.0.len() < 16 * 1024 * 1024);
     }
 
     #[test]
