@@ -56,7 +56,7 @@ use std::{
 use std::time::SystemTime;
 
 #[cfg(test)]
-use std::sync::Condvar;
+use std::{cell::Cell, sync::Condvar};
 
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, backup::Backup,
@@ -275,6 +275,24 @@ fn emit_sqlite_telemetry(
 }
 
 static NEXT_REPLAY_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+
+// Test-only instrumentation for the full immutable-history inspection path.
+// Gateway cache installation must use guarded recovery plus the bounded serving
+// fence, so a healthy cache miss must not enter this path after recovery.
+#[cfg(test)]
+thread_local! {
+    static FULL_HISTORY_INSPECTION_CALLS: Cell<u64> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_full_history_inspection_calls() {
+    FULL_HISTORY_INSPECTION_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+fn full_history_inspection_calls() -> u64 {
+    FULL_HISTORY_INSPECTION_CALLS.with(Cell::get)
+}
 
 const AUTHORITY_MIGRATION_SCHEMA: &str = r"
 ALTER TABLE authority_fences RENAME TO retired_authority_fences_v1;
@@ -5519,22 +5537,20 @@ impl SqliteRoomStore {
         let Some(trace) = trace else {
             return Ok(None);
         };
-        let Some(inspection) = self
-            .inspect_room(room_id)
-            .map_err(|error| map_gateway_inspection_error(&error))?
-        else {
+        // Recovery's guarded install has authenticated the recovered trace.
+        // Read only the current durable serving fence before caching it: full
+        // inspection would reload every canonical Transition solely to obtain
+        // the Head, integrity, and frame heads that this bounded fence owns.
+        let Some(fence) = self.current_room_serving_fence(room_id)? else {
             return Err(SqliteGatewayErrorV1::RoomUnavailable);
         };
-        if &inspection.head != trace.head() {
+        if fence.head() != trace.head() {
             return Err(SqliteGatewayErrorV1::ConcurrentChange);
         }
         Ok(Some(SqliteGatewayRoomSnapshotV1 {
             trace,
-            integrity: RoomIntegrityStateV1::new(
-                inspection.integrity_status,
-                inspection.integrity_generation,
-            ),
-            frame_heads: inspection.frame_heads,
+            integrity: fence.integrity().clone(),
+            frame_heads: fence.frame_heads().clone(),
         }))
     }
 
@@ -7264,6 +7280,8 @@ impl SqliteRoomStore {
         &self,
         room_id: &RoomId,
     ) -> Result<Option<RoomHistoryInspectionV1>, SqliteRoomInspectionErrorV1> {
+        #[cfg(test)]
+        FULL_HISTORY_INSPECTION_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
         let result = inspect_room_at_path(&self.writer.database_file, &self.writer.path, room_id);
         if matches!(
             &result,
@@ -22986,7 +23004,9 @@ pub enum SqliteStoreOpenError {
 mod tests {
     use super::{
         SqliteRoomSupervisorErrorV1, SqliteRoomSupervisorV1, SqliteStoreOpenError,
-        acquire_writer_lock, migrate, retire_expired_refresh_intents, supersede_refresh_intents,
+        acquire_writer_lock, full_history_inspection_calls, migrate,
+        reset_full_history_inspection_calls, retire_expired_refresh_intents,
+        supersede_refresh_intents,
     };
     use std::{
         collections::BTreeMap,
@@ -34900,6 +34920,39 @@ mod tests {
             .unwrap_or_else(|_| panic!("Timer-race runtime-state thread"))
             .unwrap_or_else(|error| panic!("runtime state after TimerFired race: {error}"));
         assert_eq!(state, Some(SqliteRoomRuntimeStateV1::CatchingUp));
+    }
+
+    #[test]
+    fn healthy_gateway_cache_install_uses_bounded_serving_fence_after_recovery() {
+        let file = NamedTempFile::new().unwrap_or_else(|error| panic!("temp DB: {error}"));
+        let store = SqliteRoomStore::open(file.path())
+            .unwrap_or_else(|error| panic!("open SQLite: {error}"));
+        let (trace, _) = committed_heist_trace(&store);
+        let registry = builtin_agent_heist_registry()
+            .unwrap_or_else(|error| panic!("Agent Heist recovery registry: {error}"));
+
+        // This gateway call is the cold cache-install path. Its guarded
+        // recovery must still reconstruct the exact trace, but it must not
+        // follow with `inspect_room`, which loads all canonical history.
+        reset_full_history_inspection_calls();
+        let snapshot = store
+            .gateway_room_snapshot(&registry, &parsed(ROOM))
+            .unwrap_or_else(|error| panic!("bounded gateway snapshot: {error}"))
+            .unwrap_or_else(|| panic!("durable Heist Room remains present"));
+
+        assert_eq!(snapshot.trace().head(), trace.head());
+        assert_eq!(
+            full_history_inspection_calls(),
+            0,
+            "healthy gateway cache installation must use only guarded recovery and the bounded serving fence"
+        );
+        let fence = store
+            .current_room_serving_fence(&parsed(ROOM))
+            .unwrap_or_else(|error| panic!("current serving fence: {error}"))
+            .unwrap_or_else(|| panic!("durable serving fence remains present"));
+        assert_eq!(snapshot.trace().head(), fence.head());
+        assert_eq!(snapshot.integrity(), fence.integrity());
+        assert_eq!(snapshot.frame_heads(), fence.frame_heads());
     }
 
     #[test]
