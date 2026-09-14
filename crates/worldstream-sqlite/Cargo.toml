@@ -21,7 +21,7 @@ worldstream-sqlite-open.workspace = true
 worldstream-transfer = { path = "../worldstream-transfer", version = "=0.1.0" }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["fs"] }
+rustix = { workspace = true, features = ["fs", "time"] }
 
 [target.'cfg(windows)'.dependencies]
 fs-id.workspace = true

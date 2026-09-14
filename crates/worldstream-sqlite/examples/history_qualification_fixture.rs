@@ -111,10 +111,13 @@ struct SnapshotMetrics {
     /// inserted by the production writer. The complete count is reported in
     /// `observed_snapshot_count`; this list never grows with history length.
     per_snapshot: Vec<SnapshotWriteAttribution>,
-    /// SQLite does not expose writer CPU or WAL bytes for one post-commit
-    /// callback independently from the surrounding process/connection. Keep
-    /// those fields explicit and unavailable rather than attributing the
-    /// whole transition transaction to the cache.
+    /// One deliberately quiescent post-commit cache transaction. The writer
+    /// truncates WAL only after the canonical commit, so this records snapshot
+    /// CPU and WAL separately from the Transition that made it due.
+    isolated_cache_transaction: IsolatedSnapshotTransaction,
+    /// Legacy aggregate cadence fields retained for existing consumers. They
+    /// intentionally remain unavailable: only `isolated_cache_transaction`
+    /// makes a one-transaction CPU/WAL claim.
     cpu_attribution: AttributionUnavailable,
     wal_attribution: AttributionUnavailable,
 }
@@ -129,6 +132,18 @@ struct SnapshotWriteAttribution {
 struct AttributionUnavailable {
     value: Option<u64>,
     source: &'static str,
+}
+
+#[derive(Serialize)]
+struct IsolatedSnapshotTransaction {
+    scope: &'static str,
+    room_seq: u64,
+    logical_payload_bytes: u64,
+    logical_payload_source: &'static str,
+    writer_thread_cpu_nanoseconds: Option<u64>,
+    cpu_source: &'static str,
+    exact_wal_bytes: u64,
+    wal_source: &'static str,
 }
 
 #[derive(Serialize)]
@@ -245,7 +260,26 @@ fn install_snapshot_observer(database: &Path) -> Result<()> {
     Ok(())
 }
 
-fn read_and_remove_snapshot_observer(database: &Path, room_id: &RoomId) -> Result<SnapshotMetrics> {
+fn record_isolated_snapshot_observation(
+    database: &Path,
+    isolated: &worldstream_sqlite::SqliteSnapshotQualificationMeasurementV1,
+) -> Result<()> {
+    let connection = Connection::open(database)?;
+    connection.execute(
+        "INSERT INTO fixture_snapshot_write_observations(room_seq, serialized_bytes) VALUES (?1, ?2)",
+        [
+            i64::try_from(isolated.room_seq())?,
+            i64::try_from(isolated.logical_payload_bytes())?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn read_and_remove_snapshot_observer(
+    database: &Path,
+    room_id: &RoomId,
+    isolated: worldstream_sqlite::SqliteSnapshotQualificationMeasurementV1,
+) -> Result<SnapshotMetrics> {
     let connection = Connection::open(database)?;
     let write_count = u64::try_from(connection.query_row::<i64, _, _>(
         "SELECT count(*) FROM fixture_snapshot_write_observations",
@@ -296,13 +330,27 @@ fn read_and_remove_snapshot_observer(database: &Path, room_id: &RoomId) -> Resul
         last_snapshot_room_seq: u64::try_from(last_snapshot_room_seq)?,
         transitions_since_snapshot: u64::try_from(transitions_since_snapshot)?,
         per_snapshot,
+        isolated_cache_transaction: IsolatedSnapshotTransaction {
+            scope: "quiescent_post_commit_snapshot_cache_transaction",
+            room_seq: isolated.room_seq(),
+            logical_payload_bytes: isolated.logical_payload_bytes(),
+            logical_payload_source: "complete_head_plus_core_state_plus_activity_state",
+            writer_thread_cpu_nanoseconds: isolated.writer_thread_cpu_nanoseconds(),
+            cpu_source: if isolated.writer_thread_cpu_nanoseconds().is_some() {
+                "linux_clock_thread_cputime_id_around_cache_transaction"
+            } else {
+                "clock_thread_cputime_id_unavailable_on_this_platform"
+            },
+            exact_wal_bytes: isolated.wal_bytes(),
+            wal_source: "wal_file_length_after_quiescent_truncate_and_one_cache_transaction",
+        },
         cpu_attribution: AttributionUnavailable {
             value: None,
-            source: "sqlite_writer_callback_not_separable_from_canonical_commit",
+            source: "aggregate_cadence_cpu_not_attributed_use_isolated_cache_transaction",
         },
         wal_attribution: AttributionUnavailable {
             value: None,
-            source: "sqlite_wal_delta_not_separable_per_snapshot_without_checkpointing",
+            source: "aggregate_cadence_wal_not_attributed_use_isolated_cache_transaction",
         },
     })
 }
@@ -794,7 +842,6 @@ fn run(database: &Path, count: u64, stream_metadata: bool) -> Result<Report> {
         return Err("transition count must be positive".into());
     }
     let store = SqliteRoomStore::open(database)?;
-    install_snapshot_observer(database)?;
     let authority = AuthorityV1::new(Arc::new(store.clone()));
     let host_bearer = CapabilityBearerV1::from_bytes(HOST_BEARER);
     authority.bootstrap(
@@ -857,6 +904,10 @@ fn run(database: &Path, count: u64, stream_metadata: bool) -> Result<Report> {
     };
     let prepared =
         PreparedRoomCreationV1::from_registry_genesis(identity, &creation, grant, genesis)?;
+    // The writer serializes this arm before the creation commit. Genesis is
+    // due for a paired snapshot, so the returned receipt measures exactly its
+    // post-commit cache transaction after a WAL truncate fence.
+    let isolated_snapshot = store.arm_snapshot_qualification()?;
     let outcome = commit_room_creation(&store, prepared);
     if !matches!(
         outcome.resolution(),
@@ -867,6 +918,13 @@ fn run(database: &Path, count: u64, stream_metadata: bool) -> Result<Report> {
     ) {
         return Err("Genesis was not newly committed".into());
     }
+    let isolated_snapshot = isolated_snapshot.finish()?;
+    // Install the aggregate observer only after the isolated cache
+    // transaction. The manually recorded payload preserves the historical
+    // cadence count without making the observer's audit-row insert part of
+    // the measured production cache transaction.
+    install_snapshot_observer(database)?;
+    record_isolated_snapshot_observation(database, &isolated_snapshot)?;
     let mut trace = outcome
         .into_committed_trace()
         .ok_or("Genesis did not release trace")?;
@@ -979,7 +1037,7 @@ fn run(database: &Path, count: u64, stream_metadata: bool) -> Result<Report> {
     } else {
         0
     };
-    let snapshots = read_and_remove_snapshot_observer(database, &room_id)?;
+    let snapshots = read_and_remove_snapshot_observer(database, &room_id, isolated_snapshot)?;
     if stream_metadata {
         initialize_stream_metadata(&store, &trace)?;
     }
@@ -1142,4 +1200,36 @@ fn main() -> Result<()> {
     }
     println!("{}", std::str::from_utf8(&bytes)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_one_quiescent_snapshot_transaction_separately_from_genesis() {
+        let directory = tempfile::tempdir().expect("temporary qualification directory");
+        let database = directory.path().join("history.sqlite");
+        let report = run(&database, 1, false).expect("qualification fixture report");
+
+        let measured = &report.snapshots.isolated_cache_transaction;
+        assert_eq!(
+            measured.scope,
+            "quiescent_post_commit_snapshot_cache_transaction"
+        );
+        assert_eq!(measured.room_seq, 0);
+        assert!(measured.logical_payload_bytes > 0);
+        assert!(measured.exact_wal_bytes > 0);
+        assert_eq!(report.snapshots.write_count, 1);
+        assert_eq!(report.snapshots.per_snapshot.len(), 1);
+        assert_eq!(report.snapshots.per_snapshot[0].room_seq, measured.room_seq);
+        assert_eq!(
+            report.snapshots.per_snapshot[0].serialized_bytes,
+            measured.logical_payload_bytes
+        );
+        #[cfg(target_os = "linux")]
+        assert!(measured.writer_thread_cpu_nanoseconds.is_some());
+        #[cfg(not(target_os = "linux"))]
+        assert!(measured.writer_thread_cpu_nanoseconds.is_none());
+    }
 }

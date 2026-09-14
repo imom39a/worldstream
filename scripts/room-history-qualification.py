@@ -430,6 +430,24 @@ def run_sqlite_backend(
             or type(attribution["source"]) is not str
         ):
             return {"status": "failed", "source": "production_sqlite_core_storage", "error": f"driver {attribution_field} honesty marker incomplete"}
+    isolated_snapshot = snapshots.get("isolated_cache_transaction")
+    if (
+        type(isolated_snapshot) is not dict
+        or isolated_snapshot.get("scope") != "quiescent_post_commit_snapshot_cache_transaction"
+        or type(isolated_snapshot.get("room_seq")) is not int
+        or isolated_snapshot.get("room_seq") < 0
+        or type(isolated_snapshot.get("logical_payload_bytes")) is not int
+        or isolated_snapshot.get("logical_payload_bytes") <= 0
+        or isolated_snapshot.get("logical_payload_source") != "complete_head_plus_core_state_plus_activity_state"
+        or isolated_snapshot.get("writer_thread_cpu_nanoseconds") is not None
+        and (type(isolated_snapshot.get("writer_thread_cpu_nanoseconds")) is not int
+             or isolated_snapshot.get("writer_thread_cpu_nanoseconds") < 0)
+        or type(isolated_snapshot.get("cpu_source")) is not str
+        or type(isolated_snapshot.get("exact_wal_bytes")) is not int
+        or isolated_snapshot.get("exact_wal_bytes") <= 0
+        or isolated_snapshot.get("wal_source") != "wal_file_length_after_quiescent_truncate_and_one_cache_transaction"
+    ):
+        return {"status": "failed", "source": "production_sqlite_core_storage", "error": "driver isolated snapshot transaction evidence incomplete"}
     cpu: dict[str, Any] = {
         "wall_elapsed_ms": wall_elapsed_ms,
         "source": "child_process_getrusage" if child_before and child_after else "unavailable",

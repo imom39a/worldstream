@@ -1300,6 +1300,80 @@ pub struct SqliteRoomStore {
     writer: Arc<WriterClient>,
 }
 
+/// One isolated post-commit snapshot-cache transaction captured by the
+/// qualification driver. This is observational: it is armed only by an
+/// explicit caller and cannot affect a canonical commit result.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SqliteSnapshotQualificationMeasurementV1 {
+    room_seq: u64,
+    logical_payload_bytes: u64,
+    writer_thread_cpu_nanoseconds: Option<u64>,
+    wal_bytes: u64,
+}
+
+impl SqliteSnapshotQualificationMeasurementV1 {
+    #[must_use]
+    pub const fn room_seq(&self) -> u64 {
+        self.room_seq
+    }
+
+    #[must_use]
+    pub const fn logical_payload_bytes(&self) -> u64 {
+        self.logical_payload_bytes
+    }
+
+    /// CPU time for the private SQLite writer thread while it executed only
+    /// the snapshot-cache transaction. Linux reports this from
+    /// `CLOCK_THREAD_CPUTIME_ID`; other platforms return `None`.
+    #[must_use]
+    pub const fn writer_thread_cpu_nanoseconds(&self) -> Option<u64> {
+        self.writer_thread_cpu_nanoseconds
+    }
+
+    /// Exact on-disk WAL length after a quiescent truncate and this one cache
+    /// transaction. The pre-transaction truncate excludes canonical writes.
+    #[must_use]
+    pub const fn wal_bytes(&self) -> u64 {
+        self.wal_bytes
+    }
+}
+
+/// Closed outcomes for the opt-in snapshot qualification probe.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum SqliteSnapshotQualificationErrorV1 {
+    #[error("the SQLite writer is unavailable")]
+    WriterUnavailable,
+    #[error("a snapshot qualification probe is already armed")]
+    AlreadyArmed,
+    #[error("the SQLite WAL could not be quiescently truncated")]
+    WalNotQuiescent,
+    #[error("the isolated snapshot-cache transaction did not persist")]
+    SnapshotPersistenceFailed,
+}
+
+/// Handle for the next due post-commit snapshot-cache transaction after a
+/// qualification probe is armed.
+#[doc(hidden)]
+pub struct SqliteSnapshotQualificationHandleV1 {
+    receiver: Receiver<
+        Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1>,
+    >,
+}
+
+impl SqliteSnapshotQualificationHandleV1 {
+    /// Waits for the next due cache transaction or reports that the writer
+    /// stopped before it could produce isolated evidence.
+    pub fn finish(
+        self,
+    ) -> Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1> {
+        self.receiver
+            .recv()
+            .unwrap_or(Err(SqliteSnapshotQualificationErrorV1::WriterUnavailable))
+    }
+}
+
 /// Stable native identity of the exact `SQLite` main-database object retained by
 /// a [`SqliteRoomStore`]. It contains no path or database content.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3261,6 +3335,12 @@ impl Drop for ReplaySlicePermitV1 {
 }
 
 enum WriterCommand {
+    ArmSnapshotQualification {
+        measurement: mpsc::Sender<
+            Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1>,
+        >,
+        reply: mpsc::Sender<Result<(), SqliteSnapshotQualificationErrorV1>>,
+    },
     InitializeCanonicalMetadata {
         deployment_lineage: String,
         storage_epoch: u64,
@@ -4522,6 +4602,27 @@ impl SqliteRoomStore {
     #[must_use]
     pub fn database_identity(&self) -> SqliteFileIdentityV1 {
         self.writer.database_identity
+    }
+
+    /// Arms one qualification-only measurement of the next due post-commit
+    /// snapshot-cache transaction. The writer truncates its WAL after the
+    /// canonical commit has completed, then measures only the following cache
+    /// transaction. It is intended for a quiescent controlled fixture, never
+    /// ordinary runtime telemetry.
+    #[doc(hidden)]
+    pub fn arm_snapshot_qualification(
+        &self,
+    ) -> Result<SqliteSnapshotQualificationHandleV1, SqliteSnapshotQualificationErrorV1> {
+        let (measurement, receiver) = mpsc::channel();
+        let (reply, receive) = mpsc::channel();
+        self.writer
+            .commands
+            .send(WriterCommand::ArmSnapshotQualification { measurement, reply })
+            .map_err(|_| SqliteSnapshotQualificationErrorV1::WriterUnavailable)?;
+        receive
+            .recv()
+            .map_err(|_| SqliteSnapshotQualificationErrorV1::WriterUnavailable)??;
+        Ok(SqliteSnapshotQualificationHandleV1 { receiver })
     }
 
     /// Creates and atomically publishes a standalone online backup from the
@@ -11040,6 +11141,7 @@ fn writer_main(
     drop(startup);
     #[cfg(test)]
     let mut failpoint = None;
+    let mut snapshot_qualification = None;
     macro_rules! reply_after_namespace_check {
         ($reply:expr, $value:expr) => {{
             let value = $value;
@@ -11061,6 +11163,15 @@ fn writer_main(
             break;
         }
         match command {
+            WriterCommand::ArmSnapshotQualification { measurement, reply } => {
+                let result = if snapshot_qualification.is_some() {
+                    Err(SqliteSnapshotQualificationErrorV1::AlreadyArmed)
+                } else {
+                    snapshot_qualification = Some(measurement);
+                    Ok(())
+                };
+                reply_after_namespace_check!(reply, result);
+            }
             WriterCommand::InitializeCanonicalMetadata {
                 deployment_lineage,
                 storage_epoch,
@@ -11174,15 +11285,34 @@ fn writer_main(
                 changes,
                 reply,
             } => {
-                let resolution =
-                    commit_creation_with_authority(&mut connection, *prepared, &changes, clock);
+                let resolution = commit_creation_with_authority(
+                    &mut connection,
+                    *prepared,
+                    &changes,
+                    clock,
+                    path,
+                    &mut snapshot_qualification,
+                );
                 reply_after_namespace_check!(reply, resolution);
             }
             WriterCommand::Commit(prepared, reply) => {
                 #[cfg(test)]
-                let resolution = commit_prepared(&mut connection, *prepared, clock, failpoint);
+                let resolution = commit_prepared(
+                    &mut connection,
+                    *prepared,
+                    clock,
+                    failpoint,
+                    path,
+                    &mut snapshot_qualification,
+                );
                 #[cfg(not(test))]
-                let resolution = commit_prepared(&mut connection, *prepared, clock);
+                let resolution = commit_prepared(
+                    &mut connection,
+                    *prepared,
+                    clock,
+                    path,
+                    &mut snapshot_qualification,
+                );
                 reply_after_namespace_check!(reply, resolution);
             }
             WriterCommand::ReserveExternalInputPreparation {
@@ -16482,8 +16612,21 @@ fn commit_prepared(
     connection: &mut Connection,
     prepared: SqlitePreparedWrite,
     clock: &dyn TrustedAuthorityClock,
+    path: &Path,
+    snapshot_qualification: &mut Option<
+        mpsc::Sender<
+            Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1>,
+        >,
+    >,
 ) -> RoomCommitResolutionV1 {
-    commit_prepared_inner(connection, prepared, clock, None)
+    commit_prepared_inner(
+        connection,
+        prepared,
+        clock,
+        None,
+        path,
+        snapshot_qualification,
+    )
 }
 
 #[cfg(test)]
@@ -16492,8 +16635,21 @@ fn commit_prepared(
     prepared: SqlitePreparedWrite,
     clock: &dyn TrustedAuthorityClock,
     failpoint: Option<WriteBoundary>,
+    path: &Path,
+    snapshot_qualification: &mut Option<
+        mpsc::Sender<
+            Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1>,
+        >,
+    >,
 ) -> RoomCommitResolutionV1 {
-    commit_prepared_inner(connection, prepared, clock, failpoint)
+    commit_prepared_inner(
+        connection,
+        prepared,
+        clock,
+        failpoint,
+        path,
+        snapshot_qualification,
+    )
 }
 
 fn commit_prepared_inner(
@@ -16501,6 +16657,12 @@ fn commit_prepared_inner(
     prepared: SqlitePreparedWrite,
     clock: &dyn TrustedAuthorityClock,
     failpoint: Option<WriteBoundary>,
+    path: &Path,
+    snapshot_qualification: &mut Option<
+        mpsc::Sender<
+            Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1>,
+        >,
+    >,
 ) -> RoomCommitResolutionV1 {
     let Ok(transaction) = connection.transaction_with_behavior(TransactionBehavior::Immediate)
     else {
@@ -16528,6 +16690,8 @@ fn commit_prepared_inner(
                 clock,
                 false,
                 snapshot_write_enabled,
+                path,
+                snapshot_qualification,
             );
             return resolution;
         }
@@ -16596,7 +16760,15 @@ fn commit_prepared_inner(
     let snapshot_write_enabled = failpoint != Some(WriteBoundary::Snapshot);
     #[cfg(not(test))]
     let snapshot_write_enabled = true;
-    maybe_persist_post_commit_snapshot(connection, &prepared, clock, true, snapshot_write_enabled);
+    maybe_persist_post_commit_snapshot(
+        connection,
+        &prepared,
+        clock,
+        true,
+        snapshot_write_enabled,
+        path,
+        snapshot_qualification,
+    );
     if failpoint == Some(WriteBoundary::AfterCommitUnknown) {
         RoomCommitResolutionV1::Indeterminate
     } else {
@@ -16609,6 +16781,12 @@ fn commit_creation_with_authority(
     prepared: SqlitePreparedWrite,
     changes: &[PreparedAuthorityChangeV1],
     clock: &dyn TrustedAuthorityClock,
+    path: &Path,
+    snapshot_qualification: &mut Option<
+        mpsc::Sender<
+            Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1>,
+        >,
+    >,
 ) -> RoomCommitResolutionV1 {
     if changes.is_empty() || !matches!(&prepared.branch, PreparedSqliteBranch::Create(_)) {
         return RoomCommitResolutionV1::Fault;
@@ -16652,7 +16830,15 @@ fn commit_creation_with_authority(
             if transaction.commit().is_err() {
                 return RoomCommitResolutionV1::Indeterminate;
             }
-            maybe_persist_post_commit_snapshot(connection, &prepared, clock, false, true);
+            maybe_persist_post_commit_snapshot(
+                connection,
+                &prepared,
+                clock,
+                false,
+                true,
+                path,
+                snapshot_qualification,
+            );
             return resolution;
         }
         Ok(None) => {}
@@ -16695,7 +16881,15 @@ fn commit_creation_with_authority(
     if transaction.commit().is_err() {
         return RoomCommitResolutionV1::Indeterminate;
     }
-    maybe_persist_post_commit_snapshot(connection, &prepared, clock, true, true);
+    maybe_persist_post_commit_snapshot(
+        connection,
+        &prepared,
+        clock,
+        true,
+        true,
+        path,
+        snapshot_qualification,
+    );
     RoomCommitResolutionV1::resolved(ResolutionStatusV1::New, prepared.receipt.stored_result)
 }
 
@@ -22738,6 +22932,12 @@ fn maybe_persist_post_commit_snapshot(
     clock: &dyn TrustedAuthorityClock,
     is_new_transition: bool,
     snapshot_write_enabled: bool,
+    path: &Path,
+    snapshot_qualification: &mut Option<
+        mpsc::Sender<
+            Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1>,
+        >,
+    >,
 ) {
     let Some(candidate) = prepared.snapshot_cadence_candidate() else {
         return;
@@ -22755,7 +22955,13 @@ fn maybe_persist_post_commit_snapshot(
     // so the next duplicate or new Advance may retry it.
     if due {
         if snapshot_write_enabled && let Some(snapshot) = prepared.post_commit_snapshot() {
-            let _ = persist_post_commit_snapshot(connection, &snapshot, now_text);
+            if let Some(reply) = snapshot_qualification.take() {
+                let result =
+                    persist_qualified_post_commit_snapshot(connection, path, &snapshot, now_text);
+                let _ = reply.send(result);
+            } else {
+                let _ = persist_post_commit_snapshot(connection, &snapshot, now_text);
+            }
         }
     } else if is_new_transition {
         let _ = record_snapshot_cadence_advance(
@@ -22766,6 +22972,78 @@ fn maybe_persist_post_commit_snapshot(
             next_active_started_at.as_deref(),
         );
     }
+}
+
+fn persist_qualified_post_commit_snapshot(
+    connection: &mut Connection,
+    path: &Path,
+    snapshot: &PostCommitSnapshotV1,
+    active_started_at: Option<&str>,
+) -> Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1> {
+    // This runs only after the canonical transaction has committed. A
+    // successful truncate is therefore a hard measurement fence: the WAL
+    // bytes recorded below can only have been produced by this cache
+    // transaction in the controlled single-writer fixture.
+    let checkpoint: (i64, i64, i64) = connection
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", (), |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map_err(|_| SqliteSnapshotQualificationErrorV1::WalNotQuiescent)?;
+    if checkpoint.0 != 0 || snapshot_wal_bytes(path) != 0 {
+        let _ = persist_post_commit_snapshot(connection, snapshot, active_started_at);
+        return Err(SqliteSnapshotQualificationErrorV1::WalNotQuiescent);
+    }
+
+    let cpu_before = writer_thread_cpu_nanoseconds();
+    if persist_post_commit_snapshot(connection, snapshot, active_started_at).is_err() {
+        return Err(SqliteSnapshotQualificationErrorV1::SnapshotPersistenceFailed);
+    }
+    let cpu_after = writer_thread_cpu_nanoseconds();
+    let writer_thread_cpu_nanoseconds = match (cpu_before, cpu_after) {
+        (Some(before), Some(after)) => after.checked_sub(before),
+        _ => None,
+    };
+    let logical_payload_bytes = u64::try_from(snapshot.complete_head_bytes.len())
+        .ok()
+        .and_then(|head| {
+            u64::try_from(snapshot.core_state_bytes.len())
+                .ok()
+                .and_then(|core| {
+                    u64::try_from(snapshot.activity_state_bytes.len())
+                        .ok()
+                        .and_then(|activity| head.checked_add(core)?.checked_add(activity))
+                })
+        })
+        .ok_or(SqliteSnapshotQualificationErrorV1::SnapshotPersistenceFailed)?;
+    Ok(SqliteSnapshotQualificationMeasurementV1 {
+        room_seq: u64::try_from(snapshot.room_seq)
+            .map_err(|_| SqliteSnapshotQualificationErrorV1::SnapshotPersistenceFailed)?,
+        logical_payload_bytes,
+        writer_thread_cpu_nanoseconds,
+        wal_bytes: snapshot_wal_bytes(path),
+    })
+}
+
+fn snapshot_wal_bytes(path: &Path) -> u64 {
+    let mut wal = path.as_os_str().to_os_string();
+    wal.push("-wal");
+    fs::metadata(PathBuf::from(wal))
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
+}
+
+#[cfg(target_os = "linux")]
+fn writer_thread_cpu_nanoseconds() -> Option<u64> {
+    let clock = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
+    u64::try_from(clock.tv_sec)
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(u64::try_from(clock.tv_nsec).ok()?)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn writer_thread_cpu_nanoseconds() -> Option<u64> {
+    None
 }
 
 fn statement_failure(error: rusqlite::Error) -> RoomCommitResolutionV1 {
