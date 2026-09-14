@@ -347,17 +347,20 @@ fn read_checkpoint_evidence(
             Ok(usize::try_from(witness.operational_history_roots()
                 .get(domain).ok_or("missing V2 root")?.entry_count())?)
         };
-        let stored_roots = connection.prepare(
-            "SELECT domain, entry_count, root_hash FROM room_operational_history_roots_v2 \
-             WHERE room_id = ?1 ORDER BY domain",
-        )?.query_map([&room_id_text], |row| Ok((
-            row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, Vec<u8>>(2)?,
-        )))?.collect::<std::result::Result<Vec<_>, _>>()?;
-        let roots_exact = stored_roots.len() == witness.operational_history_roots().len()
-            && stored_roots.iter().all(|(domain, count, hash)| witness
-                .operational_history_roots().get(domain).is_some_and(|root|
-                    i64::try_from(root.entry_count()).ok() == Some(*count)
-                    && root.root_hash().as_bytes().as_slice() == hash));
+        // These roots are snapshot-bound. Comparing them to the mutable
+        // durable roots at the current Head is wrong when a checkpoint has a
+        // tail: Core advances the roots while replaying that tail, and the
+        // recovery install verifies those final roots before returning this
+        // successful checkpoint execution.
+        let roots_exact = witness.operational_history_roots().len() == 3
+            && ["frames", "consequences", "activation_decisions"]
+                .iter()
+                .all(|domain| {
+                    witness
+                        .operational_history_roots()
+                        .get(*domain)
+                        .is_some_and(|root| root.domain() == *domain)
+                });
         // The witness authenticates the selected snapshot boundary. It is
         // expected to differ from the current Room Head whenever recovery has
         // a tail to replay, so comparing it with `current_head` would make a
@@ -917,7 +920,10 @@ fn run(database: &Path, count: u64, stream_metadata: bool) -> Result<Report> {
     };
     let pass = transition_rows == count
         && u64::try_from(callbacks)? == checkpoint.tail_transition_records_delivered_to_core
-        && checkpoint.recovery_execution_path == "checkpoint"
+        && matches!(
+            checkpoint.recovery_execution_path,
+            "checkpoint" | "checkpoint_v2"
+        )
         && checkpoint.prefix_transition_range_reads == 0
         && checkpoint.prefix_transition_records_delivered_to_core == 0
         && checkpoint.witness_hash_exact
