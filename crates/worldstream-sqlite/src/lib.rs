@@ -26899,7 +26899,11 @@ mod tests {
                 row.get(0)
             })
             .unwrap_or_else(|error| panic!("read restarted migration ledger: {error}"));
-        assert_eq!(migration_count, 17);
+        assert_eq!(
+            migration_count,
+            i64::try_from(migration_history().last().expect("migration inventory").version)
+                .expect("migration version fits SQLite")
+        );
     }
 
     #[test]
@@ -27192,7 +27196,11 @@ mod tests {
                 row.get(0)
             })
             .unwrap_or_else(|error| panic!("restored migration ledger: {error}"));
-        assert_eq!(restored_migrations, 17);
+        assert_eq!(
+            restored_migrations,
+            i64::try_from(migration_history().last().expect("migration inventory").version)
+                .expect("migration version fits SQLite")
+        );
 
         let startup_dir = tempdir().unwrap_or_else(|error| panic!("startup directory: {error}"));
         let startup = startup_dir.path().join("startup.sqlite3");
@@ -38448,6 +38456,9 @@ mod tests {
 
     #[test]
     fn sqlite_real_migration_and_recovery_producers_are_bounded_and_truth_independent() {
+        let target_schema_version = u64::try_from(
+            migration_history().last().expect("migration inventory").version,
+        ).expect("migration version fits telemetry schema");
         let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
         let path = directory.path().join("telemetry.sqlite3");
         let sink = RecordingSqliteTelemetry::default();
@@ -38463,11 +38474,11 @@ mod tests {
             vec![
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Started,
-                    schema_version: 17,
+                    schema_version: target_schema_version,
                 },
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Applied,
-                    schema_version: 17,
+                    schema_version: target_schema_version,
                 },
             ]
         );
@@ -38507,16 +38518,16 @@ mod tests {
             [
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Started,
-                    schema_version: 17,
+                    schema_version: target_schema_version,
                 },
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::AlreadyCurrent,
-                    schema_version: 17,
+                    schema_version: target_schema_version,
                 },
             ]
         );
         assert!(final_events.iter().all(|event| match event {
-            SqliteTelemetryEventV1::Migration { schema_version, .. } => *schema_version <= 17,
+            SqliteTelemetryEventV1::Migration { schema_version, .. } => *schema_version <= target_schema_version,
             SqliteTelemetryEventV1::Recovery { .. }
             | SqliteTelemetryEventV1::Integrity { .. }
             | SqliteTelemetryEventV1::StorageDiagnostic { .. } => true,
