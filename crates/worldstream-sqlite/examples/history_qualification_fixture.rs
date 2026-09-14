@@ -27,7 +27,7 @@ use worldstream_core::{
     PresentedCapabilityV1, PrincipalKindV1, RecoveredActivationDecisionV1,
     RecoveredObservationConsequenceV1, RecoveredObservationFrameV1,
     RecoveredTimerMaterializationV1, RecoveredTimerStateV1, ResolutionStatusV1,
-    RoomCheckpointOperationalWitnessV1, RoomCommitResolutionV1, RoomCreationIngressV1,
+    RoomCheckpointOperationalWitnessV1, RoomCheckpointOperationalWitnessV2, RoomCommitResolutionV1, RoomCreationIngressV1,
     RoomCreationRequestV1, RoomId, RoomRecoveryStorageV1, RoomSeedV1, RoomSequenceV1,
     TimerGenerationV1, ViewInputV1, authorize_core_administration_operation,
     authorize_room_creation_operation, builtin_counter_registry, commit_existing_room,
@@ -310,23 +310,68 @@ fn read_checkpoint_evidence(
 ) -> Result<CheckpointEvidence> {
     let connection = Connection::open(database)?;
     let room_id_text = room_id.to_string();
-    let (checkpoint_room_seq, checkpoint_head_bytes, witness_hash, witness_bytes): (
+    let (checkpoint_room_seq, checkpoint_head_bytes, witness_schema, witness_hash, witness_bytes): (
         i64,
         Vec<u8>,
+        String,
         Vec<u8>,
         Vec<u8>,
     ) = connection.query_row(
-        "SELECT snapshots.room_seq, snapshots.complete_head_bytes, witness.witness_hash, \
-         witness.witness_bytes FROM room_snapshots AS snapshots \
-         JOIN room_snapshot_operational_witnesses AS witness \
-           ON witness.room_id = snapshots.room_id AND witness.room_seq = snapshots.room_seq \
-         WHERE snapshots.room_id = ?1 ORDER BY snapshots.room_seq DESC LIMIT 1",
+        "SELECT room_seq, complete_head_bytes, witness_schema_version, witness_hash, witness_bytes FROM (\
+           SELECT snapshots.room_seq, snapshots.complete_head_bytes, witness.witness_schema_version, witness.witness_hash, witness.witness_bytes, 2 AS witness_version \
+           FROM room_snapshots AS snapshots JOIN room_snapshot_operational_witnesses_v2 AS witness \
+             ON witness.room_id = snapshots.room_id AND witness.room_seq = snapshots.room_seq WHERE snapshots.room_id = ?1 \
+           UNION ALL \
+           SELECT snapshots.room_seq, snapshots.complete_head_bytes, witness.witness_schema_version, witness.witness_hash, witness.witness_bytes, 1 AS witness_version \
+           FROM room_snapshots AS snapshots JOIN room_snapshot_operational_witnesses AS witness \
+             ON witness.room_id = snapshots.room_id AND witness.room_seq = snapshots.room_seq WHERE snapshots.room_id = ?1 \
+         ) ORDER BY room_seq DESC, witness_version DESC LIMIT 1",
         [&room_id_text],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
     )?;
     let checkpoint_head = worldstream_core::CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(
         &checkpoint_head_bytes,
     )?;
+    if witness_schema == worldstream_core::CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2 {
+        let witness = RoomCheckpointOperationalWitnessV2::from_canonical_bytes(
+            &witness_bytes, &checkpoint_head,
+        ).map_err(|error| format!("decode V2 checkpoint witness: {error:?}"))?;
+        let checkpoint_room_seq = u64::try_from(checkpoint_room_seq)?;
+        if !receipt.used_checkpoint()
+            || receipt.checkpoint_room_seq().map(|value| value.get()) != Some(checkpoint_room_seq)
+            || receipt.prefix_transition_records_delivered() != 0
+            || receipt.prefix_transitions_skipped() != checkpoint_room_seq {
+            return Err("recovery receipt did not prove the selected checkpoint path".into());
+        }
+        let root_entries = |domain| -> Result<usize> {
+            Ok(usize::try_from(witness.operational_history_roots()
+                .get(domain).ok_or("missing V2 root")?.entry_count())?)
+        };
+        let exact = witness_hash.as_slice() == Blake3DigestV1::hash(&witness_bytes).as_bytes()
+            && witness.checkpoint_head() == current_head;
+        let collection = |live_rows, witness_entries| WitnessCollectionEvidence {
+            live_rows, witness_entries, exact,
+        };
+        let tail = receipt.tail_transition_records_delivered();
+        return Ok(CheckpointEvidence {
+            recovery_execution_path: "checkpoint_v2",
+            checkpoint_room_seq,
+            checkpoint_boundary_transition_records_read_by_adapter: u64::from(checkpoint_room_seq > 0),
+            prefix_transition_range_reads: 0,
+            prefix_transition_records_delivered_to_core: receipt.prefix_transition_records_delivered(),
+            prefix_transitions_skipped: receipt.prefix_transitions_skipped(),
+            tail_transition_records_delivered_to_core: tail,
+            transition_records_read_by_adapter_total: u64::from(checkpoint_room_seq > 0).checked_add(tail).ok_or("checkpoint Transition read count overflow")?,
+            witness_bytes: witness_bytes.len(), witness_hash_exact: exact, witness_head_exact: exact,
+            timer_ledger: collection(witness.timers().len(), witness.timers().len()),
+            observation_frame_heads: collection(witness.observation_frame_heads().len(), witness.observation_frame_heads().len()),
+            observation_frames: collection(root_entries("frames")?, 1),
+            observation_consequences: collection(root_entries("consequences")?, 1),
+            membership_generations: collection(witness.membership_generations().len(), witness.membership_generations().len()),
+            activation_decisions: collection(root_entries("activation_decisions")?, 1),
+            all_operational_witnesses_exact: exact,
+        });
+    }
     let witness =
         RoomCheckpointOperationalWitnessV1::from_canonical_bytes(&witness_bytes, &checkpoint_head)
             .map_err(|error| format!("decode checkpoint witness: {error:?}"))?;
