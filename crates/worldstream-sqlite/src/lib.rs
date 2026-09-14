@@ -169,6 +169,7 @@ pub const ACTIVATION_BACKLOG_POLICY_MIGRATION_ID: &str = "0016-activation-backlo
 pub const STREAM_TRANSFER_V2_MIGRATION_ID: &str = "0017-stream-transfer-v2";
 pub const CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID: &str =
     "0018-checkpoint-operational-witness-v1";
+pub const OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID: &str = "0019-operational-history-roots-v2";
 const OPERATION_RECEIPT_CODEC_ID: &str = "worldstream/operation-receipt/v1";
 const PAIRED_SNAPSHOT_SCHEMA_VERSION: &str = "worldstream/paired-snapshot/v1";
 const SNAPSHOT_TRANSITION_INTERVAL: i64 = 250;
@@ -808,6 +809,20 @@ CREATE TABLE room_snapshot_operational_witnesses (
     PRIMARY KEY (room_id, room_seq),
     FOREIGN KEY (room_id, room_seq) REFERENCES room_snapshots(room_id, room_seq)
         ON DELETE CASCADE
+) STRICT;
+";
+
+// These roots are an incrementally maintained, checkpoint-bindable receipt
+// for the guard-only operational histories. They never replace the original
+// rows, which remain available for full forensic replay and export.
+const OPERATIONAL_HISTORY_ROOTS_MIGRATION_SCHEMA: &str = r"
+CREATE TABLE room_operational_history_roots_v2 (
+    room_id TEXT NOT NULL,
+    domain TEXT NOT NULL CHECK (domain IN ('frames', 'consequences', 'activation_decisions')),
+    entry_count INTEGER NOT NULL CHECK (entry_count >= 0),
+    root_hash BLOB NOT NULL CHECK (length(root_hash) = 32),
+    PRIMARY KEY (room_id, domain),
+    FOREIGN KEY (room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
 ) STRICT;
 ";
 
@@ -15733,6 +15748,12 @@ fn migrate_with_failpoint_and_telemetry(
             .map_err(SqliteStoreOpenError::Sqlite)?;
         insert_migration(&transaction, history[16], has_checksum_column)?;
     }
+    if migrations.len() < 18 {
+        transaction
+            .execute_batch(history[17].sql)
+            .map_err(SqliteStoreOpenError::Sqlite)?;
+        insert_migration(&transaction, history[17], has_checksum_column)?;
+    }
     let persisted = read_migration_rows(&transaction, has_checksum_column)?;
     let persisted = persisted
         .into_iter()
@@ -16318,6 +16339,8 @@ fn commit_create(
         .map_err(statement_failure)?;
     fail_at(failpoint, WriteBoundary::Room)?;
 
+    initialize_operational_history_roots(transaction, &room_id)?;
+
     transaction
         .execute(
             "INSERT INTO room_genesis(\
@@ -16402,6 +16425,102 @@ fn commit_create(
         )
         .map_err(statement_failure)?;
     fail_at(failpoint, WriteBoundary::Integrity)
+}
+
+const OPERATIONAL_HISTORY_ROOT_DOMAIN_TAG: &[u8] = b"worldstream/operational-history-root/v2\0";
+const OPERATIONAL_HISTORY_ROOT_DOMAINS: [&str; 3] =
+    ["frames", "consequences", "activation_decisions"];
+
+fn initialize_operational_history_roots(
+    transaction: &Transaction<'_>,
+    room_id: &str,
+) -> Result<(), RoomCommitResolutionV1> {
+    for domain in OPERATIONAL_HISTORY_ROOT_DOMAINS {
+        transaction
+            .execute(
+                "INSERT INTO room_operational_history_roots_v2(\
+                 room_id, domain, entry_count, root_hash\
+                 ) VALUES (?1, ?2, 0, ?3)",
+                params![room_id, domain, [0_u8; 32]],
+            )
+            .map_err(statement_failure)?;
+    }
+    Ok(())
+}
+
+fn operational_history_entry(parts: &[&[u8]]) -> Result<Vec<u8>, RoomCommitResolutionV1> {
+    let mut entry = Vec::new();
+    for part in parts {
+        let length = u64::try_from(part.len()).map_err(|_| RoomCommitResolutionV1::Fault)?;
+        entry.extend_from_slice(&length.to_be_bytes());
+        entry.extend_from_slice(part);
+    }
+    Ok(entry)
+}
+
+fn append_operational_history_root(
+    transaction: &Transaction<'_>,
+    room_id: &str,
+    domain: &str,
+    entry: &[u8],
+) -> Result<(), RoomCommitResolutionV1> {
+    let current: Option<(i64, Vec<u8>)> = transaction
+        .query_row(
+            "SELECT entry_count, root_hash FROM room_operational_history_roots_v2 \
+             WHERE room_id = ?1 AND domain = ?2",
+            params![room_id, domain],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(statement_failure)?;
+    let Some((count, root)) = current else {
+        // A pre-V2 Room has no incrementally complete history root. It keeps
+        // the V1/full-replay path rather than starting a forged partial root.
+        return Ok(());
+    };
+    if count < 0 || root.len() != 32 {
+        return Err(RoomCommitResolutionV1::Fault);
+    }
+    let next_count = count.checked_add(1).ok_or(RoomCommitResolutionV1::Fault)?;
+    let domain_bytes = domain.as_bytes();
+    let mut input = Vec::with_capacity(
+        OPERATIONAL_HISTORY_ROOT_DOMAIN_TAG.len()
+            + root.len()
+            + domain_bytes.len()
+            + entry.len()
+            + 24,
+    );
+    input.extend_from_slice(OPERATIONAL_HISTORY_ROOT_DOMAIN_TAG);
+    input.extend_from_slice(
+        &u64::try_from(domain_bytes.len())
+            .map_err(|_| RoomCommitResolutionV1::Fault)?
+            .to_be_bytes(),
+    );
+    input.extend_from_slice(domain_bytes);
+    input.extend_from_slice(
+        &u64::try_from(count)
+            .map_err(|_| RoomCommitResolutionV1::Fault)?
+            .to_be_bytes(),
+    );
+    input.extend_from_slice(&root);
+    input.extend_from_slice(
+        &u64::try_from(entry.len())
+            .map_err(|_| RoomCommitResolutionV1::Fault)?
+            .to_be_bytes(),
+    );
+    input.extend_from_slice(entry);
+    let next = Blake3DigestV1::hash(&input);
+    let changed = transaction
+        .execute(
+            "UPDATE room_operational_history_roots_v2 SET entry_count = ?1, root_hash = ?2 \
+             WHERE room_id = ?3 AND domain = ?4 AND entry_count = ?5 AND root_hash = ?6",
+            params![next_count, next.as_bytes(), room_id, domain, count, root],
+        )
+        .map_err(statement_failure)?;
+    if changed != 1 {
+        return Err(RoomCommitResolutionV1::Fault);
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -18093,16 +18212,35 @@ fn commit_advance(
                 if changed != 1 {
                     return Err(RoomCommitResolutionV1::Fault);
                 }
+                let frame_seq = frame.frame_seq().to_be_bytes();
+                let cause_room_seq = frame.cause_room_seq().get().to_be_bytes();
+                let entry = operational_history_entry(&[
+                    frame.member_id().to_string().as_bytes(),
+                    &frame_seq,
+                    &cause_room_seq,
+                    frame.payload_hash().as_bytes(),
+                    frame.canonical_payload_bytes(),
+                ])?;
+                append_operational_history_root(transaction, &room_id, "frames", &entry)?;
             }
             PreparedObservationConsequenceV1::ResetRequired(view) => {
+                let payload = view.canonical_bytes();
                 persist_delivery_consequence(
                     transaction,
                     &room_id,
                     view.viewer().member_id(),
                     head.room_seq(),
                     "reset_required",
-                    Some(view.canonical_bytes()),
+                    Some(payload),
                 )?;
+                let cause_room_seq = head.room_seq().get().to_be_bytes();
+                let entry = operational_history_entry(&[
+                    view.viewer().member_id().to_string().as_bytes(),
+                    &cause_room_seq,
+                    b"reset_required",
+                    &payload,
+                ])?;
+                append_operational_history_root(transaction, &room_id, "consequences", &entry)?;
             }
             PreparedObservationConsequenceV1::VisibilityLost(member_id) => {
                 persist_delivery_consequence(
@@ -18113,6 +18251,13 @@ fn commit_advance(
                     "visibility_lost",
                     None,
                 )?;
+                let cause_room_seq = head.room_seq().get().to_be_bytes();
+                let entry = operational_history_entry(&[
+                    member_id.to_string().as_bytes(),
+                    &cause_room_seq,
+                    b"visibility_lost",
+                ])?;
+                append_operational_history_root(transaction, &room_id, "consequences", &entry)?;
             }
         }
     }
@@ -18133,6 +18278,18 @@ fn commit_advance(
                 ],
             )
             .map_err(statement_failure)?;
+        let cause_room_seq = head.room_seq().get().to_be_bytes();
+        let target_member_id = decision
+            .target_member_id()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let entry = operational_history_entry(&[
+            &cause_room_seq,
+            decision.decision_id().as_bytes(),
+            target_member_id.as_bytes(),
+            decision.canonical_decision_bytes(),
+        ])?;
+        append_operational_history_root(transaction, &room_id, "activation_decisions", &entry)?;
         let decision_record = worldstream_core::CanonicalJsonV1::decode_canonical::<
             ActivationDecisionV1,
         >(decision.canonical_decision_bytes())
@@ -21498,13 +21655,13 @@ mod tests {
         EXTERNAL_INPUT_PREPARATION_MIGRATION_ID, INITIAL_MIGRATION_ID, INITIAL_MIGRATION_SCHEMA,
         MAX_SAFE_INTEGER, MIGRATION_CHECKSUMS_MIGRATION_ID, MigrationFailpoint,
         OBSERVATION_MIGRATION_ID, OBSERVATION_RETENTION_MIGRATION_ID,
-        PAIRED_SNAPSHOT_SCHEMA_VERSION, SNAPSHOT_CADENCE_MIGRATION_ID, SNAPSHOT_MIGRATION_ID,
-        SQLITE_SOURCE_ID, SQLITE_VERSION, STREAM_TRANSFER_V2_MIGRATION_ID,
-        SnapshotCadenceCandidate, SqliteActivationErrorV1, SqliteAuthorizedReplayErrorV1,
-        SqliteAuthorizedReplayOutcomeV1, SqliteAuthorizedReplayProjectionV1,
-        SqliteCanonicalExportErrorV1, SqliteCanonicalMetadataInitializationErrorV1,
-        SqliteCanonicalMetadataInitializationV1, SqliteCanonicalRecordKindV1,
-        SqliteCanonicalRecordV1, SqliteDeploymentIdentityErrorV1,
+        OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID, PAIRED_SNAPSHOT_SCHEMA_VERSION,
+        SNAPSHOT_CADENCE_MIGRATION_ID, SNAPSHOT_MIGRATION_ID, SQLITE_SOURCE_ID, SQLITE_VERSION,
+        STREAM_TRANSFER_V2_MIGRATION_ID, SnapshotCadenceCandidate, SqliteActivationErrorV1,
+        SqliteAuthorizedReplayErrorV1, SqliteAuthorizedReplayOutcomeV1,
+        SqliteAuthorizedReplayProjectionV1, SqliteCanonicalExportErrorV1,
+        SqliteCanonicalMetadataInitializationErrorV1, SqliteCanonicalMetadataInitializationV1,
+        SqliteCanonicalRecordKindV1, SqliteCanonicalRecordV1, SqliteDeploymentIdentityErrorV1,
         SqliteDeploymentIdentityInitializationV1, SqliteExternalInputPreparationErrorV1,
         SqliteGatewayErrorV1, SqliteMigrationPhaseV1, SqliteObservationDeliveryV1,
         SqliteObservationErrorV1, SqliteObservationFrameV1, SqliteObservationPositionsV1,
@@ -24354,7 +24511,9 @@ mod tests {
         let history = migration_history();
         assert_eq!(
             history.map(|migration| migration.version),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            [
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+            ]
         );
         assert_eq!(
             history.map(|migration| migration.id),
@@ -24376,6 +24535,7 @@ mod tests {
                 ACTIVATION_BACKLOG_POLICY_MIGRATION_ID,
                 STREAM_TRANSFER_V2_MIGRATION_ID,
                 CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID,
+                OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID,
             ]
         );
         let expected_checksums = [
@@ -24396,6 +24556,7 @@ mod tests {
             "blake3:495d58fdc81fee0b6b87d8973f4445b4892da22608e459033eaa333c0d4078a4",
             "blake3:aaa152c1107748f774197bd8a59600150e9d209c7e4eb14ec5e911394b23c3e2",
             "blake3:95b31dc300e31bbdafada55d7d7d9f6b3c05d0dd2e067c3f41e3f39a27655847",
+            "blake3:7977311c54cfcdbec65d3846ddbd2071f53ca830464f5721092f5de958e0b98d",
         ];
         assert_eq!(expected_checksums.len(), history.len());
         for (migration, expected) in history.iter().zip(expected_checksums) {
@@ -26214,6 +26375,7 @@ mod tests {
                 (15, ACTIVATION_BACKLOG_POLICY_MIGRATION_ID.to_owned()),
                 (16, STREAM_TRANSFER_V2_MIGRATION_ID.to_owned()),
                 (17, CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID.to_owned(),),
+                (18, OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID.to_owned(),),
             ]
         );
         let retired: (String, String, i64, Vec<u8>, Vec<u8>, i64) = connection
@@ -33264,6 +33426,17 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("count committed activation decisions: {error}"));
         assert!(activation_count > 0);
+        let activation_root: (i64, Vec<u8>) = connection
+            .query_row(
+                "SELECT entry_count, root_hash FROM room_operational_history_roots_v2 \
+                 WHERE room_id = ?1 AND domain = 'activation_decisions'",
+                [ROOM],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or_else(|error| panic!("read activation history root: {error}"));
+        assert_eq!(activation_root.0, activation_count);
+        assert_eq!(activation_root.1.len(), 32);
+        assert_ne!(activation_root.1, vec![0; 32]);
         let activation_id: String = connection
             .query_row(
                 "SELECT activation_id FROM activation_intents WHERE room_id = ?1 LIMIT 1",

@@ -60,6 +60,8 @@ pub const STREAM_TRANSFER_V2_MIGRATION_ID: &str = "0017-stream-transfer-v2";
 /// Adds cut-consistent operational witnesses for bounded checkpoint recovery.
 pub const CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID: &str =
     "0018-checkpoint-operational-witness-v1";
+/// Adds incrementally maintained roots for guard-only checkpoint histories.
+pub const OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID: &str = "0019-operational-history-roots-v2";
 
 /// A migration body and its stable identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -249,7 +251,7 @@ pub fn schema_contract_fingerprint() -> Blake3DigestV1 {
 
 /// The complete ordered migration history.
 #[must_use]
-pub fn migration_history() -> [MigrationDescriptor; 18] {
+pub fn migration_history() -> [MigrationDescriptor; 19] {
     [
         MigrationDescriptor {
             version: 1,
@@ -340,6 +342,11 @@ pub fn migration_history() -> [MigrationDescriptor; 18] {
             version: 18,
             id: CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID,
             sql: MIGRATION_0018_SQL,
+        },
+        MigrationDescriptor {
+            version: 19,
+            id: OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID,
+            sql: MIGRATION_0019_SQL,
         },
     ]
 }
@@ -950,6 +957,21 @@ CREATE TRIGGER worldstream_transfer_fence_snapshot_operational_witnesses
     FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
 ";
 
+/// Persists cache-only, append-only receipts for guard-only operational
+/// histories. The source rows remain the forensic authority.
+pub const MIGRATION_0019_SQL: &str = r"
+CREATE TABLE worldstream_room_operational_history_roots_v2 (
+    room_id text NOT NULL REFERENCES worldstream_room_roots(room_id) ON DELETE CASCADE,
+    domain text NOT NULL CHECK (domain IN ('frames', 'consequences', 'activation_decisions')),
+    entry_count bigint NOT NULL CHECK (entry_count >= 0),
+    root_hash bytea NOT NULL CHECK (octet_length(root_hash) = 32),
+    PRIMARY KEY (room_id, domain)
+);
+CREATE TRIGGER worldstream_transfer_fence_operational_history_roots_v2
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_room_operational_history_roots_v2
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+";
+
 /// The result of checking an ordered migration prefix.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MigrationVerification {
@@ -1312,6 +1334,7 @@ mod identity_tests {
                 ACTIVATION_BACKLOG_POLICY_MIGRATION_ID,
                 STREAM_TRANSFER_V2_MIGRATION_ID,
                 CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID,
+                OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID,
             ]
         );
         assert!(
