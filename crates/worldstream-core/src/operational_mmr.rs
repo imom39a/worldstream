@@ -22,6 +22,22 @@ pub struct OperationalMmrNodeV1 {
 }
 
 impl OperationalMmrNodeV1 {
+    /// Restores one persisted node after validating its coordinate alignment.
+    pub fn new(
+        height: u8,
+        start_index: u64,
+        digest: Blake3DigestV1,
+    ) -> Result<Self, OperationalMmrErrorV1> {
+        if height >= 64 || start_index % node_width(height) != 0 {
+            return Err(OperationalMmrErrorV1::MalformedNode);
+        }
+        Ok(Self {
+            height,
+            start_index,
+            digest,
+        })
+    }
+
     #[must_use]
     pub const fn height(&self) -> u8 {
         self.height
@@ -100,6 +116,11 @@ pub struct OperationalMmrProofPlanV1 {
 }
 
 impl OperationalMmrProofPlanV1 {
+    /// Derives the exact logarithmic node inventory for a retained leaf.
+    pub fn new(leaf_count: u64, leaf_index: u64) -> Result<Self, OperationalMmrErrorV1> {
+        proof_plan_for_count(leaf_count, leaf_index)
+    }
+
     #[must_use]
     pub const fn leaf_count(&self) -> u64 {
         self.leaf_count
@@ -369,6 +390,8 @@ pub enum OperationalMmrErrorV1 {
     LeafIndexOutOfRange,
     #[error("operational MMR peak inventory is malformed")]
     MalformedPeaks,
+    #[error("operational MMR node coordinate is malformed")]
+    MalformedNode,
     #[error("operational MMR proof inventory is malformed")]
     MalformedProof,
 }
@@ -621,6 +644,10 @@ mod tests {
         assert_eq!(
             OperationalMmrV1::new(""),
             Err(OperationalMmrErrorV1::InvalidDomain)
+        );
+        assert_eq!(
+            OperationalMmrNodeV1::new(2, 3, Blake3DigestV1::hash(b"x")),
+            Err(OperationalMmrErrorV1::MalformedNode)
         );
     }
 }
