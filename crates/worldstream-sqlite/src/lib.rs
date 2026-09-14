@@ -34165,6 +34165,37 @@ mod tests {
     }
 
     #[test]
+    fn each_v2_operational_root_tamper_falls_back_without_quarantine() {
+        for domain in ["frames", "consequences", "activation_decisions"] {
+            let (file, store, trace, _witness) = committed_history_fixture();
+            let connection = Connection::open(file.path())
+                .unwrap_or_else(|error| panic!("open {domain} root fixture: {error}"));
+            connection
+                .execute(
+                    "UPDATE room_operational_history_roots_v2 SET root_hash = ?1 \
+                     WHERE room_id = ?2 AND domain = ?3",
+                    params![[0xA5_u8; 32].as_slice(), ROOM, domain],
+                )
+                .unwrap_or_else(|error| panic!("tamper {domain} root: {error}"));
+            let registry = builtin_counter_registry()
+                .unwrap_or_else(|error| panic!("{domain} recovery registry: {error}"));
+            let recovered = store
+                .recover_room(&registry, &parsed(ROOM))
+                .unwrap_or_else(|error| panic!("{domain} root fallback recovery: {error:?}"))
+                .unwrap_or_else(|| panic!("{domain} Room disappeared during fallback"));
+            assert_eq!(recovered.head(), trace.head(), "{domain} fallback Head");
+            let integrity: (String, i64) = connection
+                .query_row(
+                    "SELECT status, generation FROM room_integrity WHERE room_id = ?1",
+                    [ROOM],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap_or_else(|error| panic!("read {domain} integrity: {error}"));
+            assert_eq!(integrity, ("healthy".to_owned(), 1), "{domain} integrity");
+        }
+    }
+
+    #[test]
     fn snapshot_failure_after_commit_does_not_change_canonical_result_or_recovery() {
         let file =
             NamedTempFile::new().unwrap_or_else(|error| panic!("snapshot failpoint DB: {error}"));
