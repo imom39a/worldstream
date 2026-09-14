@@ -1325,7 +1325,7 @@ fn interrupted_migration_restarts_without_duplicate_history() {
 
 #[test]
 fn kernel_conformance_migration_is_reviewed_and_forward_only() {
-    assert_eq!(migration_history().len(), 18);
+    assert_eq!(migration_history().len(), 23);
     assert_eq!(
         migration_history()[2].id,
         worldstream_postgres::KERNEL_CONFORMANCE_MIGRATION_ID
@@ -1361,6 +1361,26 @@ fn kernel_conformance_migration_is_reviewed_and_forward_only() {
     assert!(
         worldstream_postgres::MIGRATION_0011_SQL
             .contains("public.worldstream_transfer_target_fence")
+    );
+    assert!(
+        worldstream_postgres::MIGRATION_0019_SQL
+            .contains("worldstream_room_operational_history_roots_v2")
+    );
+    assert!(
+        worldstream_postgres::MIGRATION_0020_SQL
+            .contains("worldstream_room_current_timers_v2")
+    );
+    assert!(
+        worldstream_postgres::MIGRATION_0021_SQL
+            .contains("worldstream_room_snapshot_operational_witnesses_v2")
+    );
+    assert!(
+        worldstream_postgres::MIGRATION_0022_SQL
+            .contains("worldstream_room_operational_mmr_receipts_v1")
+    );
+    assert!(
+        worldstream_postgres::MIGRATION_0023_SQL
+            .contains("worldstream_room_snapshot_operational_witnesses_v3")
     );
 }
 
