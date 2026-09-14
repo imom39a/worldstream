@@ -164,10 +164,11 @@ recorded exactly 100,001 transitions, models, invocations, attempts, reducer
 callbacks, and observation consequences. Crash/reopen completed. The latest
 snapshot was at Room sequence 100,000, leaving a one-transition snapshot lag.
 
-The fixed-state SQLite cadence rerun now records the serialized materialization
-bytes for every snapshot write instead of attributing the whole database delta
-to the cache. At 1,000 transitions it observed five writes at sequences 0,
-250, 500, 750, and 1,000, with serialized byte totals 886, 888, 888, 888,
+The fixed-state SQLite cadence rerun records the serialized materialization
+bytes for every snapshot write in a transient observer and exports only a
+bounded first/middle/last sample, instead of attributing the whole database
+delta to the cache. At 1,000 transitions it observed five writes at sequences
+0, 250, 500, 750, and 1,000, with serialized byte totals 886, 888, 888, 888,
 and 889 respectively; three rows were retained. SQLite does not expose a
 portable writer CPU counter or a per-snapshot WAL delta without forcing a
 checkpoint, so both fields are emitted as unavailable with that reason. The
