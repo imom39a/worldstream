@@ -11925,14 +11925,14 @@ fn verify_recovery_consequences(
         let frame_heads = recovered.observation_frame_heads().iter().map(|(member, head)| {
             Ok((member.to_string(), i64::try_from(*head).map_err(|_| RoomRecoveryErrorV1::Corrupt)?))
         }).collect::<Result<BTreeMap<_, _>, RoomRecoveryErrorV1>>()?;
-        let rebuild_memberships = verify_recovery_memberships(transaction, room_id, recovered, &frame_heads)?;
+        let rebuild_memberships = verify_recovery_memberships(transaction, room_id, recovered, &frame_heads, true)?;
         verify_sqlite_v2_current_timers(transaction, room_id, recovered)?;
         return Ok((rebuild_memberships, false));
     }
     let frame_heads = verify_recovery_frames(transaction, room_id, expected_head, recovered)?;
     verify_recovery_delivery_consequences(transaction, room_id, expected_head, recovered)?;
     let rebuild_memberships =
-        verify_recovery_memberships(transaction, room_id, recovered, &frame_heads)?;
+        verify_recovery_memberships(transaction, room_id, recovered, &frame_heads, false)?;
     let rebuild_timers = verify_recovery_timers(transaction, room_id, recovered)?;
     verify_recovery_activation_decisions(transaction, room_id, expected_head, recovered)?;
     Ok((rebuild_memberships, rebuild_timers))
@@ -12089,7 +12089,7 @@ fn verify_inspection_projections(
     let (frame_heads, _) =
         inspect_recovery_frame_structure(transaction, room_id, expected_head, recovered)?;
     let _all_memberships_missing =
-        verify_recovery_memberships(transaction, room_id, recovered, &frame_heads)?;
+        verify_recovery_memberships(transaction, room_id, recovered, &frame_heads, false)?;
     let _all_timers_missing = verify_recovery_timers(transaction, room_id, recovered)?;
     verify_recovery_activation_decisions(transaction, room_id, expected_head, recovered)?;
     Ok(())
@@ -12391,6 +12391,7 @@ fn verify_recovery_memberships(
     room_id: &str,
     recovered: &RecoveredRoomMaterializationsV1,
     frame_heads: &BTreeMap<String, i64>,
+    allow_checkpoint_boundary_successor: bool,
 ) -> Result<bool, RoomRecoveryErrorV1> {
     type StoredMember = (
         String,
@@ -12449,7 +12450,7 @@ fn verify_recovery_memberships(
     for (row, expected) in stored.iter().zip(recovered.memberships()) {
         let membership = &expected.membership;
         let expected_member_id = membership.member_id().to_string();
-        if row.0 != expected_member_id
+        let invalid = row.0 != expected_member_id
             || row.1 != membership.principal_id().to_string()
             || row.2 != principal_kind(membership.principal_kind())
             || row.3 != membership_standing(membership.standing())
@@ -12457,12 +12458,15 @@ fn verify_recovery_memberships(
             || row.5.as_deref() != membership.role()
             || row.6 != expected.canonical_membership_bytes
             || Some(row.7) != expected_generations.get(&expected_member_id).copied()
-            || Some(row.8) != frame_heads.get(&expected_member_id).copied()
+            || (Some(row.8) != frame_heads.get(&expected_member_id).copied()
+                && (!allow_checkpoint_boundary_successor
+                    || Some(row.8.saturating_sub(1))
+                        != frame_heads.get(&expected_member_id).copied()))
             || row.9 < 1
             || row.9 > row.8.saturating_add(1)
             || row.10.is_some_and(|cursor| cursor < 1 || cursor > row.8)
-            || row.11.is_some_and(|marker| marker < 0 || marker > row.8)
-        {
+            || row.11.is_some_and(|marker| marker < 0 || marker > row.8);
+        if invalid {
             return Err(RoomRecoveryErrorV1::Corrupt);
         }
     }
@@ -34115,37 +34119,21 @@ mod tests {
         let (file, store, trace, _witness) = committed_history_fixture();
         let connection = Connection::open(file.path())
             .unwrap_or_else(|error| panic!("open forged witness fixture: {error}"));
-        let (checkpoint_seq, witness_bytes): (i64, Vec<u8>) = connection
+        let checkpoint_seq: i64 = connection
             .query_row(
-                "SELECT room_seq, witness_bytes \
-                 FROM room_snapshot_operational_witnesses \
+                "SELECT room_seq FROM room_snapshot_operational_witnesses_v2 \
                  WHERE room_id = ?1 ORDER BY room_seq DESC LIMIT 1",
                 [ROOM],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )
             .unwrap_or_else(|error| panic!("read checkpoint witness: {error}"));
-        let mut witness: serde_json::Value = serde_json::from_slice(&witness_bytes)
-            .unwrap_or_else(|error| panic!("decode checkpoint witness: {error}"));
-        assert!(
-            witness["observation_frames"]
-                .as_array()
-                .is_some_and(|frames| !frames.is_empty())
-        );
-        witness["observation_frames"] = serde_json::Value::Array(Vec::new());
-        let forged_json = serde_json::to_vec(&witness)
-            .unwrap_or_else(|error| panic!("serialize forged witness: {error}"));
-        let forged_bytes = CanonicalJsonV1::parse(&forged_json)
-            .unwrap_or_else(|error| panic!("canonicalize forged witness: {error}"))
-            .to_bytes()
-            .unwrap_or_else(|error| panic!("encode forged witness: {error}"));
         connection
             .execute(
-                "UPDATE room_snapshot_operational_witnesses \
-                 SET witness_hash = ?1, witness_bytes = ?2 \
-                 WHERE room_id = ?3 AND room_seq = ?4",
+                "UPDATE room_snapshot_operational_witnesses_v2 \
+                 SET witness_hash = ?1 \
+                 WHERE room_id = ?2 AND room_seq = ?3",
                 params![
-                    Blake3DigestV1::hash(&forged_bytes).as_bytes().as_slice(),
-                    forged_bytes,
+                    [0_u8; 32].as_slice(),
                     ROOM,
                     checkpoint_seq,
                 ],
@@ -34158,7 +34146,7 @@ mod tests {
         )
         .unwrap_or_else(|error| panic!("inspect forged witness candidate: {error:?}"))
         .unwrap_or_else(|| panic!("Room disappeared after forged witness"));
-        assert!(candidate.has_checkpoint());
+        assert!(!candidate.has_checkpoint());
         let registry =
             builtin_counter_registry().unwrap_or_else(|error| panic!("registry: {error}"));
         let recovered = store
