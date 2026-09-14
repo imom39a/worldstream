@@ -5,6 +5,7 @@
 //! leaves. Adapters persist the nodes returned by [`OperationalMmrV1::append`]
 //! and use [`OperationalMmrV1::proof_plan`] to fetch a logarithmic proof.
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::Blake3DigestV1;
@@ -14,11 +15,88 @@ const MAX_DOMAIN_BYTES: usize = 128;
 const MAX_PROOF_NODES: usize = 128;
 
 /// One immutable node in an operational MMR.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct OperationalMmrNodeV1 {
     height: u8,
     start_index: u64,
     digest: Blake3DigestV1,
+}
+
+/// Compact, canonical trust receipt carried by a checkpoint witness.
+///
+/// Peaks are included because Core must advance the receipt while replaying a
+/// bounded post-checkpoint tail. The root is repeated so storage can compare a
+/// serving proof without rebuilding the peak bag on every read.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperationalMmrReceiptV1 {
+    domain: String,
+    leaf_count: u64,
+    root_hash: Blake3DigestV1,
+    peaks: Vec<OperationalMmrNodeV1>,
+}
+
+impl OperationalMmrReceiptV1 {
+    /// Constructs and validates a persisted receipt.
+    pub fn new(
+        domain: impl Into<String>,
+        leaf_count: u64,
+        root_hash: Blake3DigestV1,
+        peaks: Vec<OperationalMmrNodeV1>,
+    ) -> Result<Self, OperationalMmrErrorV1> {
+        let accumulator = OperationalMmrV1::from_peaks(domain, leaf_count, peaks)?;
+        if accumulator.root() != root_hash {
+            return Err(OperationalMmrErrorV1::RootMismatch);
+        }
+        Ok(Self::from_accumulator(&accumulator))
+    }
+
+    /// Creates the canonical empty receipt for a domain.
+    pub fn empty(domain: impl Into<String>) -> Result<Self, OperationalMmrErrorV1> {
+        OperationalMmrV1::new(domain).map(|value| Self::from_accumulator(&value))
+    }
+
+    /// Captures the current logarithmic accumulator state.
+    #[must_use]
+    pub fn from_accumulator(accumulator: &OperationalMmrV1) -> Self {
+        Self {
+            domain: accumulator.domain.clone(),
+            leaf_count: accumulator.leaf_count,
+            root_hash: accumulator.root(),
+            peaks: accumulator.peaks.clone(),
+        }
+    }
+
+    /// Restores a validated accumulator for a bounded tail append.
+    pub fn accumulator(&self) -> Result<OperationalMmrV1, OperationalMmrErrorV1> {
+        let accumulator =
+            OperationalMmrV1::from_peaks(self.domain.clone(), self.leaf_count, self.peaks.clone())?;
+        if accumulator.root() != self.root_hash {
+            return Err(OperationalMmrErrorV1::RootMismatch);
+        }
+        Ok(accumulator)
+    }
+
+    #[must_use]
+    pub fn domain(&self) -> &str {
+        &self.domain
+    }
+
+    #[must_use]
+    pub const fn leaf_count(&self) -> u64 {
+        self.leaf_count
+    }
+
+    #[must_use]
+    pub const fn root_hash(&self) -> &Blake3DigestV1 {
+        &self.root_hash
+    }
+
+    #[must_use]
+    pub fn peaks(&self) -> &[OperationalMmrNodeV1] {
+        &self.peaks
+    }
 }
 
 impl OperationalMmrNodeV1 {
@@ -306,6 +384,11 @@ impl OperationalMmrV1 {
     }
 
     #[must_use]
+    pub fn domain(&self) -> &str {
+        &self.domain
+    }
+
+    #[must_use]
     pub const fn leaf_count(&self) -> u64 {
         self.leaf_count
     }
@@ -394,6 +477,8 @@ pub enum OperationalMmrErrorV1 {
     MalformedNode,
     #[error("operational MMR proof inventory is malformed")]
     MalformedProof,
+    #[error("operational MMR receipt root does not match its peaks")]
+    RootMismatch,
 }
 
 fn validated_domain(domain: String) -> Result<String, OperationalMmrErrorV1> {
@@ -648,6 +733,27 @@ mod tests {
         assert_eq!(
             OperationalMmrNodeV1::new(2, 3, Blake3DigestV1::hash(b"x")),
             Err(OperationalMmrErrorV1::MalformedNode)
+        );
+    }
+
+    #[test]
+    fn receipt_round_trips_logarithmic_peaks_and_rejects_a_stale_root() {
+        let mut mmr = OperationalMmrV1::new("frames").expect("MMR");
+        for index in 0_u64..100_000 {
+            mmr.append(&index.to_be_bytes()).expect("append");
+        }
+        let receipt = OperationalMmrReceiptV1::from_accumulator(&mmr);
+        assert_eq!(receipt.leaf_count(), 100_000);
+        assert!(receipt.peaks().len() <= 64);
+        assert_eq!(receipt.accumulator().expect("receipt"), mmr);
+        assert_eq!(
+            OperationalMmrReceiptV1::new(
+                "frames",
+                receipt.leaf_count(),
+                Blake3DigestV1::hash(b"stale"),
+                receipt.peaks().to_vec(),
+            ),
+            Err(OperationalMmrErrorV1::RootMismatch)
         );
     }
 }

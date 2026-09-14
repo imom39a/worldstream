@@ -245,5 +245,5 @@ mod tests;
 pub use operational_mmr::{
     OperationalMmrAppendV1, OperationalMmrErrorV1, OperationalMmrNodeCoordinateV1,
     OperationalMmrNodeV1, OperationalMmrProofNodeV1, OperationalMmrProofPlanV1,
-    OperationalMmrProofV1, OperationalMmrV1,
+    OperationalMmrProofV1, OperationalMmrReceiptV1, OperationalMmrV1,
 };
