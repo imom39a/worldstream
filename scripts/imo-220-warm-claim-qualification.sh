@@ -242,8 +242,8 @@ for tier in tiers:
     ):
         raise SystemExit(f"fixture storage RSS metric malformed for {tier}")
     fixture_checkpoint = fixture.get("checkpoint", {})
-    if fixture_checkpoint.get("recovery_execution_path") != "checkpoint_v2":
-        raise SystemExit(f"fixture did not select a V2 checkpoint for {tier}")
+    if fixture_checkpoint.get("recovery_execution_path") not in ("checkpoint_v2", "checkpoint_v3"):
+        raise SystemExit(f"fixture did not select a bounded checkpoint for {tier}")
     if not isinstance(fixture_checkpoint.get("checkpoint_room_seq"), int):
         raise SystemExit(f"fixture V2 checkpoint sequence missing for {tier}")
     if any(not isinstance(fixture_checkpoint.get(field), int) or fixture_checkpoint[field] < 0 for field in (
@@ -256,6 +256,12 @@ for tier in tiers:
         "witness_bytes",
     )):
         raise SystemExit(f"fixture checkpoint read/tail metrics missing for {tier}")
+    if fixture_checkpoint.get("recovery_execution_path") == "checkpoint_v3":
+        if fixture_checkpoint.get("operational_mmr_receipt_count") != 3:
+            raise SystemExit(f"fixture V3 MMR receipt inventory mismatch for {tier}")
+        peak_count = fixture_checkpoint.get("max_operational_mmr_peak_count")
+        if not isinstance(peak_count, int) or not 0 <= peak_count <= 64:
+            raise SystemExit(f"fixture V3 MMR peak bound missing for {tier}")
     snapshots = fixture.get("snapshots", {})
     if any(not isinstance(snapshots.get(field), int) or snapshots[field] < 1 for field in (
         "preparation_count", "write_count", "observed_snapshot_count",
