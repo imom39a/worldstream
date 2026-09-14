@@ -7616,6 +7616,7 @@ fn verify_postgres_recovery_memberships(
     tx: &mut Transaction<'_>,
     room_id: &str,
     recovered: &RecoveredRoomMaterializationsV1,
+    allow_checkpoint_boundary_successor: bool,
 ) -> Result<BTreeMap<String, PostgresRecoveryFramePosition>, RoomRecoveryErrorV1> {
     let expected = recovered
         .memberships()
@@ -7664,8 +7665,14 @@ fn verify_postgres_recovery_memberships(
         let reset_generation: i64 = row.try_get(7).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let expected_generation =
             expected_generations.and_then(|generations| generations.get(&member_id).copied());
+        let expected_frame_head = expected_heads.get(&member_id).copied();
+        let frame_head_matches = expected_frame_head == Some(frame_head)
+            || (allow_checkpoint_boundary_successor
+                && expected_frame_head
+                    .and_then(|head| head.checked_add(1))
+                    == Some(frame_head));
         if expected.get(&member_id).copied() != Some(membership_bytes.as_slice())
-            || expected_heads.get(&member_id).copied() != Some(frame_head)
+            || !frame_head_matches
             || generation < 1
             || expected_generation.is_some_and(|expected| generation != expected)
             || frame_head < 0
@@ -7977,11 +7984,11 @@ fn verify_postgres_recovery_install(
     };
     if let Some(roots) = recovered.operational_history_roots() {
         verify_postgres_v2_roots(tx, room_id, roots)?;
-        verify_postgres_recovery_memberships(tx, room_id, recovered)?;
+        verify_postgres_recovery_memberships(tx, room_id, recovered, true)?;
         verify_postgres_v2_current_timers(tx, room_id, recovered)?;
         return Ok(rebuild_materialization);
     }
-    let positions = verify_postgres_recovery_memberships(tx, room_id, recovered)?;
+    let positions = verify_postgres_recovery_memberships(tx, room_id, recovered, false)?;
     verify_postgres_recovery_timers(tx, room_id, recovered)?;
     verify_postgres_recovery_frames(tx, room_id, expected_head, recovered, &positions)?;
     verify_postgres_recovery_consequences(tx, room_id, expected_head, recovered, &positions)?;

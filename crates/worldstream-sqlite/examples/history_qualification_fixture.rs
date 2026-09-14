@@ -358,8 +358,14 @@ fn read_checkpoint_evidence(
                 .operational_history_roots().get(domain).is_some_and(|root|
                     i64::try_from(root.entry_count()).ok() == Some(*count)
                     && root.root_hash().as_bytes().as_slice() == hash));
+        // The witness authenticates the selected snapshot boundary. It is
+        // expected to differ from the current Room Head whenever recovery has
+        // a tail to replay, so comparing it with `current_head` would make a
+        // valid retained checkpoint look inexact.
         let exact = witness_hash.as_slice() == Blake3DigestV1::hash(&witness_bytes).as_bytes()
-            && witness.checkpoint_head() == current_head && roots_exact;
+            && witness.checkpoint_head() == &checkpoint_head
+            && checkpoint_head.room_seq().get() <= current_head.room_seq().get()
+            && roots_exact;
         let collection = |live_rows, witness_entries| WitnessCollectionEvidence {
             live_rows, witness_entries, exact,
         };
@@ -535,7 +541,11 @@ fn read_checkpoint_evidence(
     let activation_decisions_exact = witness.activation_decisions() == activation_decisions;
     let witness_hash_exact =
         witness_hash.as_slice() == Blake3DigestV1::hash(&witness_bytes).as_bytes();
-    let witness_head_exact = witness.checkpoint_head() == current_head;
+    // A V1 witness has the same boundary contract as V2: authenticate the
+    // snapshot Head, while the caller separately verifies the recovered final
+    // Head after replaying its tail.
+    let witness_head_exact = witness.checkpoint_head() == &checkpoint_head
+        && checkpoint_head.room_seq().get() <= current_head.room_seq().get();
     let all_operational_witnesses_exact = timer_ledger_exact
         && observation_frame_heads_exact
         && observation_frames_exact
@@ -875,6 +885,9 @@ fn run(database: &Path, count: u64, stream_metadata: bool) -> Result<Report> {
             return Err("recovery receipt and inspected checkpoint tail disagree".into());
         }
         let recovered = execution.into_trace();
+        if recovered.head() != trace.head() {
+            return Err("checkpoint recovery final Head differs from the current Head".into());
+        }
         let callbacks = recovered.activity_callback_count();
         let checkpoint = read_checkpoint_evidence(database, &room_id, trace.head(), receipt)?;
         (recovery_ms, callbacks, checkpoint)

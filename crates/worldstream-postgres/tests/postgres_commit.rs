@@ -15,7 +15,8 @@ use worldstream_core::{
     PackGenesisRequestV1, ParticipantActionRequestV1, ParticipantActionV1,
     PreparedAuthorityWitnessV1, PreparedRoomCommitV1, PreparedRoomCreationV1, PreparedRoomWriteV1,
     PrincipalKindV1, RecordedStimulusV1, ResolutionStatusV1, RoomCheckpointOperationalWitnessV1,
-    RoomCommitResolutionV1, RoomCommitStorageV1, RoomCreationRequestV1, RoomRecoveryStorageV1,
+    RoomCheckpointOperationalWitnessV2, RoomCommitResolutionV1, RoomCommitStorageV1,
+    RoomCreationRequestV1, RoomRecoveryStorageV1,
     RoomSeedV1, TransitionId, builtin_counter_registry, commit_existing_room, counter_v2_digest,
     recover_room_from_storage_with_receipt,
 };
@@ -523,39 +524,96 @@ fn qualify_bounded_recovery_scales(
 
         let checkpoint_row = runtime_client
             .query_one(
-                "SELECT snapshots.room_seq, snapshots.complete_head_bytes, witness.witness_hash, witness.witness_bytes \
-                 FROM worldstream_room_snapshots AS snapshots \
-                 JOIN worldstream_room_snapshot_operational_witnesses AS witness \
-                   ON witness.room_id = snapshots.room_id AND witness.room_seq = snapshots.room_seq \
-                 WHERE snapshots.room_id = $1 ORDER BY snapshots.room_seq DESC LIMIT 1",
+                "SELECT room_seq, complete_head_bytes, witness_schema_version, witness_hash, witness_bytes FROM (\
+                   SELECT snapshots.room_seq, snapshots.complete_head_bytes, witness.witness_schema_version, witness.witness_hash, witness.witness_bytes, 2 AS witness_version \
+                   FROM worldstream_room_snapshots AS snapshots \
+                   JOIN worldstream_room_snapshot_operational_witnesses_v2 AS witness \
+                     ON witness.room_id = snapshots.room_id AND witness.room_seq = snapshots.room_seq \
+                   WHERE snapshots.room_id = $1 \
+                   UNION ALL \
+                   SELECT snapshots.room_seq, snapshots.complete_head_bytes, witness.witness_schema_version, witness.witness_hash, witness.witness_bytes, 1 AS witness_version \
+                   FROM worldstream_room_snapshots AS snapshots \
+                   JOIN worldstream_room_snapshot_operational_witnesses AS witness \
+                     ON witness.room_id = snapshots.room_id AND witness.room_seq = snapshots.room_seq \
+                   WHERE snapshots.room_id = $1 \
+                 ) AS checkpoint ORDER BY room_seq DESC, witness_version DESC LIMIT 1",
                 &[&room_id],
             )
             .unwrap_or_else(|error| panic!("scale checkpoint witness {sequence}: {error}"));
         let checkpoint_seq: i64 = checkpoint_row.get(0);
         let checkpoint_head_bytes: Vec<u8> = checkpoint_row.get(1);
-        let witness_hash: Vec<u8> = checkpoint_row.get(2);
-        let witness_bytes: Vec<u8> = checkpoint_row.get(3);
+        let witness_schema: String = checkpoint_row.get(2);
+        let witness_hash: Vec<u8> = checkpoint_row.get(3);
+        let witness_bytes: Vec<u8> = checkpoint_row.get(4);
         let checkpoint_head =
             CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&checkpoint_head_bytes)
                 .unwrap_or_else(|error| panic!("scale checkpoint Head {sequence}: {error}"));
-        let witness = RoomCheckpointOperationalWitnessV1::from_canonical_bytes(
-            &witness_bytes,
-            &checkpoint_head,
-        )
-        .unwrap_or_else(|error| panic!("scale operational witness {sequence}: {error:?}"));
         assert_eq!(u64::try_from(checkpoint_seq).ok(), Some(sequence));
         assert_eq!(&checkpoint_head, trace.head());
-        assert_eq!(witness.checkpoint_head(), trace.head());
         assert_eq!(
             witness_hash.as_slice(),
             worldstream_core::Blake3DigestV1::hash(&witness_bytes).as_bytes()
         );
-        assert_eq!(
-            witness
-                .canonical_bytes()
-                .unwrap_or_else(|error| panic!("scale canonical witness {sequence}: {error:?}")),
-            witness_bytes
-        );
+        let (
+            timer_witness_entries,
+            frame_witness_entries,
+            consequence_witness_entries,
+            activation_witness_entries,
+            membership_generations,
+            observation_frame_heads,
+        ) = if witness_schema == worldstream_core::CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2 {
+            let witness = RoomCheckpointOperationalWitnessV2::from_canonical_bytes(
+                &witness_bytes,
+                &checkpoint_head,
+            )
+            .unwrap_or_else(|error| panic!("scale V2 operational witness {sequence}: {error:?}"));
+            assert_eq!(witness.checkpoint_head(), trace.head());
+            assert_eq!(
+                witness.canonical_bytes().unwrap_or_else(|error| {
+                    panic!("scale V2 canonical witness {sequence}: {error:?}")
+                }),
+                witness_bytes
+            );
+            let root_entries = |domain| {
+                usize::try_from(
+                    witness
+                        .operational_history_roots()
+                        .get(domain)
+                        .unwrap_or_else(|| panic!("scale V2 root {domain} missing"))
+                        .entry_count(),
+                )
+                .unwrap_or_else(|_| panic!("scale V2 root {domain} exceeds platform capacity"))
+            };
+            (
+                witness.timers().len(),
+                root_entries("frames"),
+                root_entries("consequences"),
+                root_entries("activation_decisions"),
+                witness.membership_generations().clone(),
+                witness.observation_frame_heads().clone(),
+            )
+        } else {
+            let witness = RoomCheckpointOperationalWitnessV1::from_canonical_bytes(
+                &witness_bytes,
+                &checkpoint_head,
+            )
+            .unwrap_or_else(|error| panic!("scale operational witness {sequence}: {error:?}"));
+            assert_eq!(witness.checkpoint_head(), trace.head());
+            assert_eq!(
+                witness.canonical_bytes().unwrap_or_else(|error| {
+                    panic!("scale canonical witness {sequence}: {error:?}")
+                }),
+                witness_bytes
+            );
+            (
+                witness.timers().len(),
+                witness.observation_frames().len(),
+                witness.observation_consequences().len(),
+                witness.activation_decisions().len(),
+                witness.membership_generations().clone(),
+                witness.observation_frame_heads().clone(),
+            )
+        };
 
         let counts = runtime_client
             .query_one(
@@ -580,23 +638,23 @@ fn qualify_bounded_recovery_scales(
         assert_eq!(u64::try_from(transition_rows).ok(), Some(sequence));
         assert_eq!(
             usize::try_from(timer_rows).ok(),
-            Some(witness.timers().len())
+            Some(timer_witness_entries)
         );
         assert_eq!(
             usize::try_from(frame_rows).ok(),
-            Some(witness.observation_frames().len())
+            Some(frame_witness_entries)
         );
         assert_eq!(
             usize::try_from(consequence_rows).ok(),
-            Some(witness.observation_consequences().len())
+            Some(consequence_witness_entries)
         );
         assert_eq!(
             usize::try_from(activation_rows).ok(),
-            Some(witness.activation_decisions().len())
+            Some(activation_witness_entries)
         );
         assert_eq!(
             usize::try_from(membership_rows).ok(),
-            Some(witness.membership_generations().len())
+            Some(membership_generations.len())
         );
         let membership_rows = runtime_client
             .query(
@@ -611,11 +669,11 @@ fn qualify_bounded_recovery_scales(
             let frame_head: i64 = membership.get(1);
             let generation: i64 = membership.get(2);
             assert_eq!(
-                witness.membership_generations().get(&member_id),
+                membership_generations.get(&member_id),
                 Some(&generation)
             );
             assert_eq!(
-                witness.observation_frame_heads().get(&parsed(&member_id)),
+                observation_frame_heads.get(&parsed(&member_id)),
                 Some(
                     &u64::try_from(frame_head)
                         .unwrap_or_else(|_| { panic!("scale frame Head cannot be negative") })
@@ -651,12 +709,12 @@ fn qualify_bounded_recovery_scales(
                     "checkpoint_hash_exact": true,
                 },
                 "operational_witness": {
-                    "timers": {"live_rows": timer_rows, "witness_entries": witness.timers().len(), "exact": true},
-                    "frames": {"live_rows": frame_rows, "witness_entries": witness.observation_frames().len(), "exact": true},
-                    "consequences": {"live_rows": consequence_rows, "witness_entries": witness.observation_consequences().len(), "exact": true},
-                    "membership_generations": {"live_rows": membership_row_count, "witness_entries": witness.membership_generations().len(), "exact": true},
-                    "frame_heads": {"live_rows": membership_row_count, "witness_entries": witness.observation_frame_heads().len(), "exact": true},
-                    "activation_decisions": {"live_rows": activation_rows, "witness_entries": witness.activation_decisions().len(), "exact": true},
+                    "timers": {"live_rows": timer_rows, "witness_entries": timer_witness_entries, "exact": true},
+                    "frames": {"live_rows": frame_rows, "witness_entries": frame_witness_entries, "exact": true},
+                    "consequences": {"live_rows": consequence_rows, "witness_entries": consequence_witness_entries, "exact": true},
+                    "membership_generations": {"live_rows": membership_row_count, "witness_entries": membership_generations.len(), "exact": true},
+                    "frame_heads": {"live_rows": membership_row_count, "witness_entries": observation_frame_heads.len(), "exact": true},
+                    "activation_decisions": {"live_rows": activation_rows, "witness_entries": activation_witness_entries, "exact": true},
                 },
                 "semantic_receipts": {
                     "live_rows": semantic_receipt_rows,
@@ -2075,7 +2133,7 @@ fn live_direct_runtime_and_optional_pooler_conformance() {
     let witness_row = runtime_client
         .query_one(
             "SELECT witness_hash, witness_bytes \
-             FROM worldstream_room_snapshot_operational_witnesses \
+             FROM worldstream_room_snapshot_operational_witnesses_v2 \
              WHERE room_id = $1 AND room_seq = 0",
             &[&ROOM],
         )
@@ -2086,7 +2144,7 @@ fn live_direct_runtime_and_optional_pooler_conformance() {
     let malformed_hash = worldstream_core::Blake3DigestV1::hash(&malformed_witness);
     runtime_client
         .execute(
-            "UPDATE worldstream_room_snapshot_operational_witnesses \
+            "UPDATE worldstream_room_snapshot_operational_witnesses_v2 \
              SET witness_hash = $1, witness_bytes = $2 \
              WHERE room_id = $3 AND room_seq = 0",
             &[
@@ -2107,7 +2165,7 @@ fn live_direct_runtime_and_optional_pooler_conformance() {
     assert_eq!(fallback.tail_transition_count(), 2);
     runtime_client
         .execute(
-            "UPDATE worldstream_room_snapshot_operational_witnesses \
+            "UPDATE worldstream_room_snapshot_operational_witnesses_v2 \
              SET witness_hash = $1, witness_bytes = $2 \
              WHERE room_id = $3 AND room_seq = 0",
             &[&witness_hash, &witness_bytes, &ROOM],
@@ -2130,7 +2188,7 @@ fn live_direct_runtime_and_optional_pooler_conformance() {
     let forged_hash = worldstream_core::Blake3DigestV1::hash(&forged_bytes);
     runtime_client
         .execute(
-            "UPDATE worldstream_room_snapshot_operational_witnesses \
+            "UPDATE worldstream_room_snapshot_operational_witnesses_v2 \
              SET witness_hash = $1, witness_bytes = $2 \
              WHERE room_id = $3 AND room_seq = 0",
             &[&forged_hash.as_bytes().as_slice(), &forged_bytes, &ROOM],
@@ -2160,7 +2218,7 @@ fn live_direct_runtime_and_optional_pooler_conformance() {
     assert_eq!(integrity.get::<_, i64>(1), 1);
     runtime_client
         .execute(
-            "UPDATE worldstream_room_snapshot_operational_witnesses \
+            "UPDATE worldstream_room_snapshot_operational_witnesses_v2 \
              SET witness_hash = $1, witness_bytes = $2 \
              WHERE room_id = $3 AND room_seq = 0",
             &[&witness_hash, &witness_bytes, &ROOM],
