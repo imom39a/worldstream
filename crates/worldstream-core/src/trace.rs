@@ -2251,6 +2251,139 @@ struct StoredHistoryPreflightV1 {
     timers: TimerBookV1,
 }
 
+/// Bounded structural preflight for an exact persisted Room lineage.
+///
+/// Callers feed ordered Transition pages and may discard every page after
+/// [`Self::consume_transition_page`] returns. It deliberately finishes this
+/// complete canonical pass before a retained Pack runtime can be started.
+pub struct StorageHistoryPreflightV1 {
+    genesis: GenesisV1,
+    preflight: StoredHistoryPreflightV1,
+}
+
+impl StorageHistoryPreflightV1 {
+    /// Starts a structural preflight from exact canonical Genesis bytes.
+    pub fn begin(genesis_bytes: &[u8]) -> Result<Self, ReplayFailureV1> {
+        let genesis = decode_replay_genesis(genesis_bytes)?;
+        let preflight = StoredHistoryPreflightV1::from_genesis(&genesis)?;
+        Ok(Self { genesis, preflight })
+    }
+
+    /// Checks one ordered page without retaining its Transition bytes.
+    pub fn consume_transition_page(
+        &mut self,
+        transition_bytes: &[Vec<u8>],
+    ) -> Result<(), ReplayFailureV1> {
+        for bytes in transition_bytes {
+            self.preflight.consume_transition(bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Returns the final structurally verified Head.
+    #[must_use]
+    pub const fn final_head(&self) -> &CompleteHeadV1 {
+        &self.preflight.head
+    }
+
+    /// Starts the retained-Pack executable pass after all structural pages
+    /// have been consumed. The resulting accumulator retains only current
+    /// executor state and folds subsequent pages independently.
+    pub fn begin_executable(
+        self,
+        registry: &PackRegistryV1,
+    ) -> Result<StorageExecutableReplayV1, ReplayFailureV1> {
+        let request = pack_genesis_request_from_record(&self.genesis);
+        let verified = registry
+            .prepare_genesis_for_retained_room(&request)
+            .map_err(|error| map_retained_genesis_error(&error, self.preflight.head.clone()))?;
+        verify_retained_genesis_matches_record(&self.genesis, &verified)?;
+        let retained_pack = verified.retained_pack().clone();
+        let transition_preparer = RoomTransitionPreparerV1::from_retained_pack(
+            retained_pack.clone(),
+            self.genesis.room_seed.clone(),
+        );
+        let trace = CoreTraceV1::from_verified_genesis(
+            self.genesis,
+            transition_preparer,
+            Some(retained_pack),
+        )
+        .map_err(|error| {
+            ReplayFailureV1::without_head(classify_genesis_error(&error), error.to_string())
+        })?;
+        Ok(StorageExecutableReplayV1 { trace })
+    }
+}
+
+/// Bounded retained-Pack executable replay for an already preflighted Room.
+pub struct StorageExecutableReplayV1 {
+    trace: CoreTraceV1,
+}
+
+impl StorageExecutableReplayV1 {
+    /// Folds one exact preflighted Transition page without retaining history.
+    pub fn consume_transition_page(
+        &mut self,
+        transition_bytes: &[Vec<u8>],
+    ) -> Result<(), ReplayFailureV1> {
+        for bytes in transition_bytes {
+            self.trace.replay_stored_transition(bytes, None)?;
+            // `install_prepared_inner` retains a Transition for ordinary
+            // executor history. Storage verification only needs the current
+            // state, so release it before accepting the next record.
+            self.trace.transitions.clear();
+        }
+        Ok(())
+    }
+
+    /// Compares the bounded replay result with exact captured serving bytes.
+    pub fn finish(
+        self,
+        expected_head: &CompleteHeadV1,
+        expected_core_state_bytes: &[u8],
+        expected_activity_state_bytes: &[u8],
+    ) -> Result<(), ReplayFailureV1> {
+        if &self.trace.head != expected_head {
+            return Err(ReplayFailureV1::with_head(
+                ReplayFailureClassV1::LineageHash,
+                "replayed final Head differs from captured Head".to_owned(),
+                self.trace.head,
+            ));
+        }
+        let replayed_core_state_bytes =
+            self.trace.core_state.canonical_bytes().map_err(|error| {
+                ReplayFailureV1::with_head(
+                    ReplayFailureClassV1::CanonicalEncoding,
+                    error.to_string(),
+                    expected_head.clone(),
+                )
+            })?;
+        if replayed_core_state_bytes != expected_core_state_bytes {
+            return Err(ReplayFailureV1::with_head(
+                ReplayFailureClassV1::CoreState,
+                "replayed Core materialization differs from captured bytes".to_owned(),
+                expected_head.clone(),
+            ));
+        }
+        let replayed_activity_state_bytes =
+            self.trace.activity_state.to_bytes().map_err(|error| {
+                ReplayFailureV1::with_head(
+                    ReplayFailureClassV1::CanonicalEncoding,
+                    error.to_string(),
+                    expected_head.clone(),
+                )
+            })?;
+        if replayed_activity_state_bytes != expected_activity_state_bytes {
+            return Err(ReplayFailureV1::with_head(
+                ReplayFailureClassV1::ActivityState,
+                "replayed Activity materialization differs from captured bytes".to_owned(),
+                expected_head.clone(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl StoredHistoryPreflightV1 {
     fn from_genesis(genesis: &GenesisV1) -> Result<Self, ReplayFailureV1> {
         let timers = validate_stored_genesis_integrity(genesis).map_err(|error| {

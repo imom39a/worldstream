@@ -229,7 +229,7 @@ pub use trace::{
     PreparedRoomTransitionV1, ReplayActivationDecisionWitnessV1, ReplayFailureClassV1,
     ReplayFailureV1, ReplayMembershipWitnessV1, ReplayObservationPositionWitnessV1, ReplayReportV1,
     ReplayStepV1, ReplayStorageVerificationV1, RoomTransitionPreparerV1, RoomTransitionStateV1,
-    TraceErrorV1, VerifiedCoreStateV1,
+    StorageExecutableReplayV1, StorageHistoryPreflightV1, TraceErrorV1, VerifiedCoreStateV1,
 };
 
 #[cfg(test)]

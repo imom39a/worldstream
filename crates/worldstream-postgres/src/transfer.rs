@@ -2651,11 +2651,12 @@ fn verify_stream_hydration(
                     healthy = healthy.checked_add(1).ok_or(
                         PostgresTransferError::InvalidProviderValue("stream healthy Room count"),
                     )?;
-                    let verification =
-                        PostgresRoomStore::verify_room_in_transaction(transaction, &room_id)
-                            .map_err(PostgresTransferError::Semantic)?;
-                    if verification.integrity_status != "healthy"
-                        || verification.verify_executable_replay(&registry).is_err()
+                    if PostgresRoomStore::verify_stream_room_executable_replay_in_transaction(
+                        transaction,
+                        &room_id,
+                        &registry,
+                    )
+                    .is_err()
                     {
                         return Err(PostgresTransferError::Canonical(
                             "stream healthy Room executable replay",

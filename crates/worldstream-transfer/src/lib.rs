@@ -2658,6 +2658,10 @@ pub struct TransferStreamReaderV2<R> {
     previous_order: Option<(u8, u8, String)>,
     hasher: blake3::Hasher,
     footer: Option<TransferStreamFooterV2>,
+    // Reuse the raw authenticated chunk storage. A stream can have thousands
+    // of bounded chunks; allocating a new maximum-sized buffer per chunk lets
+    // the process allocator retain memory proportional to the full stream.
+    chunk_buffer: Vec<u8>,
     finished: bool,
 }
 
@@ -2729,6 +2733,7 @@ impl<R: Read> TransferStreamReaderV2<R> {
             previous_order: None,
             hasher,
             footer: None,
+            chunk_buffer: Vec::new(),
             finished: false,
         })
     }
@@ -2844,9 +2849,14 @@ impl<R: Read> TransferStreamReaderV2<R> {
             });
         }
         let expected_digest = read_stream_digest(&mut self.source, "read stream chunk")?;
-        let mut bytes = vec![0_u8; byte_count];
-        read_stream_exact(&mut self.source, &mut bytes, "read stream chunk")?;
-        let actual_digest = stream_chunk_digest(self.identity_digest, index, &bytes);
+        self.chunk_buffer.resize(byte_count, 0);
+        read_stream_exact(
+            &mut self.source,
+            &mut self.chunk_buffer,
+            "read stream chunk",
+        )?;
+        let actual_digest =
+            stream_chunk_digest(self.identity_digest, index, &self.chunk_buffer);
         if actual_digest != expected_digest {
             return Err(TransferError::HashMismatch {
                 what: "stream chunk",
@@ -2854,7 +2864,7 @@ impl<R: Read> TransferStreamReaderV2<R> {
                 actual: actual_digest,
             });
         }
-        let mut reader = Reader::new(&bytes);
+        let mut reader = Reader::new(&self.chunk_buffer);
         let mut records = Vec::with_capacity(count);
         for _ in 0..count {
             let record = read_stream_record(&mut reader, self.limits.max_record_bytes)?;

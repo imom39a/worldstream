@@ -107,6 +107,7 @@ use worldstream_core::{
     RecoveredObservationConsequenceV1, RecoveredObservationFrameV1,
     RecoveredRoomMaterializationsV1, RecoveredTimerMaterializationV1, RecoveredTimerStateV1,
     RecoveryIntegrityDispositionV1, ReplayFailureClassV1, ReplayStorageVerificationV1,
+    StorageHistoryPreflightV1,
     OperationalHistoryRootV2, ResolutionStatusV1, ResolveOutcomeV1,
     RoomCheckpointOperationalWitnessV1, RoomCheckpointOperationalWitnessV2,
     RoomCommitResolutionV1, RoomCommitStorageV1, RoomId, RoomIntegrityStateV1,
@@ -5406,6 +5407,202 @@ impl PostgresRoomStore {
         room_id: &str,
     ) -> Result<PostgresRoomVerification, PostgresRoomVerificationError> {
         PostgresAdmin::verify_room_with_client(transaction, room_id, false, true)
+    }
+
+    /// Replays one healthy Room through the exact retained Pack without
+    /// collecting its complete Transition lineage in a verification report.
+    /// The stream-transfer caller already compares every operational row with
+    /// its staged source evidence, so this path proves canonical executable
+    /// semantics while retaining only one keyset page and current Core state.
+    pub(crate) fn verify_stream_room_executable_replay_in_transaction(
+        transaction: &mut Transaction<'_>,
+        room_id: &str,
+        registry: &PackRegistryV1,
+    ) -> Result<(), PostgresRoomVerificationError> {
+        const PAGE_ROWS: i64 = 256;
+        let parsed_room_id = room_id
+            .parse::<RoomId>()
+            .map_err(|_| PostgresRoomVerificationError::InvalidRoomId)?;
+        let root = transaction
+            .query_opt(
+                "SELECT head_bytes FROM worldstream_room_roots WHERE room_id = $1 FOR SHARE",
+                &[&room_id],
+            )
+            .map_err(PostgresRoomVerificationError::Sql)?
+            .ok_or_else(|| PostgresRoomVerificationError::MissingRoom {
+                room_id: room_id.to_owned(),
+            })?;
+        let head_bytes: Vec<u8> = root
+            .try_get(0)
+            .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Head" })?;
+        let head = CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&head_bytes)
+            .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Head" })?;
+        if head.canonical_bytes().ok().as_deref() != Some(head_bytes.as_slice())
+            || head.room_id() != &parsed_room_id
+        {
+            return Err(PostgresRoomVerificationError::Corrupt { what: "Head" });
+        }
+
+        let genesis_row = transaction
+            .query_opt(
+                "SELECT pack_revision_lock_bytes, genesis_bytes FROM worldstream_genesis WHERE room_id = $1 FOR SHARE",
+                &[&room_id],
+            )
+            .map_err(PostgresRoomVerificationError::Sql)?
+            .ok_or(PostgresRoomVerificationError::Corrupt { what: "Genesis" })?;
+        let pack_lock_bytes: Vec<u8> = genesis_row.try_get(0).map_err(|_| {
+            PostgresRoomVerificationError::Corrupt {
+                what: "pack revision lock",
+            }
+        })?;
+        let genesis_bytes: Vec<u8> = genesis_row
+            .try_get(1)
+            .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Genesis" })?;
+        let genesis = GenesisV1::from_canonical_bytes(&genesis_bytes)
+            .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Genesis" })?;
+        if genesis.canonical_bytes().ok().as_deref() != Some(genesis_bytes.as_slice())
+            || genesis.room_id() != &parsed_room_id
+            || genesis.pack_digest() != head.pack_digest()
+        {
+            return Err(PostgresRoomVerificationError::Corrupt { what: "Genesis" });
+        }
+        let pack_lock = PackRevisionLockV1::from_canonical_bytes(&pack_lock_bytes, genesis.pack_digest())
+            .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                what: "pack revision lock",
+            })?;
+        if pack_lock.canonical_bytes().ok().as_deref() != Some(pack_lock_bytes.as_slice())
+            || registry
+                .load_retained(head.pack_digest())
+                .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                    what: "retained Pack",
+                })?
+                .revision_lock()
+                != &pack_lock
+        {
+            return Err(PostgresRoomVerificationError::Corrupt {
+                what: "pack revision lock",
+            });
+        }
+        let materializations = transaction
+            .query_opt(
+                "SELECT core_state_bytes, activity_state_bytes FROM worldstream_materializations WHERE room_id = $1 FOR SHARE",
+                &[&room_id],
+            )
+            .map_err(PostgresRoomVerificationError::Sql)?
+            .ok_or(PostgresRoomVerificationError::Corrupt {
+                what: "materialization",
+            })?;
+        let core_state_bytes: Vec<u8> = materializations.try_get(0).map_err(|_| {
+            PostgresRoomVerificationError::Corrupt {
+                what: "Core materialization",
+            }
+        })?;
+        let activity_state_bytes: Vec<u8> = materializations.try_get(1).map_err(|_| {
+            PostgresRoomVerificationError::Corrupt {
+                what: "Activity materialization",
+            }
+        })?;
+        CanonicalJsonV1::decode_canonical::<worldstream_core::CoreRoomStateV1>(&core_state_bytes)
+            .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                what: "Core materialization",
+            })?;
+        CanonicalJsonV1::from_canonical_bytes(&activity_state_bytes).map_err(|_| {
+            PostgresRoomVerificationError::Corrupt {
+                what: "Activity materialization",
+            }
+        })?;
+
+        let mut preflight = StorageHistoryPreflightV1::begin(&genesis_bytes)
+            .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                what: "Transition lineage",
+            })?;
+        let mut after = 0_i64;
+        let mut expected = 1_i64;
+        loop {
+            let rows = transaction
+                .query(
+                    "SELECT room_seq, transition_bytes FROM worldstream_transitions WHERE room_id = $1 AND room_seq > $2 ORDER BY room_seq LIMIT $3",
+                    &[&room_id, &after, &PAGE_ROWS],
+                )
+                .map_err(PostgresRoomVerificationError::Sql)?;
+            if rows.is_empty() {
+                break;
+            }
+            let mut page = Vec::with_capacity(rows.len());
+            for row in rows {
+                let sequence: i64 = row.try_get(0).map_err(|_| {
+                    PostgresRoomVerificationError::Corrupt {
+                        what: "Transition sequence",
+                    }
+                })?;
+                if sequence != expected {
+                    return Err(PostgresRoomVerificationError::Corrupt {
+                        what: "Transition sequence",
+                    });
+                }
+                page.push(row.try_get(1).map_err(|_| {
+                    PostgresRoomVerificationError::Corrupt { what: "Transition" }
+                })?);
+                after = sequence;
+                expected = expected.checked_add(1).ok_or(
+                    PostgresRoomVerificationError::Corrupt {
+                        what: "Transition sequence",
+                    },
+                )?;
+            }
+            preflight.consume_transition_page(&page).map_err(|_| {
+                PostgresRoomVerificationError::Corrupt {
+                    what: "Transition lineage",
+                }
+            })?;
+        }
+        if u64::try_from(expected.saturating_sub(1)).ok() != Some(head.room_seq().get())
+            || preflight.final_head() != &head
+        {
+            return Err(PostgresRoomVerificationError::Corrupt {
+                what: "Transition lineage",
+            });
+        }
+
+        let mut executable = preflight.begin_executable(registry).map_err(|_| {
+            PostgresRoomVerificationError::Corrupt {
+                what: "retained Pack replay",
+            }
+        })?;
+        after = 0;
+        loop {
+            let rows = transaction
+                .query(
+                    "SELECT room_seq, transition_bytes FROM worldstream_transitions WHERE room_id = $1 AND room_seq > $2 ORDER BY room_seq LIMIT $3",
+                    &[&room_id, &after, &PAGE_ROWS],
+                )
+                .map_err(PostgresRoomVerificationError::Sql)?;
+            if rows.is_empty() {
+                break;
+            }
+            let mut page = Vec::with_capacity(rows.len());
+            for row in rows {
+                let sequence: i64 = row.try_get(0).map_err(|_| {
+                    PostgresRoomVerificationError::Corrupt {
+                        what: "Transition sequence",
+                    }
+                })?;
+                page.push(row.try_get(1).map_err(|_| {
+                    PostgresRoomVerificationError::Corrupt { what: "Transition" }
+                })?);
+                after = sequence;
+            }
+            executable.consume_transition_page(&page).map_err(|_| {
+                PostgresRoomVerificationError::Corrupt {
+                    what: "retained Pack replay",
+                }
+            })?;
+        }
+        executable
+            .finish(&head, &core_state_bytes, &activity_state_bytes)
+            .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                what: "retained Pack replay",
+            })
     }
 
     /// Performs the same read-only deployment identity probe as the admin
