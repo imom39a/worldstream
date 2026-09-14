@@ -800,7 +800,8 @@ impl CoreTraceV1 {
         let verified_core = preparer
             .core_reducer
             .validate_state(input.initial_core_state.clone())?;
-        let timers = TimerBookV1::from_genesis(&input.initial_timers, input.created_at.as_str())?;
+        let timers =
+            TimerBookV1::from_genesis(&input.initial_timers, input.created_at.as_str(), true)?;
         let core_state_hash = verified_core.core_state_hash.clone();
         let activity_state_hash =
             hash_activity_state(&input.pack_digest, &input.initial_activity_state)?;
@@ -2149,7 +2150,8 @@ fn validate_stored_genesis_integrity(genesis: &GenesisV1) -> Result<TimerBookV1,
     if genesis.initial_core_state.room_status != RoomStatusV1::Active {
         return Err(TraceErrorV1::GenesisMustBeActive);
     }
-    let timers = TimerBookV1::from_genesis(&genesis.initial_timers, genesis.created_at.as_str())?;
+    let timers =
+        TimerBookV1::from_genesis(&genesis.initial_timers, genesis.created_at.as_str(), false)?;
     let core_hash = hash_core_state(&genesis.initial_core_state)?;
     let activity_hash = hash_activity_state(&genesis.pack_digest, &genesis.initial_activity_state)?;
     let authoritative_hash =
@@ -2476,14 +2478,18 @@ impl TimerBookV1 {
         })
     }
 
-    fn from_genesis(initial: &[ScheduledTimerV1], created_at: &str) -> Result<Self, TraceErrorV1> {
+    fn from_genesis(
+        initial: &[ScheduledTimerV1],
+        created_at: &str,
+        enforce_distinct_timer_id_cap: bool,
+    ) -> Result<Self, TraceErrorV1> {
         if initial
             .windows(2)
             .any(|pair| pair[0].timer_id >= pair[1].timer_id)
         {
             return Err(TraceErrorV1::TimerChangesNotStrictlySorted);
         }
-        if initial.len() > MAX_DISTINCT_TIMER_IDS_V1 {
+        if enforce_distinct_timer_id_cap && initial.len() > MAX_DISTINCT_TIMER_IDS_V1 {
             return Err(TraceErrorV1::DistinctTimerIdLimitExceeded);
         }
         let generation_one = TimerGenerationV1::new(1)?;
