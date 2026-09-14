@@ -145,6 +145,7 @@ LOCK TABLE
     worldstream_room_snapshots,
     worldstream_room_snapshot_operational_witnesses,
     worldstream_room_snapshot_operational_witnesses_v2,
+    worldstream_room_snapshot_operational_witnesses_v3,
     worldstream_room_snapshot_schedules,
     worldstream_semantic_receipts,
     worldstream_integrity_incidents,
@@ -194,6 +195,7 @@ SELECT domain, row_count FROM (
     UNION ALL SELECT 'worldstream_room_snapshots', count(*)::bigint FROM worldstream_room_snapshots
     UNION ALL SELECT 'worldstream_room_snapshot_operational_witnesses', count(*)::bigint FROM worldstream_room_snapshot_operational_witnesses
     UNION ALL SELECT 'worldstream_room_snapshot_operational_witnesses_v2', count(*)::bigint FROM worldstream_room_snapshot_operational_witnesses_v2
+    UNION ALL SELECT 'worldstream_room_snapshot_operational_witnesses_v3', count(*)::bigint FROM worldstream_room_snapshot_operational_witnesses_v3
     UNION ALL SELECT 'worldstream_room_snapshot_schedules', count(*)::bigint FROM worldstream_room_snapshot_schedules
     UNION ALL SELECT 'worldstream_semantic_receipts', count(*)::bigint FROM worldstream_semantic_receipts
     UNION ALL SELECT 'worldstream_integrity_incidents', count(*)::bigint FROM worldstream_integrity_incidents
@@ -249,6 +251,7 @@ TRUNCATE TABLE
     worldstream_room_snapshots,
     worldstream_room_snapshot_operational_witnesses,
     worldstream_room_snapshot_operational_witnesses_v2,
+    worldstream_room_snapshot_operational_witnesses_v3,
     worldstream_room_snapshot_schedules,
     worldstream_semantic_receipts,
     worldstream_integrity_incidents,
@@ -6608,7 +6611,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let fingerprint = postgres_backend_fingerprint()?;
         assert_eq!(fingerprint.profile(), BundleProfileV1::PostgresPrimary17);
-        assert_eq!(fingerprint.schema().migrations().len(), 22);
+        assert_eq!(fingerprint.schema().migrations().len(), 23);
         assert_eq!(fingerprint.schema().migrations()[5].version(), 6);
         assert_eq!(fingerprint.schema().migrations()[10].version(), 11);
         assert_eq!(fingerprint.schema().migrations()[11].version(), 12);
@@ -6620,6 +6623,7 @@ mod tests {
         assert_eq!(fingerprint.schema().migrations()[19].version(), 20);
         assert_eq!(fingerprint.schema().migrations()[20].version(), 21);
         assert_eq!(fingerprint.schema().migrations()[21].version(), 22);
+        assert_eq!(fingerprint.schema().migrations()[22].version(), 23);
         Ok(())
     }
 
@@ -6687,6 +6691,7 @@ mod tests {
             "worldstream_room_snapshots",
             "worldstream_room_snapshot_operational_witnesses",
             "worldstream_room_snapshot_operational_witnesses_v2",
+            "worldstream_room_snapshot_operational_witnesses_v3",
             "worldstream_room_snapshot_schedules",
             "worldstream_semantic_receipts",
             "worldstream_integrity_incidents",

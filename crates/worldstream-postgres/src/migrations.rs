@@ -73,6 +73,10 @@ pub const CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID: &str =
 /// reads. The older V2 operational-history root remains a frozen left-fold
 /// receipt used by checkpoint recovery.
 pub const OPERATIONAL_HISTORY_MMR_MIGRATION_ID: &str = "0022-operational-history-mmr-v1";
+/// Adds a forward-only checkpoint witness binding the independently evolving
+/// MMR receipts. V2 is frozen because it authenticates the left-fold roots.
+pub const CHECKPOINT_OPERATIONAL_WITNESS_V3_MIGRATION_ID: &str =
+    "0023-checkpoint-operational-witness-v3";
 
 /// A migration body and its stable identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -191,6 +195,9 @@ pub const SCHEMA_FINGERPRINT_MATERIAL: &str = concat!(
     "worldstream_room_snapshot_operational_witnesses_v2(",
     "room_id:text:NO,room_seq:bigint:NO,witness_schema_version:text:NO,",
     "witness_hash:bytea:NO,witness_bytes:bytea:NO);",
+    "worldstream_room_snapshot_operational_witnesses_v3(",
+    "room_id:text:NO,room_seq:bigint:NO,witness_schema_version:text:NO,",
+    "witness_hash:bytea:NO,witness_bytes:bytea:NO);",
     "worldstream_room_snapshot_schedules(",
     "room_id:text:NO,last_snapshot_room_seq:bigint:NO,transitions_since_snapshot:bigint:NO,",
     "active_started_at:text:YES);",
@@ -274,7 +281,7 @@ pub fn schema_contract_fingerprint() -> Blake3DigestV1 {
 
 /// The complete ordered migration history.
 #[must_use]
-pub fn migration_history() -> [MigrationDescriptor; 22] {
+pub fn migration_history() -> [MigrationDescriptor; 23] {
     [
         MigrationDescriptor {
             version: 1,
@@ -385,6 +392,11 @@ pub fn migration_history() -> [MigrationDescriptor; 22] {
             version: 22,
             id: OPERATIONAL_HISTORY_MMR_MIGRATION_ID,
             sql: MIGRATION_0022_SQL,
+        },
+        MigrationDescriptor {
+            version: 23,
+            id: CHECKPOINT_OPERATIONAL_WITNESS_V3_MIGRATION_ID,
+            sql: MIGRATION_0023_SQL,
         },
     ]
 }
@@ -1092,6 +1104,26 @@ CREATE TRIGGER worldstream_transfer_fence_operational_mmr_nodes_v1
     FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
 ";
 
+/// Stores the immutable V3 checkpoint witness separately from the frozen V2
+/// relation. A witness is only an authenticated bounded-recovery cache; its
+/// receipt peaks are reconstructed from immutable MMR nodes on each capture.
+pub const MIGRATION_0023_SQL: &str = r"
+CREATE TABLE worldstream_room_snapshot_operational_witnesses_v3 (
+    room_id text NOT NULL,
+    room_seq bigint NOT NULL CHECK (room_seq >= 0),
+    witness_schema_version text NOT NULL
+        CHECK (witness_schema_version = 'worldstream/checkpoint-operational-witness/v3'),
+    witness_hash bytea NOT NULL CHECK (octet_length(witness_hash) = 32),
+    witness_bytes bytea NOT NULL CHECK (octet_length(witness_bytes) > 0),
+    PRIMARY KEY (room_id, room_seq),
+    FOREIGN KEY (room_id, room_seq)
+        REFERENCES worldstream_room_snapshots(room_id, room_seq) ON DELETE CASCADE
+);
+CREATE TRIGGER worldstream_transfer_fence_snapshot_operational_witnesses_v3
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_room_snapshot_operational_witnesses_v3
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+";
+
 /// The result of checking an ordered migration prefix.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MigrationVerification {
@@ -1383,7 +1415,7 @@ mod identity_tests {
         );
         assert_eq!(
             schema_contract_fingerprint().to_string(),
-            "blake3:28e9765429afc17fa678ffafcd4be898520a4e716bbeb25995993bb8136cab04"
+            "blake3:ce0d34c5f7da9ffcfcd4d8ff52586cf1bd3e566edb74de1ac131cacae0dd8c22"
         );
     }
 
@@ -1458,6 +1490,7 @@ mod identity_tests {
                 CURRENT_TIMERS_MIGRATION_ID,
                 CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID,
                 OPERATIONAL_HISTORY_MMR_MIGRATION_ID,
+                CHECKPOINT_OPERATIONAL_WITNESS_V3_MIGRATION_ID,
             ]
         );
         assert!(
@@ -1490,12 +1523,60 @@ mod identity_tests {
         let migration = migration_history()[20];
         assert_eq!(migration.version, 21);
         assert_eq!(migration.id, CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID);
+        assert!(
+            migration
+                .sql
+                .contains("CREATE TABLE worldstream_room_snapshot_operational_witnesses_v2")
+        );
+        assert!(
+            migration
+                .sql
+                .contains("worldstream_transfer_fence_snapshot_operational_witnesses_v2")
+        );
+        assert!(migration.sql.contains("ON DELETE CASCADE"));
+    }
+
+    #[test]
+    fn operational_history_mmr_migration_keeps_legacy_rows_unmapped_and_fences_sidecars() {
+        let migration = migration_history()[21];
+        assert_eq!(migration.version, 22);
+        assert_eq!(migration.id, OPERATIONAL_HISTORY_MMR_MIGRATION_ID);
+        for table in [
+            "worldstream_room_operational_mmr_receipts_v1",
+            "worldstream_room_operational_mmr_nodes_v1",
+        ] {
+            assert!(migration.sql.contains(&format!("CREATE TABLE {table}")));
+        }
+        for table in [
+            "worldstream_frames",
+            "worldstream_observation_consequences",
+            "worldstream_activation_decisions",
+        ] {
+            assert!(migration.sql.contains(&format!("ALTER TABLE {table}")));
+        }
+        assert_eq!(migration.sql.matches("ADD COLUMN mmr_leaf_index bigint").count(), 3);
         assert!(migration
             .sql
-            .contains("CREATE TABLE worldstream_room_snapshot_operational_witnesses_v2"));
+            .contains("worldstream_operational_mmr_nodes_v1_immutable"));
         assert!(migration
             .sql
-            .contains("worldstream_transfer_fence_snapshot_operational_witnesses_v2"));
+            .contains("worldstream_transfer_fence_operational_mmr_receipts_v1"));
+        assert!(migration
+            .sql
+            .contains("worldstream_transfer_fence_operational_mmr_nodes_v1"));
+    }
+
+    #[test]
+    fn checkpoint_operational_witness_v3_is_forward_only_and_transfer_fenced() {
+        let migration = migration_history()[22];
+        assert_eq!(migration.version, 23);
+        assert_eq!(migration.id, CHECKPOINT_OPERATIONAL_WITNESS_V3_MIGRATION_ID);
+        assert!(migration
+            .sql
+            .contains("CREATE TABLE worldstream_room_snapshot_operational_witnesses_v3"));
+        assert!(migration
+            .sql
+            .contains("worldstream_transfer_fence_snapshot_operational_witnesses_v3"));
         assert!(migration.sql.contains("ON DELETE CASCADE"));
     }
 }
