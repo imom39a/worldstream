@@ -92,7 +92,9 @@ use worldstream_core::{
     MAX_HISTORICAL_EVIDENCE_TIME_MS_V1, MAX_PENDING_REFRESH_AGE_MS_V1,
     MAX_PENDING_REFRESH_BYTES_V1, MemberId, MemberReadOperationV1, MembershipAuthoritySnapshotV1,
     MembershipGenerationV1, MembershipStandingV1, MembershipV1, OperationIdentityV1,
-    OperationalHistoryRootV2, PackRegistryV1, PackRevisionLockV1, PackViewerV1,
+    OperationalHistoryRootV2, OperationalMmrNodeCoordinateV1, OperationalMmrNodeV1,
+    OperationalMmrProofNodeV1, OperationalMmrProofPlanV1, OperationalMmrProofV1,
+    OperationalMmrReceiptV1, OperationalMmrV1, PackRegistryV1, PackRevisionLockV1, PackViewerV1,
     ParticipantActionAuthorityV1, ParticipantActionRequestV1, ParticipantActionV1,
     PreparedAdvancePersistenceV1, PreparedAuthorityBootstrapV1, PreparedAuthorityChangeV1,
     PreparedAuthorityWitnessV1, PreparedCreationPersistenceV1, PreparedExistingIntentV1,
@@ -104,21 +106,18 @@ use worldstream_core::{
     RecoveredRoomMaterializationsV1, RecoveredTimerMaterializationV1, RecoveredTimerStateV1,
     RecoveryIntegrityDispositionV1, ReplayAdapterInputV1, ReplayFailureClassV1,
     ReplayProjectionKindV1, ResolutionStatusV1, ResolveOutcomeV1,
-    OperationalMmrNodeCoordinateV1, OperationalMmrNodeV1, OperationalMmrProofNodeV1,
-    OperationalMmrProofPlanV1, OperationalMmrProofV1, OperationalMmrReceiptV1, OperationalMmrV1,
     RoomCheckpointOperationalWitnessV1, RoomCheckpointOperationalWitnessV2,
-    RoomCheckpointOperationalWitnessV3, RoomCommitResolutionV1,
-    RoomCommitStorageV1, RoomId, RoomIntegrityStateV1, RoomIntegrityStatusV1,
-    RoomRecoveryCandidateV1, RoomRecoveryCheckpointV1, RoomRecoveryErrorV1, RoomRecoveryStorageV1,
-    RoomSequenceV1, RoomStatusV1, RunnerAuthoritySnapshotV1, RunnerAuthorityStatusV1,
-    RunnerControlAdapterInputV1, RunnerControlOperationV1, RunnerGenerationV1, RunnerId,
-    RunnerMembershipSetV1, SemanticResultV1, SessionBarrierV1, SessionErrorV1,
-    StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, TimerId,
-    TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1, ValidatedAuthorityBootstrapV1,
-    ValidatedAuthorityChangeV1, ValidatedPackViewV1, VerifiedCurrentRoomMaterializationV1,
-    ViewerAdapterInputV1, activation_refresh_budget_allows_v1, commit_existing_room,
-    prepare_activation_context, recover_room_from_storage,
-    resolve_authorized_room_operation_for_adapter,
+    RoomCheckpointOperationalWitnessV3, RoomCommitResolutionV1, RoomCommitStorageV1, RoomId,
+    RoomIntegrityStateV1, RoomIntegrityStatusV1, RoomRecoveryCandidateV1, RoomRecoveryCheckpointV1,
+    RoomRecoveryErrorV1, RoomRecoveryStorageV1, RoomSequenceV1, RoomStatusV1,
+    RunnerAuthoritySnapshotV1, RunnerAuthorityStatusV1, RunnerControlAdapterInputV1,
+    RunnerControlOperationV1, RunnerGenerationV1, RunnerId, RunnerMembershipSetV1,
+    SemanticResultV1, SessionBarrierV1, SessionErrorV1, StoredSemanticResultV1,
+    TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, TimerId, TimerScheduledFor, TraceErrorV1,
+    TransitionId, TransitionV1, ValidatedAuthorityBootstrapV1, ValidatedAuthorityChangeV1,
+    ValidatedPackViewV1, VerifiedCurrentRoomMaterializationV1, ViewerAdapterInputV1,
+    activation_refresh_budget_allows_v1, commit_existing_room, prepare_activation_context,
+    recover_room_from_storage, resolve_authorized_room_operation_for_adapter,
 };
 use worldstream_sqlite_open::{ExactSqliteConnection, ExactSqliteOpenError, open_exact};
 use worldstream_transfer::{
@@ -185,8 +184,7 @@ pub const CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID: &str =
 /// Adds the append-only authenticated operational-history sidecar. The V2
 /// left-fold root receipt remains unchanged; this migration adds a separate
 /// MMR receipt for bounded serving reads.
-pub const OPERATIONAL_HISTORY_MMR_MIGRATION_ID: &str =
-    "0022-operational-history-mmr-v1";
+pub const OPERATIONAL_HISTORY_MMR_MIGRATION_ID: &str = "0022-operational-history-mmr-v1";
 /// Adds the authenticated V3 checkpoint witness table. V2 witnesses remain
 /// frozen and are retained as the explicit legacy fallback.
 pub const CHECKPOINT_OPERATIONAL_WITNESS_V3_MIGRATION_ID: &str =
@@ -16837,8 +16835,8 @@ fn initialize_operational_mmr_receipts(
     room_id: &str,
 ) -> Result<(), RoomCommitResolutionV1> {
     for domain in OPERATIONAL_HISTORY_ROOT_DOMAINS {
-        let receipt = OperationalMmrReceiptV1::empty(domain)
-            .map_err(|_| RoomCommitResolutionV1::Fault)?;
+        let receipt =
+            OperationalMmrReceiptV1::empty(domain).map_err(|_| RoomCommitResolutionV1::Fault)?;
         transaction
             .execute(
                 "INSERT INTO room_operational_mmr_receipts_v1(\
@@ -16897,7 +16895,12 @@ fn append_operational_mmr(
             .query_row(
                 "SELECT node_hash FROM room_operational_mmr_nodes_v1 \
                  WHERE room_id = ?1 AND domain = ?2 AND height = ?3 AND start_index = ?4",
-                params![room_id, domain, i64::from(height), i64::try_from(start_index).map_err(|_| RoomCommitResolutionV1::Fault)?],
+                params![
+                    room_id,
+                    domain,
+                    i64::from(height),
+                    i64::try_from(start_index).map_err(|_| RoomCommitResolutionV1::Fault)?
+                ],
                 |row| row.get(0),
             )
             .map_err(statement_failure)?;
@@ -16940,7 +16943,8 @@ fn append_operational_mmr(
             "UPDATE room_operational_mmr_receipts_v1 SET leaf_count = ?1, root_hash = ?2 \
              WHERE room_id = ?3 AND domain = ?4 AND leaf_count = ?5 AND root_hash = ?6",
             params![
-                i64::try_from(accumulator.leaf_count()).map_err(|_| RoomCommitResolutionV1::Fault)?,
+                i64::try_from(accumulator.leaf_count())
+                    .map_err(|_| RoomCommitResolutionV1::Fault)?,
                 accumulator.root().as_bytes(),
                 room_id,
                 domain,
@@ -16982,7 +16986,12 @@ fn load_operational_mmr_receipt(
         let digest: Vec<u8> = connection.query_row(
             "SELECT node_hash FROM room_operational_mmr_nodes_v1 \
              WHERE room_id = ?1 AND domain = ?2 AND height = ?3 AND start_index = ?4",
-            params![room_id, domain, i64::from(height), i64::try_from(start_index).map_err(|_| rusqlite::Error::InvalidQuery)?],
+            params![
+                room_id,
+                domain,
+                i64::from(height),
+                i64::try_from(start_index).map_err(|_| rusqlite::Error::InvalidQuery)?
+            ],
             |row| row.get(0),
         )?;
         let digest = Blake3DigestV1::from_bytes(
@@ -17872,13 +17881,9 @@ fn prepare_activation_claim_readonly_from_trace(
     {
         return Err(SqliteActivationErrorV1::Corrupt);
     }
-    let trusted_frames_receipt = trusted_mmr_receipt_for_head(
-        &connection,
-        &room_id,
-        trace.head(),
-        "frames",
-    )
-    .map_err(|_| SqliteActivationErrorV1::StaleContext)?;
+    let trusted_frames_receipt =
+        trusted_mmr_receipt_for_head(&connection, &room_id, trace.head(), "frames")
+            .map_err(|_| SqliteActivationErrorV1::StaleContext)?;
     let delivery = if cursor.is_none()
         || reset_required_through.is_some()
         || cursor.is_some_and(|value| value.saturating_add(1) < retained_floor)
@@ -17973,7 +17978,7 @@ fn prepare_activation_claim_readonly_from_trace(
             let page_end = i64::try_from(expected).map_err(|_| SqliteActivationErrorV1::Corrupt)?;
             let payload_rows = connection
                 .prepare(
-            "SELECT frame_seq, cause_room_seq, payload_hash, payload_bytes, mmr_leaf_index \
+                    "SELECT frame_seq, cause_room_seq, payload_hash, payload_bytes, mmr_leaf_index \
                      FROM observation_frames WHERE room_id = ?1 AND member_id = ?2 \
                      AND frame_seq > ?3 AND frame_seq <= ?4 ORDER BY frame_seq",
                 )
@@ -17997,8 +18002,10 @@ fn prepare_activation_claim_readonly_from_trace(
             if payload_rows.len() != metadata.len() {
                 return Err(SqliteActivationErrorV1::Corrupt);
             }
-            for ((frame_seq, cause_seq, stored_hash, payload_bytes, mmr_leaf_index), metadata_row) in
-                payload_rows.into_iter().zip(metadata)
+            for (
+                (frame_seq, cause_seq, stored_hash, payload_bytes, mmr_leaf_index),
+                metadata_row,
+            ) in payload_rows.into_iter().zip(metadata)
             {
                 if frame_seq != metadata_row.0
                     || cause_seq != metadata_row.1
@@ -18907,12 +18914,8 @@ fn commit_advance(
                     &cause_room_seq,
                     frame.payload_hash().as_bytes(),
                 ])?;
-                let mmr_leaf_index = append_operational_mmr(
-                    transaction,
-                    &room_id,
-                    "frames",
-                    &entry,
-                )?;
+                let mmr_leaf_index =
+                    append_operational_mmr(transaction, &room_id, "frames", &entry)?;
                 if let Some(index) = mmr_leaf_index {
                     transaction
                         .execute(
@@ -18949,12 +18952,8 @@ fn commit_advance(
                     b"reset_required",
                     projection_hash.as_bytes(),
                 ])?;
-                let mmr_leaf_index = append_operational_mmr(
-                    transaction,
-                    &room_id,
-                    "consequences",
-                    &entry,
-                )?;
+                let mmr_leaf_index =
+                    append_operational_mmr(transaction, &room_id, "consequences", &entry)?;
                 append_operational_history_root(transaction, &room_id, "consequences", &entry)?;
                 if let Some(index) = mmr_leaf_index {
                     update_consequence_mmr_leaf_index(
@@ -18981,12 +18980,8 @@ fn commit_advance(
                     &cause_room_seq,
                     b"visibility_lost",
                 ])?;
-                let mmr_leaf_index = append_operational_mmr(
-                    transaction,
-                    &room_id,
-                    "consequences",
-                    &entry,
-                )?;
+                let mmr_leaf_index =
+                    append_operational_mmr(transaction, &room_id, "consequences", &entry)?;
                 append_operational_history_root(transaction, &room_id, "consequences", &entry)?;
                 if let Some(index) = mmr_leaf_index {
                     update_consequence_mmr_leaf_index(
@@ -19028,12 +19023,8 @@ fn commit_advance(
             target_member_id.as_bytes(),
             decision.canonical_decision_bytes(),
         ])?;
-        let mmr_leaf_index = append_operational_mmr(
-            transaction,
-            &room_id,
-            "activation_decisions",
-            &entry,
-        )?;
+        let mmr_leaf_index =
+            append_operational_mmr(transaction, &room_id, "activation_decisions", &entry)?;
         append_operational_history_root(transaction, &room_id, "activation_decisions", &entry)?;
         if let Some(index) = mmr_leaf_index {
             transaction
@@ -19708,8 +19699,8 @@ fn trusted_mmr_receipt_for_head(
     room_head: &CompleteHeadV1,
     domain: &str,
 ) -> Result<Option<OperationalMmrReceiptV1>, rusqlite::Error> {
-    let head_seq = i64::try_from(room_head.room_seq().get())
-        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let head_seq =
+        i64::try_from(room_head.room_seq().get()).map_err(|_| rusqlite::Error::InvalidQuery)?;
     let row: Option<(i64, String, Vec<u8>, Vec<u8>)> = transaction
         .query_row(
             "SELECT room_seq, witness_schema_version, witness_hash, witness_bytes \
@@ -19729,11 +19720,9 @@ fn trusted_mmr_receipt_for_head(
     }
     let decoded = CanonicalJsonV1::decode_canonical::<RoomCheckpointOperationalWitnessV3>(&bytes)
         .map_err(|_| rusqlite::Error::InvalidQuery)?;
-    let witness = RoomCheckpointOperationalWitnessV3::from_canonical_bytes(
-        &bytes,
-        decoded.checkpoint_head(),
-    )
-    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let witness =
+        RoomCheckpointOperationalWitnessV3::from_canonical_bytes(&bytes, decoded.checkpoint_head())
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
     if decoded.checkpoint_head().room_id() != room_head.room_id()
         || decoded.checkpoint_head().room_seq().get()
             != u64::try_from(checkpoint_seq).map_err(|_| rusqlite::Error::InvalidQuery)?
@@ -19772,7 +19761,8 @@ fn trusted_mmr_receipt_for_head(
     let mut accumulator = base
         .accumulator()
         .map_err(|_| rusqlite::Error::InvalidQuery)?;
-    let checkpoint_seq = u64::try_from(checkpoint_seq).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let checkpoint_seq =
+        u64::try_from(checkpoint_seq).map_err(|_| rusqlite::Error::InvalidQuery)?;
     match domain {
         "frames" => {
             let mut rows = transaction.prepare(
@@ -19780,21 +19770,45 @@ fn trusted_mmr_receipt_for_head(
                         mmr_leaf_index FROM observation_frames \
                  WHERE room_id = ?1 AND cause_room_seq > ?2 ORDER BY mmr_leaf_index",
             )?;
-            let values = rows.query_map(params![room_id, i64::try_from(checkpoint_seq).map_err(|_| rusqlite::Error::InvalidQuery)?], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, Vec<u8>>(4)?, row.get::<_, Option<i64>>(5)?))
-            })?;
+            let values = rows.query_map(
+                params![
+                    room_id,
+                    i64::try_from(checkpoint_seq).map_err(|_| rusqlite::Error::InvalidQuery)?
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Vec<u8>>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                    ))
+                },
+            )?;
             for value in values {
                 let (member, frame, cause, hash, payload, index) = value?;
                 let index = u64::try_from(index.ok_or(rusqlite::Error::InvalidQuery)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?;
                 let entry = operational_history_entry(&[
                     member.as_bytes(),
-                    &u64::try_from(frame).map_err(|_| rusqlite::Error::InvalidQuery)?.to_be_bytes(),
-                    &u64::try_from(cause).map_err(|_| rusqlite::Error::InvalidQuery)?.to_be_bytes(),
-                    Blake3DigestV1::from_str(&hash).map_err(|_| rusqlite::Error::InvalidQuery)?.as_bytes(),
-                ]).map_err(|_| rusqlite::Error::InvalidQuery)?;
-                let appended = accumulator.append(&entry).map_err(|_| rusqlite::Error::InvalidQuery)?;
-                if appended.leaf_index() != index || Blake3DigestV1::hash(&payload).to_string() != hash {
+                    &u64::try_from(frame)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?
+                        .to_be_bytes(),
+                    &u64::try_from(cause)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?
+                        .to_be_bytes(),
+                    Blake3DigestV1::from_str(&hash)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?
+                        .as_bytes(),
+                ])
+                .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let appended = accumulator
+                    .append(&entry)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                if appended.leaf_index() != index
+                    || Blake3DigestV1::hash(&payload).to_string() != hash
+                {
                     return Err(rusqlite::Error::InvalidQuery);
                 }
             }
@@ -19805,9 +19819,21 @@ fn trusted_mmr_receipt_for_head(
                  FROM observation_consequences WHERE room_id = ?1 AND cause_room_seq > ?2 \
                  ORDER BY mmr_leaf_index",
             )?;
-            let values = rows.query_map(params![room_id, i64::try_from(checkpoint_seq).map_err(|_| rusqlite::Error::InvalidQuery)?], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, Option<i64>>(4)?))
-            })?;
+            let values = rows.query_map(
+                params![
+                    room_id,
+                    i64::try_from(checkpoint_seq).map_err(|_| rusqlite::Error::InvalidQuery)?
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                    ))
+                },
+            )?;
             for value in values {
                 let (member, cause, kind, projection, index) = value?;
                 let index = u64::try_from(index.ok_or(rusqlite::Error::InvalidQuery)?)
@@ -19823,8 +19849,11 @@ fn trusted_mmr_receipt_for_head(
                 if let Some(projection) = projection_digest.as_ref() {
                     parts.push(projection.as_bytes());
                 }
-                let entry = operational_history_entry(&parts).map_err(|_| rusqlite::Error::InvalidQuery)?;
-                let appended = accumulator.append(&entry).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let entry =
+                    operational_history_entry(&parts).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let appended = accumulator
+                    .append(&entry)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
                 if appended.leaf_index() != index {
                     return Err(rusqlite::Error::InvalidQuery);
                 }
@@ -19836,9 +19865,21 @@ fn trusted_mmr_receipt_for_head(
                  FROM activation_decisions WHERE room_id = ?1 AND cause_room_seq > ?2 \
                  ORDER BY mmr_leaf_index",
             )?;
-            let values = rows.query_map(params![room_id, i64::try_from(checkpoint_seq).map_err(|_| rusqlite::Error::InvalidQuery)?], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Vec<u8>>(3)?, row.get::<_, Option<i64>>(4)?))
-            })?;
+            let values = rows.query_map(
+                params![
+                    room_id,
+                    i64::try_from(checkpoint_seq).map_err(|_| rusqlite::Error::InvalidQuery)?
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                    ))
+                },
+            )?;
             for value in values {
                 let (cause, decision, target, bytes, index) = value?;
                 let index = u64::try_from(index.ok_or(rusqlite::Error::InvalidQuery)?)
@@ -19846,9 +19887,15 @@ fn trusted_mmr_receipt_for_head(
                 let cause = u64::try_from(cause).map_err(|_| rusqlite::Error::InvalidQuery)?;
                 let target = target.unwrap_or_default();
                 let entry = operational_history_entry(&[
-                    &cause.to_be_bytes(), decision.as_bytes(), target.as_bytes(), &bytes,
-                ]).map_err(|_| rusqlite::Error::InvalidQuery)?;
-                let appended = accumulator.append(&entry).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                    &cause.to_be_bytes(),
+                    decision.as_bytes(),
+                    target.as_bytes(),
+                    &bytes,
+                ])
+                .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let appended = accumulator
+                    .append(&entry)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
                 if appended.leaf_index() != index {
                     return Err(rusqlite::Error::InvalidQuery);
                 }
@@ -19856,7 +19903,9 @@ fn trusted_mmr_receipt_for_head(
         }
         _ => return Err(rusqlite::Error::InvalidQuery),
     }
-    if accumulator.leaf_count() != current.leaf_count() || accumulator.root() != *current.root_hash() {
+    if accumulator.leaf_count() != current.leaf_count()
+        || accumulator.root() != *current.root_hash()
+    {
         return Err(rusqlite::Error::InvalidQuery);
     }
     Ok(Some(current))
@@ -20069,8 +20118,8 @@ fn read_observation_frames(
             let receipt = trusted_receipt
                 .as_ref()
                 .ok_or(SqliteObservationErrorV1::ResetRequired)?;
-            let leaf_index = u64::try_from(mmr_leaf_index)
-                .map_err(|_| SqliteObservationErrorV1::Corrupt)?;
+            let leaf_index =
+                u64::try_from(mmr_leaf_index).map_err(|_| SqliteObservationErrorV1::Corrupt)?;
             let leaf = operational_history_entry(&[
                 authority.membership().member_id().to_string().as_bytes(),
                 &frame_seq.to_be_bytes(),
@@ -22170,15 +22219,11 @@ fn capture_checkpoint_operational_witness_v3(
     else {
         return Ok(None);
     };
-    let checkpoint_head = CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(
-        &snapshot.complete_head_bytes,
-    )
-    .map_err(|_| rusqlite::Error::InvalidQuery)?;
-    let v2 = RoomCheckpointOperationalWitnessV2::from_canonical_bytes(
-        &v2_bytes,
-        &checkpoint_head,
-    )
-    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let checkpoint_head =
+        CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&snapshot.complete_head_bytes)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let v2 = RoomCheckpointOperationalWitnessV2::from_canonical_bytes(&v2_bytes, &checkpoint_head)
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
     let mut receipts = BTreeMap::new();
     for domain in OPERATIONAL_HISTORY_ROOT_DOMAINS {
         let Some(receipt) = load_operational_mmr_receipt(transaction, &snapshot.room_id, domain)?
@@ -23018,20 +23063,20 @@ mod tests {
     use super::{
         ACTIVATION_BACKLOG_POLICY_MIGRATION_ID, ACTIVATION_MIGRATION_ID, AUTHORITY_MIGRATION_ID,
         CANONICAL_EXPORT_MIGRATION_ID, CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID,
-        CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID, CURRENT_TIMERS_MIGRATION_ID,
-        CHECKPOINT_OPERATIONAL_WITNESS_V3_MIGRATION_ID,
+        CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID,
+        CHECKPOINT_OPERATIONAL_WITNESS_V3_MIGRATION_ID, CURRENT_TIMERS_MIGRATION_ID,
         DEPLOYMENT_IDENTITIES_MIGRATION_ID, DiagnosticHistoryV1,
         EXTERNAL_INPUT_PREPARATION_MIGRATION_ID, INITIAL_MIGRATION_ID, INITIAL_MIGRATION_SCHEMA,
         MAX_SAFE_INTEGER, MIGRATION_CHECKSUMS_MIGRATION_ID, MigrationFailpoint,
         OBSERVATION_MIGRATION_ID, OBSERVATION_RETENTION_MIGRATION_ID,
         OPERATIONAL_HISTORY_MMR_MIGRATION_ID, OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID,
-        PAIRED_SNAPSHOT_SCHEMA_VERSION,
-        SNAPSHOT_CADENCE_MIGRATION_ID, SNAPSHOT_MIGRATION_ID, SQLITE_SOURCE_ID, SQLITE_VERSION,
-        STREAM_TRANSFER_V2_MIGRATION_ID, SnapshotCadenceCandidate, SqliteActivationErrorV1,
-        SqliteAuthorizedReplayErrorV1, SqliteAuthorizedReplayOutcomeV1,
-        SqliteAuthorizedReplayProjectionV1, SqliteCanonicalExportErrorV1,
-        SqliteCanonicalMetadataInitializationErrorV1, SqliteCanonicalMetadataInitializationV1,
-        SqliteCanonicalRecordKindV1, SqliteCanonicalRecordV1, SqliteDeploymentIdentityErrorV1,
+        PAIRED_SNAPSHOT_SCHEMA_VERSION, SNAPSHOT_CADENCE_MIGRATION_ID, SNAPSHOT_MIGRATION_ID,
+        SQLITE_SOURCE_ID, SQLITE_VERSION, STREAM_TRANSFER_V2_MIGRATION_ID,
+        SnapshotCadenceCandidate, SqliteActivationErrorV1, SqliteAuthorizedReplayErrorV1,
+        SqliteAuthorizedReplayOutcomeV1, SqliteAuthorizedReplayProjectionV1,
+        SqliteCanonicalExportErrorV1, SqliteCanonicalMetadataInitializationErrorV1,
+        SqliteCanonicalMetadataInitializationV1, SqliteCanonicalRecordKindV1,
+        SqliteCanonicalRecordV1, SqliteDeploymentIdentityErrorV1,
         SqliteDeploymentIdentityInitializationV1, SqliteExternalInputPreparationErrorV1,
         SqliteGatewayErrorV1, SqliteMigrationPhaseV1, SqliteObservationDeliveryV1,
         SqliteObservationErrorV1, SqliteObservationFrameV1, SqliteObservationPositionsV1,
@@ -23048,18 +23093,18 @@ mod tests {
         create_verified_transfer_backup_with_publish_hook, expire_deferred_replay_sessions,
         load_current_paired_snapshot_materializations, lookup_activation_receipt,
         migrate_with_failpoint, migration_history, native_migration_witness,
-        publish_verified_migration_backup, publish_verified_migration_backup_with_hook,
-        publish_verified_migration_backup_with_hooks, read_migration_rows, release_guarded_commit,
-        release_recovery_install, release_replay_projection, release_writer_queue,
-        remove_transfer_named_identity_with_hook, remove_verified_transfer_backup_with_hook,
-        restore_verified_migration_backup, restore_verified_migration_backup_with_hook,
-        restore_verified_migration_backup_with_hooks, retire_activation_context,
-        serialize_replay_projection_test, set_replay_slice_row_budget, snapshot_cadence_due,
-        transfer_file_identity, verify_migration_prefix, verify_migration_records,
+        operational_history_entry, publish_verified_migration_backup,
+        publish_verified_migration_backup_with_hook, publish_verified_migration_backup_with_hooks,
+        read_migration_rows, release_guarded_commit, release_recovery_install,
+        release_replay_projection, release_writer_queue, remove_transfer_named_identity_with_hook,
+        remove_verified_transfer_backup_with_hook, restore_verified_migration_backup,
+        restore_verified_migration_backup_with_hook, restore_verified_migration_backup_with_hooks,
+        retire_activation_context, serialize_replay_projection_test, set_replay_slice_row_budget,
+        snapshot_cadence_due, transfer_file_identity, trusted_mmr_receipt_for_head,
+        verify_migration_prefix, verify_migration_records, verify_mmr_leaf_inclusion,
         wait_until_authority_change_enqueued, wait_until_guarded_commit_pauses,
         wait_until_recovery_install_pauses, wait_until_replay_projection_pauses,
-        wait_until_writer_queue_pauses, operational_history_entry,
-        trusted_mmr_receipt_for_head, verify_mmr_leaf_inclusion,
+        wait_until_writer_queue_pauses,
     };
 
     const ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -25883,8 +25928,7 @@ mod tests {
         assert_eq!(
             history.map(|migration| migration.version),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21
-                , 22
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22
             ]
         );
         assert_eq!(
@@ -26029,7 +26073,15 @@ mod tests {
                     "SELECT frame_seq, cause_room_seq, payload_hash, payload_bytes, mmr_leaf_index \
                      FROM observation_frames WHERE room_id = ?1 ORDER BY frame_seq LIMIT 1",
                     [ROOM],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
                 )
                 .unwrap_or_else(|error| panic!("load MMR proof row: {error}"));
         let hash = Blake3DigestV1::from_str(&hash)
@@ -26047,10 +26099,12 @@ mod tests {
             hash.as_bytes(),
         ])
         .unwrap_or_else(|error| panic!("encode MMR proof leaf: {error:?}"));
-        let leaf_index = u64::try_from(leaf_index)
-            .unwrap_or_else(|error| panic!("leaf index: {error}"));
-        assert!(verify_mmr_leaf_inclusion(&transaction, ROOM, &receipt, leaf_index, &leaf)
-            .unwrap_or_else(|error| panic!("verify original MMR proof: {error}")));
+        let leaf_index =
+            u64::try_from(leaf_index).unwrap_or_else(|error| panic!("leaf index: {error}"));
+        assert!(
+            verify_mmr_leaf_inclusion(&transaction, ROOM, &receipt, leaf_index, &leaf)
+                .unwrap_or_else(|error| panic!("verify original MMR proof: {error}"))
+        );
         transaction
             .commit()
             .unwrap_or_else(|error| panic!("finish MMR proof read: {error}"));
@@ -26074,14 +26128,10 @@ mod tests {
             mutated_hash.as_bytes(),
         ])
         .unwrap_or_else(|error| panic!("encode mutated MMR proof leaf: {error:?}"));
-        assert!(!verify_mmr_leaf_inclusion(
-            &transaction,
-            ROOM,
-            &receipt,
-            leaf_index,
-            &mutated_leaf,
-        )
-        .unwrap_or_else(|error| panic!("verify mutated MMR proof: {error}")));
+        assert!(
+            !verify_mmr_leaf_inclusion(&transaction, ROOM, &receipt, leaf_index, &mutated_leaf,)
+                .unwrap_or_else(|error| panic!("verify mutated MMR proof: {error}"))
+        );
         drop(transaction);
         drop(store);
     }

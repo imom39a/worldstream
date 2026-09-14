@@ -30,26 +30,24 @@ pub use authority::{PostgresAuthenticatedCapabilityV1, PostgresAuthorityAuthenti
 pub use migrations::{
     ACTIVATION_BACKLOG_POLICY_MIGRATION_ID, AUTHORITY_FACTS_MIGRATION_ID, AUTHORITY_MIGRATION_ID,
     CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID, CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID,
-    CHECKPOINT_OPERATIONAL_WITNESS_V3_MIGRATION_ID,
-    CURRENT_TIMERS_MIGRATION_ID, DEPLOYMENT_IDENTITY_MIGRATION_ID,
-    DEPLOYMENT_METADATA_MIGRATION_ID, EXTERNAL_INPUT_PREPARATION_MIGRATION_ID,
-    FixtureMigrationProvider, INITIAL_MIGRATION_ID, KERNEL_CONFORMANCE_MIGRATION_ID,
-    KERNEL_PARITY_MIGRATION_ID, LOGICAL_HISTORY_ID, MIGRATION_0002_SQL, MIGRATION_0003_SQL,
-    MIGRATION_0004_SQL, MIGRATION_0005_SQL, MIGRATION_0006_SQL, MIGRATION_0007_SQL,
-    MIGRATION_0008_SQL, MIGRATION_0009_SQL, MIGRATION_0010_SQL, MIGRATION_0011_SQL,
-    MIGRATION_0012_SQL, MIGRATION_0013_SQL, MIGRATION_0014_SQL, MIGRATION_0015_SQL,
-    MIGRATION_0016_SQL, MIGRATION_0017_SQL, MIGRATION_0018_SQL, MIGRATION_0019_SQL,
-    MIGRATION_0020_SQL, MIGRATION_0021_SQL, MIGRATION_0022_SQL, MIGRATION_0023_SQL,
-    MigrationDescriptor,
-    MigrationFailpoint,
+    CHECKPOINT_OPERATIONAL_WITNESS_V3_MIGRATION_ID, CURRENT_TIMERS_MIGRATION_ID,
+    DEPLOYMENT_IDENTITY_MIGRATION_ID, DEPLOYMENT_METADATA_MIGRATION_ID,
+    EXTERNAL_INPUT_PREPARATION_MIGRATION_ID, FixtureMigrationProvider, INITIAL_MIGRATION_ID,
+    KERNEL_CONFORMANCE_MIGRATION_ID, KERNEL_PARITY_MIGRATION_ID, LOGICAL_HISTORY_ID,
+    MIGRATION_0002_SQL, MIGRATION_0003_SQL, MIGRATION_0004_SQL, MIGRATION_0005_SQL,
+    MIGRATION_0006_SQL, MIGRATION_0007_SQL, MIGRATION_0008_SQL, MIGRATION_0009_SQL,
+    MIGRATION_0010_SQL, MIGRATION_0011_SQL, MIGRATION_0012_SQL, MIGRATION_0013_SQL,
+    MIGRATION_0014_SQL, MIGRATION_0015_SQL, MIGRATION_0016_SQL, MIGRATION_0017_SQL,
+    MIGRATION_0018_SQL, MIGRATION_0019_SQL, MIGRATION_0020_SQL, MIGRATION_0021_SQL,
+    MIGRATION_0022_SQL, MIGRATION_0023_SQL, MigrationDescriptor, MigrationFailpoint,
     MigrationRecord, MigrationVerification, MigrationVerificationError,
     OBSERVATION_RESET_GENERATION_MIGRATION_ID, OBSERVATION_RETENTION_MIGRATION_ID,
     OPERATIONAL_HISTORY_MMR_MIGRATION_ID, OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID,
-    SCHEMA_CONTRACT_ID, SCHEMA_FINGERPRINT_MATERIAL,
-    SNAPSHOT_CADENCE_MIGRATION_ID, STREAM_TRANSFER_V2_MIGRATION_ID,
-    TRANSFER_PUBLICATION_MIGRATION_ID, TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID,
-    TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID, migration_history, schema_contract_fingerprint,
-    verify_migration_prefix, verify_runtime_migration_history,
+    SCHEMA_CONTRACT_ID, SCHEMA_FINGERPRINT_MATERIAL, SNAPSHOT_CADENCE_MIGRATION_ID,
+    STREAM_TRANSFER_V2_MIGRATION_ID, TRANSFER_PUBLICATION_MIGRATION_ID,
+    TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID, TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID,
+    migration_history, schema_contract_fingerprint, verify_migration_prefix,
+    verify_runtime_migration_history,
 };
 pub use retention::PostgresObservationRetentionV1;
 pub use telemetry::{
@@ -92,34 +90,33 @@ use worldstream_core::{
     AuthorizedExternalInputV1, AuthorizedReceiptReadV1, AuthorizedReceiptResolverV1,
     AuthorizedReplayV1, AuthorizedRunnerControlV1, AuthorizedTimerFiredV1, Blake3DigestV1,
     CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V1, CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2,
-    CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V3,
-    CanonicalJsonV1, CanonicalRequestHashV1, CompleteHeadV1, CoreAdministrationRequestV1,
-    CoreRecordedAt, CoreTraceV1, DiagnosticOperationV1, DiagnosticTargetV1,
-    ExternalInputRecordedAt, ExternalInputV1, GenesisV1, HistoricalEvidencePageOutcomeV1,
-    HistoricalEvidenceReferenceV1, HistoricalReplayErrorV1, HistoricalReplayProjectionV1,
-    HostClockSampleV1, IntegrityGenerationV1, MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1,
-    MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES, MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1,
-    MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_TIME_MS_V1,
-    MAX_PENDING_REFRESH_AGE_MS_V1, MAX_PENDING_REFRESH_BYTES_V1, MemberId, MembershipStandingV1,
-    MembershipV1, OperationIdentityV1, OperationalHistoryRootV2, OperationalMmrNodeCoordinateV1,
+    CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V3, CanonicalJsonV1, CanonicalRequestHashV1,
+    CompleteHeadV1, CoreAdministrationRequestV1, CoreRecordedAt, CoreTraceV1,
+    DiagnosticOperationV1, DiagnosticTargetV1, ExternalInputRecordedAt, ExternalInputV1, GenesisV1,
+    HistoricalEvidencePageOutcomeV1, HistoricalEvidenceReferenceV1, HistoricalReplayErrorV1,
+    HistoricalReplayProjectionV1, HostClockSampleV1, IntegrityGenerationV1,
+    MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1, MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES,
+    MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1,
+    MAX_HISTORICAL_EVIDENCE_TIME_MS_V1, MAX_PENDING_REFRESH_AGE_MS_V1,
+    MAX_PENDING_REFRESH_BYTES_V1, MemberId, MembershipStandingV1, MembershipV1,
+    OperationIdentityV1, OperationalHistoryRootV2, OperationalMmrNodeCoordinateV1,
     OperationalMmrNodeV1, OperationalMmrProofNodeV1, OperationalMmrProofV1,
-    OperationalMmrReceiptV1, OperationalMmrV1, PackRegistryV1,
-    PackRevisionLockV1, PackViewerV1, ParticipantActionAuthorityV1, ParticipantActionRequestV1,
-    ParticipantActionV1, PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1,
-    PreparedCreationPersistenceV1, PreparedExistingIntentV1, PreparedMembershipMaterializationV1,
+    OperationalMmrReceiptV1, OperationalMmrV1, PackRegistryV1, PackRevisionLockV1, PackViewerV1,
+    ParticipantActionAuthorityV1, ParticipantActionRequestV1, ParticipantActionV1,
+    PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1, PreparedCreationPersistenceV1,
+    PreparedExistingIntentV1, PreparedMembershipMaterializationV1,
     PreparedObservationConsequenceV1, PreparedRoomCommitV1, PreparedRoomWriteV1,
     PreparedTimerMutationKindV1, RecordedStimulusV1, RecoveredActivationDecisionV1,
     RecoveredObservationConsequenceV1, RecoveredObservationFrameV1,
     RecoveredRoomMaterializationsV1, RecoveredTimerMaterializationV1, RecoveredTimerStateV1,
     RecoveryIntegrityDispositionV1, ReplayFailureClassV1, ReplayStorageVerificationV1,
     ResolutionStatusV1, ResolveOutcomeV1, RoomCheckpointOperationalWitnessV1,
-    RoomCheckpointOperationalWitnessV2, RoomCheckpointOperationalWitnessV3,
-    RoomCommitResolutionV1, RoomCommitStorageV1, RoomId,
-    RoomIntegrityStateV1, RoomIntegrityStatusV1, RoomRecoveryCandidateV1, RoomRecoveryCheckpointV1,
-    RoomRecoveryErrorV1, RoomRecoveryStorageV1, RoomSequenceV1, RoomStatusV1,
-    RunnerControlAdapterInputV1, RunnerControlOperationV1, StorageHistoryPreflightV1,
-    StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, TimerId,
-    TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1,
+    RoomCheckpointOperationalWitnessV2, RoomCheckpointOperationalWitnessV3, RoomCommitResolutionV1,
+    RoomCommitStorageV1, RoomId, RoomIntegrityStateV1, RoomIntegrityStatusV1,
+    RoomRecoveryCandidateV1, RoomRecoveryCheckpointV1, RoomRecoveryErrorV1, RoomRecoveryStorageV1,
+    RoomSequenceV1, RoomStatusV1, RunnerControlAdapterInputV1, RunnerControlOperationV1,
+    StorageHistoryPreflightV1, StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1,
+    TimerGenerationV1, TimerId, TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1,
     VerifiedCurrentRoomMaterializationV1, ViewerAdapterInputV1,
     activation_refresh_budget_allows_v1, commit_existing_room, prepare_activation_context,
     projection_hash_for_canonical_bytes,
@@ -1299,11 +1296,11 @@ impl PostgresAdmin {
             if let Some(receipts) = capture_operational_mmr_receipts(&mut tx, room_id)
                 .map_err(PostgresRoomVerificationError::Sql)?
             {
-                verify_postgres_operational_mmr_full(&mut tx, room_id, &receipts).map_err(|_| {
-                    PostgresRoomVerificationError::Corrupt {
+                verify_postgres_operational_mmr_full(&mut tx, room_id, &receipts).map_err(
+                    |_| PostgresRoomVerificationError::Corrupt {
                         what: "operational MMR",
-                    }
-                })?;
+                    },
+                )?;
             }
             tx.commit().map_err(PostgresRoomVerificationError::Sql)?;
             Ok(verification)
@@ -8340,7 +8337,8 @@ fn verify_postgres_operational_mmr_receipts(
     expected: &BTreeMap<String, OperationalMmrReceiptV1>,
 ) -> Result<(), RoomRecoveryErrorV1> {
     let Some(stored) = capture_operational_mmr_receipts(tx, room_id)
-        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)? else {
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+    else {
         return Err(RoomRecoveryErrorV1::Corrupt);
     };
     if &stored != expected || stored.len() != OPERATIONAL_HISTORY_ROOT_DOMAINS.len() {
@@ -10125,13 +10123,17 @@ fn initialize_operational_mmr_receipts(
     room_id: &str,
 ) -> Result<(), postgres::Error> {
     for domain in OPERATIONAL_HISTORY_ROOT_DOMAINS {
-        let receipt = OperationalMmrReceiptV1::empty(domain)
-            .expect("fixed operational MMR domain is valid");
+        let receipt =
+            OperationalMmrReceiptV1::empty(domain).expect("fixed operational MMR domain is valid");
         tx.execute(
             "INSERT INTO worldstream_room_operational_mmr_receipts_v1( \
              room_id, domain, leaf_count, root_hash \
              ) VALUES ($1, $2, 0, $3)",
-            &[&room_id, &domain, &receipt.root_hash().as_bytes().as_slice()],
+            &[
+                &room_id,
+                &domain,
+                &receipt.root_hash().as_bytes().as_slice(),
+            ],
         )?;
     }
     Ok(())
@@ -10169,8 +10171,7 @@ fn load_operational_mmr_receipt(
     };
     let count: i64 = row.try_get(0).map_err(CommitDecision::Provider)?;
     let root: Vec<u8> = row.try_get(1).map_err(CommitDecision::Provider)?;
-    let (Ok(leaf_count), Ok(root_hash)) = (u64::try_from(count), <[u8; 32]>::try_from(root))
-    else {
+    let (Ok(leaf_count), Ok(root_hash)) = (u64::try_from(count), <[u8; 32]>::try_from(root)) else {
         return Err(CommitDecision::Resolution(RoomCommitResolutionV1::Fault));
     };
     let mut peaks = Vec::new();
@@ -10183,9 +10184,8 @@ fn load_operational_mmr_receipt(
                     &room_id,
                     &domain,
                     &i16::from(height),
-                    &i64::try_from(start_index).map_err(|_| {
-                        CommitDecision::Resolution(RoomCommitResolutionV1::Fault)
-                    })?,
+                    &i64::try_from(start_index)
+                        .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?,
                 ],
             )
             .map_err(CommitDecision::Provider)?
@@ -10196,13 +10196,19 @@ fn load_operational_mmr_receipt(
         let Ok(digest) = <[u8; 32]>::try_from(digest) else {
             return Err(CommitDecision::Resolution(RoomCommitResolutionV1::Fault));
         };
-        let peak = OperationalMmrNodeV1::new(height, start_index, Blake3DigestV1::from_bytes(digest))
-            .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?;
+        let peak =
+            OperationalMmrNodeV1::new(height, start_index, Blake3DigestV1::from_bytes(digest))
+                .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?;
         peaks.push(peak);
     }
-    OperationalMmrReceiptV1::new(domain, leaf_count, Blake3DigestV1::from_bytes(root_hash), peaks)
-        .map(Some)
-        .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))
+    OperationalMmrReceiptV1::new(
+        domain,
+        leaf_count,
+        Blake3DigestV1::from_bytes(root_hash),
+        peaks,
+    )
+    .map(Some)
+    .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))
 }
 
 /// Appends a canonical operational row atomically with its immutable MMR
@@ -10234,17 +10240,18 @@ fn append_operational_mmr(
                 &room_id,
                 &domain,
                 &i16::from(node.height()),
-                &i64::try_from(node.start_index()).map_err(|_| {
-                    CommitDecision::Resolution(RoomCommitResolutionV1::Fault)
-                })?,
+                &i64::try_from(node.start_index())
+                    .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?,
                 &node.digest().as_bytes().as_slice(),
             ],
         )
         .map_err(CommitDecision::Provider)?;
     }
-    let next_count = i64::try_from(old_count.checked_add(1).ok_or(
-        CommitDecision::Resolution(RoomCommitResolutionV1::Fault),
-    )?)
+    let next_count = i64::try_from(
+        old_count
+            .checked_add(1)
+            .ok_or(CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?,
+    )
     .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?;
     let changed = tx
         .execute(
@@ -10256,9 +10263,8 @@ fn append_operational_mmr(
                 &appended.root().as_bytes().as_slice(),
                 &room_id,
                 &domain,
-                &i64::try_from(old_count).map_err(|_| {
-                    CommitDecision::Resolution(RoomCommitResolutionV1::Fault)
-                })?,
+                &i64::try_from(old_count)
+                    .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?,
                 &old_root,
             ],
         )
@@ -10570,18 +10576,17 @@ fn capture_operational_mmr_receipts<C: GenericClient>(
                 "SELECT node_hash FROM worldstream_room_operational_mmr_nodes_v1 \
                  WHERE room_id = $1 AND domain = $2 AND height = $3 AND start_index = $4 FOR SHARE",
                 &[&room_id, &domain, &i16::from(height), &start_index_i64],
-            )? else {
+            )?
+            else {
                 return Ok(None);
             };
             let digest: Vec<u8> = node.try_get(0)?;
             let Ok(digest) = <[u8; 32]>::try_from(digest) else {
                 return Ok(None);
             };
-            let Ok(node) = OperationalMmrNodeV1::new(
-                height,
-                start_index,
-                Blake3DigestV1::from_bytes(digest),
-            ) else {
+            let Ok(node) =
+                OperationalMmrNodeV1::new(height, start_index, Blake3DigestV1::from_bytes(digest))
+            else {
                 return Ok(None);
             };
             peaks.push(node);
@@ -10615,7 +10620,8 @@ fn verify_operational_mmr_leaf<C: GenericClient>(
         "SELECT entry_count FROM worldstream_room_operational_history_roots_v2 \
          WHERE room_id = $1 AND domain = $2 FOR SHARE",
         &[&room_id, &receipt.domain()],
-    )? else {
+    )?
+    else {
         return Ok(false);
     };
     let entry_count: i64 = root_row.try_get(0)?;
@@ -10638,8 +10644,14 @@ fn verify_operational_mmr_leaf<C: GenericClient>(
         let Some(row) = client.query_opt(
             "SELECT node_hash FROM worldstream_room_operational_mmr_nodes_v1 \
              WHERE room_id = $1 AND domain = $2 AND height = $3 AND start_index = $4 FOR SHARE",
-            &[&room_id, &receipt.domain(), &i16::from(coordinate.height()), &start_index],
-        )? else {
+            &[
+                &room_id,
+                &receipt.domain(),
+                &i16::from(coordinate.height()),
+                &start_index,
+            ],
+        )?
+        else {
             return Ok(None);
         };
         let digest: Vec<u8> = row.try_get(0)?;
@@ -11232,12 +11244,7 @@ fn persist_advance(
             target_member_id.as_bytes(),
             decision.canonical_decision_bytes(),
         ])?;
-        let mmr_leaf_index = append_operational_mmr(
-            tx,
-            room_id,
-            "activation_decisions",
-            &entry,
-        )?;
+        let mmr_leaf_index = append_operational_mmr(tx, room_id, "activation_decisions", &entry)?;
         tx.execute("INSERT INTO worldstream_activation_decisions(room_id, cause_room_seq, decision_id, target_member_id, decision_bytes, mmr_leaf_index) VALUES ($1, $2, $3, $4, $5, $6)", &[&room_id, &seq, &decision.decision_id(), &decision.target_member_id().map(ToString::to_string), &decision.canonical_decision_bytes(), &mmr_leaf_index]).map_err(CommitDecision::Provider)?;
         append_operational_history_root(tx, room_id, "activation_decisions", &entry)?;
         let decision_record = CanonicalJsonV1::decode_canonical::<
@@ -11683,7 +11690,8 @@ fn read_bounded_observation_frames(
     for row in rows {
         let member_id: String = row.try_get(0).map_err(PostgresObservationError::Sql)?;
         let frame_seq = nonnegative_u64(row.try_get(1).map_err(PostgresObservationError::Sql)?)?;
-        let cause_room_seq = nonnegative_u64(row.try_get(2).map_err(PostgresObservationError::Sql)?)?;
+        let cause_room_seq =
+            nonnegative_u64(row.try_get(2).map_err(PostgresObservationError::Sql)?)?;
         let payload_bytes: Vec<u8> = row.try_get(3).map_err(PostgresObservationError::Sql)?;
         let payload_hash: Vec<u8> = row.try_get(4).map_err(PostgresObservationError::Sql)?;
         let leaf_index: Option<i64> = row.try_get(5).map_err(PostgresObservationError::Sql)?;
@@ -11692,7 +11700,8 @@ fn read_bounded_observation_frames(
         else {
             return Err(PostgresObservationError::ResetRequired);
         };
-        let leaf_index = u64::try_from(leaf_index).map_err(|_| PostgresObservationError::ResetRequired)?;
+        let leaf_index =
+            u64::try_from(leaf_index).map_err(|_| PostgresObservationError::ResetRequired)?;
         if payload_hash_array != *Blake3DigestV1::hash(&payload_bytes).as_bytes()
             || CanonicalJsonV1::from_canonical_bytes(&payload_bytes).is_err()
         {

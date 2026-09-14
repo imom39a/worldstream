@@ -15,10 +15,9 @@ use worldstream_core::{
     PackGenesisRequestV1, ParticipantActionRequestV1, ParticipantActionV1,
     PreparedAuthorityWitnessV1, PreparedRoomCommitV1, PreparedRoomCreationV1, PreparedRoomWriteV1,
     PrincipalKindV1, RecordedStimulusV1, ResolutionStatusV1, RoomCheckpointOperationalWitnessV1,
-    RoomCheckpointOperationalWitnessV2, RoomCheckpointOperationalWitnessV3,
-    RoomCommitResolutionV1, RoomCommitStorageV1,
-    RoomCreationRequestV1, RoomRecoveryStorageV1,
-    RoomSeedV1, TransitionId, builtin_counter_registry, commit_existing_room, counter_v2_digest,
+    RoomCheckpointOperationalWitnessV2, RoomCheckpointOperationalWitnessV3, RoomCommitResolutionV1,
+    RoomCommitStorageV1, RoomCreationRequestV1, RoomRecoveryStorageV1, RoomSeedV1, TransitionId,
+    builtin_counter_registry, commit_existing_room, counter_v2_digest,
     recover_room_from_storage_with_receipt,
 };
 use worldstream_postgres::conformance::{
@@ -707,10 +706,7 @@ fn qualify_bounded_recovery_scales(
             let member_id: String = membership.get(0);
             let frame_head: i64 = membership.get(1);
             let generation: i64 = membership.get(2);
-            assert_eq!(
-                membership_generations.get(&member_id),
-                Some(&generation)
-            );
+            assert_eq!(membership_generations.get(&member_id), Some(&generation));
             assert_eq!(
                 observation_frame_heads.get(&parsed(&member_id)),
                 Some(
@@ -1406,8 +1402,7 @@ fn kernel_conformance_migration_is_reviewed_and_forward_only() {
             .contains("worldstream_room_operational_history_roots_v2")
     );
     assert!(
-        worldstream_postgres::MIGRATION_0020_SQL
-            .contains("worldstream_room_current_timers_v2")
+        worldstream_postgres::MIGRATION_0020_SQL.contains("worldstream_room_current_timers_v2")
     );
     assert!(
         worldstream_postgres::MIGRATION_0021_SQL

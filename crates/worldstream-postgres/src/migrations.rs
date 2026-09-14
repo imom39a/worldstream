@@ -1554,16 +1554,28 @@ mod identity_tests {
         ] {
             assert!(migration.sql.contains(&format!("ALTER TABLE {table}")));
         }
-        assert_eq!(migration.sql.matches("ADD COLUMN mmr_leaf_index bigint").count(), 3);
-        assert!(migration
-            .sql
-            .contains("worldstream_operational_mmr_nodes_v1_immutable"));
-        assert!(migration
-            .sql
-            .contains("worldstream_transfer_fence_operational_mmr_receipts_v1"));
-        assert!(migration
-            .sql
-            .contains("worldstream_transfer_fence_operational_mmr_nodes_v1"));
+        assert_eq!(
+            migration
+                .sql
+                .matches("ADD COLUMN mmr_leaf_index bigint")
+                .count(),
+            3
+        );
+        assert!(
+            migration
+                .sql
+                .contains("worldstream_operational_mmr_nodes_v1_immutable")
+        );
+        assert!(
+            migration
+                .sql
+                .contains("worldstream_transfer_fence_operational_mmr_receipts_v1")
+        );
+        assert!(
+            migration
+                .sql
+                .contains("worldstream_transfer_fence_operational_mmr_nodes_v1")
+        );
     }
 
     #[test]
@@ -1571,12 +1583,16 @@ mod identity_tests {
         let migration = migration_history()[22];
         assert_eq!(migration.version, 23);
         assert_eq!(migration.id, CHECKPOINT_OPERATIONAL_WITNESS_V3_MIGRATION_ID);
-        assert!(migration
-            .sql
-            .contains("CREATE TABLE worldstream_room_snapshot_operational_witnesses_v3"));
-        assert!(migration
-            .sql
-            .contains("worldstream_transfer_fence_snapshot_operational_witnesses_v3"));
+        assert!(
+            migration
+                .sql
+                .contains("CREATE TABLE worldstream_room_snapshot_operational_witnesses_v3")
+        );
+        assert!(
+            migration
+                .sql
+                .contains("worldstream_transfer_fence_snapshot_operational_witnesses_v3")
+        );
         assert!(migration.sql.contains("ON DELETE CASCADE"));
     }
 }
