@@ -64,12 +64,24 @@
       ]
     },
     "exact_basis": true,
+    "fairness_schedule": {
+      "attempts_per_opportunity": 2,
+      "first_attempt": "one real private update then exact stale rejection",
+      "kind": "deterministic_round_robin",
+      "participants": 8,
+      "rounds": 32,
+      "second_attempt": "refresh with a new Action identity then accepted contribution"
+    },
     "imo_217_comparison": {
       "reason": "IMO-217 has no implementation or baseline evidence yet; this probe measures synchronized-head contention only.",
       "status": "blocked_dependency"
     },
     "measurement": {
       "accepted_trials": 160,
+      "fairness_max_accepted_per_participant": 32,
+      "fairness_min_accepted_per_participant": 32,
+      "fairness_opportunities": 256,
+      "fairness_stale_rejections": 256,
       "max_attempts": 3,
       "max_backoff_ms": 2,
       "participant_counts": [

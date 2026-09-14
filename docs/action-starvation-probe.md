@@ -43,7 +43,11 @@ The local run produced `scenarios=240`, `accepted_trials=160`,
 `max_backoff_ms=2`; each participant-count lane ran 60 trials, with 40
 accepted and a maximum of three attempts. This is evidence for bounded
 exact-Head admission contention in Core; it does not establish a backend or
-scheduler throughput bound.
+scheduler throughput bound. A separate production-Core round-robin schedule
+gave each of eight participants 32 opportunities. Every first attempt raced
+one real private update and rejected stale; every refreshed second attempt
+used a new Action identity and committed. The minimum and maximum accepted
+contributions per participant were both 32.
 The Runner refreshes, re-evaluates, and creates a new Action identity; the
 probe never auto-rebases a stale Action.
 
@@ -64,8 +68,9 @@ measurement evidence for a future versioned successor ADR only if a broader
 envelope is required. Participant count is included as a controlled occupancy
 dimension while the aggregate Room update rate stays fixed. This probe
 measures one target Runner's pending work and the production check confirms the
-whole-Head fence; it does not claim scheduler fairness across participants,
-backend commit throughput, storage, network, or model-quality results. The
+whole-Head fence. The separate round-robin schedule establishes equal outcomes
+under its controlled schedule; it does not claim backend scheduler throughput,
+storage, network, or model-quality results. The
 Core admission layer has no delivery metadata, so visibility and relatedness
 are controlled scenario dimensions while the trace measures the common
 whole-Head behavior. A before/after comparison with hidden-head recovery is

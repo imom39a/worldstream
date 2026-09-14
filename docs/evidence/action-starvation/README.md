@@ -42,6 +42,12 @@ trials, and 240 exact stale rejections, with at most three attempts and 2 ms
 backoff. Each participant-count lane ran 60 trials and accepted 40, so the
 controlled schedule did not favor a participant-count lane.
 
+The production-Core fairness schedule then gave each of eight participants 32
+round-robin opportunities. All 256 first attempts raced a real private update
+and rejected stale; all 256 refreshed second attempts used new Action
+identities and committed. The minimum and maximum accepted contribution counts
+were both 32.
+
 IMO-217 is intentionally separate. Its hidden-head synchronization defect
 starts before reasoning, while this ticket's primary matrix starts from a
 synchronized Head and introduces updates during reasoning. The deterministic
@@ -53,5 +59,5 @@ change is part of this measurement ticket.
 
 ```text
 deterministic-matrix.json sha256 2a6e65f78fbb3cb2853608e492d892fb683b58bcdb24f82e4e53eb1f2033d2a8
-production-matrix.json    sha256 2149edb29a35a033c05f3bde53d3ea0bcc12979a3b2d256fd58693b7aab2e5d9
+production-matrix.json    sha256 4dd1fc5f413bec57d81c113fc93e0e9cb699fc47df659d4a89fd7bf5a6412d9f
 ```

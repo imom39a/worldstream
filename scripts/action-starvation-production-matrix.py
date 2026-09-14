@@ -30,7 +30,11 @@ MEASUREMENT_PATTERN = re.compile(
     r"max_attempts=(?P<max_attempts>\d+)\s+"
     r"max_backoff_ms=(?P<max_backoff_ms>\d+)\s+"
     r"participant_counts=(?P<participant_counts>[0-9,]+)\s+"
-    r"participant_stats=(?P<participant_stats>[0-9:,]+)"
+    r"participant_stats=(?P<participant_stats>[0-9:,]+)\s+"
+    r"fairness_opportunities=(?P<fairness_opportunities>\d+)\s+"
+    r"fairness_stale_rejections=(?P<fairness_stale_rejections>\d+)\s+"
+    r"fairness_min_accepted_per_participant=(?P<fairness_min_accepted_per_participant>\d+)\s+"
+    r"fairness_max_accepted_per_participant=(?P<fairness_max_accepted_per_participant>\d+)"
 )
 
 
@@ -49,6 +53,14 @@ def parse_measurement(output: str) -> dict:
         "stale_rejections": int(values["stale_rejections"]),
         "max_attempts": int(values["max_attempts"]),
         "max_backoff_ms": int(values["max_backoff_ms"]),
+        "fairness_opportunities": int(values["fairness_opportunities"]),
+        "fairness_stale_rejections": int(values["fairness_stale_rejections"]),
+        "fairness_min_accepted_per_participant": int(
+            values["fairness_min_accepted_per_participant"]
+        ),
+        "fairness_max_accepted_per_participant": int(
+            values["fairness_max_accepted_per_participant"]
+        ),
         "participant_counts": [
             int(value) for value in values["participant_counts"].split(",")
         ],
@@ -89,6 +101,14 @@ def run_production_matrix() -> dict:
             "retry_backoff_ms": [0, 1, 2],
             "max_attempts": 3,
             "retains_all_contexts": False,
+        },
+        "fairness_schedule": {
+            "kind": "deterministic_round_robin",
+            "participants": 8,
+            "rounds": 32,
+            "attempts_per_opportunity": 2,
+            "first_attempt": "one real private update then exact stale rejection",
+            "second_attempt": "refresh with a new Action identity then accepted contribution",
         },
         "measurement": measurement,
         "exact_basis": True,

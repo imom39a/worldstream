@@ -873,13 +873,94 @@ fn production_action_admission_matrix_preserves_exact_basis_fence() {
         })
         .collect::<Vec<_>>()
         .join(",");
+    // A separate deterministic round-robin schedule gives every participant
+    // the same number of proposal opportunities. Each first attempt races one
+    // real private update, then the refreshed attempt succeeds under the exact
+    // production admission check and is installed in the trace.
+    let mut fairness_accepted = [0_u64; CONTENTION_MEMBERS.len()];
+    let mut fairness_stale = [0_u64; CONTENTION_MEMBERS.len()];
+    for round in 0_u64..32 {
+        for (target_index, target_member) in CONTENTION_MEMBERS.iter().enumerate() {
+            let mut trace = contention_trace(CONTENTION_MEMBERS.len());
+            let observed_head = trace.head().room_seq();
+            let target_offset = u64::try_from(target_index).unwrap_or(0);
+            let updater_index = (target_index
+                + usize::try_from(round).unwrap_or(0)
+                + 1)
+                % CONTENTION_MEMBERS.len();
+            trace
+                .advance(counter_private_ack_stimulus(
+                    &trace,
+                    CONTENTION_MEMBERS[updater_index],
+                    &contention_action_id(9_000_000 + round * 100 + target_offset),
+                ))
+                .unwrap_or_else(|error| unreachable!("fairness update: {error}"));
+            let stale = ParticipantActionRequestV1::new(
+                parsed(ROOM),
+                parsed(target_member),
+                parsed(&contention_action_id(
+                    10_000_000 + round * 100 + target_offset,
+                )),
+                observed_head,
+                "increment",
+                canonical(br"{}"),
+            );
+            assert_eq!(
+                trace
+                    .assess_stable_action_disposition(
+                        &stale,
+                        &parsed("2026-08-15T12:00:03Z"),
+                    )
+                    .unwrap_or_else(|error| unreachable!("fairness stale admission: {error}"))
+                    .map(|value| value.code),
+                Some("stale_room_state")
+            );
+            fairness_stale[target_index] += 1;
+
+            let accepted_action_id =
+                contention_action_id(11_000_000 + round * 100 + target_offset);
+            let refreshed = ParticipantActionRequestV1::new(
+                parsed(ROOM),
+                parsed(target_member),
+                parsed(&accepted_action_id),
+                trace.head().room_seq(),
+                "increment",
+                canonical(br"{}"),
+            );
+            assert!(
+                trace
+                    .assess_stable_action_disposition(
+                        &refreshed,
+                        &parsed("2026-08-15T12:00:04Z"),
+                    )
+                    .unwrap_or_else(|error| unreachable!("fairness refreshed admission: {error}"))
+                    .is_none()
+            );
+            trace
+                .advance(counter_action_stimulus(
+                    &trace,
+                    target_member,
+                    &accepted_action_id,
+                    "increment",
+                ))
+                .unwrap_or_else(|error| unreachable!("fairness accepted action: {error}"));
+            fairness_accepted[target_index] += 1;
+        }
+    }
+    let fairness_min_accepted = fairness_accepted.iter().copied().min().unwrap_or(0);
+    let fairness_max_accepted = fairness_accepted.iter().copied().max().unwrap_or(0);
+    let fairness_opportunities = fairness_accepted.iter().sum::<u64>();
+    let fairness_stale_rejections = fairness_stale.iter().sum::<u64>();
     eprintln!(
-        "production_action_contention schema=worldstream/action-starvation-production/v2 scenarios={scenario_count} accepted_trials={accepted_trials} starved_trials={starved_trials} stale_rejections={stale_rejections} max_attempts={max_attempts_seen} max_backoff_ms=2 participant_counts=1,2,4,8 participant_stats={participant_summary}"
+        "production_action_contention schema=worldstream/action-starvation-production/v2 scenarios={scenario_count} accepted_trials={accepted_trials} starved_trials={starved_trials} stale_rejections={stale_rejections} max_attempts={max_attempts_seen} max_backoff_ms=2 participant_counts=1,2,4,8 participant_stats={participant_summary} fairness_opportunities={fairness_opportunities} fairness_stale_rejections={fairness_stale_rejections} fairness_min_accepted_per_participant={fairness_min_accepted} fairness_max_accepted_per_participant={fairness_max_accepted}"
     );
     assert_eq!(scenario_count, 5 * 3 * 4 * 2 * 2);
     assert!(accepted_trials > 0);
     assert!(stale_rejections > 0);
     assert!(max_attempts_seen <= MAX_ATTEMPTS_PER_TRIAL);
+    assert_eq!(fairness_opportunities, 256);
+    assert_eq!(fairness_stale_rejections, 256);
+    assert_eq!(fairness_min_accepted, fairness_max_accepted);
 }
 
 fn timer_plan() -> (CoreTraceV1, PreparedRoomCommitV1) {
