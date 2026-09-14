@@ -5415,7 +5415,12 @@ impl RoomCheckpointOperationalWitnessV3 {
                 self.operational_mmr_receipts
                     .get(*domain)
                     .is_none_or(|receipt| {
-                        receipt.domain() != *domain || receipt.accumulator().is_err()
+                        receipt.domain() != *domain
+                            || receipt.accumulator().is_err()
+                            || self
+                                .operational_history_roots
+                                .get(*domain)
+                                .is_none_or(|root| root.entry_count() != receipt.leaf_count())
                     })
             })
         {

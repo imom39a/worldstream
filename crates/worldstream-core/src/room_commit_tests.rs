@@ -214,6 +214,28 @@ fn v3_checkpoint_round_trips_authenticated_mmr_receipts_and_rejects_domain_subst
         .unwrap_or_else(|error| unreachable!("decode V3 witness: {error:?}"));
     assert_eq!(decoded.operational_mmr_receipts(), &mmr);
 
+    let mut one_leaf = OperationalMmrV1::new("frames")
+        .unwrap_or_else(|error| unreachable!("one-leaf MMR: {error:?}"));
+    one_leaf
+        .append(b"frame")
+        .unwrap_or_else(|error| unreachable!("append one leaf: {error:?}"));
+    let mut count_mismatch = mmr.clone();
+    count_mismatch.insert(
+        "frames".to_owned(),
+        OperationalMmrReceiptV1::from_accumulator(&one_leaf),
+    );
+    assert_eq!(
+        RoomCheckpointOperationalWitnessV3::new(
+            trace.head().clone(),
+            Vec::new(),
+            heads.clone(),
+            generations.clone(),
+            rolling.clone(),
+            count_mismatch,
+        ),
+        Err(RoomRecoveryErrorV1::Corrupt)
+    );
+
     let mut substituted = mmr;
     substituted.insert(
         "frames".to_owned(),
