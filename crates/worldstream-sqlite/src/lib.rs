@@ -34267,6 +34267,58 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_and_forced_full_replay_preserve_timer_delivery_and_receipt_materializations() {
+        let file = NamedTempFile::new().unwrap_or_else(|error| panic!("replay comparator DB: {error}"));
+        let store = SqliteRoomStore::open(file.path())
+            .unwrap_or_else(|error| panic!("open replay comparator SQLite: {error}"));
+        let (mut trace, witness) = committed_heist_trace(&store);
+        let timer = prepared_first_timer(&trace, witness, TIMER_TRANSITION);
+        assert!(matches!(
+            commit_existing_room(&store, &mut trace, timer).resolution(),
+            RoomCommitResolutionV1::TransitionCommitted { .. }
+        ));
+        let registry = builtin_agent_heist_registry()
+            .unwrap_or_else(|error| panic!("replay comparator registry: {error}"));
+        let checkpoint = store
+            .recover_room(&registry, &parsed(ROOM))
+            .unwrap_or_else(|error| panic!("checkpoint recovery: {error:?}"))
+            .unwrap_or_else(|| panic!("checkpoint Room present"));
+        let checkpoint_core = checkpoint.core_state().canonical_bytes()
+            .unwrap_or_else(|error| panic!("checkpoint Core bytes: {error}"));
+        let checkpoint_activity = checkpoint.activity_state().to_bytes()
+            .unwrap_or_else(|error| panic!("checkpoint Activity bytes: {error}"));
+        let connection = Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open replay comparator reader: {error}"));
+        let materializations: (i64, i64, i64, i64) = connection.query_row(
+            "SELECT (SELECT count(*) FROM timers WHERE room_id = ?1), \
+                    (SELECT count(*) FROM observation_frames WHERE room_id = ?1), \
+                    (SELECT count(*) FROM observation_consequences WHERE room_id = ?1), \
+                    (SELECT count(*) FROM semantic_receipts WHERE room_id = ?1)",
+            [ROOM], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).unwrap_or_else(|error| panic!("read replay materializations: {error}"));
+        assert!(materializations.0 > 0);
+        assert!(materializations.3 > 0);
+        connection.execute(
+            "UPDATE room_snapshot_operational_witnesses_v2 SET witness_hash = ?1 WHERE room_id = ?2",
+            params![[0_u8; 32].as_slice(), ROOM],
+        ).unwrap_or_else(|error| panic!("force full replay: {error}"));
+        let full = store.recover_room(&registry, &parsed(ROOM))
+            .unwrap_or_else(|error| panic!("full replay recovery: {error:?}"))
+            .unwrap_or_else(|| panic!("full replay Room present"));
+        assert_eq!(full.head(), checkpoint.head());
+        assert_eq!(full.core_state().canonical_bytes().unwrap_or_else(|error| panic!("full Core bytes: {error}")), checkpoint_core);
+        assert_eq!(full.activity_state().to_bytes().unwrap_or_else(|error| panic!("full Activity bytes: {error}")), checkpoint_activity);
+        let after: (i64, i64, i64, i64) = connection.query_row(
+            "SELECT (SELECT count(*) FROM timers WHERE room_id = ?1), \
+                    (SELECT count(*) FROM observation_frames WHERE room_id = ?1), \
+                    (SELECT count(*) FROM observation_consequences WHERE room_id = ?1), \
+                    (SELECT count(*) FROM semantic_receipts WHERE room_id = ?1)",
+            [ROOM], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).unwrap_or_else(|error| panic!("read full replay materializations: {error}"));
+        assert_eq!(after, materializations);
+    }
+
+    #[test]
     fn snapshot_failure_after_commit_does_not_change_canonical_result_or_recovery() {
         let file =
             NamedTempFile::new().unwrap_or_else(|error| panic!("snapshot failpoint DB: {error}"));
