@@ -12,7 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const DEPLOYMENT_REVISION_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 export const HOSTED_DEPLOYMENT_PREFLIGHT_SCHEMA =
-  "worldstream/hosted-deployment-preflight/v1";
+  "worldstream/hosted-deployment-preflight/v2";
 
 function exactRevision(value, label) {
   if (typeof value !== "string" || !DEPLOYMENT_REVISION_PATTERN.test(value)) {
@@ -46,6 +46,7 @@ export function validateHostedDeploymentBinding({
 export function hostedFirstDeploymentPlan({
   repositoryRoot,
   app,
+  clientOrigin,
   sourceRevision,
   rustBuilderImage,
   nodeRuntimeImage,
@@ -55,26 +56,36 @@ export function hostedFirstDeploymentPlan({
   if (typeof app !== "string" || !/^[a-z][a-z0-9-]{0,63}$/u.test(app)) {
     throw new Error("Fly app must be a lowercase DNS label");
   }
+  const origin = new URL(clientOrigin);
+  if (
+    origin.protocol !== "https:" ||
+    origin.username !== "" ||
+    origin.password !== "" ||
+    origin.pathname !== "/" ||
+    origin.search !== "" ||
+    origin.hash !== ""
+  ) {
+    throw new Error("hosted client origin must be an exact HTTPS origin");
+  }
   if (typeof rustBuilderImage !== "string" || !/@sha256:[0-9a-f]{64}$/u.test(rustBuilderImage)) {
     throw new Error("Rust builder image must be digest pinned");
   }
   if (typeof nodeRuntimeImage !== "string" || !/@sha256:[0-9a-f]{64}$/u.test(nodeRuntimeImage)) {
     throw new Error("Node runtime image must be digest pinned");
   }
-  const image = `worldstream-hosted:${revision}`;
   return Object.freeze({
     schema: HOSTED_DEPLOYMENT_PREFLIGHT_SCHEMA,
     source_revision: revision,
     dockerfile: `${root}/packaging/hosted/Dockerfile`,
-    build: Object.freeze([
-      "docker", "build", "--build-arg", `WORLDSTREAM_RUST_BUILDER_IMAGE=${rustBuilderImage}`,
-      "--build-arg", `WORLDSTREAM_NODE_RUNTIME_IMAGE=${nodeRuntimeImage}`,
-      "--build-arg", `SOURCE_REVISION=${revision}`,
-      "-f", `${root}/packaging/hosted/Dockerfile`, "-t", image, `${root}`,
-    ]),
     deploy: Object.freeze([
       "fly", "deploy", "-a", app, "-c", `${root}/packaging/hosted/fly.toml`,
-      "--image", image, "--env", `WORLDSTREAM_DEPLOYMENT_VERSION=${revision}`,
+      "--remote-only", "--ha=false",
+      "--build-arg", `WORLDSTREAM_RUST_BUILDER_IMAGE=${rustBuilderImage}`,
+      "--build-arg", `WORLDSTREAM_NODE_RUNTIME_IMAGE=${nodeRuntimeImage}`,
+      "--build-arg", `SOURCE_REVISION=${revision}`,
+      "--env", `WORLDSTREAM_DEPLOYMENT_VERSION=${revision}`,
+      "--env", `WORLDSTREAM_PUBLIC_AUTHORITY=${app}.fly.dev`,
+      "--env", `WORLDSTREAM_HOSTED_CLIENT_ORIGIN=${origin.origin}`,
     ]),
   });
 }
@@ -87,9 +98,9 @@ export function readCleanHostedSource(repositoryRoot) {
 }
 
 function main() {
-  const [command, app, rustBuilderImage, nodeRuntimeImage] = process.argv.slice(2);
-  if (command !== "plan" || app === undefined || rustBuilderImage === undefined || nodeRuntimeImage === undefined) {
-    throw new Error("usage: hosted-deploy-preflight.mjs plan <app> <rust-image@sha256:digest> <node-image@sha256:digest>");
+  const [command, app, clientOrigin, rustBuilderImage, nodeRuntimeImage] = process.argv.slice(2);
+  if (command !== "plan" || app === undefined || clientOrigin === undefined || rustBuilderImage === undefined || nodeRuntimeImage === undefined) {
+    throw new Error("usage: hosted-deploy-preflight.mjs plan <app> <https-client-origin> <rust-image@sha256:digest> <node-image@sha256:digest>");
   }
   const source = readCleanHostedSource(resolve(fileURLToPath(new URL("..", import.meta.url))));
   const binding = validateHostedDeploymentBinding({
@@ -101,6 +112,7 @@ function main() {
   const plan = hostedFirstDeploymentPlan({
     repositoryRoot: resolve(fileURLToPath(new URL("..", import.meta.url))),
     app,
+    clientOrigin,
     sourceRevision: binding.source_revision,
     rustBuilderImage,
     nodeRuntimeImage,

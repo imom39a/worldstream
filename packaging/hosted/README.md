@@ -53,11 +53,13 @@ existing secret, spending, maintenance, or data-preservation checks below.
    ```text
    REVISION=$(git rev-parse HEAD)
    node scripts/hosted-deploy-preflight.mjs plan <fly-app> \
+     <https-client-origin> \
      <rust-image@sha256:digest> <node-image@sha256:digest>
    ```
 
-   Review the JSON command plan, then use its exact `docker build` and `fly
-   deploy` arguments. A failed preflight is a release stop before image
+   Review the JSON command plan, then use its exact `fly deploy` arguments. The
+   plan performs a pinned remote Docker build from the repository root and
+   supplies all non-secret app-specific runtime bindings. A failed preflight is a release stop before image
    publication or Machine mutation.
 6. Deploy the source-built image with an exact clean Git revision, digest-pinned
    base-image build arguments, public Fly authority, and HTTPS Activity Client
@@ -97,19 +99,17 @@ fly config validate \
   -c packaging/hosted/fly.toml
 ```
 
-Build from the repository root:
+Deploy from the repository root:
 
 ```text
-docker build \
+fly deploy -a <fly-app> -c packaging/hosted/fly.toml \
+  --remote-only --ha=false \
   --build-arg WORLDSTREAM_RUST_BUILDER_IMAGE=<rust-image@sha256:digest> \
   --build-arg WORLDSTREAM_NODE_RUNTIME_IMAGE=<node-image@sha256:digest> \
   --build-arg SOURCE_REVISION=<clean-git-commit> \
-  -f packaging/hosted/Dockerfile \
-  -t worldstream-hosted:<clean-git-commit> .
-
-fly deploy -a <fly-app> -c packaging/hosted/fly.toml \
-  --image worldstream-hosted:<clean-git-commit> \
-  --env WORLDSTREAM_DEPLOYMENT_VERSION=<clean-git-commit>
+  --env WORLDSTREAM_DEPLOYMENT_VERSION=<clean-git-commit> \
+  --env WORLDSTREAM_PUBLIC_AUTHORITY=<fly-app>.fly.dev \
+  --env WORLDSTREAM_HOSTED_CLIENT_ORIGIN=<https-client-origin>
 ```
 
 ## Bounded Controller catalog overlay
