@@ -172,6 +172,67 @@ fn counter_trace() -> CoreTraceV1 {
         .unwrap_or_else(|error| unreachable!("fixture Counter trace: {error}"))
 }
 
+#[test]
+fn v3_checkpoint_round_trips_authenticated_mmr_receipts_and_rejects_domain_substitution() {
+    let trace = counter_trace();
+    let member_id = parsed::<MemberId>(MEMBER);
+    let heads = BTreeMap::from([(member_id, 0)]);
+    let generations = BTreeMap::from([(MEMBER.to_owned(), 1)]);
+    let rolling = ["frames", "consequences", "activation_decisions"]
+        .into_iter()
+        .map(|domain| {
+            (
+                domain.to_owned(),
+                OperationalHistoryRootV2::new(domain, 0, Blake3DigestV1::from_bytes([0_u8; 32]))
+                    .unwrap_or_else(|error| unreachable!("fixture rolling root: {error:?}")),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mmr = ["frames", "consequences", "activation_decisions"]
+        .into_iter()
+        .map(|domain| {
+            (
+                domain.to_owned(),
+                OperationalMmrReceiptV1::empty(domain)
+                    .unwrap_or_else(|error| unreachable!("fixture MMR: {error:?}")),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let witness = RoomCheckpointOperationalWitnessV3::new(
+        trace.head().clone(),
+        Vec::new(),
+        heads.clone(),
+        generations.clone(),
+        rolling.clone(),
+        mmr.clone(),
+    )
+    .unwrap_or_else(|error| unreachable!("fixture V3 witness: {error:?}"));
+    let bytes = witness
+        .canonical_bytes()
+        .unwrap_or_else(|error| unreachable!("encode V3 witness: {error:?}"));
+    let decoded = RoomCheckpointOperationalWitnessV3::from_canonical_bytes(&bytes, trace.head())
+        .unwrap_or_else(|error| unreachable!("decode V3 witness: {error:?}"));
+    assert_eq!(decoded.operational_mmr_receipts(), &mmr);
+
+    let mut substituted = mmr;
+    substituted.insert(
+        "frames".to_owned(),
+        OperationalMmrReceiptV1::empty("consequences")
+            .unwrap_or_else(|error| unreachable!("substituted MMR: {error:?}")),
+    );
+    assert_eq!(
+        RoomCheckpointOperationalWitnessV3::new(
+            trace.head().clone(),
+            Vec::new(),
+            heads,
+            generations,
+            rolling,
+            substituted,
+        ),
+        Err(RoomRecoveryErrorV1::Corrupt)
+    );
+}
+
 fn contention_trace(participant_count: usize) -> CoreTraceV1 {
     assert!((1..=CONTENTION_MEMBERS.len()).contains(&participant_count));
     let registry = builtin_counter_registry()
@@ -934,10 +995,8 @@ fn production_action_admission_matrix_preserves_exact_basis_fence() {
             let mut trace = contention_trace(CONTENTION_MEMBERS.len());
             let observed_head = trace.head().room_seq();
             let target_offset = u64::try_from(target_index).unwrap_or(0);
-            let updater_index = (target_index
-                + usize::try_from(round).unwrap_or(0)
-                + 1)
-                % CONTENTION_MEMBERS.len();
+            let updater_index =
+                (target_index + usize::try_from(round).unwrap_or(0) + 1) % CONTENTION_MEMBERS.len();
             trace
                 .advance(counter_private_ack_stimulus(
                     &trace,
@@ -957,18 +1016,14 @@ fn production_action_admission_matrix_preserves_exact_basis_fence() {
             );
             assert_eq!(
                 trace
-                    .assess_stable_action_disposition(
-                        &stale,
-                        &parsed("2026-08-15T12:00:03Z"),
-                    )
+                    .assess_stable_action_disposition(&stale, &parsed("2026-08-15T12:00:03Z"),)
                     .unwrap_or_else(|error| unreachable!("fairness stale admission: {error}"))
                     .map(|value| value.code),
                 Some("stale_room_state")
             );
             fairness_stale[target_index] += 1;
 
-            let accepted_action_id =
-                contention_action_id(11_000_000 + round * 100 + target_offset);
+            let accepted_action_id = contention_action_id(11_000_000 + round * 100 + target_offset);
             let refreshed = ParticipantActionRequestV1::new(
                 parsed(ROOM),
                 parsed(target_member),
@@ -979,10 +1034,7 @@ fn production_action_admission_matrix_preserves_exact_basis_fence() {
             );
             assert!(
                 trace
-                    .assess_stable_action_disposition(
-                        &refreshed,
-                        &parsed("2026-08-15T12:00:04Z"),
-                    )
+                    .assess_stable_action_disposition(&refreshed, &parsed("2026-08-15T12:00:04Z"),)
                     .unwrap_or_else(|error| unreachable!("fairness refreshed admission: {error}"))
                     .is_none()
             );
