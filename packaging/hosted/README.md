@@ -33,6 +33,30 @@ backup contract derives that exact path from the Runtime directory.
 - Use the same service authority in the Fly secret and the server-side platform
   BFF secret. Never expose it to browser code.
 
+## Cost and Machine sizing
+
+Keep the hosted preview on the smallest shared-CPU Machine that can run the
+current application reliably. `packaging/hosted/fly.toml` records the normal
+CPU and memory baseline; verify the live Machine too, because a manual resize
+can leave it larger than the committed configuration.
+
+The 2026-09-13 live resize found repeated server-start failures with one shared
+CPU at 1 GB RAM. Two shared CPUs at the same memory passed startup and sustained
+readiness checks. Recheck that startup failure before reducing CPU further.
+
+Temporary increases in CPU or RAM are allowed when needed for testing. Record
+the original size and the reason for the increase. Before finishing the testing
+task, restore the baseline or a smaller validated shared size, and verify the
+live CPU kind, CPU count, memory, and readiness. If the baseline cannot support
+the application, use the smallest working shared size and report the measured
+reason, remaining size, and estimated monthly cost. Keep the baseline config
+aligned with that decision. A temporary testing increase is not a permanent
+production sizing change.
+
+Preserve the existing single authority, persistent volume, and disabled
+automatic stopping when reducing cost. Use the maintenance procedure below
+for a planned resize that restarts the Machine.
+
 ## First deployment
 
 For this hobby MVP, build, test, and publish from the local operator checkout.

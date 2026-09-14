@@ -4,6 +4,10 @@
 /.worldstream/
 /.worldstream.backup-*/
 /node_modules/
+**/.worldstream/
+**/node_modules/
+/.scratch/
+/.imo-*.json
 /clients/*/node_modules/
 /clients/*/dist/
 /web/console/node_modules/

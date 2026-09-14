@@ -1,0 +1,1177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Community Hanoi — WorldStream state prototype</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #f7f2e7;
+      --muted: #a9a59c;
+      --panel: #15191f;
+      --panel-2: #0f1318;
+      --line: #303741;
+      --orange: #ff7657;
+      --gold: #ffc857;
+      --blue: #69b9ff;
+      --green: #72e0a1;
+      --red: #ff6d7a;
+      --shadow: rgba(0, 0, 0, 0.38);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { background: #090c10; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 12% 0%, rgba(255, 118, 87, 0.13), transparent 29rem),
+        radial-gradient(circle at 90% 15%, rgba(105, 185, 255, 0.1), transparent 27rem),
+        #090c10;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    button, select { font: inherit; }
+
+    button:focus-visible, select:focus-visible, summary:focus-visible {
+      outline: 3px solid var(--blue);
+      outline-offset: 3px;
+    }
+
+    .shell {
+      width: min(1480px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 26px 0 48px;
+    }
+
+    .eyebrow, .label, .chip, .tab, .mini-title, th {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    header {
+      display: flex;
+      gap: 24px;
+      align-items: flex-end;
+      justify-content: space-between;
+      margin-bottom: 22px;
+    }
+
+    h1 {
+      margin: 4px 0 0;
+      max-width: 900px;
+      font-size: clamp(2.3rem, 6vw, 5.8rem);
+      line-height: 0.9;
+      letter-spacing: -0.065em;
+      font-weight: 780;
+    }
+
+    .eyebrow { color: var(--orange); font-size: 0.74rem; }
+    .subtitle { max-width: 530px; margin: 12px 0 0; color: var(--muted); line-height: 1.55; }
+
+    .prototype-tag {
+      flex: 0 0 auto;
+      border: 1px solid var(--orange);
+      color: var(--orange);
+      padding: 10px 13px;
+      font: 700 0.7rem ui-monospace, SFMono-Regular, Menlo, monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      transform: rotate(1deg);
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 1px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--line);
+      box-shadow: 0 18px 50px var(--shadow);
+    }
+
+    .metric { padding: 15px 17px; background: rgba(21, 25, 31, 0.96); }
+    .metric .label { color: var(--muted); font-size: 0.62rem; }
+    .metric strong { display: block; margin-top: 7px; font-size: clamp(1.2rem, 2.6vw, 2rem); letter-spacing: -0.045em; }
+    .metric small { display: block; color: var(--muted); margin-top: 3px; font-size: 0.72rem; }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1.75fr) minmax(330px, 0.72fr);
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(21, 25, 31, 0.92);
+      box-shadow: 0 20px 55px var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: center;
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(9, 12, 16, 0.55);
+    }
+
+    .panel-title { margin: 0; font-size: 0.78rem; letter-spacing: 0.02em; }
+    .chip { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 0.63rem; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px rgba(114, 224, 161, 0.1); }
+
+    .canvas-wrap { position: relative; min-height: 470px; background: #0c1015; }
+    canvas { display: block; width: 100%; height: 470px; }
+
+    .canvas-overlay {
+      position: absolute;
+      left: 17px;
+      right: 17px;
+      top: 15px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      pointer-events: none;
+    }
+
+    .room-badge {
+      max-width: 340px;
+      padding: 10px 12px;
+      border: 1px solid rgba(247, 242, 231, 0.16);
+      background: rgba(9, 12, 16, 0.76);
+      backdrop-filter: blur(10px);
+      border-radius: 10px;
+    }
+
+    .room-badge strong { display: block; font-size: 0.78rem; }
+    .room-badge span { display: block; color: var(--muted); font-size: 0.7rem; margin-top: 4px; line-height: 1.35; }
+
+    .progress-track { height: 7px; background: #272d35; }
+    .progress-fill { height: 100%; width: 0; background: linear-gradient(90deg, var(--orange), var(--gold)); transition: width 180ms ease; }
+
+    .ownership {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      background: var(--line);
+      border-top: 1px solid var(--line);
+    }
+
+    .owner { min-height: 90px; padding: 13px 15px; background: var(--panel); }
+    .owner strong { display: block; margin-bottom: 6px; font-size: 0.76rem; }
+    .owner p { margin: 0; color: var(--muted); font-size: 0.72rem; line-height: 1.45; }
+    .owner.pack strong { color: var(--gold); }
+    .owner.runtime strong { color: var(--blue); }
+    .owner.gateway strong { color: var(--orange); }
+    .owner.runner strong { color: var(--green); }
+
+    .rail { display: grid; align-content: start; gap: 16px; }
+    .rail-body { padding: 15px; }
+
+    .round-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+    .round-number { margin: 0; font-size: 1.7rem; letter-spacing: -0.04em; }
+    .margin-badge { padding: 7px 9px; border-radius: 8px; background: rgba(255, 200, 87, 0.12); color: var(--gold); font: 700 0.69rem ui-monospace, monospace; }
+
+    .vote-list { display: grid; gap: 8px; margin: 15px 0; }
+    .vote-row { display: grid; grid-template-columns: 43px 1fr 26px; gap: 9px; align-items: center; font-size: 0.73rem; }
+    .vote-bar { height: 7px; border-radius: 99px; background: #292f37; overflow: hidden; }
+    .vote-bar i { display: block; height: 100%; min-width: 0; background: var(--blue); transition: width 150ms ease; }
+    .vote-row.leader .vote-bar i { background: var(--gold); }
+    .vote-row.leader { color: var(--gold); }
+
+    .receipt {
+      min-height: 64px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 11px;
+      background: var(--panel-2);
+      color: var(--muted);
+      font: 0.71rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .receipt.accepted { border-color: rgba(114, 224, 161, 0.38); color: var(--green); }
+    .receipt.stale, .receipt.rejected { border-color: rgba(255, 109, 122, 0.38); color: var(--red); }
+
+    .queue-line { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 12px; }
+    .queue-line strong { font-size: 1.25rem; }
+    .queue-line span { color: var(--muted); font-size: 0.72rem; }
+
+    select {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      color: var(--ink);
+      background: #0c1015;
+    }
+
+    .tradeoff { margin: 11px 0 0; color: var(--muted); font-size: 0.72rem; line-height: 1.5; }
+    .tradeoff b { color: var(--ink); }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 9px;
+      margin-top: 13px;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      padding: 10px 11px;
+      color: var(--ink);
+      background: #1c222a;
+      cursor: pointer;
+      transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+    }
+
+    button:hover { transform: translateY(-1px); border-color: #596370; background: #232a33; }
+    button.primary { border-color: var(--orange); background: var(--orange); color: #111317; font-weight: 750; }
+    button.good { border-color: rgba(114, 224, 161, 0.55); color: var(--green); }
+    button.bad { border-color: rgba(255, 109, 122, 0.5); color: var(--red); }
+    button.wide { grid-column: 1 / -1; }
+
+    .lower {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .tabs { display: flex; overflow-x: auto; border-bottom: 1px solid var(--line); }
+    .tab { flex: 1 0 auto; border: 0; border-right: 1px solid var(--line); border-radius: 0; padding: 13px 14px; color: var(--muted); background: transparent; font-size: 0.66rem; }
+    .tab:last-child { border-right: 0; }
+    .tab[aria-selected="true"] { color: var(--ink); background: #20262e; box-shadow: inset 0 -2px var(--orange); }
+
+    .walkthrough { padding: 18px; min-height: 260px; }
+    .walkthrough h2 { margin: 0 0 8px; font-size: 1.45rem; letter-spacing: -0.035em; }
+    .walkthrough p { color: var(--muted); line-height: 1.6; font-size: 0.86rem; }
+    .step-box { margin-top: 14px; padding: 13px; border-left: 3px solid var(--blue); background: rgba(105, 185, 255, 0.07); }
+    .step-box strong { display: block; font-size: 0.77rem; margin-bottom: 5px; }
+    .step-box span { color: var(--muted); font-size: 0.77rem; line-height: 1.45; }
+    .guide-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 16px; }
+
+    details { border-top: 1px solid var(--line); }
+    summary { cursor: pointer; padding: 13px 16px; color: var(--muted); font: 0.68rem ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.07em; }
+    pre {
+      max-height: 520px;
+      margin: 0;
+      padding: 16px;
+      overflow: auto;
+      background: #090c10;
+      color: #ccd7e3;
+      font: 0.7rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      tab-size: 2;
+    }
+
+    .event-list { display: grid; gap: 1px; background: var(--line); }
+    .event { display: grid; grid-template-columns: 72px 1fr; gap: 11px; padding: 11px 14px; background: var(--panel); font-size: 0.72rem; }
+    .event time { color: var(--muted); font-family: ui-monospace, monospace; }
+    .event span { color: #d9d6cf; line-height: 1.4; }
+
+    .footnote { margin: 16px 2px 0; color: #777d85; font-size: 0.7rem; line-height: 1.55; }
+
+    @media (max-width: 1050px) {
+      .metric-grid { grid-template-columns: repeat(3, 1fr); }
+      .workspace, .lower { grid-template-columns: 1fr; }
+      .rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 680px) {
+      .shell { width: min(100% - 18px, 1480px); padding-top: 16px; }
+      header { align-items: flex-start; flex-direction: column; }
+      .metric-grid { grid-template-columns: repeat(2, 1fr); }
+      .rail { grid-template-columns: 1fr; }
+      .ownership { grid-template-columns: repeat(2, 1fr); }
+      .canvas-wrap, canvas { min-height: 390px; height: 390px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <div class="eyebrow">WorldStream system study · Room hanoi-day-01</div>
+        <h1>Community Hanoi</h1>
+        <p class="subtitle">A one-day Room where up to 100 external agent controllers vote on one tiny, checkable move at a time. Spectators see the same bounded public state.</p>
+      </div>
+      <div class="prototype-tag">Prototype · in memory only</div>
+    </header>
+
+    <section class="metric-grid" aria-label="Room metrics">
+      <div class="metric"><span class="label">Room sequence</span><strong id="roomSeq">0</strong><small>accepted Transitions</small></div>
+      <div class="metric"><span class="label">Puzzle move</span><strong id="moveMetric">0 / 32,767</strong><small id="progressMetric">0.000% complete</small></div>
+      <div class="metric"><span class="label">Connected</span><strong id="connectedMetric">0 / 100</strong><small>guest controllers</small></div>
+      <div class="metric"><span class="label">Waiting</span><strong id="waitingMetric">0</strong><small>gateway queue</small></div>
+      <div class="metric"><span class="label">Day clock</span><strong id="clockMetric">23:59:59</strong><small>Room semantic deadline</small></div>
+    </section>
+
+    <section class="workspace">
+      <article class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">Public Projection · live board</h2>
+          <div class="chip"><span class="dot"></span><span id="phaseChip">running</span></div>
+        </div>
+        <div class="canvas-wrap">
+          <canvas id="board" width="1000" height="470" aria-label="Tower of Hanoi board"></canvas>
+          <div class="canvas-overlay">
+            <div class="room-badge"><strong id="boardTitle">15 disks · goal A → C</strong><span id="boardNote">The canvas renders current Pack state, never a locally reconstructed Replay.</span></div>
+            <div class="room-badge"><strong id="grantTitle">Grant: waiting</strong><span id="grantNote">The gateway serializes current-head submissions.</span></div>
+          </div>
+        </div>
+        <div class="progress-track" aria-hidden="true"><div class="progress-fill" id="progressFill"></div></div>
+        <div class="ownership" aria-label="System ownership">
+          <div class="owner pack"><strong>PACK</strong><p>Board, legal moves, vote margin, deadline, Outcome.</p></div>
+          <div class="owner runtime"><strong>WORLDSTREAM</strong><p>Membership, Head basis, receipts, order, views, Replay.</p></div>
+          <div class="owner gateway"><strong>GATEWAY</strong><p>Queue, 100 connections, short leases, sequential grants.</p></div>
+          <div class="owner runner"><strong>RUNNER</strong><p>Model call, bounded prompt, private memory, proposal.</p></div>
+        </div>
+      </article>
+
+      <aside class="rail">
+        <section class="panel">
+          <div class="panel-head"><h2 class="panel-title">Current voting round</h2><span class="chip" id="roundStatus">open</span></div>
+          <div class="rail-body">
+            <div class="round-top">
+              <div><span class="label">Round</span><p class="round-number" id="roundNumber">1</p></div>
+              <div class="margin-badge" id="marginBadge">margin 0 / 3</div>
+            </div>
+            <div class="vote-list" id="voteList"></div>
+            <div class="receipt" id="receipt">No Action submitted. The next controller receives a bounded current Projection and exact Action Offer.</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><h2 class="panel-title">Agent gate</h2><span class="chip">operational state</span></div>
+          <div class="rail-body">
+            <div class="queue-line"><span>Current grant</span><strong id="currentGrant">none</strong></div>
+            <label class="label" for="identityModel">Identity model</label>
+            <select id="identityModel">
+              <option value="fixed_slots">100 fixed solver Memberships</option>
+              <option value="guest_memberships">one Membership per guest</option>
+            </select>
+            <p class="tradeoff" id="tradeoff"></p>
+            <div class="controls">
+              <button class="good" id="correctVote">Correct vote</button>
+              <button class="bad" id="wrongVote">Wrong vote</button>
+              <button id="resolveRound">Resolve one round</button>
+              <button id="runHundred">Run 100 moves</button>
+              <button id="addGuest">Queue a guest</button>
+              <button id="disconnect">Drop grantee</button>
+              <button class="wide" id="fillRoom">Fill 100 + queue 25</button>
+              <button class="wide" id="reset">Reset prototype</button>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </section>
+
+    <section class="lower">
+      <article class="panel">
+        <div class="tabs" role="tablist" aria-label="Guided prototype scenarios">
+          <button class="tab" role="tab" aria-selected="true" data-scenario="late_join">Late join</button>
+          <button class="tab" role="tab" aria-selected="false" data-scenario="contention">100-way race</button>
+          <button class="tab" role="tab" aria-selected="false" data-scenario="failover">Lease failover</button>
+          <button class="tab" role="tab" aria-selected="false" data-scenario="scale">100K scale</button>
+        </div>
+        <div class="walkthrough">
+          <div class="mini-title" id="guideKicker">Question 01 · context</div>
+          <h2 id="guideTitle">Can an agent join after 100,000 turns?</h2>
+          <p id="guideCopy"></p>
+          <div class="step-box"><strong id="stepTitle">Step 1</strong><span id="stepCopy"></span></div>
+          <div class="guide-actions">
+            <button class="primary" id="loadScenario">Load scenario</button>
+            <button id="nextScenarioStep">Run next step</button>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-head"><h2 class="panel-title">Recent system facts</h2><span class="chip">bounded window</span></div>
+        <div class="event-list" id="eventList"></div>
+        <details>
+          <summary>Inspect complete prototype state</summary>
+          <pre id="stateJson"></pre>
+        </details>
+      </article>
+    </section>
+
+    <p class="footnote">This file is a throwaway interaction and state-model prototype. It does not call WorldStream, create Memberships, persist canonical history, invoke models, or publish a site. MAKER's voting idea is represented as a first-to-ahead margin of three; the Pack's deterministic Hanoi validator remains the source of puzzle correctness.</p>
+  </main>
+
+  <script>
+    const PEGS = ["A", "B", "C"];
+    const CANDIDATES = ["A>B", "A>C", "B>A", "B>C", "C>A", "C>B"];
+    const DISK_COUNT = 15;
+    const OPTIMAL_MOVES = (2 ** DISK_COUNT) - 1;
+    const CAPACITY = 100;
+    const MARGIN = 3;
+    const RECENT_LIMIT = 7;
+
+    const el = (id) => document.getElementById(id);
+    const pad = (n, width = 3) => String(n).padStart(width, "0");
+    const nowStamp = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const formatNumber = (n) => n.toLocaleString("en-US");
+
+    function emptyCounts() {
+      return Object.fromEntries(CANDIDATES.map((candidate) => [candidate, 0]));
+    }
+
+    function initialPegs() {
+      return { A: Array.from({ length: DISK_COUNT }, (_, i) => DISK_COUNT - i), B: [], C: [] };
+    }
+
+    function fixedSlots() {
+      return Array.from({ length: CAPACITY }, (_, i) => ({
+        membership_id: `solver-${pad(i + 1)}`,
+        controller: null,
+        lease: null
+      }));
+    }
+
+    function createState(identityModel = "fixed_slots") {
+      const deadline = Date.now() + (24 * 60 * 60 * 1000);
+      return {
+        worldstream: {
+          room_id: "hanoi-day-01",
+          room_seq: 0,
+          head_digest: "demo:seq-0",
+          retained_memberships: identityModel === "fixed_slots" ? CAPACITY + 1 : 1,
+          departed_memberships: 0,
+          public_relay_memberships: 1,
+          last_receipt: null,
+          recovery_note: "Prototype only; canonical recovery is not simulated."
+        },
+        pack: {
+          phase: "running",
+          disk_count: DISK_COUNT,
+          pegs: initialPegs(),
+          move_number: 0,
+          optimal_moves: OPTIMAL_MOVES,
+          round: {
+            round_id: 1,
+            basis_room_seq: 0,
+            proposal_counts: emptyCounts(),
+            voted_member_ids: [],
+            leader: null,
+            runner_up_count: 0,
+            margin_required: MARGIN,
+            status: "open"
+          },
+          recent_commits: [],
+          successful_rounds: 0,
+          failed_rounds: 0,
+          deadline_at: new Date(deadline).toISOString(),
+          outcome: null
+        },
+        gateway: {
+          identity_model: identityModel,
+          connection_capacity: CAPACITY,
+          slots: fixedSlots(),
+          guest_memberships: [],
+          queue: [],
+          next_guest_number: 1,
+          grant_cursor: -1,
+          current_grant: null,
+          lease_seconds: 30,
+          serialized_grants: true
+        },
+        runner: {
+          current_controller: null,
+          current_membership: null,
+          context_strategy: "replace current Projection; never append full Replay",
+          last_projection_bytes: 0,
+          last_projection_kind: null
+        },
+        prototype: {
+          deadline_ms: deadline,
+          events: [],
+          active_scenario: "late_join",
+          scenario_step: 0,
+          last_experiment: null
+        }
+      };
+    }
+
+    let state = createState();
+
+    const guides = {
+      late_join: {
+        kicker: "Question 01 · context",
+        title: "Can an agent join after 100,000 turns?",
+        copy: "Yes. Load a Room already at sequence 100,000. The new controller receives one complete current Projection Reset: board, open round, its stable solver Membership, and one propose_move Action Offer. Canonical history remains available for Replay, but it is absent from the model prompt.",
+        steps: [
+          ["Load the mature Room", "The prototype advances the deterministic board to move 23,784, sets the Room sequence to 100,000, and creates a queue."],
+          ["Admit the late controller", "The gateway leases an available solver Membership and returns a Projection Reset of only the current authorized state."],
+          ["Submit from current state", "The late controller votes against the current Head. It needs no earlier move or conversation transcript."]
+        ]
+      },
+      contention: {
+        kicker: "Question 02 · ordering",
+        title: "What happens if 100 agents act on one Head?",
+        copy: "WorldStream Actions carry a whole-Head basis. If 100 controllers submit concurrently from the same Head, only one can advance it; the other 99 become stale. The gateway therefore serializes short action grants while every controller can remain connected and observe.",
+        steps: [
+          ["Fill all 100 controller slots", "Every controller reads the same current Projection and prepares a proposal based on the same Room sequence."],
+          ["Release the race", "The first Action is accepted. Ninety-nine simulated submissions retain the old basis and receive stale receipts."],
+          ["Enable serialized grants", "Round-robin grants let each accepted vote use the latest Head, preserving the existing admission contract."]
+        ]
+      },
+      failover: {
+        kicker: "Question 03 · continuity",
+        title: "Can a queued agent replace a disconnected controller?",
+        copy: "The fixed-slot design rotates controller leases without changing canonical Memberships. The one-Membership-per-guest design gives exact attribution but retains a Departed Membership on each turnover, increasing Core state and write amplification.",
+        steps: [
+          ["Fill capacity and queue 25", "The gateway owns waiting order. Queue position is operational data and never enters Activity State."],
+          ["Disconnect the current grantee", "Its lease is fenced. The Pack sees no puzzle Transition because connection state is not puzzle truth."],
+          ["Promote the next guest", "The guest receives a new lease and Projection Reset. Watch retained Memberships under each identity model."]
+        ]
+      },
+      scale: {
+        kicker: "Question 04 · qualification",
+        title: "Why test 15 disks and margin three?",
+        copy: "Fifteen disks require 32,767 committed moves. Three accepted votes per move produce at least 98,301 accepted Actions; normal overhead carries the Room beyond 100,000 Transitions. This preserves MAKER's tiny checked-step pattern at a one-day community scale.",
+        steps: [
+          ["Start with bounded state", "The Pack holds the board and only one open round. Recent commits are a small window; the full trace lives in Canonical History."],
+          ["Run 100 puzzle moves", "The simulation applies three sequential correct votes to every move, creating 300 accepted vote Transitions."],
+          ["Inspect the invariant", "Activity State size remains roughly stable as Room sequence grows because old votes and commits are retired from the current view."]
+        ]
+      }
+    };
+
+    function addEvent(message) {
+      state.prototype.events.unshift({ at: nowStamp(), message });
+      state.prototype.events = state.prototype.events.slice(0, RECENT_LIMIT);
+    }
+
+    function activeEntries() {
+      if (state.gateway.identity_model === "fixed_slots") {
+        return state.gateway.slots.filter((slot) => slot.controller).map((slot) => ({
+          controller: slot.controller,
+          membership_id: slot.membership_id,
+          ref: slot
+        }));
+      }
+      return state.gateway.guest_memberships.filter((entry) => entry.connected).map((entry) => ({
+        controller: entry.controller,
+        membership_id: entry.membership_id,
+        ref: entry
+      }));
+    }
+
+    function addControllers(count) {
+      const available = Math.max(0, CAPACITY - activeEntries().length);
+      const admitted = Math.min(count, available);
+      for (let i = 0; i < admitted; i += 1) {
+        const guest = `guest-${pad(state.gateway.next_guest_number++)}`;
+        if (state.gateway.identity_model === "fixed_slots") {
+          const slot = state.gateway.slots.find((candidate) => !candidate.controller);
+          slot.controller = guest;
+          slot.lease = `lease:${guest}:${slot.membership_id}`;
+        } else {
+          const membership = {
+            controller: guest,
+            membership_id: `member-${guest}`,
+            connected: true,
+            standing: "enabled",
+            lease: `lease:${guest}:member`
+          };
+          state.gateway.guest_memberships.push(membership);
+          state.worldstream.retained_memberships += 1;
+        }
+      }
+      for (let i = admitted; i < count; i += 1) {
+        state.gateway.queue.push(`guest-${pad(state.gateway.next_guest_number++)}`);
+      }
+      if (admitted || count > admitted) addEvent(`Gateway admitted ${admitted}; queued ${count - admitted}.`);
+      ensureGrant();
+    }
+
+    function promoteQueued() {
+      if (!state.gateway.queue.length || activeEntries().length >= CAPACITY) return null;
+      const guest = state.gateway.queue.shift();
+      if (state.gateway.identity_model === "fixed_slots") {
+        const slot = state.gateway.slots.find((candidate) => !candidate.controller);
+        slot.controller = guest;
+        slot.lease = `lease:${guest}:${slot.membership_id}`;
+      } else {
+        state.gateway.guest_memberships.push({
+          controller: guest,
+          membership_id: `member-${guest}`,
+          connected: true,
+          standing: "enabled",
+          lease: `lease:${guest}:member`
+        });
+        state.worldstream.retained_memberships += 1;
+      }
+      addEvent(`Gateway promoted ${guest} from queue and issued a new lease.`);
+      return guest;
+    }
+
+    function ensureGrant() {
+      const active = activeEntries();
+      if (!active.length) {
+        state.gateway.current_grant = null;
+        state.runner.current_controller = null;
+        state.runner.current_membership = null;
+        return;
+      }
+      const alreadyVoted = new Set(state.pack.round.voted_member_ids);
+      let selected = null;
+      for (let offset = 1; offset <= active.length; offset += 1) {
+        const index = (state.gateway.grant_cursor + offset) % active.length;
+        if (!alreadyVoted.has(active[index].membership_id)) {
+          selected = { entry: active[index], index };
+          break;
+        }
+      }
+      if (!selected) return;
+      state.gateway.grant_cursor = selected.index;
+      state.gateway.current_grant = {
+        controller: selected.entry.controller,
+        membership_id: selected.entry.membership_id,
+        based_on_room_seq: state.worldstream.room_seq,
+        round_id: state.pack.round.round_id,
+        expires_in_seconds: state.gateway.lease_seconds
+      };
+      state.runner.current_controller = selected.entry.controller;
+      state.runner.current_membership = selected.entry.membership_id;
+      state.runner.last_projection_kind = "current Projection";
+      state.runner.last_projection_bytes = JSON.stringify(agentProjection(selected.entry)).length;
+    }
+
+    function trailingZeroes(value) {
+      let zeros = 0;
+      while (value % 2 === 0) { value /= 2; zeros += 1; }
+      return zeros;
+    }
+
+    function expectedMove() {
+      const step = state.pack.move_number + 1;
+      const disk = trailingZeroes(step) + 1;
+      const fromIndex = PEGS.findIndex((peg) => state.pack.pegs[peg].at(-1) === disk);
+      const direction = (DISK_COUNT % 2) === (disk % 2) ? -1 : 1;
+      const toIndex = (fromIndex + direction + 3) % 3;
+      return { from: PEGS[fromIndex], to: PEGS[toIndex], disk, key: `${PEGS[fromIndex]}>${PEGS[toIndex]}` };
+    }
+
+    function legalMoves() {
+      const moves = [];
+      for (const from of PEGS) {
+        const disk = state.pack.pegs[from].at(-1);
+        if (disk === undefined) continue;
+        for (const to of PEGS) {
+          if (from === to) continue;
+          const target = state.pack.pegs[to].at(-1);
+          if (target === undefined || target > disk) moves.push({ from, to, disk, key: `${from}>${to}` });
+        }
+      }
+      return moves;
+    }
+
+    function winningStats() {
+      const sorted = Object.entries(state.pack.round.proposal_counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      return {
+        leader: sorted[0][1] > 0 ? sorted[0][0] : null,
+        leaderCount: sorted[0][1],
+        runnerUpCount: sorted[1][1],
+        margin: sorted[0][1] - sorted[1][1]
+      };
+    }
+
+    function updateRoundStats() {
+      const stats = winningStats();
+      state.pack.round.leader = stats.leader;
+      state.pack.round.runner_up_count = stats.runnerUpCount;
+      return stats;
+    }
+
+    function advanceHead() {
+      state.worldstream.room_seq += 1;
+      state.worldstream.head_digest = `demo:seq-${state.worldstream.room_seq}`;
+    }
+
+    function openNextRound() {
+      state.pack.round = {
+        round_id: state.pack.round.round_id + 1,
+        basis_room_seq: state.worldstream.room_seq,
+        proposal_counts: emptyCounts(),
+        voted_member_ids: [],
+        leader: null,
+        runner_up_count: 0,
+        margin_required: MARGIN,
+        status: "open"
+      };
+    }
+
+    function applyWinningMove(move, votes) {
+      const disk = state.pack.pegs[move.from].pop();
+      state.pack.pegs[move.to].push(disk);
+      state.pack.move_number += 1;
+      state.pack.successful_rounds += 1;
+      state.pack.recent_commits.unshift({
+        move_number: state.pack.move_number,
+        move: move.key,
+        disk,
+        deciding_votes: votes,
+        at_room_seq: state.worldstream.room_seq
+      });
+      state.pack.recent_commits = state.pack.recent_commits.slice(0, 20);
+      addEvent(`Pack committed move ${formatNumber(state.pack.move_number)}: disk ${disk}, ${move.from} → ${move.to}.`);
+      if (state.pack.move_number === OPTIMAL_MOVES) {
+        state.pack.phase = "solved";
+        state.pack.round.status = "closed";
+        state.pack.outcome = {
+          result: "solved",
+          moves: state.pack.move_number,
+          accepted_vote_transitions: state.worldstream.room_seq,
+          failed_rounds: state.pack.failed_rounds
+        };
+      } else {
+        openNextRound();
+      }
+    }
+
+    function submitVote(kind = "correct", quiet = false) {
+      if (state.pack.phase !== "running") return;
+      ensureGrant();
+      const grant = state.gateway.current_grant;
+      if (!grant) {
+        state.worldstream.last_receipt = { status: "rejected", reason: "no admitted controller has a current action grant" };
+        if (!quiet) addEvent("Gateway could not issue a grant; no controller is admitted.");
+        render();
+        return;
+      }
+      if (grant.based_on_room_seq !== state.worldstream.room_seq || grant.round_id !== state.pack.round.round_id) {
+        state.worldstream.last_receipt = { status: "stale", based_on_room_seq: grant.based_on_room_seq, current_room_seq: state.worldstream.room_seq };
+        if (!quiet) addEvent(`${grant.controller} received a stale Action receipt.`);
+        ensureGrant();
+        render();
+        return;
+      }
+
+      const correct = expectedMove();
+      const alternatives = legalMoves().filter((move) => move.key !== correct.key);
+      const proposed = kind === "correct" || !alternatives.length ? correct : alternatives[0];
+      advanceHead();
+      state.pack.round.proposal_counts[proposed.key] += 1;
+      state.pack.round.voted_member_ids.push(grant.membership_id);
+      state.worldstream.last_receipt = {
+        status: "accepted",
+        action_type: "propose_move",
+        member_id: grant.membership_id,
+        controller_label: `${grant.controller} · external unverified`,
+        proposal: proposed.key,
+        committed_room_seq: state.worldstream.room_seq
+      };
+      if (!quiet) addEvent(`${grant.controller} voted ${proposed.from} → ${proposed.to}; Action accepted at seq ${formatNumber(state.worldstream.room_seq)}.`);
+
+      const stats = updateRoundStats();
+      if (stats.margin >= MARGIN) {
+        state.pack.round.status = "resolved";
+        if (stats.leader === correct.key) {
+          applyWinningMove(correct, stats.leaderCount);
+        } else {
+          state.pack.failed_rounds += 1;
+          addEvent(`Pack rejected winning candidate ${stats.leader}; deterministic expected move is ${correct.key}.`);
+          openNextRound();
+        }
+      }
+      state.gateway.current_grant = null;
+      ensureGrant();
+      render();
+    }
+
+    function resolveOneRound(quiet = false) {
+      if (activeEntries().length < MARGIN) addControllers(MARGIN - activeEntries().length);
+      const targetRound = state.pack.round.round_id;
+      let guard = 0;
+      while (state.pack.phase === "running" && state.pack.round.round_id === targetRound && guard < 12) {
+        submitVote("correct", true);
+        guard += 1;
+      }
+      if (!quiet) addEvent(`MAKER-style round resolved after ${guard} accepted proposal Actions.`);
+      render();
+    }
+
+    function runMoves(count) {
+      if (activeEntries().length < 8) addControllers(8 - activeEntries().length);
+      const start = state.pack.move_number;
+      for (let i = 0; i < count && state.pack.phase === "running"; i += 1) resolveOneRound(true);
+      addEvent(`Scale simulation committed ${formatNumber(state.pack.move_number - start)} moves with bounded current state.`);
+      render();
+    }
+
+    function disconnectCurrent() {
+      ensureGrant();
+      const grant = state.gateway.current_grant;
+      if (!grant) { addEvent("No granted controller to disconnect."); render(); return; }
+      if (state.gateway.identity_model === "fixed_slots") {
+        const slot = state.gateway.slots.find((candidate) => candidate.membership_id === grant.membership_id);
+        slot.controller = null;
+        slot.lease = null;
+        addEvent(`Gateway fenced ${grant.controller}; ${slot.membership_id} remains canonical.`);
+      } else {
+        const member = state.gateway.guest_memberships.find((candidate) => candidate.membership_id === grant.membership_id);
+        member.connected = false;
+        member.standing = "departed";
+        state.worldstream.departed_memberships += 1;
+        addEvent(`WorldStream retained ${member.membership_id} as Departed after ${grant.controller} left.`);
+      }
+      state.gateway.current_grant = null;
+      promoteQueued();
+      ensureGrant();
+      render();
+    }
+
+    function switchIdentityModel(model) {
+      const desiredActive = activeEntries().length;
+      const queued = [...state.gateway.queue];
+      state = createState(model);
+      addControllers(desiredActive);
+      state.gateway.queue.push(...queued.slice(0, 100));
+      state.prototype.active_scenario = "failover";
+      addEvent(`Prototype reset to ${model === "fixed_slots" ? "fixed solver slots" : "one Membership per guest"}.`);
+      render();
+    }
+
+    function setBoardAtMove(moveNumber) {
+      state.pack.pegs = initialPegs();
+      state.pack.move_number = 0;
+      for (let i = 0; i < moveNumber; i += 1) {
+        const move = expectedMove();
+        const disk = state.pack.pegs[move.from].pop();
+        state.pack.pegs[move.to].push(disk);
+        state.pack.move_number += 1;
+      }
+      state.pack.successful_rounds = moveNumber;
+      state.pack.round = {
+        round_id: moveNumber + 1,
+        basis_room_seq: state.worldstream.room_seq,
+        proposal_counts: emptyCounts(),
+        voted_member_ids: [],
+        leader: null,
+        runner_up_count: 0,
+        margin_required: MARGIN,
+        status: "open"
+      };
+    }
+
+    function loadScenario(name) {
+      const model = state.gateway.identity_model;
+      state = createState(model);
+      state.prototype.active_scenario = name;
+      state.prototype.scenario_step = 0;
+      if (name === "late_join") {
+        state.worldstream.room_seq = 100000;
+        state.worldstream.head_digest = "demo:seq-100000";
+        setBoardAtMove(23784);
+        addControllers(18);
+        state.gateway.queue.push(...Array.from({ length: 3 }, () => `guest-${pad(state.gateway.next_guest_number++)}`));
+        addEvent("Loaded a mature Room at sequence 100,000; no Replay placed in agent context.");
+      } else if (name === "contention") {
+        addControllers(CAPACITY);
+        addEvent("All 100 controllers captured Projection at Room sequence 0.");
+      } else if (name === "failover") {
+        addControllers(CAPACITY + 25);
+        addEvent("Capacity is full; 25 guests wait in gateway order.");
+      } else if (name === "scale") {
+        addControllers(12);
+        addEvent("15-disk scale run ready: 32,767 moves, margin three.");
+      }
+      ensureGrant();
+      render();
+    }
+
+    function runScenarioStep() {
+      const name = state.prototype.active_scenario;
+      const step = state.prototype.scenario_step;
+      if (name === "late_join") {
+        if (step === 0) {
+          state.runner.last_projection_kind = "Projection Reset";
+          ensureGrant();
+          state.runner.last_projection_bytes = JSON.stringify(agentProjection(activeEntries()[0])).length;
+          addEvent(`Late controller received a ${formatNumber(state.runner.last_projection_bytes)}-byte Projection Reset, not 100,000 Transitions.`);
+        } else if (step === 1) {
+          submitVote("correct", true);
+          addEvent("Late controller submitted immediately from current board and Action Offer.");
+        } else {
+          resolveOneRound(true);
+          addEvent("The round completed without loading historical moves into context.");
+        }
+      } else if (name === "contention") {
+        if (step === 0) {
+          const captured = state.worldstream.room_seq;
+          submitVote("correct", true);
+          state.prototype.last_experiment = {
+            name: "100-way same-Head race",
+            captured_basis: captured,
+            accepted: 1,
+            stale: 99,
+            finding: "serialize grants or change the admission primitive"
+          };
+          state.worldstream.last_receipt = { status: "stale", count: 99, reason: "based_on_room_seq no longer equals current Head" };
+          addEvent("Contention experiment: 1 accepted Action, 99 stale receipts.");
+        } else if (step === 1) {
+          state.gateway.serialized_grants = true;
+          state.prototype.last_experiment.finding = "gateway sequential grants enabled";
+          addEvent("Gateway now issues one current-head grant at a time.");
+        } else {
+          resolveOneRound(true);
+          addEvent("Sequential current-head votes resolved the round at margin three.");
+        }
+      } else if (name === "failover") {
+        if (step === 0) {
+          disconnectCurrent();
+        } else if (step === 1) {
+          state.runner.last_projection_kind = "Projection Reset";
+          ensureGrant();
+          addEvent("Promoted controller received a complete current Projection Reset.");
+        } else {
+          submitVote("correct", true);
+          addEvent("Replacement controller acted without inheriting private prompt history.");
+        }
+      } else if (name === "scale") {
+        if (step === 0) {
+          runMoves(100);
+        } else if (step === 1) {
+          state.worldstream.room_seq = Math.max(state.worldstream.room_seq, 100000);
+          state.worldstream.head_digest = `demo:seq-${state.worldstream.room_seq}`;
+          state.prototype.last_experiment = {
+            name: "100K transition projection check",
+            canonical_transitions: state.worldstream.room_seq,
+            projection_bytes: JSON.stringify(agentProjection(activeEntries()[0])).length,
+            replay_in_prompt: false
+          };
+          addEvent("Room sequence set to 100,000; current Projection remains bounded.");
+        } else {
+          resolveOneRound(true);
+          addEvent("One more three-vote move committed from the bounded state.");
+        }
+      }
+      state.prototype.scenario_step = (step + 1) % 3;
+      render();
+    }
+
+    function publicProjection() {
+      return {
+        room_head: { room_seq: state.worldstream.room_seq, digest: state.worldstream.head_digest },
+        activity: {
+          phase: state.pack.phase,
+          disk_count: state.pack.disk_count,
+          pegs: state.pack.pegs,
+          move_number: state.pack.move_number,
+          optimal_moves: state.pack.optimal_moves,
+          round: state.pack.round,
+          recent_commits: state.pack.recent_commits,
+          deadline_at: state.pack.deadline_at,
+          outcome: state.pack.outcome
+        },
+        action_offers: []
+      };
+    }
+
+    function agentProjection(entry) {
+      return {
+        room_head: { room_seq: state.worldstream.room_seq, digest: state.worldstream.head_digest },
+        self: entry ? { membership_id: entry.membership_id, role: "solver", standing: "enabled" } : null,
+        activity: {
+          phase: state.pack.phase,
+          pegs: state.pack.pegs,
+          move_number: state.pack.move_number,
+          goal: "move all 15 disks from A to C; never place a larger disk on a smaller disk",
+          round: state.pack.round
+        },
+        action_offers: state.pack.phase === "running" ? [{
+          action_type: "propose_move",
+          payload_schema: { round_id: "integer", from: "A | B | C", to: "A | B | C" }
+        }] : []
+      };
+    }
+
+    function stateForInspector() {
+      return {
+        worldstream: state.worldstream,
+        pack_activity_state: state.pack,
+        gateway_operational_state: {
+          identity_model: state.gateway.identity_model,
+          connection_capacity: state.gateway.connection_capacity,
+          active_count: activeEntries().length,
+          fixed_slots: state.gateway.identity_model === "fixed_slots" ? state.gateway.slots : undefined,
+          guest_memberships: state.gateway.identity_model === "guest_memberships" ? state.gateway.guest_memberships : undefined,
+          queue: state.gateway.queue,
+          current_grant: state.gateway.current_grant,
+          serialized_grants: state.gateway.serialized_grants
+        },
+        runner_ephemeral_state: state.runner,
+        authorized_public_projection: publicProjection(),
+        prototype_experiment: state.prototype.last_experiment
+      };
+    }
+
+    function drawBoard() {
+      const canvas = el("board");
+      const rect = canvas.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+      const ctx = canvas.getContext("2d");
+      ctx.scale(dpr, dpr);
+      const width = rect.width;
+      const height = rect.height;
+      ctx.clearRect(0, 0, width, height);
+
+      const grid = 34;
+      ctx.strokeStyle = "rgba(255,255,255,0.025)";
+      ctx.lineWidth = 1;
+      for (let x = 0; x < width; x += grid) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke(); }
+      for (let y = 0; y < height; y += grid) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); }
+
+      const baseY = height - 55;
+      const centers = [width * 0.19, width * 0.5, width * 0.81];
+      const maxDisk = Math.min(width * 0.265, 250);
+      const minDisk = Math.max(34, maxDisk * 0.22);
+      const diskHeight = Math.min(19, Math.max(12, (height - 155) / DISK_COUNT));
+
+      ctx.fillStyle = "#535d69";
+      ctx.fillRect(width * 0.06, baseY, width * 0.88, 7);
+      centers.forEach((center, index) => {
+        ctx.fillStyle = "#414a55";
+        ctx.fillRect(center - 3, 115, 6, baseY - 115);
+        ctx.fillStyle = "#9ea6af";
+        ctx.font = "700 12px ui-monospace, monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(PEGS[index], center, baseY + 29);
+      });
+
+      const colors = ["#ff7657", "#ff8c59", "#ffa65b", "#ffc857", "#e4d862", "#a9df79", "#72e0a1", "#5ad8bd", "#55cfda", "#69b9ff", "#779dfc", "#967ff1", "#b772df", "#d86ebf", "#ef7598"];
+      PEGS.forEach((peg, pegIndex) => {
+        state.pack.pegs[peg].forEach((disk, level) => {
+          const ratio = disk / DISK_COUNT;
+          const diskWidth = minDisk + ((maxDisk - minDisk) * ratio);
+          const x = centers[pegIndex] - diskWidth / 2;
+          const y = baseY - 4 - ((level + 1) * diskHeight);
+          ctx.fillStyle = colors[disk - 1];
+          ctx.beginPath();
+          ctx.roundRect(x, y, diskWidth, diskHeight - 2, 4);
+          ctx.fill();
+          if (diskHeight >= 16 && disk <= 9) {
+            ctx.fillStyle = "rgba(9,12,16,0.72)";
+            ctx.font = "700 9px ui-monospace, monospace";
+            ctx.textAlign = "center";
+            ctx.fillText(String(disk), centers[pegIndex], y + 11);
+          }
+        });
+      });
+    }
+
+    function renderVotes() {
+      const stats = updateRoundStats();
+      const max = Math.max(3, stats.leaderCount);
+      el("voteList").innerHTML = CANDIDATES.map((candidate) => {
+        const count = state.pack.round.proposal_counts[candidate];
+        const leaderClass = stats.leader === candidate ? " leader" : "";
+        return `<div class="vote-row${leaderClass}"><span>${candidate.replace(">", "→")}</span><span class="vote-bar"><i style="width:${(count / max) * 100}%"></i></span><b>${count}</b></div>`;
+      }).join("");
+      el("marginBadge").textContent = `margin ${stats.margin} / ${MARGIN}`;
+      el("roundNumber").textContent = formatNumber(state.pack.round.round_id);
+      el("roundStatus").textContent = state.pack.round.status;
+    }
+
+    function renderGuide() {
+      const guide = guides[state.prototype.active_scenario];
+      const step = guide.steps[state.prototype.scenario_step];
+      el("guideKicker").textContent = guide.kicker;
+      el("guideTitle").textContent = guide.title;
+      el("guideCopy").textContent = guide.copy;
+      el("stepTitle").textContent = `Step ${state.prototype.scenario_step + 1} · ${step[0]}`;
+      el("stepCopy").textContent = step[1];
+      document.querySelectorAll(".tab").forEach((tab) => tab.setAttribute("aria-selected", String(tab.dataset.scenario === state.prototype.active_scenario)));
+    }
+
+    function render() {
+      const active = activeEntries();
+      const progress = (state.pack.move_number / OPTIMAL_MOVES) * 100;
+      const remainingMs = Math.max(0, state.prototype.deadline_ms - Date.now());
+      const seconds = Math.floor(remainingMs / 1000);
+      const hh = pad(Math.floor(seconds / 3600), 2);
+      const mm = pad(Math.floor((seconds % 3600) / 60), 2);
+      const ss = pad(seconds % 60, 2);
+
+      el("roomSeq").textContent = formatNumber(state.worldstream.room_seq);
+      el("moveMetric").textContent = `${formatNumber(state.pack.move_number)} / ${formatNumber(OPTIMAL_MOVES)}`;
+      el("progressMetric").textContent = `${progress.toFixed(3)}% complete`;
+      el("connectedMetric").textContent = `${active.length} / ${CAPACITY}`;
+      el("waitingMetric").textContent = formatNumber(state.gateway.queue.length);
+      el("clockMetric").textContent = `${hh}:${mm}:${ss}`;
+      el("phaseChip").textContent = state.pack.phase;
+      el("progressFill").style.width = `${progress}%`;
+
+      const grant = state.gateway.current_grant;
+      el("currentGrant").textContent = grant ? grant.membership_id : "none";
+      el("grantTitle").textContent = grant ? `Grant: ${grant.membership_id}` : "Grant: waiting";
+      el("grantNote").textContent = grant ? `${grant.controller} · based on seq ${formatNumber(grant.based_on_room_seq)}` : "The gateway serializes current-head submissions.";
+
+      const receipt = state.worldstream.last_receipt;
+      el("receipt").className = `receipt${receipt ? ` ${receipt.status}` : ""}`;
+      el("receipt").textContent = receipt ? JSON.stringify(receipt, null, 2) : "No Action submitted. The next controller receives a bounded current Projection and exact Action Offer.";
+
+      const fixed = state.gateway.identity_model === "fixed_slots";
+      el("identityModel").value = state.gateway.identity_model;
+      el("tradeoff").innerHTML = fixed
+        ? `<b>${formatNumber(state.worldstream.retained_memberships)} retained Memberships.</b> Controller turnover stays bounded; canonical attribution stops at the solver slot.`
+        : `<b>${formatNumber(state.worldstream.retained_memberships)} retained Memberships.</b> Every guest is attributable; each departure remains in Core state.`;
+
+      el("eventList").innerHTML = state.prototype.events.length
+        ? state.prototype.events.map((event) => `<div class="event"><time>${event.at}</time><span>${event.message}</span></div>`).join("")
+        : `<div class="event"><time>—</time><span>Use free-play controls or load a guided scenario.</span></div>`;
+      el("stateJson").textContent = JSON.stringify(stateForInspector(), null, 2);
+      renderVotes();
+      renderGuide();
+      drawBoard();
+    }
+
+    document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
+      state.prototype.active_scenario = tab.dataset.scenario;
+      state.prototype.scenario_step = 0;
+      renderGuide();
+    }));
+    el("loadScenario").addEventListener("click", () => loadScenario(state.prototype.active_scenario));
+    el("nextScenarioStep").addEventListener("click", runScenarioStep);
+    el("correctVote").addEventListener("click", () => submitVote("correct"));
+    el("wrongVote").addEventListener("click", () => submitVote("wrong"));
+    el("resolveRound").addEventListener("click", () => resolveOneRound());
+    el("runHundred").addEventListener("click", () => runMoves(100));
+    el("addGuest").addEventListener("click", () => { addControllers(1); render(); });
+    el("disconnect").addEventListener("click", disconnectCurrent);
+    el("fillRoom").addEventListener("click", () => { addControllers((CAPACITY - activeEntries().length) + 25); render(); });
+    el("reset").addEventListener("click", () => { state = createState(state.gateway.identity_model); render(); });
+    el("identityModel").addEventListener("change", (event) => switchIdentityModel(event.target.value));
+    window.addEventListener("resize", drawBoard);
+    setInterval(() => {
+      const remainingMs = Math.max(0, state.prototype.deadline_ms - Date.now());
+      const seconds = Math.floor(remainingMs / 1000);
+      el("clockMetric").textContent = `${pad(Math.floor(seconds / 3600), 2)}:${pad(Math.floor((seconds % 3600) / 60), 2)}:${pad(seconds % 60, 2)}`;
+    }, 1000);
+
+    addControllers(12);
+    state.gateway.queue.push(...Array.from({ length: 8 }, () => `guest-${pad(state.gateway.next_guest_number++)}`));
+    addEvent("Prototype started with 12 controllers and 8 queued guests.");
+    render();
+  </script>
+</body>
+</html>

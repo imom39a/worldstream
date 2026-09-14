@@ -141,6 +141,21 @@ importers:
         specifier: 5.9.2
         version: 5.9.2
 
+  packs/tower-of-hanoi:
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+      '@worldstream/pack-cli':
+        specifier: workspace:*
+        version: link:../../sdk/typescript-pack/packages/pack-cli
+      '@worldstream/pack-sdk':
+        specifier: workspace:*
+        version: link:../../sdk/typescript-pack/packages/pack-sdk
+      typescript:
+        specifier: 5.9.2
+        version: 5.9.2
+
   sdk/typescript-client:
     devDependencies:
       typescript:

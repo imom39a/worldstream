@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Community Hanoi — live local canvas</title>
+  <style>
+    :root { color-scheme: dark; --bg:#090c10; --panel:#15191f; --line:#303741; --ink:#f7f2e7; --muted:#a9a59c; --orange:#ff7657; --gold:#ffc857; --blue:#69b9ff; --green:#72e0a1; --red:#ff6d7a; }
+    * { box-sizing:border-box; } body { margin:0; min-height:100vh; color:var(--ink); background:radial-gradient(circle at 12% 0%,rgba(255,118,87,.14),transparent 30rem),radial-gradient(circle at 90% 10%,rgba(105,185,255,.1),transparent 28rem),var(--bg); font-family:Inter,ui-sans-serif,system-ui,sans-serif; }
+    main { width:min(1280px,calc(100% - 32px)); margin:0 auto; padding:32px 0 48px; } header { display:flex; justify-content:space-between; align-items:flex-start; gap:24px; margin-bottom:20px; } .eyebrow,.label { color:var(--orange); font:700 .68rem ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.1em; text-transform:uppercase; } h1 { margin:6px 0 0; font-size:clamp(2.6rem,7vw,5.4rem); line-height:.9; letter-spacing:-.065em; } .subtitle { max-width:670px; color:var(--muted); line-height:1.55; }
+    .live-badge { display:flex; align-items:center; gap:8px; flex:0 0 auto; border:1px solid var(--line); border-radius:999px; padding:9px 12px; color:var(--muted); font:700 .68rem ui-monospace,monospace; letter-spacing:.06em; text-transform:uppercase; } .light { width:8px; height:8px; border-radius:50%; background:var(--gold); box-shadow:0 0 0 4px rgba(255,200,87,.12); } .live .light { background:var(--green); box-shadow:0 0 0 4px rgba(114,224,161,.12); } .complete .light { background:var(--blue); }
+    .metrics { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:1px; overflow:hidden; border:1px solid var(--line); border-radius:14px; background:var(--line); } .metric { min-height:102px; padding:15px 17px; background:rgba(21,25,31,.95); } .metric span { color:var(--muted); font:700 .62rem ui-monospace,monospace; letter-spacing:.08em; text-transform:uppercase; } .metric strong { display:block; margin-top:8px; font-size:clamp(1.25rem,2.8vw,2rem); letter-spacing:-.05em; } .metric small { display:block; margin-top:4px; color:var(--muted); font-size:.72rem; }
+    .grid { display:grid; grid-template-columns:minmax(0,1.65fr) minmax(300px,.7fr); gap:16px; margin-top:16px; } .panel { overflow:hidden; border:1px solid var(--line); border-radius:16px; background:rgba(21,25,31,.94); box-shadow:0 18px 55px rgba(0,0,0,.36); } .panel-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:13px 16px; border-bottom:1px solid var(--line); background:rgba(9,12,16,.5); } h2 { margin:0; font-size:.8rem; letter-spacing:.02em; } .chip { color:var(--muted); font:700 .63rem ui-monospace,monospace; letter-spacing:.06em; text-transform:uppercase; }
+    .canvas-wrap { position:relative; height:470px; background:#0c1015; } canvas { display:block; width:100%; height:100%; } .overlay { position:absolute; top:16px; left:16px; right:16px; display:flex; justify-content:space-between; gap:14px; pointer-events:none; } .note { max-width:340px; padding:10px 12px; border:1px solid rgba(247,242,231,.16); border-radius:10px; background:rgba(9,12,16,.78); backdrop-filter:blur(10px); } .note strong { display:block; font-size:.78rem; } .note span { display:block; margin-top:4px; color:var(--muted); font-size:.7rem; line-height:1.35; }
+    .progress { height:7px; background:#272d35; } .progress i { display:block; height:100%; width:0; background:linear-gradient(90deg,var(--orange),var(--gold)); transition:width 180ms ease; }.facts { display:grid; grid-template-columns:repeat(3,1fr); gap:1px; border-top:1px solid var(--line); background:var(--line); }.fact { min-height:80px; padding:12px 15px; background:var(--panel); }.fact b { display:block; color:var(--gold); font:.65rem ui-monospace,monospace; letter-spacing:.08em; }.fact p { margin:6px 0 0; color:var(--muted); font-size:.72rem; line-height:1.4; }
+    .section { padding:15px; } .contributions { display:grid; gap:9px; }.contribution { display:grid; grid-template-columns:minmax(78px,1fr) minmax(0,2fr) 30px; gap:8px; align-items:center; color:#ddd8ce; font-size:.78rem; }.bar { height:8px; overflow:hidden; border-radius:99px; background:#2b323b; }.bar i { display:block; height:100%; background:var(--blue); transition:width 180ms ease; }.contribution:first-child .bar i { background:var(--gold); }.contribution b { text-align:right; color:var(--muted); font:700 .72rem ui-monospace,monospace; }
+    .events { display:grid; gap:1px; background:var(--line); }.event { display:grid; grid-template-columns:76px 1fr; gap:10px; padding:11px 14px; background:var(--panel); }.event time { color:var(--muted); font:.67rem ui-monospace,monospace; }.event span { color:#dfdcd5; font-size:.76rem; line-height:1.4; }.event.stale span { color:var(--red); }.event.accepted span { color:var(--green); }.event.moved span { color:var(--gold); }
+    details { border-top:1px solid var(--line); } summary { padding:13px 16px; cursor:pointer; color:var(--muted); font:.66rem ui-monospace,monospace; text-transform:uppercase; letter-spacing:.07em; } pre { max-height:300px; overflow:auto; margin:0; padding:14px; background:#090c10; color:#ccd7e3; font:.69rem/1.5 ui-monospace,monospace; }.footnote { color:#81858c; font-size:.72rem; line-height:1.55; margin:16px 2px 0; }
+    @media (max-width:900px) { .metrics { grid-template-columns:repeat(3,1fr); }.grid { grid-template-columns:1fr; } } @media (max-width:600px) { main { width:min(100% - 18px,1280px); padding-top:18px; } header { flex-direction:column; } .metrics { grid-template-columns:repeat(2,1fr); }.canvas-wrap { height:380px; }.facts { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <div class="eyebrow">WorldStream local Activity Client study</div>
+        <h1>Community Hanoi</h1>
+        <p class="subtitle">A live canvas for one local Tower of Hanoi Room. It renders only the observer’s authorized public Projection and bounded supervisor receipts.</p>
+      </div>
+      <div class="live-badge" id="connection"><i class="light"></i><span>connecting</span></div>
+    </header>
+
+    <section class="metrics" aria-label="Room metrics">
+      <div class="metric"><span>Room sequence</span><strong id="sequence">0</strong><small>authoritative transition head</small></div>
+      <div class="metric"><span>Accepted moves</span><strong id="moves">0 / 15</strong><small id="moveCopy">safety move cap</small></div>
+      <div class="metric"><span>Round</span><strong id="round">1</strong><small>Pack Activity State</small></div>
+      <div class="metric"><span>Work revision</span><strong id="workRevision">0</strong><small>moves supersede open claims</small></div>
+      <div class="metric"><span>Delivery cursor</span><strong id="cursor">0</strong><small>loopback feed batch</small></div>
+      <div class="metric"><span>Phase</span><strong id="phase">solving</strong><small>Pack-defined</small></div>
+      <div class="metric"><span>Claim approvals</span><strong id="quorum">0 / 2</strong><small id="quorumCopy">no open Participant claim</small></div>
+      <div class="metric"><span>Gameplay window</span><strong id="deadline">not started</strong><small id="deadlineCopy">starts after live observer attach</small></div>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <div class="panel-head"><h2>Authorized public board</h2><span class="chip" id="source">static sample fallback</span></div>
+        <div class="canvas-wrap">
+          <canvas id="board" aria-label="Tower of Hanoi board"></canvas>
+          <div class="overlay"><div class="note"><strong id="boardTitle">3 disks · collaboration board</strong><span id="boardNote">Waiting for the local observer feed. The sample remains visible until a Projection arrives.</span></div><div class="note"><strong id="latestTitle">No live event yet</strong><span id="latestNote">Receipt and observation batches reconnect through an SSE cursor.</span></div></div>
+        </div>
+        <div class="progress"><i id="progress"></i></div>
+        <div class="facts"><div class="fact"><b>PACK</b><p>Board, phase, Outcome, last accepted move.</p></div><div class="fact"><b>WORLDSTREAM</b><p>Sequence, authorized Projection, Observation order.</p></div><div class="fact"><b>LOCAL BRIDGE</b><p>Sanitized receipt batches only; no Membership bearer in the browser.</p></div></div>
+      </article>
+
+      <aside class="panel">
+        <div class="panel-head"><h2>Solver attribution</h2><span class="chip">public counts</span></div>
+        <div class="section"><div class="contributions" id="contributions"></div></div>
+        <div class="panel-head"><h2>Claim review</h2><span class="chip" id="reviewStatus">no open claim</span></div>
+        <div class="events" id="reviews"></div>
+        <div class="panel-head"><h2>Feed events</h2><span class="chip">newest first</span></div>
+        <div class="events" id="events"></div>
+      </aside>
+    </section>
+
+    <section class="panel" style="margin-top:16px"><details><summary>Inspect the sanitized browser DTO</summary><pre id="dto"></pre></details></section>
+    <p class="footnote">This loopback-only preview has no controls and cannot act on the Room. The current browser payload excludes Room IDs, Membership IDs, Runtime URLs, capability values, raw observation frames, and local evidence paths.</p>
+  </main>
+  <script>
+    const sample = {
+      room_seq: 0, disks: 3, phase: "solving", round: 2, work_revision: 1, move_limit: 10000,
+      objective: { source_rod: "A", target_rod: "C", description: "Participants may aim to move the full tower from A to C." },
+      outcome: { moves: 1, status: "in_progress" },
+      completion: { claim_open: false, claim: null, assessments: [], endorsement_count: 0, approval_count: 0, quorum: 2, review_attention_pending: 0 },
+      board: { A: [3, 2], B: [], C: [1] }, contributions: [{ actor: "solver-a", moves: 0 }, { actor: "solver-b", moves: 0 }]
+    };
+    const state = { projection: sample, cursor: 0, mode: "sample", connection: "connecting", events: [], latest: null, deadline: null };
+    const el = (id) => document.getElementById(id);
+    const number = (value) => Number(value).toLocaleString("en-US");
+    const colors = ["#ff7657", "#ff9a5c", "#ffc857", "#d9df71", "#72e0a1", "#5ad8bd", "#69b9ff", "#947ff1", "#d28cff", "#f386d4"];
+    function moveText(move) { return move ? `disk ${move.disk}, ${move.from} → ${move.to}` : "move details are carried by the authorized board observation"; }
+    function describe(event) {
+      const actor = event.actor || "observer";
+      if (event.kind === "disk_moved") return `${actor} moved ${moveText(event.move)} at seq ${number(event.room_seq)}.`;
+      if (event.kind === "completion_claim_posted") return `${actor} posted a completion claim for work revision ${number(event.work_revision)}.`;
+      if (event.kind === "completion_claim_superseded") return "A disk move superseded the open completion claim.";
+      if (event.kind === "completion_claim_assessed") return `${actor} assessed the open claim as ${event.assessment}.`;
+      if (event.kind.endsWith("_accepted")) return `${actor} received an accepted ${event.kind.replace(/_accepted$/, "").replaceAll("_", " ")} receipt at seq ${number(event.room_seq)}.`;
+      if (event.kind.endsWith("_stale")) return `${actor} refreshed after a stale-head ${event.kind.replace(/_stale$/, "").replaceAll("_", " ")} receipt at seq ${number(event.room_seq)}.`;
+      if (event.kind.endsWith("_rejected")) return `${actor} received a rejected ${event.kind.replace(/_rejected$/, "").replaceAll("_", " ")} receipt at seq ${number(event.room_seq)}.`;
+      return "The authorized observer feed changed state.";
+    }
+    function draw() {
+      const canvas = el("board"), rect = canvas.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 2), ctx = canvas.getContext("2d"), p = state.projection;
+      canvas.width = Math.max(1, Math.floor(rect.width * dpr)); canvas.height = Math.max(1, Math.floor(rect.height * dpr)); ctx.scale(dpr, dpr);
+      const w = rect.width, h = rect.height, base = h - 54, centers = [w * .19, w * .5, w * .81], max = Math.min(w * .265, 250), min = Math.max(34, max * .25), diskHeight = Math.min(24, Math.max(14, (h - 158) / p.disks));
+      ctx.clearRect(0, 0, w, h); ctx.strokeStyle = "rgba(255,255,255,.028)";
+      for (let x = 0; x < w; x += 34) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
+      for (let y = 0; y < h; y += 34) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+      ctx.fillStyle = "#535d69"; ctx.fillRect(w * .06, base, w * .88, 7);
+      ["A", "B", "C"].forEach((rod, index) => {
+        ctx.fillStyle = "#414a55"; ctx.fillRect(centers[index] - 3, 115, 6, base - 115); ctx.fillStyle = "#b6bdc7"; ctx.font = "700 12px ui-monospace,monospace"; ctx.textAlign = "center"; ctx.fillText(rod, centers[index], base + 29);
+        (p.board[rod] || []).forEach((disk, level) => { const width = min + ((max - min) * (disk / p.disks)), x = centers[index] - width / 2, y = base - 4 - ((level + 1) * diskHeight); ctx.fillStyle = colors[(disk - 1) % colors.length]; ctx.beginPath(); ctx.roundRect(x, y, width, diskHeight - 2, 4); ctx.fill(); ctx.fillStyle = "rgba(9,12,16,.72)"; ctx.font = "700 9px ui-monospace,monospace"; ctx.fillText(String(disk), centers[index], y + 12); });
+      });
+    }
+    function render() {
+      const p = state.projection, percent = Math.min(100, (p.outcome.moves / p.move_limit) * 100), complete = p.phase === "complete", completion = p.completion || sample.completion;
+      const remaining = state.deadline?.status === "running" ? Math.max(0, state.deadline.deadline_at_ms - Date.now()) : null;
+      el("sequence").textContent = number(p.room_seq); el("moves").textContent = `${number(p.outcome.moves)} / ${number(p.move_limit)}`; el("moveCopy").textContent = p.outcome.status === "participant_accepted_completion" ? "Participant-accepted completion" : "safety move cap";
+      el("round").textContent = number(p.round); el("workRevision").textContent = number(p.work_revision); el("cursor").textContent = number(state.cursor); el("phase").textContent = p.phase;
+      el("quorum").textContent = `${completion.approval_count} / ${completion.quorum}`;
+      const claim = completion.claim;
+      el("quorumCopy").textContent = claim ? `${claim.actor} claim · work r${number(claim.work_revision)} · ${completion.review_attention_pending} reviews pending` : "no open Participant claim";
+      el("deadline").textContent = remaining === null ? (state.deadline?.status || "not started") : `${Math.ceil(remaining / 1000)}s`;
+      el("deadlineCopy").textContent = state.deadline?.status === "running" ? "five-minute solver budget" : state.deadline?.status === "complete" ? "participant quorum reached" : state.deadline?.status === "time_limit" ? "unresolved at time limit" : "starts after live observer attach";
+      el("progress").style.width = `${percent}%`; el("source").textContent = state.mode === "live" ? "live observer batches" : "static sample fallback";
+      el("boardTitle").textContent = `${p.disks} disks · ${p.objective?.source_rod || "A"} → ${p.objective?.target_rod || "C"}`;
+      el("boardNote").textContent = state.mode === "live" ? `${p.objective?.description || "Participant objective"} Board and claim state refresh from authorized observations.` : "Waiting for the local observer feed. The sample remains visible until a Projection arrives.";
+      const badge = el("connection"); badge.className = `live-badge ${complete ? "complete" : state.mode === "live" ? "live" : ""}`; badge.querySelector("span").textContent = complete ? "participant accepted" : state.connection;
+      const latest = state.latest; el("latestTitle").textContent = latest ? `${latest.actor || "observer"} · ${latest.kind.replaceAll("_", " ")}` : "No live event yet"; el("latestNote").textContent = latest ? describe(latest) : "Receipts and observation batches reconnect through an SSE cursor.";
+      const max = Math.max(1, ...p.contributions.map((c) => c.moves)); const rows = el("contributions");
+      rows.replaceChildren(...p.contributions.map((c) => { const row = document.createElement("div"), name = document.createElement("span"), bar = document.createElement("span"), fill = document.createElement("i"), count = document.createElement("b"); row.className = "contribution"; name.textContent = c.actor; fill.style.width = `${(c.moves / max) * 100}%`; bar.className = "bar"; bar.append(fill); count.textContent = String(c.moves); row.append(name, bar, count); return row; }));
+      const reviews = el("reviews"); const reviewRows = claim ? [
+        { label: `claim ${claim.actor} · round ${number(claim.claim_round)} · work r${number(claim.work_revision)}`, tone: "accepted" },
+        ...(completion.assessments.length ? completion.assessments.map((assessment) => ({ label: `${assessment.actor}: ${assessment.assessment}`, tone: assessment.assessment === "endorse" ? "accepted" : assessment.assessment === "challenge" ? "stale" : "" })) : [{ label: "Awaiting Participant assessments", tone: "" }])
+      ] : [{ label: "No open completion claim", tone: "" }];
+      el("reviewStatus").textContent = claim ? `${completion.approval_count} / ${completion.quorum} approvals` : "no open claim";
+      reviews.replaceChildren(...reviewRows.map((review) => { const row = document.createElement("div"), time = document.createElement("time"), text = document.createElement("span"); row.className = `event ${review.tone}`; time.textContent = "review"; text.textContent = review.label; row.append(time, text); return row; }));
+      const events = el("events"); events.replaceChildren(...(state.events.length ? state.events : [{ kind: "waiting", room_seq: 0 }]).map((event) => { const row = document.createElement("div"), time = document.createElement("time"), text = document.createElement("span"); row.className = `event ${event.kind.includes("stale") || event.kind.includes("rejected") ? "stale" : event.kind.includes("accepted") ? "accepted" : event.kind === "disk_moved" ? "moved" : ""}`; time.textContent = event.kind === "waiting" ? "—" : `seq ${number(event.room_seq || 0)}`; text.textContent = event.kind === "waiting" ? "Awaiting a local Hanoi Room." : describe(event); row.append(time, text); return row; }));
+      el("dto").textContent = JSON.stringify({ cursor: state.cursor, projection: p, deadline: state.deadline, events: state.events }, null, 2); draw();
+    }
+    function eventKey(event) { return [event.kind, event.actor, event.room_seq, event.work_revision, event.claim_round, event.assessment, event.move?.from, event.move?.to, event.move?.disk].join("|"); }
+    function apply(payload) {
+      if (!payload || typeof payload !== "object") return;
+      if (payload.type === "status") { state.connection = payload.state; render(); return; }
+      if (payload.type !== "hanoi") return;
+      const cursor = Number.isSafeInteger(payload.cursor) ? payload.cursor : null; if (cursor !== null && cursor <= state.cursor) return; if (cursor !== null) state.cursor = cursor;
+      state.mode = "live"; state.connection = "live"; if (payload.projection) state.projection = payload.projection; if (payload.deadline) state.deadline = payload.deadline;
+      if (Array.isArray(payload.events) && payload.events.length) { const incoming = payload.events.filter((event) => !state.events.some((current) => eventKey(current) === eventKey(event))); state.events = [...incoming.slice().reverse(), ...state.events].slice(0, 16); state.latest = payload.events[payload.events.length - 1]; }
+      render();
+    }
+    const feed = new EventSource("/events"); feed.addEventListener("hanoi", (event) => { try { apply(JSON.parse(event.data)); } catch { state.connection = "reconnecting"; render(); } }); feed.onerror = () => { if (state.mode === "live") { state.connection = "reconnecting"; render(); } };
+    window.addEventListener("resize", draw); setInterval(render, 1000); render();
+  </script>
+</body>
+</html>

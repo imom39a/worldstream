@@ -42,6 +42,6 @@ kill_timeout = 120
   processes = ["app"]
 
 [[vm]]
-  size = "shared-cpu-1x"
+  size = "shared-cpu-2x"
   memory = "1gb"
   processes = ["app"]
