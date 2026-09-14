@@ -89,6 +89,8 @@ const REQUIRED_MIGRATIONS: &[&str] = &[
     "0019-operational-history-roots-v2",
     "0020-current-timers-v2",
     "0021-checkpoint-operational-witness-v2",
+    "0022-operational-history-mmr-v1",
+    "0023-checkpoint-operational-witness-v3",
 ];
 const REQUIRED_MIGRATION_CHECKSUMS: &[&str] = &[
     "blake3:dd07208c71d7165b93861883b25411b1e7c33a6be36fc2be28a638e1ab5cd763",
@@ -111,11 +113,13 @@ const REQUIRED_MIGRATION_CHECKSUMS: &[&str] = &[
     "blake3:7977311c54cfcdbec65d3846ddbd2071f53ca830464f5721092f5de958e0b98d",
     "blake3:00116356f2c4490438c9e923b8197ab7a3704c22d32f4d0d9e3912dfa41f8471",
     "blake3:52c9dbd493d058e5553c5b77a3ee4a5a1feecf8e6f881aedce36a4644662b8db",
+    "blake3:e00976433df9a260598f3b1e766a2eaa076b54c0fcb88a18c3f623ea9b335c28",
+    "blake3:fc24f79e96a6d4e8cbeef25b753ba1c4ac229265f68991c780502338fb12418c",
 ];
 // These are reviewed shipped prefixes, rather than an arbitrary version
 // range. A retained backup must present one exact contiguous ledger through
 // the corresponding release boundary.
-const SUPPORTED_MIGRATION_COUNTS: &[usize] = &[13, 15, 16, 17, 18, 19, 20];
+const SUPPORTED_MIGRATION_COUNTS: &[usize] = &[13, 15, 16, 17, 18, 19, 20, 21, 22];
 
 /// The `SQLite` engine selected by the workspace's bundled rusqlite build.
 pub const BUNDLED_SQLITE_VERSION: &str = "3.53.4";
@@ -6579,15 +6583,20 @@ mod tests {
 
     #[test]
     fn streaming_retained_verifier_accepts_the_current_reviewed_migration_tail() {
-        assert_eq!(REQUIRED_MIGRATIONS.len(), 20);
-        assert_eq!(REQUIRED_MIGRATION_CHECKSUMS.len(), 20);
+        assert_eq!(REQUIRED_MIGRATIONS.len(), 22);
+        assert_eq!(REQUIRED_MIGRATION_CHECKSUMS.len(), 22);
         assert_eq!(REQUIRED_MIGRATIONS[17], "0019-operational-history-roots-v2");
         assert_eq!(REQUIRED_MIGRATIONS[18], "0020-current-timers-v2");
         assert_eq!(
             REQUIRED_MIGRATIONS[19],
             "0021-checkpoint-operational-witness-v2"
         );
-        assert!(SUPPORTED_MIGRATION_COUNTS.contains(&20));
+        assert_eq!(REQUIRED_MIGRATIONS[20], "0022-operational-history-mmr-v1");
+        assert_eq!(
+            REQUIRED_MIGRATIONS[21],
+            "0023-checkpoint-operational-witness-v3"
+        );
+        assert!(SUPPORTED_MIGRATION_COUNTS.contains(&22));
     }
 
     #[test]

@@ -1149,6 +1149,8 @@ if [[ "$live_adapter_status" == "pass" \
   && "$gateway_status" == "pass" \
   && "$harness_status" == "pass" \
   && "$pooler_status" == "pass" \
+  && "$live_marker_checkpoint_recovery_scales" == "pass" \
+  && "$live_marker_snapshot_cadence" == "pass" \
   && "$imo50_shared_direct_status" == "pass" \
   && "$imo50_shared_pooler_status" == "pass" \
   && "$transfer_status" == "pass" ]]; then
