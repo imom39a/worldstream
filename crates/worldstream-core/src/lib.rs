@@ -36,6 +36,7 @@ mod counter_attention_v4;
 mod counter_registry;
 mod lineage;
 mod model;
+mod operational_mmr;
 mod primitives;
 mod reducer;
 mod registry;
@@ -242,3 +243,5 @@ mod room_commit_tests;
 mod session_tests;
 #[cfg(test)]
 mod tests;
+
+pub use operational_mmr::{OperationalMmrProofV1, OperationalMmrV1};
