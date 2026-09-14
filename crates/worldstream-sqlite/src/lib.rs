@@ -173,6 +173,10 @@ pub const OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID: &str = "0019-operational-histo
 /// Adds the bounded current Timer materialization used only by V2 checkpoint
 /// recovery. The immutable Timer ledger remains the forensic authority.
 pub const CURRENT_TIMERS_MIGRATION_ID: &str = "0020-current-timers-v2";
+/// Adds the compact V2 checkpoint witness without altering the frozen V1
+/// witness table or its canonical schema constraint.
+pub const CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID: &str =
+    "0021-checkpoint-operational-witness-v2";
 const OPERATION_RECEIPT_CODEC_ID: &str = "worldstream/operation-receipt/v1";
 const PAIRED_SNAPSHOT_SCHEMA_VERSION: &str = "worldstream/paired-snapshot/v1";
 const SNAPSHOT_TRANSITION_INTERVAL: i64 = 250;
@@ -841,6 +845,20 @@ CREATE TABLE room_current_timers_v2 (
     payload_bytes BLOB NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('scheduled', 'cancelled', 'fired')),
     PRIMARY KEY (room_id, timer_id)
+) STRICT;
+";
+
+const CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_SCHEMA: &str = r"
+CREATE TABLE room_snapshot_operational_witnesses_v2 (
+    room_id TEXT NOT NULL,
+    room_seq INTEGER NOT NULL CHECK (room_seq BETWEEN 0 AND 9007199254740991),
+    witness_schema_version TEXT NOT NULL
+        CHECK (witness_schema_version = 'worldstream/checkpoint-operational-witness/v2'),
+    witness_hash BLOB NOT NULL CHECK (length(witness_hash) = 32),
+    witness_bytes BLOB NOT NULL CHECK (length(witness_bytes) > 0),
+    PRIMARY KEY (room_id, room_seq),
+    FOREIGN KEY (room_id, room_seq) REFERENCES room_snapshots(room_id, room_seq)
+        ON DELETE CASCADE
 ) STRICT;
 ";
 
@@ -15784,6 +15802,12 @@ fn migrate_with_failpoint_and_telemetry(
         // V1/full-replay recovery path.
         insert_migration(&transaction, history[18], has_checksum_column)?;
     }
+    if migrations.len() < 20 {
+        transaction
+            .execute_batch(history[19].sql)
+            .map_err(SqliteStoreOpenError::Sqlite)?;
+        insert_migration(&transaction, history[19], has_checksum_column)?;
+    }
     let persisted = read_migration_rows(&transaction, has_checksum_column)?;
     let persisted = persisted
         .into_iter()
@@ -21791,7 +21815,7 @@ mod tests {
     use super::{
         ACTIVATION_BACKLOG_POLICY_MIGRATION_ID, ACTIVATION_MIGRATION_ID, AUTHORITY_MIGRATION_ID,
         CANONICAL_EXPORT_MIGRATION_ID, CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID,
-        CURRENT_TIMERS_MIGRATION_ID,
+        CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID, CURRENT_TIMERS_MIGRATION_ID,
         DEPLOYMENT_IDENTITIES_MIGRATION_ID, DiagnosticHistoryV1,
         EXTERNAL_INPUT_PREPARATION_MIGRATION_ID, INITIAL_MIGRATION_ID, INITIAL_MIGRATION_SCHEMA,
         MAX_SAFE_INTEGER, MIGRATION_CHECKSUMS_MIGRATION_ID, MigrationFailpoint,
@@ -24653,7 +24677,7 @@ mod tests {
         assert_eq!(
             history.map(|migration| migration.version),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
             ]
         );
         assert_eq!(
@@ -24678,6 +24702,7 @@ mod tests {
                 CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID,
                 OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID,
                 CURRENT_TIMERS_MIGRATION_ID,
+                CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID,
             ]
         );
         let expected_checksums = [
@@ -24700,6 +24725,7 @@ mod tests {
             "blake3:95b31dc300e31bbdafada55d7d7d9f6b3c05d0dd2e067c3f41e3f39a27655847",
             "blake3:7977311c54cfcdbec65d3846ddbd2071f53ca830464f5721092f5de958e0b98d",
             "blake3:00116356f2c4490438c9e923b8197ab7a3704c22d32f4d0d9e3912dfa41f8471",
+            "blake3:52c9dbd493d058e5553c5b77a3ee4a5a1feecf8e6f881aedce36a4644662b8db",
         ];
         assert_eq!(expected_checksums.len(), history.len());
         for (migration, expected) in history.iter().zip(expected_checksums) {
@@ -26520,6 +26546,7 @@ mod tests {
                 (17, CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID.to_owned(),),
                 (18, OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID.to_owned(),),
                 (19, CURRENT_TIMERS_MIGRATION_ID.to_owned(),),
+                (20, CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID.to_owned(),),
             ]
         );
         let retired: (String, String, i64, Vec<u8>, Vec<u8>, i64) = connection

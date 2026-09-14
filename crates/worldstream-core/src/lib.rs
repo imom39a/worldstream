@@ -173,6 +173,7 @@ pub use registry::builtin_worldstream_registry;
 pub use room_commit::{
     ActionAdmissionContextV1, ActionOfferWitnessV1, ActionOffersUnavailableReasonV1,
     ActorInstallationV1, AuthorizedReceiptResolverV1, CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V1,
+    CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2,
     CREATE_ROOM_OPERATION_KIND, CanonicalRequestHashV1, CoreAdministrationIngressV1,
     CoreAdministrationRequestV1, ExistingRoomCommitOutcomeV1, ExistingRoomPendingAttemptV1,
     ExistingRoomReprepareV1, ExistingRoomResolveV1, ExistingRoomRetryV1,

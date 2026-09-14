@@ -29,7 +29,8 @@ mod transfer;
 pub use authority::{PostgresAuthenticatedCapabilityV1, PostgresAuthorityAuthenticationError};
 pub use migrations::{
     ACTIVATION_BACKLOG_POLICY_MIGRATION_ID, AUTHORITY_FACTS_MIGRATION_ID, AUTHORITY_MIGRATION_ID,
-    CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID, CURRENT_TIMERS_MIGRATION_ID,
+    CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID, CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID,
+    CURRENT_TIMERS_MIGRATION_ID,
     DEPLOYMENT_IDENTITY_MIGRATION_ID, DEPLOYMENT_METADATA_MIGRATION_ID,
     EXTERNAL_INPUT_PREPARATION_MIGRATION_ID, FixtureMigrationProvider, INITIAL_MIGRATION_ID,
     KERNEL_CONFORMANCE_MIGRATION_ID, KERNEL_PARITY_MIGRATION_ID, LOGICAL_HISTORY_ID,
@@ -37,7 +38,8 @@ pub use migrations::{
     MIGRATION_0006_SQL, MIGRATION_0007_SQL, MIGRATION_0008_SQL, MIGRATION_0009_SQL,
     MIGRATION_0010_SQL, MIGRATION_0011_SQL, MIGRATION_0012_SQL, MIGRATION_0013_SQL,
     MIGRATION_0014_SQL, MIGRATION_0015_SQL, MIGRATION_0016_SQL, MIGRATION_0017_SQL,
-    MIGRATION_0018_SQL, MIGRATION_0019_SQL, MIGRATION_0020_SQL, MigrationDescriptor,
+    MIGRATION_0018_SQL, MIGRATION_0019_SQL, MIGRATION_0020_SQL, MIGRATION_0021_SQL,
+    MigrationDescriptor,
     MigrationFailpoint, MigrationRecord, MigrationVerification, MigrationVerificationError,
     OBSERVATION_RESET_GENERATION_MIGRATION_ID, OBSERVATION_RETENTION_MIGRATION_ID,
     OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID, SCHEMA_CONTRACT_ID, SCHEMA_FINGERPRINT_MATERIAL,
@@ -3212,6 +3214,7 @@ const SCHEMA_TABLE_ORDER: &[&str] = &[
     "worldstream_activation_operation_receipts",
     "worldstream_room_snapshots",
     "worldstream_room_snapshot_operational_witnesses",
+    "worldstream_room_snapshot_operational_witnesses_v2",
     "worldstream_room_snapshot_schedules",
     "worldstream_semantic_receipts",
     "worldstream_integrity_incidents",
@@ -3280,7 +3283,7 @@ const GLOBAL_RESOURCE_IDENTITY_INDEXES: [(&str, &str); 2] = [
     ),
 ];
 
-const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 35] = [
+const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 36] = [
     (
         "worldstream_transfer_fence_operation_guards",
         "worldstream_operation_guards",
@@ -3332,6 +3335,10 @@ const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 35] = [
     (
         "worldstream_transfer_fence_snapshot_operational_witnesses",
         "worldstream_room_snapshot_operational_witnesses",
+    ),
+    (
+        "worldstream_transfer_fence_snapshot_operational_witnesses_v2",
+        "worldstream_room_snapshot_operational_witnesses_v2",
     ),
     (
         "worldstream_transfer_fence_operational_history_roots_v2",
