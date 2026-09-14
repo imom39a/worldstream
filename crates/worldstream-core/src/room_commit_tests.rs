@@ -628,6 +628,56 @@ fn counter_action_trace() -> CoreTraceV1 {
     trace
 }
 
+#[test]
+fn bounded_storage_replay_preflights_then_replays_transition_pages() {
+    let trace = counter_action_trace();
+    let genesis_bytes = trace
+        .genesis()
+        .canonical_bytes()
+        .unwrap_or_else(|error| unreachable!("fixture Genesis bytes: {error}"));
+    let transition_bytes = trace
+        .transitions()
+        .iter()
+        .map(|transition| {
+            transition
+                .canonical_bytes()
+                .unwrap_or_else(|error| unreachable!("fixture Transition bytes: {error}"))
+        })
+        .collect::<Vec<_>>();
+    let mut preflight = StorageHistoryPreflightV1::begin(&genesis_bytes)
+        .unwrap_or_else(|error| unreachable!("storage preflight: {error:?}"));
+    for page in transition_bytes.chunks(1) {
+        preflight
+            .consume_transition_page(page)
+            .unwrap_or_else(|error| unreachable!("storage preflight page: {error:?}"));
+    }
+    assert_eq!(preflight.final_head(), trace.head());
+
+    let registry = builtin_counter_registry()
+        .unwrap_or_else(|error| unreachable!("fixture Counter registry: {error}"));
+    let mut executable = preflight
+        .begin_executable(&registry)
+        .unwrap_or_else(|error| unreachable!("storage executable begin: {error:?}"));
+    for page in transition_bytes.chunks(1) {
+        executable
+            .consume_transition_page(page)
+            .unwrap_or_else(|error| unreachable!("storage executable page: {error:?}"));
+    }
+    executable
+        .finish(
+            trace.head(),
+            &trace
+                .core_state()
+                .canonical_bytes()
+                .unwrap_or_else(|error| unreachable!("fixture Core bytes: {error}")),
+            &trace
+                .activity_state()
+                .to_bytes()
+                .unwrap_or_else(|error| unreachable!("fixture Activity bytes: {error}")),
+        )
+        .unwrap_or_else(|error| unreachable!("storage executable finish: {error:?}"));
+}
+
 fn lifecycle_stimulus(
     trace: &CoreTraceV1,
     kind: CoreProposedKindV1,

@@ -118,7 +118,9 @@ struct SafetyReport {
 struct BoundedWorkingSet {
     source_rss_before_bytes: Option<u64>,
     source_rss_after_export_bytes: Option<u64>,
-    source_rss_after_import_bytes: Option<u64>,
+    source_rss_after_resume_import_bytes: Option<u64>,
+    source_rss_after_corruption_probe_bytes: Option<u64>,
+    source_rss_after_authority_bytes: Option<u64>,
     source_rss_peak_delta_bytes: Option<u64>,
     source_record_collection: &'static str,
     backup_image: &'static str,
@@ -517,6 +519,7 @@ fn run(arguments: Arguments) -> Result<Report> {
     if !resume_import_finalized {
         bail!("resumed stream import did not remain finalized behind serving fence");
     }
+    let source_rss_after_resume_import = rss_bytes();
 
     // A separate disposable target accepts the corrupted prefix only as
     // non-serving staging and must never hydrate or publish authority.
@@ -544,6 +547,7 @@ fn run(arguments: Arguments) -> Result<Report> {
     {
         bail!("corrupted stream crossed a target publication fence");
     }
+    let source_rss_after_corruption_probe = rss_bytes();
 
     finalize_stream_authority_v2(&source, &arguments.stream, &admin, target, limits)
         .context("final stream authority coordinator")?;
@@ -555,15 +559,27 @@ fn run(arguments: Arguments) -> Result<Report> {
     if !source_retired || !final_authority_published {
         bail!("authority handoff did not retire source before target publication");
     }
-    let source_rss_after_import = rss_bytes();
+    let source_rss_after_authority = rss_bytes();
     let source_rss_peak_delta_bytes = match (
         source_rss_before,
         source_rss_after_export,
-        source_rss_after_import,
+        source_rss_after_resume_import,
+        source_rss_after_corruption_probe,
+        source_rss_after_authority,
     ) {
-        (Some(before), Some(after_export), Some(after_import)) => {
-            Some(after_export.max(after_import).saturating_sub(before))
-        }
+        (
+            Some(before),
+            Some(after_export),
+            Some(after_resume_import),
+            Some(after_corruption_probe),
+            Some(after_authority),
+        ) => Some(
+            after_export
+                .max(after_resume_import)
+                .max(after_corruption_probe)
+                .max(after_authority)
+                .saturating_sub(before),
+        ),
         _ => None,
     };
     let expectations = {
@@ -633,7 +649,9 @@ fn run(arguments: Arguments) -> Result<Report> {
         bounded_working_set: BoundedWorkingSet {
             source_rss_before_bytes: source_rss_before,
             source_rss_after_export_bytes: source_rss_after_export,
-            source_rss_after_import_bytes: source_rss_after_import,
+            source_rss_after_resume_import_bytes: source_rss_after_resume_import,
+            source_rss_after_corruption_probe_bytes: source_rss_after_corruption_probe,
+            source_rss_after_authority_bytes: source_rss_after_authority,
             source_rss_peak_delta_bytes,
             source_record_collection: "keyset_cursor_and_bounded_chunks_only",
             backup_image: "not_constructed",

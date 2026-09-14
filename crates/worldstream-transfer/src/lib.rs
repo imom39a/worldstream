@@ -2855,8 +2855,7 @@ impl<R: Read> TransferStreamReaderV2<R> {
             &mut self.chunk_buffer,
             "read stream chunk",
         )?;
-        let actual_digest =
-            stream_chunk_digest(self.identity_digest, index, &self.chunk_buffer);
+        let actual_digest = stream_chunk_digest(self.identity_digest, index, &self.chunk_buffer);
         if actual_digest != expected_digest {
             return Err(TransferError::HashMismatch {
                 what: "stream chunk",
