@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -468,12 +469,16 @@ def run_codex(codex_bin: str, model: str, reasoning: str, prompt: str) -> tuple[
             env={**os.environ, "NO_COLOR": "1"},
         )
         elapsed_ms = round((time.monotonic() - started) * 1000)
+        token_match = re.search(r"tokens used\s+([0-9,]+)", completed.stderr)
         metadata = {
             "elapsed_ms": elapsed_ms,
             "exit_code": completed.returncode,
-            "stderr_tail": completed.stderr[-2_000:],
+            "reported_tokens_used": int(token_match.group(1).replace(",", ""))
+            if token_match
+            else None,
         }
         if completed.returncode != 0 or not output_path.exists():
+            metadata["stderr_tail"] = completed.stderr[-2_000:]
             raise RuntimeError(json.dumps(metadata, sort_keys=True))
         return json.loads(output_path.read_text(encoding="utf-8")), metadata
 
