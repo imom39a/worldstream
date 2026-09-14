@@ -39,6 +39,7 @@ const TABLES: &[(&str, usize)] = &[
     ("runner_capability_memberships", 3),
     ("authority_change_receipts", 9),
     ("authority_audit", 12),
+    ("room_operational_history_roots_v2", 4),
     ("room_operational_mmr_receipts_v1", 4),
     ("room_operational_mmr_nodes_v1", 5),
     ("activation_decisions", 6),
@@ -75,6 +76,7 @@ pub const NATIVE_SQLITE_OPERATIONAL_TABLES_V2: &[&str] = &[
     "runner_capability_memberships",
     "authority_change_receipts",
     "authority_audit",
+    "room_operational_history_roots_v2",
     "room_operational_mmr_receipts_v1",
     "room_operational_mmr_nodes_v1",
     "activation_decisions",
@@ -981,7 +983,9 @@ fn prepare_rows(
         if !rows.tables.contains_key(*table) {
             if matches!(
                 *table,
-                "room_operational_mmr_receipts_v1" | "room_operational_mmr_nodes_v1"
+                "room_operational_history_roots_v2"
+                    | "room_operational_mmr_receipts_v1"
+                    | "room_operational_mmr_nodes_v1"
             ) {
                 continue;
             }
@@ -995,7 +999,9 @@ fn prepare_rows(
             Some(values) => values,
             None if matches!(
                 *table,
-                "room_operational_mmr_receipts_v1" | "room_operational_mmr_nodes_v1"
+                "room_operational_history_roots_v2"
+                    | "room_operational_mmr_receipts_v1"
+                    | "room_operational_mmr_nodes_v1"
             ) =>
             {
                 &[]
@@ -1364,6 +1370,16 @@ fn validate_relations(
                 let _ = optional_text(&row.values, 10, row.table)?;
             }
             "room_integrity" => {}
+            "room_operational_history_roots_v2" => {
+                if !matches!(
+                    text(&row.values, 1, row.table)?,
+                    "frames" | "consequences" | "activation_decisions"
+                ) || integer(&row.values, 2, row.table)? < 0
+                    || blob(&row.values, 3, row.table)?.len() != 32
+                {
+                    return invalid(row.table, "operational history root");
+                }
+            }
             "room_operational_mmr_receipts_v1" => {
                 if !matches!(
                     text(&row.values, 1, row.table)?,
@@ -1633,6 +1649,7 @@ fn validate_mmr_inventory(rows: &[PreparedRow]) -> Result<(), NativeSqliteTransf
             "observation_frames"
                 | "observation_consequences"
                 | "activation_decisions"
+                | "room_operational_history_roots_v2"
                 | "room_operational_mmr_receipts_v1"
                 | "room_operational_mmr_nodes_v1"
         ) {
@@ -1641,6 +1658,15 @@ fn validate_mmr_inventory(rows: &[PreparedRow]) -> Result<(), NativeSqliteTransf
     }
     for room in rooms {
         for (domain, table, leaf_index) in DOMAINS {
+            let frozen_roots = rows
+                .iter()
+                .filter(|row| {
+                    row.table == "room_operational_history_roots_v2"
+                        && row.room_id.as_deref() == Some(room.as_str())
+                        && row.values.get(1)
+                            == Some(&NativeSqliteValueV1::Text((*domain).to_owned()))
+                })
+                .collect::<Vec<_>>();
             let receipt = rows
                 .iter()
                 .filter(|row| {
@@ -1663,6 +1689,20 @@ fn validate_mmr_inventory(rows: &[PreparedRow]) -> Result<(), NativeSqliteTransf
                 .iter()
                 .filter(|row| row.table == *table && row.room_id.as_deref() == Some(room.as_str()))
                 .collect::<Vec<_>>();
+            if frozen_roots.len() > 1 {
+                return relation(
+                    "room_operational_history_roots_v2",
+                    "duplicate operational history root",
+                );
+            }
+            if let Some(frozen) = frozen_roots.first() {
+                let entry_count = integer(&frozen.values, 2, frozen.table)?;
+                if entry_count < 0
+                    || usize::try_from(entry_count).unwrap_or(usize::MAX) != domain_rows.len()
+                {
+                    return relation(table, "operational history root count and row count");
+                }
+            }
             if receipt.is_empty() {
                 if !nodes.is_empty()
                     || domain_rows.iter().any(|row| {
@@ -1690,6 +1730,20 @@ fn validate_mmr_inventory(rows: &[PreparedRow]) -> Result<(), NativeSqliteTransf
                     table: receipt.table,
                     what: "MMR leaf count",
                 })?;
+            let frozen =
+                frozen_roots
+                    .first()
+                    .ok_or(NativeSqliteTransferError::InvalidRelation {
+                        table: "room_operational_mmr_receipts_v1",
+                        what: "MMR receipt has no frozen V2 root",
+                    })?;
+            if integer(&frozen.values, 2, frozen.table)? != i64::try_from(leaf_count).unwrap_or(-1)
+            {
+                return relation(
+                    "room_operational_mmr_receipts_v1",
+                    "MMR leaf count and frozen V2 root count",
+                );
+            }
             if domain_rows.len() != usize::try_from(leaf_count).unwrap_or(usize::MAX) {
                 return relation(table, "MMR leaf count and row count");
             }
@@ -1956,6 +2010,11 @@ fn row_identity(
             format!("authority/change/{}", text(values, 0, table)?)
         }
         "authority_audit" => format!("authority/audit/{}", integer(values, 0, table)?),
+        "room_operational_history_roots_v2" => format!(
+            "room/{}/operational-history-root/{}",
+            text(values, 0, table)?,
+            text(values, 1, table)?
+        ),
         "room_operational_mmr_receipts_v1" => format!(
             "room/{}/operational-mmr-receipt/{}",
             text(values, 0, table)?,
@@ -2044,6 +2103,7 @@ fn room_id(
         | "activation_decisions"
         | "activation_operation_receipts"
         | "semantic_receipts"
+        | "room_operational_history_roots_v2"
         | "room_operational_mmr_receipts_v1"
         | "room_operational_mmr_nodes_v1"
         | "integrity_incidents" => Some(0),
@@ -2875,6 +2935,49 @@ mod tests {
             record.identity().contains("activation-intent")
                 || record.identity().contains("activation/")
         }));
+    }
+
+    #[test]
+    fn operational_history_root_is_carried_and_count_bound_before_mmr_receipts() {
+        assert_eq!(
+            native_sqlite_operational_row_width_v2("room_operational_history_roots_v2"),
+            Some(4)
+        );
+        let root = row(
+            "room_operational_history_roots_v2",
+            vec![
+                Value::Text("room-1".to_owned()),
+                Value::Text("frames".to_owned()),
+                Value::Integer(1),
+                Value::Blob(vec![0x41; 32]),
+            ],
+        );
+        let (identity, bytes) =
+            encode_native_sqlite_stream_row_v2(&root).expect("encode frozen V2 root");
+        assert_eq!(
+            identity,
+            "native-sqlite/row/room_operational_history_roots_v2/room/room-1/operational-history-root/frames"
+        );
+        assert_eq!(decode_row(&bytes).expect("decode frozen V2 root"), root);
+
+        let mut rows = healthy_rows();
+        rows.tables.insert(
+            "room_operational_history_roots_v2".to_owned(),
+            vec![root.clone()],
+        );
+        NativeSqliteTransferAdapterV1::summary_from_rows(&rows)
+            .expect("matching frozen V2 root count");
+        rows.tables
+            .get_mut("room_operational_history_roots_v2")
+            .expect("frozen roots")[0]
+            .values[2] = Value::Integer(2);
+        assert!(matches!(
+            NativeSqliteTransferAdapterV1::summary_from_rows(&rows),
+            Err(NativeSqliteTransferError::InvalidRelation {
+                table: "observation_frames",
+                what: "operational history root count and row count"
+            })
+        ));
     }
 
     #[test]

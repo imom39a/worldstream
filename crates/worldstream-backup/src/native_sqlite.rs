@@ -1061,6 +1061,10 @@ const OPERATIONAL_QUERIES: &[(&str, &str)] = &[
         "SELECT * FROM authority_audit ORDER BY audit_seq",
     ),
     (
+        "room_operational_history_roots_v2",
+        "SELECT * FROM room_operational_history_roots_v2 ORDER BY room_id, domain",
+    ),
+    (
         "room_operational_mmr_receipts_v1",
         "SELECT * FROM room_operational_mmr_receipts_v1 ORDER BY room_id, domain",
     ),
@@ -1115,6 +1119,7 @@ const OPERATIONAL_QUERIES: &[(&str, &str)] = &[
 ];
 
 const OPTIONAL_OPERATIONAL_TABLES: &[&str] = &[
+    "room_operational_history_roots_v2",
     "room_operational_mmr_receipts_v1",
     "room_operational_mmr_nodes_v1",
 ];
@@ -3186,6 +3191,7 @@ fn verify_mmr_sidecar(
     rooms: &BTreeMap<String, RoomRow>,
     diagnostics: &mut Vec<NativeSqliteDiagnosticV1>,
 ) {
+    let roots = table_rows(evidence, "room_operational_history_roots_v2");
     let receipts = table_rows(evidence, "room_operational_mmr_receipts_v1");
     let nodes = table_rows(evidence, "room_operational_mmr_nodes_v1");
     let domains = [
@@ -3193,6 +3199,27 @@ fn verify_mmr_sidecar(
         ("consequences", "observation_consequences", 6),
         ("activation_decisions", "activation_decisions", 5),
     ];
+    let mut root_keys = BTreeSet::new();
+    for row in roots {
+        let valid = row.values.len() == 4
+            && text_value(&row.values, 0).is_some_and(|room| rooms.contains_key(room))
+            && text_value(&row.values, 1)
+                .is_some_and(|domain| domains.iter().any(|(expected, _, _)| expected == &domain))
+            && integer_value(&row.values, 2).is_some_and(|count| count >= 0)
+            && blob_value(&row.values, 3).is_some_and(|hash| hash.len() == 32)
+            && root_keys.insert((
+                text_value(&row.values, 0).unwrap_or_default().to_owned(),
+                text_value(&row.values, 1).unwrap_or_default().to_owned(),
+            ));
+        if !valid {
+            diagnostic(
+                diagnostics,
+                "operational_history_root_mismatch",
+                true,
+                "frozen V2 root",
+            );
+        }
+    }
     let mut receipt_keys = BTreeSet::new();
     for row in receipts {
         let valid = row.values.len() == 4
@@ -3235,6 +3262,10 @@ fn verify_mmr_sidecar(
     }
     for room in rooms.keys() {
         for (domain, table, index) in domains {
+            let root = roots.iter().find(|row| {
+                text_value(&row.values, 0) == Some(room.as_str())
+                    && text_value(&row.values, 1) == Some(domain)
+            });
             let receipt = receipts.iter().find(|row| {
                 text_value(&row.values, 0) == Some(room.as_str())
                     && text_value(&row.values, 1) == Some(domain)
@@ -3243,6 +3274,18 @@ fn verify_mmr_sidecar(
                 .iter()
                 .filter(|row| text_value(&row.values, 0) == Some(room.as_str()))
                 .collect::<Vec<_>>();
+            if let Some(root) = root {
+                if integer_value(&root.values, 2).and_then(|value| usize::try_from(value).ok())
+                    != Some(rows.len())
+                {
+                    diagnostic(
+                        diagnostics,
+                        "operational_history_root_count_mismatch",
+                        true,
+                        room,
+                    );
+                }
+            }
             let Some(receipt) = receipt else {
                 if rows.iter().any(|row| {
                     integer_value_or_null(&row.values, index).is_some_and(|value| value.is_some())
@@ -3251,6 +3294,16 @@ fn verify_mmr_sidecar(
                 }
                 continue;
             };
+            if root.and_then(|root| integer_value(&root.values, 2))
+                != integer_value(&receipt.values, 2)
+            {
+                diagnostic(
+                    diagnostics,
+                    "operational_mmr_root_count_mismatch",
+                    true,
+                    room,
+                );
+            }
             let Some(count) =
                 integer_value(&receipt.values, 2).and_then(|value| usize::try_from(value).ok())
             else {

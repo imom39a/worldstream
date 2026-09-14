@@ -93,6 +93,8 @@ transfer_runtime_dsn=""
 transfer_abort_admin_dsn=""
 recovery_scale_admin_dsn=""
 recovery_scale_runtime_dsn=""
+gateway_runtime_dsn=""
+gateway_pooler_dsn=""
 transfer_admin_dsn_file=""
 transfer_runtime_dsn_file=""
 transfer_abort_admin_dsn_file=""
@@ -511,6 +513,7 @@ transfer_runtime_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream_tran
 transfer_abort_admin_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream_transfer_abort user=admin password=$admin_password"
 recovery_scale_admin_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream_recovery_scale user=admin password=$admin_password"
 recovery_scale_runtime_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream_recovery_scale user=runtime password=$runtime_password"
+gateway_runtime_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream_gateway user=runtime password=$runtime_password"
 transfer_admin_dsn_file="$temp_root/transfer-admin.dsn"
 transfer_runtime_dsn_file="$temp_root/transfer-runtime.dsn"
 transfer_abort_admin_dsn_file="$temp_root/transfer-abort-admin.dsn"
@@ -529,11 +532,15 @@ run_admin_sql() {
 run_db_admin_sql() {
   printf '%s\n' "$1" | PGPASSWORD="$admin_password" "$psql_bin" "$admin_psql_dsn" --no-psqlrc --quiet --no-align --tuples-only --no-password --set=ON_ERROR_STOP=1 >/dev/null 2>&1
 }
+run_gateway_admin_sql() {
+  printf '%s\n' "$1" | PGPASSWORD="$admin_password" "$psql_bin" "host=127.0.0.1 port=$postgres_port dbname=worldstream_gateway user=admin" --no-psqlrc --quiet --no-align --tuples-only --no-password --set=ON_ERROR_STOP=1 >/dev/null 2>&1
+}
 
 if ! run_admin_sql "CREATE ROLE runtime LOGIN PASSWORD '$runtime_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS" \
   || ! run_admin_sql "CREATE DATABASE worldstream_transfer OWNER admin" \
   || ! run_admin_sql "CREATE DATABASE worldstream_transfer_abort OWNER admin" \
-  || ! run_admin_sql "CREATE DATABASE worldstream_recovery_scale OWNER admin"; then
+  || ! run_admin_sql "CREATE DATABASE worldstream_recovery_scale OWNER admin" \
+  || ! run_admin_sql "CREATE DATABASE worldstream_gateway OWNER admin"; then
   overall_status="unavailable"; overall_reason="role_or_transfer_database_setup_failed"; add_error "role_or_transfer_database_setup_failed"; finish "$EXIT_UNAVAILABLE"
 fi
 
@@ -541,7 +548,7 @@ fi
 # access. Granting default table privileges before migration would also grant
 # DML on the migration ledger, which the reviewed runtime-role contract must
 # reject. The owner-only DSN files keep credentials out of argv and logs.
-for database in worldstream worldstream_transfer worldstream_transfer_abort worldstream_recovery_scale; do
+for database in worldstream worldstream_transfer worldstream_transfer_abort worldstream_recovery_scale worldstream_gateway; do
   database_admin_dsn_file="$temp_root/$database-admin.dsn"
   printf '%s\n' "host=127.0.0.1 port=$postgres_port dbname=$database user=admin password=$admin_password" >"$database_admin_dsn_file"
   chmod 600 "$database_admin_dsn_file"
@@ -600,6 +607,7 @@ if [[ "$pooler_status" == "not_started" ]]; then
       sleep 1
     done
     pooler_dsn="host=127.0.0.1 port=$pooler_port dbname=worldstream user=runtime password=$runtime_password"
+    gateway_pooler_dsn="host=127.0.0.1 port=$pooler_port dbname=worldstream_gateway user=runtime password=$runtime_password"
     if [[ -n "$pooler_port" ]] && grep -q '^1$' "$temp_root/pooler-ready.log" 2>/dev/null; then
       if PGCONNECT_TIMEOUT=3 PGPASSWORD="$admin_password" "$psql_bin" "host=127.0.0.1 port=$pooler_port dbname=pgbouncer user=admin" --no-psqlrc --quiet --no-align --tuples-only --no-password -c 'SHOW CONFIG' >"$temp_root/pooler-config.log" 2>/dev/null && grep -Eq '(^|[|[:space:]])pool_mode([|[:space:]])|pool_mode.*transaction' "$temp_root/pooler-config.log" && grep -Eiq 'transaction' "$temp_root/pooler-config.log"; then
         pooler_status="pass"; pooler_reason="transaction_pool_verified"
@@ -937,11 +945,11 @@ run_gateway_warm_path() {
 
 if [[ "$live_adapter_status" == "pass" && "$pooler_status" == "pass" \
   && "$gateway_status" != "failed" ]]; then
-  if run_gateway_warm_path "direct" "$runtime_dsn" "Direct"; then
-    if ! run_db_admin_sql "$truncate_sql"; then
+  if run_gateway_warm_path "direct" "$gateway_runtime_dsn" "Direct"; then
+    if ! run_gateway_admin_sql "$truncate_sql"; then
       gateway_direct_status="failed"
       add_error "production_gateway_direct_state_reset_failed"
-    elif ! run_gateway_warm_path "transaction_pool" "$pooler_dsn" "TransactionPool"; then
+    elif ! run_gateway_warm_path "transaction_pool" "$gateway_pooler_dsn" "TransactionPool"; then
       add_error "production_gateway_pooler_workflow_failed"
     fi
   else
@@ -956,7 +964,7 @@ else
   gateway_status="not_run"
   add_error "production_gateway_requires_live_adapter_and_pooler"
 fi
-if [[ "$gateway_status" == "pass" ]] && ! run_db_admin_sql "$truncate_sql"; then
+if [[ "$gateway_status" == "pass" ]] && ! run_gateway_admin_sql "$truncate_sql"; then
   gateway_status="failed"
   add_error "production_gateway_state_reset_failed"
 fi

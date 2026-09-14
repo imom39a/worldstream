@@ -2512,6 +2512,9 @@ fn publish_stream_native_table(
                 "authority_change_receipts" => publish_authority_change_receipt(transaction, &row)?,
                 "authority_audit" => publish_authority_audit(transaction, &row)?,
                 "room_integrity" => publish_stream_room_integrity(transaction, &row)?,
+                "room_operational_history_roots_v2" => {
+                    publish_operational_history_root(transaction, &row)?;
+                }
                 "room_operational_mmr_receipts_v1" => {
                     publish_operational_mmr_receipt(transaction, &row)?;
                 }
@@ -2704,6 +2707,9 @@ fn native_stream_relation_count_sql(relation: &str) -> Option<&'static str> {
         }
         "authority_audit" => Some("SELECT count(*) FROM worldstream_authority_audit"),
         "room_integrity" => Some("SELECT count(*) FROM worldstream_room_roots"),
+        "room_operational_history_roots_v2" => {
+            Some("SELECT count(*) FROM worldstream_room_operational_history_roots_v2")
+        }
         "room_operational_mmr_receipts_v1" => {
             Some("SELECT count(*) FROM worldstream_room_operational_mmr_receipts_v1")
         }
@@ -4135,6 +4141,9 @@ impl<'a> PostgresTransferDestination<'a> {
                     }
                     "authority_audit" => publish_authority_audit(transaction, row)?,
                     "room_integrity" => publish_room_integrity(transaction, row, created_roots)?,
+                    "room_operational_history_roots_v2" => {
+                        publish_operational_history_root(transaction, row)?;
+                    }
                     "room_operational_mmr_receipts_v1" => {
                         publish_operational_mmr_receipt(transaction, row)?;
                     }
@@ -4229,6 +4238,10 @@ fn verify_native_row_cardinalities(
             "SELECT count(*) FROM worldstream_authority_audit",
         ),
         (
+            "room_operational_history_roots_v2",
+            "SELECT count(*) FROM worldstream_room_operational_history_roots_v2",
+        ),
+        (
             "room_operational_mmr_receipts_v1",
             "SELECT count(*) FROM worldstream_room_operational_mmr_receipts_v1",
         ),
@@ -4316,6 +4329,7 @@ const PUBLICATION_ORDER: &[&str] = &[
     "authority_change_receipts",
     "authority_audit",
     "room_integrity",
+    "room_operational_history_roots_v2",
     "room_operational_mmr_receipts_v1",
     "room_operational_mmr_nodes_v1",
     "room_members",
@@ -4836,6 +4850,17 @@ fn ensure_native_operational_row_present(
                 .query_opt(
                     "SELECT 1 FROM worldstream_room_roots WHERE room_id = $1",
                     &[&room_id],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .is_some()
+        }
+        "room_operational_history_roots_v2" => {
+            let room_id = native_text(row, 0)?;
+            let domain = native_text(row, 1)?;
+            transaction
+                .query_opt(
+                    "SELECT 1 FROM worldstream_room_operational_history_roots_v2 WHERE room_id = $1 AND domain = $2",
+                    &[&room_id, &domain],
                 )
                 .map_err(PostgresTransferError::Sql)?
                 .is_some()
@@ -5538,6 +5563,50 @@ fn publish_timer(
             != state
     {
         return Err(PostgresTransferError::Canonical("timer row mismatch"));
+    }
+    Ok(())
+}
+
+fn publish_operational_history_root(
+    transaction: &mut Transaction<'_>,
+    row: &NativeRow,
+) -> Result<(), PostgresTransferError> {
+    let room_id = native_text(row, 0)?;
+    let domain = native_text(row, 1)?;
+    let entry_count = native_integer(row, 2)?;
+    let root_hash = native_blob(row, 3)?;
+    if !matches!(
+        domain.as_str(),
+        "frames" | "consequences" | "activation_decisions"
+    ) || entry_count < 0
+        || root_hash.len() != 32
+    {
+        return Err(PostgresTransferError::Canonical("operational history root"));
+    }
+    transaction
+        .execute(
+            "INSERT INTO worldstream_room_operational_history_roots_v2(room_id, domain, entry_count, root_hash) VALUES ($1, $2, $3, $4) ON CONFLICT (room_id, domain) DO NOTHING",
+            &[&room_id, &domain, &entry_count, &root_hash],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    let stored = transaction
+        .query_one(
+            "SELECT entry_count, root_hash FROM worldstream_room_operational_history_roots_v2 WHERE room_id = $1 AND domain = $2",
+            &[&room_id, &domain],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    if stored
+        .try_get::<_, i64>(0)
+        .map_err(PostgresTransferError::Sql)?
+        != entry_count
+        || stored
+            .try_get::<_, Vec<u8>>(1)
+            .map_err(PostgresTransferError::Sql)?
+            != root_hash
+    {
+        return Err(PostgresTransferError::Canonical(
+            "operational history root mismatch",
+        ));
     }
     Ok(())
 }
@@ -7114,6 +7183,19 @@ mod tests {
             native_sqlite_operational_row_width_v2("room_members"),
             Some(14)
         );
+        assert_eq!(
+            native_sqlite_operational_row_width_v2("room_operational_history_roots_v2"),
+            Some(4)
+        );
+        assert!(
+            PUBLICATION_ORDER
+                .iter()
+                .position(|table| *table == "room_operational_history_roots_v2")
+                < PUBLICATION_ORDER
+                    .iter()
+                    .position(|table| *table == "room_operational_mmr_receipts_v1")
+        );
+        assert!(native_stream_relation_count_sql("room_operational_history_roots_v2").is_some());
         assert_eq!(
             native_sqlite_operational_row_width_v2("external_input_preparations"),
             Some(3)

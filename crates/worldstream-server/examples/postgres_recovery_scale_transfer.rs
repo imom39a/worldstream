@@ -6,6 +6,7 @@
 //! measures a separate ordinary cold recovery from that checkpoint.
 
 use std::{
+    collections::BTreeSet,
     env, fs,
     fs::OpenOptions,
     io::Write,
@@ -19,7 +20,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use postgres::{Client, NoTls};
 use serde_json::json;
 use worldstream_core::{
-    Blake3DigestV1, CanonicalJsonV1, CompleteHeadV1, MemberId, RoomCheckpointOperationalWitnessV1,
+    Blake3DigestV1, CanonicalJsonV1, CompleteHeadV1, MemberId, RoomCheckpointOperationalWitnessV3,
     RoomRecoveryStorageV1, builtin_counter_registry, recover_room_from_storage_with_receipt,
 };
 use worldstream_postgres::{
@@ -218,7 +219,7 @@ fn run(arguments: Arguments) -> Result<serde_json::Value> {
         Client::connect(&runtime_dsn, NoTls).context("open runtime scale evidence reader")?;
     let checkpoint = client.query_one(
         "SELECT snapshots.room_seq, snapshots.complete_head_bytes, witness.witness_hash, witness.witness_bytes \
-         FROM worldstream_room_snapshots AS snapshots JOIN worldstream_room_snapshot_operational_witnesses AS witness \
+         FROM worldstream_room_snapshots AS snapshots JOIN worldstream_room_snapshot_operational_witnesses_v3 AS witness \
          ON witness.room_id = snapshots.room_id AND witness.room_seq = snapshots.room_seq \
          WHERE snapshots.room_id = $1 ORDER BY snapshots.room_seq DESC LIMIT 1",
         &[&ROOM],
@@ -230,7 +231,7 @@ fn run(arguments: Arguments) -> Result<serde_json::Value> {
     let checkpoint_head =
         CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&checkpoint_head_bytes)?;
     let witness =
-        RoomCheckpointOperationalWitnessV1::from_canonical_bytes(&witness_bytes, &checkpoint_head)
+        RoomCheckpointOperationalWitnessV3::from_canonical_bytes(&witness_bytes, &checkpoint_head)
             .map_err(|error| anyhow!("decode operational witness: {error:?}"))?;
     if checkpoint_seq != i64::try_from(SCALE)?
         || checkpoint_head != *expected.head()
@@ -257,6 +258,49 @@ fn run(arguments: Arguments) -> Result<serde_json::Value> {
     let activation_rows: i64 = counts.get(4);
     let membership_rows: i64 = counts.get(5);
     let semantic_receipt_rows: i64 = counts.get(6);
+    let operational_roots = client.query(
+        "SELECT roots.domain, roots.entry_count, roots.root_hash, receipts.leaf_count, receipts.root_hash \
+         FROM worldstream_room_operational_history_roots_v2 AS roots \
+         JOIN worldstream_room_operational_mmr_receipts_v1 AS receipts \
+           ON receipts.room_id = roots.room_id AND receipts.domain = roots.domain \
+         WHERE roots.room_id = $1 ORDER BY roots.domain",
+        &[&ROOM],
+    )?;
+    let expected_operational_counts = [
+        ("frames", frame_rows),
+        ("consequences", consequence_rows),
+        ("activation_decisions", activation_rows),
+    ];
+    let mut observed_domains = BTreeSet::new();
+    for row in &operational_roots {
+        let domain: String = row.get(0);
+        let entry_count: i64 = row.get(1);
+        let root_hash: Vec<u8> = row.get(2);
+        let mmr_leaf_count: i64 = row.get(3);
+        let mmr_root_hash: Vec<u8> = row.get(4);
+        let expected_count = expected_operational_counts
+            .iter()
+            .find_map(|(expected_domain, count)| (domain == *expected_domain).then_some(*count))
+            .ok_or_else(|| anyhow!("unexpected operational root domain"))?;
+        let witness_root = witness
+            .operational_history_roots()
+            .get(&domain)
+            .ok_or_else(|| anyhow!("checkpoint witness is missing an operational root"))?;
+        let witness_mmr = witness
+            .operational_mmr_receipts()
+            .get(&domain)
+            .ok_or_else(|| anyhow!("checkpoint witness is missing an operational MMR receipt"))?;
+        if !observed_domains.insert(domain.clone())
+            || entry_count != expected_count
+            || mmr_leaf_count != expected_count
+            || u64::try_from(entry_count)? != witness_root.entry_count()
+            || root_hash.as_slice() != witness_root.root_hash().as_bytes()
+            || u64::try_from(mmr_leaf_count)? != witness_mmr.leaf_count()
+            || mmr_root_hash.as_slice() != witness_mmr.root_hash().as_bytes()
+        {
+            bail!("captured witness does not match transferred operational roots");
+        }
+    }
     let members = client.query(
         "SELECT member_id, frame_head, membership_generation FROM worldstream_members \
          WHERE room_id = $1 ORDER BY member_id",
@@ -277,11 +321,9 @@ fn run(arguments: Arguments) -> Result<serde_json::Value> {
     }
     if transition_rows != i64::try_from(SCALE)?
         || usize::try_from(timer_rows)? != witness.timers().len()
-        || usize::try_from(frame_rows)? != witness.observation_frames().len()
-        || usize::try_from(consequence_rows)? != witness.observation_consequences().len()
-        || usize::try_from(activation_rows)? != witness.activation_decisions().len()
         || usize::try_from(membership_rows)? != witness.membership_generations().len()
         || members.len() != witness.observation_frame_heads().len()
+        || observed_domains.len() != expected_operational_counts.len()
         || semantic_receipt_rows < transition_rows
     {
         bail!("captured witness does not exactly match transferred operational rows");
@@ -308,11 +350,11 @@ fn run(arguments: Arguments) -> Result<serde_json::Value> {
         "state": {"head_exact": true, "core_exact": true, "activity_exact": true, "checkpoint_hash_exact": true},
         "operational_witness": {
             "timers": {"live_rows": timer_rows, "witness_entries": witness.timers().len(), "exact": true},
-            "frames": {"live_rows": frame_rows, "witness_entries": witness.observation_frames().len(), "exact": true},
-            "consequences": {"live_rows": consequence_rows, "witness_entries": witness.observation_consequences().len(), "exact": true},
+            "frames": {"live_rows": frame_rows, "witness_entries": witness.operational_history_roots()["frames"].entry_count(), "exact": true},
+            "consequences": {"live_rows": consequence_rows, "witness_entries": witness.operational_history_roots()["consequences"].entry_count(), "exact": true},
             "membership_generations": {"live_rows": members.len(), "witness_entries": witness.membership_generations().len(), "exact": true},
             "frame_heads": {"live_rows": members.len(), "witness_entries": witness.observation_frame_heads().len(), "exact": true},
-            "activation_decisions": {"live_rows": activation_rows, "witness_entries": witness.activation_decisions().len(), "exact": true}
+            "activation_decisions": {"live_rows": activation_rows, "witness_entries": witness.operational_history_roots()["activation_decisions"].entry_count(), "exact": true}
         },
         "semantic_receipts": {"live_rows": semantic_receipt_rows, "read_by_bounded_recovery": false},
         "qualification_setup": "public_sqlite_to_postgres_v2_transfer+full_verified_replay_checkpoint_capture"

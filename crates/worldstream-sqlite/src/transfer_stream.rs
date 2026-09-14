@@ -56,6 +56,7 @@ const NATIVE_STREAM_TABLES: &[&str] = &[
     "authority_change_receipts",
     "authority_audit",
     "room_integrity",
+    "room_operational_history_roots_v2",
     "room_operational_mmr_receipts_v1",
     "room_operational_mmr_nodes_v1",
     "room_members",
