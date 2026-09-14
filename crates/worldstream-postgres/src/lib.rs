@@ -31,17 +31,18 @@ pub use migrations::{
     ACTIVATION_BACKLOG_POLICY_MIGRATION_ID, AUTHORITY_FACTS_MIGRATION_ID, AUTHORITY_MIGRATION_ID,
     CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID, CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID,
     CHECKPOINT_OPERATIONAL_WITNESS_V3_MIGRATION_ID,
-    CURRENT_TIMERS_MIGRATION_ID,
-    DEPLOYMENT_IDENTITY_MIGRATION_ID, DEPLOYMENT_METADATA_MIGRATION_ID,
-    EXTERNAL_INPUT_PREPARATION_MIGRATION_ID, FixtureMigrationProvider, INITIAL_MIGRATION_ID,
-    KERNEL_CONFORMANCE_MIGRATION_ID, KERNEL_PARITY_MIGRATION_ID, LOGICAL_HISTORY_ID,
-    MIGRATION_0002_SQL, MIGRATION_0003_SQL, MIGRATION_0004_SQL, MIGRATION_0005_SQL,
-    MIGRATION_0006_SQL, MIGRATION_0007_SQL, MIGRATION_0008_SQL, MIGRATION_0009_SQL,
-    MIGRATION_0010_SQL, MIGRATION_0011_SQL, MIGRATION_0012_SQL, MIGRATION_0013_SQL,
-    MIGRATION_0014_SQL, MIGRATION_0015_SQL, MIGRATION_0016_SQL, MIGRATION_0017_SQL,
-    MIGRATION_0018_SQL, MIGRATION_0019_SQL, MIGRATION_0020_SQL, MIGRATION_0021_SQL,
-    MIGRATION_0022_SQL, MIGRATION_0023_SQL, MigrationDescriptor,
-    MigrationFailpoint, MigrationRecord, MigrationVerification, MigrationVerificationError,
+    CURRENT_TIMERS_MIGRATION_ID, DEPLOYMENT_IDENTITY_MIGRATION_ID,
+    DEPLOYMENT_METADATA_MIGRATION_ID, EXTERNAL_INPUT_PREPARATION_MIGRATION_ID,
+    FixtureMigrationProvider, INITIAL_MIGRATION_ID, KERNEL_CONFORMANCE_MIGRATION_ID,
+    KERNEL_PARITY_MIGRATION_ID, LOGICAL_HISTORY_ID, MIGRATION_0002_SQL, MIGRATION_0003_SQL,
+    MIGRATION_0004_SQL, MIGRATION_0005_SQL, MIGRATION_0006_SQL, MIGRATION_0007_SQL,
+    MIGRATION_0008_SQL, MIGRATION_0009_SQL, MIGRATION_0010_SQL, MIGRATION_0011_SQL,
+    MIGRATION_0012_SQL, MIGRATION_0013_SQL, MIGRATION_0014_SQL, MIGRATION_0015_SQL,
+    MIGRATION_0016_SQL, MIGRATION_0017_SQL, MIGRATION_0018_SQL, MIGRATION_0019_SQL,
+    MIGRATION_0020_SQL, MIGRATION_0021_SQL, MIGRATION_0022_SQL, MIGRATION_0023_SQL,
+    MigrationDescriptor,
+    MigrationFailpoint,
+    MigrationRecord, MigrationVerification, MigrationVerificationError,
     OBSERVATION_RESET_GENERATION_MIGRATION_ID, OBSERVATION_RETENTION_MIGRATION_ID,
     OPERATIONAL_HISTORY_MMR_MIGRATION_ID, OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID,
     SCHEMA_CONTRACT_ID, SCHEMA_FINGERPRINT_MATERIAL,
@@ -92,34 +93,33 @@ use worldstream_core::{
     AuthorizedReplayV1, AuthorizedRunnerControlV1, AuthorizedTimerFiredV1, Blake3DigestV1,
     CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V1, CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2,
     CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V3,
-    CanonicalJsonV1, CanonicalRequestHashV1,
-    CompleteHeadV1, CoreAdministrationRequestV1, CoreRecordedAt, CoreTraceV1,
-    DiagnosticOperationV1, DiagnosticTargetV1, ExternalInputRecordedAt, ExternalInputV1, GenesisV1,
-    HistoricalEvidencePageOutcomeV1, HistoricalEvidenceReferenceV1, HistoricalReplayErrorV1,
-    HistoricalReplayProjectionV1, HostClockSampleV1, IntegrityGenerationV1,
-    MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1, MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES,
-    MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1,
-    MAX_HISTORICAL_EVIDENCE_TIME_MS_V1, MAX_PENDING_REFRESH_AGE_MS_V1,
-    MAX_PENDING_REFRESH_BYTES_V1, MemberId, MembershipStandingV1, MembershipV1,
-    OperationIdentityV1, OperationalHistoryRootV2, OperationalMmrNodeV1,
-    OperationalMmrReceiptV1, OperationalMmrV1, PackRegistryV1, PackRevisionLockV1, PackViewerV1,
-    ParticipantActionAuthorityV1, ParticipantActionRequestV1, ParticipantActionV1,
-    PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1, PreparedCreationPersistenceV1,
-    PreparedExistingIntentV1, PreparedMembershipMaterializationV1,
+    CanonicalJsonV1, CanonicalRequestHashV1, CompleteHeadV1, CoreAdministrationRequestV1,
+    CoreRecordedAt, CoreTraceV1, DiagnosticOperationV1, DiagnosticTargetV1,
+    ExternalInputRecordedAt, ExternalInputV1, GenesisV1, HistoricalEvidencePageOutcomeV1,
+    HistoricalEvidenceReferenceV1, HistoricalReplayErrorV1, HistoricalReplayProjectionV1,
+    HostClockSampleV1, IntegrityGenerationV1, MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1,
+    MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES, MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1,
+    MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_TIME_MS_V1,
+    MAX_PENDING_REFRESH_AGE_MS_V1, MAX_PENDING_REFRESH_BYTES_V1, MemberId, MembershipStandingV1,
+    MembershipV1, OperationIdentityV1, OperationalHistoryRootV2, OperationalMmrNodeCoordinateV1,
+    OperationalMmrNodeV1, OperationalMmrProofNodeV1, OperationalMmrProofV1,
+    OperationalMmrReceiptV1, OperationalMmrV1, PackRegistryV1,
+    PackRevisionLockV1, PackViewerV1, ParticipantActionAuthorityV1, ParticipantActionRequestV1,
+    ParticipantActionV1, PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1,
+    PreparedCreationPersistenceV1, PreparedExistingIntentV1, PreparedMembershipMaterializationV1,
     PreparedObservationConsequenceV1, PreparedRoomCommitV1, PreparedRoomWriteV1,
     PreparedTimerMutationKindV1, RecordedStimulusV1, RecoveredActivationDecisionV1,
     RecoveredObservationConsequenceV1, RecoveredObservationFrameV1,
     RecoveredRoomMaterializationsV1, RecoveredTimerMaterializationV1, RecoveredTimerStateV1,
     RecoveryIntegrityDispositionV1, ReplayFailureClassV1, ReplayStorageVerificationV1,
-    StorageHistoryPreflightV1,
-    OperationalHistoryRootV2, ResolutionStatusV1, ResolveOutcomeV1,
-    RoomCheckpointOperationalWitnessV1, RoomCheckpointOperationalWitnessV2,
-    RoomCheckpointOperationalWitnessV3,
-    RoomCommitResolutionV1, RoomCommitStorageV1, RoomId, RoomIntegrityStateV1,
-    RoomIntegrityStatusV1, RoomRecoveryCandidateV1, RoomRecoveryCheckpointV1, RoomRecoveryErrorV1,
-    RoomRecoveryStorageV1, RoomSequenceV1, RoomStatusV1, RunnerControlAdapterInputV1,
-    RunnerControlOperationV1, StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1,
-    TimerGenerationV1, TimerId, TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1,
+    ResolutionStatusV1, ResolveOutcomeV1, RoomCheckpointOperationalWitnessV1,
+    RoomCheckpointOperationalWitnessV2, RoomCheckpointOperationalWitnessV3,
+    RoomCommitResolutionV1, RoomCommitStorageV1, RoomId,
+    RoomIntegrityStateV1, RoomIntegrityStatusV1, RoomRecoveryCandidateV1, RoomRecoveryCheckpointV1,
+    RoomRecoveryErrorV1, RoomRecoveryStorageV1, RoomSequenceV1, RoomStatusV1,
+    RunnerControlAdapterInputV1, RunnerControlOperationV1, StorageHistoryPreflightV1,
+    StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, TimerId,
+    TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1,
     VerifiedCurrentRoomMaterializationV1, ViewerAdapterInputV1,
     activation_refresh_budget_allows_v1, commit_existing_room, prepare_activation_context,
     projection_hash_for_canonical_bytes,
@@ -1286,11 +1286,28 @@ impl PostgresAdmin {
         &self,
         room_id: &str,
     ) -> Result<PostgresRoomVerification, PostgresRoomVerificationError> {
-        let result = Client::connect(&self.config.dsn, self.config.tls.clone())
-            .map_err(PostgresRoomVerificationError::Connection)
-            .and_then(|mut client| {
-                Self::verify_room_with_client(&mut client, room_id, false, true)
-            });
+        let result = (|| {
+            let mut client = Client::connect(&self.config.dsn, self.config.tls.clone())
+                .map_err(PostgresRoomVerificationError::Connection)?;
+            let verification = Self::verify_room_with_client(&mut client, room_id, false, true)?;
+            // This is the explicit administrative path permitted to scan the
+            // complete MMR inventory. Bounded recovery and serving reads use
+            // receipts/proofs only.
+            let mut tx = client
+                .transaction()
+                .map_err(PostgresRoomVerificationError::Sql)?;
+            if let Some(receipts) = capture_operational_mmr_receipts(&mut tx, room_id)
+                .map_err(PostgresRoomVerificationError::Sql)?
+            {
+                verify_postgres_operational_mmr_full(&mut tx, room_id, &receipts).map_err(|_| {
+                    PostgresRoomVerificationError::Corrupt {
+                        what: "operational MMR",
+                    }
+                })?;
+            }
+            tx.commit().map_err(PostgresRoomVerificationError::Sql)?;
+            Ok(verification)
+        })();
         if let Err(error) = &result {
             let kind = match error {
                 PostgresRoomVerificationError::Connection(_) => {
@@ -5478,11 +5495,12 @@ impl PostgresRoomStore {
             )
             .map_err(PostgresRoomVerificationError::Sql)?
             .ok_or(PostgresRoomVerificationError::Corrupt { what: "Genesis" })?;
-        let pack_lock_bytes: Vec<u8> = genesis_row.try_get(0).map_err(|_| {
-            PostgresRoomVerificationError::Corrupt {
-                what: "pack revision lock",
-            }
-        })?;
+        let pack_lock_bytes: Vec<u8> =
+            genesis_row
+                .try_get(0)
+                .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                    what: "pack revision lock",
+                })?;
         let genesis_bytes: Vec<u8> = genesis_row
             .try_get(1)
             .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Genesis" })?;
@@ -5494,10 +5512,11 @@ impl PostgresRoomStore {
         {
             return Err(PostgresRoomVerificationError::Corrupt { what: "Genesis" });
         }
-        let pack_lock = PackRevisionLockV1::from_canonical_bytes(&pack_lock_bytes, genesis.pack_digest())
-            .map_err(|_| PostgresRoomVerificationError::Corrupt {
-                what: "pack revision lock",
-            })?;
+        let pack_lock =
+            PackRevisionLockV1::from_canonical_bytes(&pack_lock_bytes, genesis.pack_digest())
+                .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                    what: "pack revision lock",
+                })?;
         if pack_lock.canonical_bytes().ok().as_deref() != Some(pack_lock_bytes.as_slice())
             || registry
                 .load_retained(head.pack_digest())
@@ -5520,30 +5539,33 @@ impl PostgresRoomStore {
             .ok_or(PostgresRoomVerificationError::Corrupt {
                 what: "materialization",
             })?;
-        let core_state_bytes: Vec<u8> = materializations.try_get(0).map_err(|_| {
-            PostgresRoomVerificationError::Corrupt {
-                what: "Core materialization",
-            }
-        })?;
-        let activity_state_bytes: Vec<u8> = materializations.try_get(1).map_err(|_| {
-            PostgresRoomVerificationError::Corrupt {
-                what: "Activity materialization",
-            }
-        })?;
+        let core_state_bytes: Vec<u8> =
+            materializations
+                .try_get(0)
+                .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                    what: "Core materialization",
+                })?;
+        let activity_state_bytes: Vec<u8> =
+            materializations
+                .try_get(1)
+                .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                    what: "Activity materialization",
+                })?;
         CanonicalJsonV1::decode_canonical::<worldstream_core::CoreRoomStateV1>(&core_state_bytes)
             .map_err(|_| PostgresRoomVerificationError::Corrupt {
-                what: "Core materialization",
-            })?;
+            what: "Core materialization",
+        })?;
         CanonicalJsonV1::from_canonical_bytes(&activity_state_bytes).map_err(|_| {
             PostgresRoomVerificationError::Corrupt {
                 what: "Activity materialization",
             }
         })?;
 
-        let mut preflight = StorageHistoryPreflightV1::begin(&genesis_bytes)
-            .map_err(|_| PostgresRoomVerificationError::Corrupt {
+        let mut preflight = StorageHistoryPreflightV1::begin(&genesis_bytes).map_err(|_| {
+            PostgresRoomVerificationError::Corrupt {
                 what: "Transition lineage",
-            })?;
+            }
+        })?;
         let mut after = 0_i64;
         let mut expected = 1_i64;
         loop {
@@ -5558,25 +5580,29 @@ impl PostgresRoomStore {
             }
             let mut page = Vec::with_capacity(rows.len());
             for row in rows {
-                let sequence: i64 = row.try_get(0).map_err(|_| {
-                    PostgresRoomVerificationError::Corrupt {
-                        what: "Transition sequence",
-                    }
-                })?;
+                let sequence: i64 =
+                    row.try_get(0)
+                        .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                            what: "Transition sequence",
+                        })?;
                 if sequence != expected {
                     return Err(PostgresRoomVerificationError::Corrupt {
                         what: "Transition sequence",
                     });
                 }
-                page.push(row.try_get(1).map_err(|_| {
-                    PostgresRoomVerificationError::Corrupt { what: "Transition" }
-                })?);
+                page.push(
+                    row.try_get(1)
+                        .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                            what: "Transition",
+                        })?,
+                );
                 after = sequence;
-                expected = expected.checked_add(1).ok_or(
-                    PostgresRoomVerificationError::Corrupt {
-                        what: "Transition sequence",
-                    },
-                )?;
+                expected =
+                    expected
+                        .checked_add(1)
+                        .ok_or(PostgresRoomVerificationError::Corrupt {
+                            what: "Transition sequence",
+                        })?;
             }
             preflight.consume_transition_page(&page).map_err(|_| {
                 PostgresRoomVerificationError::Corrupt {
@@ -5610,14 +5636,17 @@ impl PostgresRoomStore {
             }
             let mut page = Vec::with_capacity(rows.len());
             for row in rows {
-                let sequence: i64 = row.try_get(0).map_err(|_| {
-                    PostgresRoomVerificationError::Corrupt {
-                        what: "Transition sequence",
-                    }
-                })?;
-                page.push(row.try_get(1).map_err(|_| {
-                    PostgresRoomVerificationError::Corrupt { what: "Transition" }
-                })?);
+                let sequence: i64 =
+                    row.try_get(0)
+                        .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                            what: "Transition sequence",
+                        })?;
+                page.push(
+                    row.try_get(1)
+                        .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                            what: "Transition",
+                        })?,
+                );
                 after = sequence;
             }
             executable.consume_transition_page(&page).map_err(|_| {
@@ -6539,6 +6568,12 @@ impl PostgresRoomStore {
             }
         } else {
             let cursor = cursor.ok_or(PostgresActivationError::Corrupt)?;
+            let receipts = capture_operational_mmr_receipts(&mut tx, &room_id)
+                .map_err(PostgresActivationError::Sql)?
+                .ok_or(PostgresActivationError::Corrupt)?;
+            let frame_receipt = receipts
+                .get("frames")
+                .ok_or(PostgresActivationError::Corrupt)?;
             let mut previous = cursor;
             let mut frames = Vec::new();
             let mut payload_total = 0_usize;
@@ -6546,7 +6581,7 @@ impl PostgresRoomStore {
             loop {
                 let metadata = tx
                     .query(
-                        "SELECT frame_seq, cause_room_seq, payload_hash, octet_length(payload_bytes) \
+                        "SELECT frame_seq, cause_room_seq, payload_hash, octet_length(payload_bytes), mmr_leaf_index \
                          FROM worldstream_frames WHERE room_id = $1 AND member_id = $2 \
                          AND frame_seq > $3 AND frame_seq <= $4 ORDER BY frame_seq LIMIT $5",
                         &[
@@ -6601,7 +6636,7 @@ impl PostgresRoomStore {
                 }
                 let payload_rows = tx
                     .query(
-                        "SELECT frame_seq, cause_room_seq, payload_hash, payload_bytes \
+                        "SELECT frame_seq, cause_room_seq, payload_hash, payload_bytes, mmr_leaf_index \
                          FROM worldstream_frames WHERE room_id = $1 AND member_id = $2 \
                          AND frame_seq > $3 AND frame_seq <= $4 ORDER BY frame_seq",
                         &[
@@ -6624,6 +6659,8 @@ impl PostgresRoomStore {
                         row.try_get(2).map_err(PostgresActivationError::Sql)?;
                     let payload_bytes: Vec<u8> =
                         row.try_get(3).map_err(PostgresActivationError::Sql)?;
+                    let leaf_index: Option<i64> =
+                        row.try_get(4).map_err(PostgresActivationError::Sql)?;
                     let metadata_hash: Vec<u8> = metadata_row
                         .try_get(2)
                         .map_err(PostgresActivationError::Sql)?;
@@ -6640,11 +6677,39 @@ impl PostgresRoomStore {
                     {
                         return Err(PostgresActivationError::Corrupt);
                     }
+                    if leaf_index
+                        != metadata_row
+                            .try_get(4)
+                            .map_err(PostgresActivationError::Sql)?
+                    {
+                        return Err(PostgresActivationError::Corrupt);
+                    }
                     let payload_hash =
                         Blake3DigestV1::from_str(&format!("blake3:{}", hex_bytes(&payload_hash)))
                             .map_err(|_| PostgresActivationError::Corrupt)?;
                     if payload_hash != Blake3DigestV1::hash(&payload_bytes)
                         || CanonicalJsonV1::from_canonical_bytes(&payload_bytes).is_err()
+                    {
+                        return Err(PostgresActivationError::Corrupt);
+                    }
+                    let leaf_index = leaf_index
+                        .and_then(|value| u64::try_from(value).ok())
+                        .ok_or(PostgresActivationError::Corrupt)?;
+                    let entry = operational_history_entry(&[
+                        member_id.as_bytes(),
+                        &frame_seq.to_be_bytes(),
+                        &cause_seq.to_be_bytes(),
+                        payload_hash.as_bytes(),
+                    ])
+                    .map_err(|_| PostgresActivationError::Corrupt)?;
+                    if !verify_operational_mmr_leaf(
+                        &mut tx,
+                        &room_id,
+                        frame_receipt,
+                        leaf_index,
+                        &entry,
+                    )
+                    .map_err(PostgresActivationError::Sql)?
                     {
                         return Err(PostgresActivationError::Corrupt);
                     }
@@ -7734,12 +7799,14 @@ fn inspect_postgres_checkpoint_candidate(
             &[&room_id, &checkpoint_seq],
         )
         .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
-    let v2_witness = tx.query_opt(
-        "SELECT witness_schema_version, witness_hash, witness_bytes \
+    let v2_witness = tx
+        .query_opt(
+            "SELECT witness_schema_version, witness_hash, witness_bytes \
          FROM worldstream_room_snapshot_operational_witnesses_v2 \
          WHERE room_id = $1 AND room_seq = $2 FOR SHARE",
-        &[&room_id, &checkpoint_seq],
-    ).map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+            &[&room_id, &checkpoint_seq],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
 
     let transition_rows = tx
         .query(
@@ -7775,7 +7842,6 @@ fn inspect_postgres_checkpoint_candidate(
     let activity_state_bytes: Vec<u8> = materialization
         .try_get(1)
         .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-    let checkpoint = if let Some(witness_row) = v3_witness {
     let checkpoint = if let Some(witness_row) = v3_witness {
         let schema: String = witness_row
             .try_get(0)
@@ -7813,46 +7879,86 @@ fn inspect_postgres_checkpoint_candidate(
         .with_operational_history_roots(witness.operational_history_roots().clone())
         .with_operational_mmr_receipts(witness.operational_mmr_receipts().clone())
     } else if let Some(witness_row) = v2_witness {
-        let schema: String = witness_row.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-        let hash: Vec<u8> = witness_row.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-        let bytes: Vec<u8> = witness_row.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let schema: String = witness_row
+            .try_get(0)
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let hash: Vec<u8> = witness_row
+            .try_get(1)
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let bytes: Vec<u8> = witness_row
+            .try_get(2)
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         if schema != CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2
             || bytes.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_BYTES
-            || hash != Blake3DigestV1::hash(&bytes).as_bytes() { return Ok(None); }
-        let Ok(witness) = RoomCheckpointOperationalWitnessV2::from_canonical_bytes(&bytes, &checkpoint_head) else { return Ok(None); };
+            || hash != Blake3DigestV1::hash(&bytes).as_bytes()
+        {
+            return Ok(None);
+        }
+        let Ok(witness) =
+            RoomCheckpointOperationalWitnessV2::from_canonical_bytes(&bytes, &checkpoint_head)
+        else {
+            return Ok(None);
+        };
         RoomRecoveryCheckpointV1::new(
-            checkpoint_head.clone(), record_bytes.clone(), checkpoint_core_bytes.clone(), checkpoint_activity_bytes.clone(), witness.timers().to_vec(),
-        ).with_operational_witnesses(Vec::new(), Vec::new(), witness.membership_generations().clone())
-            .with_bounded_operational_witnesses(witness.observation_frame_heads().clone(), Vec::new())
-            .with_operational_history_roots(witness.operational_history_roots().clone())
+            checkpoint_head.clone(),
+            record_bytes.clone(),
+            checkpoint_core_bytes.clone(),
+            checkpoint_activity_bytes.clone(),
+            witness.timers().to_vec(),
+        )
+        .with_operational_witnesses(
+            Vec::new(),
+            Vec::new(),
+            witness.membership_generations().clone(),
+        )
+        .with_bounded_operational_witnesses(witness.observation_frame_heads().clone(), Vec::new())
+        .with_operational_history_roots(witness.operational_history_roots().clone())
     } else {
-    let witness_row = tx.query_one(
-        "SELECT witness_schema_version, witness_hash, witness_bytes \
+        let witness_row = tx
+            .query_one(
+                "SELECT witness_schema_version, witness_hash, witness_bytes \
          FROM worldstream_room_snapshot_operational_witnesses \
          WHERE room_id = $1 AND room_seq = $2 FOR SHARE",
-        &[&room_id, &checkpoint_seq],
-    ).map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
-    let schema: String = witness_row.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-    let hash: Vec<u8> = witness_row.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-    let bytes: Vec<u8> = witness_row.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-    if schema != CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V1 || bytes.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_BYTES || hash != Blake3DigestV1::hash(&bytes).as_bytes() { return Ok(None); }
-    let Ok(witness) = RoomCheckpointOperationalWitnessV1::from_canonical_bytes(&bytes, &checkpoint_head) else { return Ok(None); };
-    RoomRecoveryCheckpointV1::new(
-        checkpoint_head,
-        record_bytes,
-        checkpoint_core_bytes,
-        checkpoint_activity_bytes,
-        witness.timers().to_vec(),
-    )
-    .with_operational_witnesses(
-        witness.observation_frames().to_vec(),
-        witness.observation_consequences().to_vec(),
-        witness.membership_generations().clone(),
-    )
-    .with_bounded_operational_witnesses(
-        witness.observation_frame_heads().clone(),
-        witness.activation_decisions().to_vec(),
-    )};
+                &[&room_id, &checkpoint_seq],
+            )
+            .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+        let schema: String = witness_row
+            .try_get(0)
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let hash: Vec<u8> = witness_row
+            .try_get(1)
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let bytes: Vec<u8> = witness_row
+            .try_get(2)
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        if schema != CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V1
+            || bytes.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_BYTES
+            || hash != Blake3DigestV1::hash(&bytes).as_bytes()
+        {
+            return Ok(None);
+        }
+        let Ok(witness) =
+            RoomCheckpointOperationalWitnessV1::from_canonical_bytes(&bytes, &checkpoint_head)
+        else {
+            return Ok(None);
+        };
+        RoomRecoveryCheckpointV1::new(
+            checkpoint_head,
+            record_bytes,
+            checkpoint_core_bytes,
+            checkpoint_activity_bytes,
+            witness.timers().to_vec(),
+        )
+        .with_operational_witnesses(
+            witness.observation_frames().to_vec(),
+            witness.observation_consequences().to_vec(),
+            witness.membership_generations().clone(),
+        )
+        .with_bounded_operational_witnesses(
+            witness.observation_frame_heads().clone(),
+            witness.activation_decisions().to_vec(),
+        )
+    };
     tx.commit()
         .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
     Ok(Some(RoomRecoveryCandidateV1::new_with_checkpoint(
@@ -7938,9 +8044,7 @@ fn verify_postgres_recovery_memberships(
         let expected_frame_head = expected_heads.get(&member_id).copied();
         let frame_head_matches = expected_frame_head == Some(frame_head)
             || (allow_checkpoint_boundary_successor
-                && expected_frame_head
-                    .and_then(|head| head.checked_add(1))
-                    == Some(frame_head));
+                && expected_frame_head.and_then(|head| head.checked_add(1)) == Some(frame_head));
         if expected.get(&member_id).copied() != Some(membership_bytes.as_slice())
             || !frame_head_matches
             || generation < 1
@@ -8226,7 +8330,27 @@ fn verify_postgres_recovery_activation_decisions(
     Ok(())
 }
 
-fn verify_postgres_operational_mmr(
+/// Recovery only compares the Core-advanced checkpoint receipts with the
+/// current bounded receipt/peak inventory. It does not scan retained rows.
+fn verify_postgres_operational_mmr_receipts(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    expected: &BTreeMap<String, OperationalMmrReceiptV1>,
+) -> Result<(), RoomRecoveryErrorV1> {
+    let Some(stored) = capture_operational_mmr_receipts(tx, room_id)
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)? else {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    };
+    if &stored != expected || stored.len() != OPERATIONAL_HISTORY_ROOT_DOMAINS.len() {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    Ok(())
+}
+
+/// Full ordered row/node recomputation is deliberately reserved for explicit
+/// administrative verification. It is never in the bounded checkpoint
+/// recovery guard or a serving request path.
+fn verify_postgres_operational_mmr_full(
     tx: &mut Transaction<'_>,
     room_id: &str,
     expected: &BTreeMap<String, OperationalMmrReceiptV1>,
@@ -8376,7 +8500,7 @@ fn verify_postgres_recovery_install(
         None => true,
     };
     if let Some(receipts) = recovered.operational_mmr_receipts() {
-        verify_postgres_operational_mmr(tx, room_id, receipts)?;
+        verify_postgres_operational_mmr_receipts(tx, room_id, receipts)?;
     }
     if let Some(roots) = recovered.operational_history_roots() {
         verify_postgres_v2_roots(tx, room_id, roots)?;
@@ -8393,37 +8517,55 @@ fn verify_postgres_recovery_install(
 }
 
 fn verify_postgres_v2_roots(
-    tx: &mut Transaction<'_>, room_id: &str,
+    tx: &mut Transaction<'_>,
+    room_id: &str,
     expected: &BTreeMap<String, OperationalHistoryRootV2>,
 ) -> Result<(), RoomRecoveryErrorV1> {
     let rows = tx.query("SELECT domain, entry_count, root_hash FROM worldstream_room_operational_history_roots_v2 WHERE room_id = $1 ORDER BY domain FOR SHARE", &[&room_id])
         .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
-    if rows.len() != expected.len() { return Err(RoomRecoveryErrorV1::Corrupt); }
+    if rows.len() != expected.len() {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
     for row in rows {
         let domain: String = row.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let count: i64 = row.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let hash: Vec<u8> = row.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-        let Some(root) = expected.get(&domain) else { return Err(RoomRecoveryErrorV1::Corrupt); };
-        if count != recovery_i64(root.entry_count())? || hash.as_slice() != root.root_hash().as_bytes() { return Err(RoomRecoveryErrorV1::Corrupt); }
+        let Some(root) = expected.get(&domain) else {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        };
+        if count != recovery_i64(root.entry_count())?
+            || hash.as_slice() != root.root_hash().as_bytes()
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
     }
     Ok(())
 }
 
 fn verify_postgres_v2_current_timers(
-    tx: &mut Transaction<'_>, room_id: &str, recovered: &RecoveredRoomMaterializationsV1,
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    recovered: &RecoveredRoomMaterializationsV1,
 ) -> Result<(), RoomRecoveryErrorV1> {
     let rows = tx.query("SELECT timer_id, generation, scheduled_for, payload_bytes, state FROM worldstream_room_current_timers_v2 WHERE room_id = $1 ORDER BY timer_id FOR SHARE", &[&room_id])
         .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
-    if rows.len() != recovered.timers().len() { return Err(RoomRecoveryErrorV1::Corrupt); }
+    if rows.len() != recovered.timers().len() {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
     for (row, expected) in rows.iter().zip(recovered.timers()) {
         let timer_id: String = row.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let generation: i64 = row.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let scheduled_for: String = row.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let payload: Vec<u8> = row.try_get(3).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let state: String = row.try_get(4).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-        if timer_id != expected.timer_id().to_string() || generation != recovery_i64(expected.generation().get())?
-            || scheduled_for != expected.scheduled_for().as_str() || payload != expected.canonical_payload_bytes()
-            || state != recovered_postgres_timer_state(expected.state()) { return Err(RoomRecoveryErrorV1::Corrupt); }
+        if timer_id != expected.timer_id().to_string()
+            || generation != recovery_i64(expected.generation().get())?
+            || scheduled_for != expected.scheduled_for().as_str()
+            || payload != expected.canonical_payload_bytes()
+            || state != recovered_postgres_timer_state(expected.state())
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
     }
     Ok(())
 }
@@ -10264,12 +10406,22 @@ const MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2: i64 = 1_024;
 const MAX_CHECKPOINT_OPERATIONAL_WITNESS_VALUE_BYTES_V2: i32 = 4 * 1024;
 
 fn capture_checkpoint_operational_witness_v2(
-    tx: &mut Transaction<'_>, room_id: &str, expected_head: &CompleteHeadV1,
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    expected_head: &CompleteHeadV1,
     expected_head_bytes: &[u8],
 ) -> Result<Option<(Vec<u8>, Blake3DigestV1)>, postgres::Error> {
-    let Some(row) = tx.query_opt("SELECT head_bytes FROM worldstream_room_roots WHERE room_id = $1 FOR SHARE", &[&room_id])? else { return Ok(None); };
+    let Some(row) = tx.query_opt(
+        "SELECT head_bytes FROM worldstream_room_roots WHERE room_id = $1 FOR SHARE",
+        &[&room_id],
+    )?
+    else {
+        return Ok(None);
+    };
     let stored_head: Vec<u8> = row.try_get(0)?;
-    if stored_head != expected_head_bytes { return Ok(None); }
+    if stored_head != expected_head_bytes {
+        return Ok(None);
+    }
     let mut roots = BTreeMap::new();
     for row in tx.query("SELECT domain, entry_count, root_hash FROM worldstream_room_operational_history_roots_v2 WHERE room_id = $1 ORDER BY domain LIMIT 4 FOR SHARE", &[&room_id])? {
         let domain: String = row.try_get(0)?;
@@ -10279,7 +10431,9 @@ fn capture_checkpoint_operational_witness_v2(
         let Ok(root) = OperationalHistoryRootV2::new(domain.clone(), count, Blake3DigestV1::from_bytes(hash)) else { return Ok(None); };
         if roots.insert(domain, root).is_some() { return Ok(None); }
     }
-    if roots.len() != 3 { return Ok(None); }
+    if roots.len() != 3 {
+        return Ok(None);
+    }
     let mut timers = Vec::new();
     for row in tx.query(
         "SELECT timer_id, generation, scheduled_for, CASE WHEN octet_length(payload_bytes) <= $2 THEN payload_bytes ELSE NULL END, state FROM worldstream_room_current_timers_v2 WHERE room_id = $1 ORDER BY timer_id LIMIT $3 FOR SHARE",
@@ -10292,22 +10446,39 @@ fn capture_checkpoint_operational_witness_v2(
         let state = match state.as_str() { "scheduled" => RecoveredTimerStateV1::Scheduled, "fired" => RecoveredTimerStateV1::Fired, "cancelled" => RecoveredTimerStateV1::Cancelled, _ => return Ok(None) };
         timers.push(RecoveredTimerMaterializationV1::new(timer_id, generation, scheduled_for, payload, state));
     }
-    if timers.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize { return Ok(None); }
-    let mut heads = BTreeMap::new(); let mut generations = BTreeMap::new();
+    if timers.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize {
+        return Ok(None);
+    }
+    let mut heads = BTreeMap::new();
+    let mut generations = BTreeMap::new();
     for row in tx.query("SELECT member_id, frame_head, membership_generation FROM worldstream_members WHERE room_id = $1 ORDER BY member_id LIMIT $2 FOR SHARE", &[&room_id, &(MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 + 1)])? {
         let member_id: String = row.try_get(0)?; let frame_head: i64 = row.try_get(1)?; let generation: i64 = row.try_get(2)?;
         let (Ok(member), Ok(frame_head)) = (member_id.parse::<MemberId>(), u64::try_from(frame_head)) else { return Ok(None); };
         if generation < 1 || heads.insert(member, frame_head).is_some() || generations.insert(member_id, generation).is_some() { return Ok(None); }
     }
-    if heads.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize { return Ok(None); }
-    let Ok(witness) = RoomCheckpointOperationalWitnessV2::new(expected_head.clone(), timers, heads, generations, roots) else { return Ok(None); };
-    let Ok(bytes) = witness.canonical_bytes() else { return Ok(None); };
-    if bytes.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_BYTES { return Ok(None); }
+    if heads.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize {
+        return Ok(None);
+    }
+    let Ok(witness) = RoomCheckpointOperationalWitnessV2::new(
+        expected_head.clone(),
+        timers,
+        heads,
+        generations,
+        roots,
+    ) else {
+        return Ok(None);
+    };
+    let Ok(bytes) = witness.canonical_bytes() else {
+        return Ok(None);
+    };
+    if bytes.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_BYTES {
+        return Ok(None);
+    }
     Ok(Some((bytes.clone(), Blake3DigestV1::hash(&bytes))))
 }
 
-fn capture_operational_mmr_receipts(
-    tx: &mut Transaction<'_>,
+fn capture_operational_mmr_receipts<C: GenericClient>(
+    tx: &mut C,
     room_id: &str,
 ) -> Result<Option<BTreeMap<String, OperationalMmrReceiptV1>>, postgres::Error> {
     let rows = tx.query(
@@ -10365,6 +10536,82 @@ fn capture_operational_mmr_receipts(
         }
     }
     Ok(Some(receipts))
+}
+
+/// Verifies one retained operational leaf by fetching only the logarithmic
+/// sibling/peak coordinates that Core prescribes. This intentionally never
+/// queries a domain prefix: recovery/admin verification owns full scans.
+fn verify_operational_mmr_leaf<C: GenericClient>(
+    client: &mut C,
+    room_id: &str,
+    receipt: &OperationalMmrReceiptV1,
+    leaf_index: u64,
+    canonical_leaf: &[u8],
+) -> Result<bool, postgres::Error> {
+    let Some(root_row) = client.query_opt(
+        "SELECT entry_count FROM worldstream_room_operational_history_roots_v2 \
+         WHERE room_id = $1 AND domain = $2 FOR SHARE",
+        &[&room_id, &receipt.domain()],
+    )? else {
+        return Ok(false);
+    };
+    let entry_count: i64 = root_row.try_get(0)?;
+    if u64::try_from(entry_count).ok() != Some(receipt.leaf_count()) {
+        return Ok(false);
+    }
+    let Ok(accumulator) = receipt.accumulator() else {
+        return Ok(false);
+    };
+    let Ok(plan) = accumulator.proof_plan(leaf_index) else {
+        return Ok(false);
+    };
+    let fetch = |coordinate: OperationalMmrNodeCoordinateV1,
+                 client: &mut C|
+     -> Result<Option<OperationalMmrProofNodeV1>, postgres::Error> {
+        let start_index = match i64::try_from(coordinate.start_index()) {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        let Some(row) = client.query_opt(
+            "SELECT node_hash FROM worldstream_room_operational_mmr_nodes_v1 \
+             WHERE room_id = $1 AND domain = $2 AND height = $3 AND start_index = $4 FOR SHARE",
+            &[&room_id, &receipt.domain(), &i16::from(coordinate.height()), &start_index],
+        )? else {
+            return Ok(None);
+        };
+        let digest: Vec<u8> = row.try_get(0)?;
+        let Ok(digest) = <[u8; 32]>::try_from(digest) else {
+            return Ok(None);
+        };
+        Ok(Some(OperationalMmrProofNodeV1::new(
+            coordinate,
+            Blake3DigestV1::from_bytes(digest),
+        )))
+    };
+    let mut siblings = Vec::with_capacity(plan.siblings().len());
+    for coordinate in plan.siblings() {
+        let Some(node) = fetch(*coordinate, client)? else {
+            return Ok(false);
+        };
+        siblings.push(node);
+    }
+    let mut other_peaks = Vec::with_capacity(plan.other_peaks().len());
+    for coordinate in plan.other_peaks() {
+        let Some(node) = fetch(*coordinate, client)? else {
+            return Ok(false);
+        };
+        other_peaks.push(node);
+    }
+    let Ok(proof) = OperationalMmrProofV1::from_nodes(
+        receipt.domain(),
+        receipt.leaf_count(),
+        leaf_index,
+        siblings,
+        other_peaks,
+    ) else {
+        return Ok(false);
+    };
+    Ok(proof.verify(canonical_leaf, receipt.root_hash()))
 }
 
 /// V3 is deliberately constructed from the V2 witness rather than changing
@@ -11356,24 +11603,59 @@ fn read_bounded_observation_frames(
     let through = captured_frame_head;
     let rows = tx
         .query(
-            "SELECT member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash FROM worldstream_frames WHERE room_id = $1 AND member_id = $2 AND frame_seq > $3 AND frame_seq <= $4 ORDER BY frame_seq",
+            "SELECT member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash, mmr_leaf_index FROM worldstream_frames WHERE room_id = $1 AND member_id = $2 AND frame_seq > $3 AND frame_seq <= $4 ORDER BY frame_seq",
             &[&room_id, &member_id, &after, &through],
         )
         .map_err(PostgresObservationError::Sql)?;
     if rows.len() != metadata.len() {
         return Err(PostgresObservationError::Corrupt);
     }
-    rows.into_iter()
-        .map(|row| {
-            Ok(PostgresFrameEvidenceV1 {
-                member_id: row.get(0),
-                frame_seq: nonnegative_u64(row.get(1))?,
-                cause_room_seq: nonnegative_u64(row.get(2))?,
-                payload_bytes: row.get(3),
-                payload_hash: row.get(4),
-            })
-        })
-        .collect()
+    let receipts = capture_operational_mmr_receipts(tx, room_id)
+        .map_err(PostgresObservationError::Sql)?
+        .ok_or(PostgresObservationError::ResetRequired)?;
+    let receipt = receipts
+        .get("frames")
+        .ok_or(PostgresObservationError::ResetRequired)?;
+    let mut frames = Vec::with_capacity(rows.len());
+    for row in rows {
+        let member_id: String = row.try_get(0).map_err(PostgresObservationError::Sql)?;
+        let frame_seq = nonnegative_u64(row.try_get(1).map_err(PostgresObservationError::Sql)?)?;
+        let cause_room_seq = nonnegative_u64(row.try_get(2).map_err(PostgresObservationError::Sql)?)?;
+        let payload_bytes: Vec<u8> = row.try_get(3).map_err(PostgresObservationError::Sql)?;
+        let payload_hash: Vec<u8> = row.try_get(4).map_err(PostgresObservationError::Sql)?;
+        let leaf_index: Option<i64> = row.try_get(5).map_err(PostgresObservationError::Sql)?;
+        let (Some(leaf_index), Ok(payload_hash_array)) =
+            (leaf_index, <[u8; 32]>::try_from(payload_hash.as_slice()))
+        else {
+            return Err(PostgresObservationError::ResetRequired);
+        };
+        let leaf_index = u64::try_from(leaf_index).map_err(|_| PostgresObservationError::ResetRequired)?;
+        if payload_hash_array != *Blake3DigestV1::hash(&payload_bytes).as_bytes()
+            || CanonicalJsonV1::from_canonical_bytes(&payload_bytes).is_err()
+        {
+            return Err(PostgresObservationError::ResetRequired);
+        }
+        let entry = operational_history_entry(&[
+            member_id.as_bytes(),
+            &frame_seq.to_be_bytes(),
+            &cause_room_seq.to_be_bytes(),
+            &payload_hash_array,
+        ])
+        .map_err(|_| PostgresObservationError::ResetRequired)?;
+        if !verify_operational_mmr_leaf(tx, room_id, receipt, leaf_index, &entry)
+            .map_err(PostgresObservationError::Sql)?
+        {
+            return Err(PostgresObservationError::ResetRequired);
+        }
+        frames.push(PostgresFrameEvidenceV1 {
+            member_id,
+            frame_seq,
+            cause_room_seq,
+            payload_bytes,
+            payload_hash: payload_hash_array.to_vec(),
+        });
+    }
+    Ok(frames)
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {
@@ -12218,6 +12500,57 @@ mod activation_backlog_provider_tests {
 #[cfg(test)]
 mod native_hydration_tests {
     use super::*;
+
+    #[test]
+    fn serving_mmr_proof_plan_is_logarithmic_without_a_prefix_inventory() {
+        let accumulator = OperationalMmrV1::from_peaks(
+            "frames",
+            1_u64 << 40,
+            vec![
+                OperationalMmrNodeV1::new(40, 0, Blake3DigestV1::hash(b"peak"))
+                    .unwrap_or_else(|error| panic!("valid peak: {error}")),
+            ],
+        )
+        .unwrap_or_else(|error| panic!("valid accumulator: {error}"));
+        let plan = accumulator
+            .proof_plan((1_u64 << 40) - 1)
+            .unwrap_or_else(|error| panic!("bounded plan: {error}"));
+        assert_eq!(plan.siblings().len(), 40);
+        assert!(plan.siblings().len() + plan.other_peaks().len() <= 128);
+    }
+
+    #[test]
+    fn serving_mmr_proof_rejects_coordinated_payload_and_hash_substitution() {
+        let member = "member-a";
+        let original_payload = b"{\"value\":1}";
+        let original_hash = Blake3DigestV1::hash(original_payload);
+        let original_leaf = operational_history_entry(&[
+            member.as_bytes(),
+            &1_u64.to_be_bytes(),
+            &1_u64.to_be_bytes(),
+            original_hash.as_bytes(),
+        ])
+        .unwrap_or_else(|_| panic!("canonical leaf"));
+        let mut accumulator =
+            OperationalMmrV1::new("frames").unwrap_or_else(|error| panic!("MMR: {error}"));
+        accumulator
+            .append(&original_leaf)
+            .unwrap_or_else(|error| panic!("append: {error}"));
+        let receipt = OperationalMmrReceiptV1::from_accumulator(&accumulator);
+        let proof = OperationalMmrProofV1::from_nodes("frames", 1, 0, Vec::new(), Vec::new())
+            .unwrap_or_else(|error| panic!("single-leaf proof: {error}"));
+        assert!(proof.verify(&original_leaf, receipt.root_hash()));
+
+        let substituted_hash = Blake3DigestV1::hash(b"{\"value\":2}");
+        let substituted_leaf = operational_history_entry(&[
+            member.as_bytes(),
+            &1_u64.to_be_bytes(),
+            &1_u64.to_be_bytes(),
+            substituted_hash.as_bytes(),
+        ])
+        .unwrap_or_else(|_| panic!("substituted leaf"));
+        assert!(!proof.verify(&substituted_leaf, receipt.root_hash()));
+    }
 
     #[test]
     fn snapshot_cadence_selects_count_or_active_time_before_work_is_materialized() {
