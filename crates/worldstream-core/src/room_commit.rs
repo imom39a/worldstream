@@ -29,6 +29,7 @@ use crate::{
     activity_pack::{ValidatedPackObservationV1, ValidatedPackViewV1},
     authority::{AuthorityFenceFactsV1, ReceiptReadAdapterInputV1, ReceiptReadTargetPolicyV1},
     canonical::encode,
+    operational_mmr::OperationalMmrReceiptV1,
     primitives::{DigestParseError, compare_timestamp_text},
     trace::{AdvanceDispositionV1, PreparedRoomTransitionV1},
 };
@@ -4575,6 +4576,7 @@ pub struct RoomRecoveryCheckpointV1 {
     observation_frame_heads: BTreeMap<MemberId, u64>,
     activation_decisions: Vec<RecoveredActivationDecisionV1>,
     operational_history_roots: Option<BTreeMap<String, OperationalHistoryRootV2>>,
+    operational_mmr_receipts: Option<BTreeMap<String, OperationalMmrReceiptV1>>,
 }
 
 impl RoomRecoveryCheckpointV1 {
@@ -4598,6 +4600,7 @@ impl RoomRecoveryCheckpointV1 {
             observation_frame_heads: BTreeMap::new(),
             activation_decisions: Vec::new(),
             operational_history_roots: None,
+            operational_mmr_receipts: None,
         }
     }
 
@@ -4651,6 +4654,16 @@ impl RoomRecoveryCheckpointV1 {
         self
     }
 
+    /// Adds the MMR receipts authenticated by a V3 checkpoint witness.
+    #[must_use]
+    pub fn with_operational_mmr_receipts(
+        mut self,
+        receipts: BTreeMap<String, OperationalMmrReceiptV1>,
+    ) -> Self {
+        self.operational_mmr_receipts = Some(receipts);
+        self
+    }
+
     pub(crate) fn head(&self) -> &CompleteHeadV1 {
         &self.checkpoint_head
     }
@@ -4685,6 +4698,11 @@ impl RoomRecoveryCheckpointV1 {
         &self,
     ) -> Option<&BTreeMap<String, OperationalHistoryRootV2>> {
         self.operational_history_roots.as_ref()
+    }
+    pub(crate) fn operational_mmr_receipts(
+        &self,
+    ) -> Option<&BTreeMap<String, OperationalMmrReceiptV1>> {
+        self.operational_mmr_receipts.as_ref()
     }
 }
 
@@ -4939,6 +4957,7 @@ pub struct RecoveredRoomMaterializationsV1 {
     membership_generations: Option<BTreeMap<String, i64>>,
     activation_decisions: Vec<RecoveredActivationDecisionV1>,
     operational_history_roots: Option<BTreeMap<String, OperationalHistoryRootV2>>,
+    operational_mmr_receipts: Option<BTreeMap<String, OperationalMmrReceiptV1>>,
 }
 redacted_debug!(RecoveredRoomMaterializationsV1);
 
@@ -5004,6 +5023,7 @@ impl RecoveredRoomMaterializationsV1 {
             membership_generations: None,
             activation_decisions: recover_activation_decisions(canonical_transition_bytes)?,
             operational_history_roots: None,
+            operational_mmr_receipts: None,
         })
     }
 
@@ -5058,6 +5078,7 @@ impl RecoveredRoomMaterializationsV1 {
             membership_generations: None,
             activation_decisions: Vec::new(),
             operational_history_roots: None,
+            operational_mmr_receipts: None,
         })
     }
 
@@ -5118,6 +5139,14 @@ impl RecoveredRoomMaterializationsV1 {
         &self,
     ) -> Option<&BTreeMap<String, OperationalHistoryRootV2>> {
         self.operational_history_roots.as_ref()
+    }
+
+    /// MMR receipts are present only when a V3 checkpoint authenticated them.
+    #[must_use]
+    pub const fn operational_mmr_receipts(
+        &self,
+    ) -> Option<&BTreeMap<String, OperationalMmrReceiptV1>> {
+        self.operational_mmr_receipts.as_ref()
     }
 }
 
@@ -5220,10 +5249,13 @@ pub const CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V1: &str =
 pub const CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2: &str =
     "worldstream/checkpoint-operational-witness/v2";
 
+/// Canonical schema marker for checkpoints that authenticate MMR receipts.
+pub const CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V3: &str =
+    "worldstream/checkpoint-operational-witness/v3";
+
 const OPERATIONAL_HISTORY_ROOT_DOMAINS_V2: [&str; 3] =
     ["frames", "consequences", "activation_decisions"];
-const OPERATIONAL_HISTORY_ROOT_DOMAIN_TAG_V2: &[u8] =
-    b"worldstream/operational-history-root/v2\0";
+const OPERATIONAL_HISTORY_ROOT_DOMAIN_TAG_V2: &[u8] = b"worldstream/operational-history-root/v2\0";
 
 /// One incrementally maintained root for a retained guard-only operational
 /// history. It is a cache-verification receipt, never a replacement for the
@@ -5282,6 +5314,165 @@ pub struct RoomCheckpointOperationalWitnessV2 {
     observation_frame_heads: BTreeMap<MemberId, u64>,
     membership_generations: BTreeMap<String, i64>,
     operational_history_roots: BTreeMap<String, OperationalHistoryRootV2>,
+}
+
+/// A bounded checkpoint witness that preserves the frozen V2 receipts and
+/// additionally authenticates the MMR roots used by serving reads.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoomCheckpointOperationalWitnessV3 {
+    witness_schema: String,
+    checkpoint_head: CompleteHeadV1,
+    timers: Vec<RecoveredTimerMaterializationV1>,
+    observation_frame_heads: BTreeMap<MemberId, u64>,
+    membership_generations: BTreeMap<String, i64>,
+    operational_history_roots: BTreeMap<String, OperationalHistoryRootV2>,
+    operational_mmr_receipts: BTreeMap<String, OperationalMmrReceiptV1>,
+}
+
+impl RoomCheckpointOperationalWitnessV3 {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        checkpoint_head: CompleteHeadV1,
+        timers: Vec<RecoveredTimerMaterializationV1>,
+        observation_frame_heads: BTreeMap<MemberId, u64>,
+        membership_generations: BTreeMap<String, i64>,
+        operational_history_roots: BTreeMap<String, OperationalHistoryRootV2>,
+        operational_mmr_receipts: BTreeMap<String, OperationalMmrReceiptV1>,
+    ) -> Result<Self, RoomRecoveryErrorV1> {
+        let witness = Self {
+            witness_schema: CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V3.to_owned(),
+            checkpoint_head,
+            timers,
+            observation_frame_heads,
+            membership_generations,
+            operational_history_roots,
+            operational_mmr_receipts,
+        };
+        witness.validate()?;
+        Ok(witness)
+    }
+
+    pub fn from_canonical_bytes(
+        bytes: &[u8],
+        expected_head: &CompleteHeadV1,
+    ) -> Result<Self, RoomRecoveryErrorV1> {
+        let witness = CanonicalJsonV1::decode_canonical::<Self>(bytes)
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        if &witness.checkpoint_head != expected_head {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+        witness.validate()?;
+        Ok(witness)
+    }
+
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, RoomRecoveryErrorV1> {
+        encode(self).map_err(|_| RoomRecoveryErrorV1::Corrupt)
+    }
+
+    #[must_use]
+    pub const fn checkpoint_head(&self) -> &CompleteHeadV1 {
+        &self.checkpoint_head
+    }
+
+    #[must_use]
+    pub fn timers(&self) -> &[RecoveredTimerMaterializationV1] {
+        &self.timers
+    }
+
+    #[must_use]
+    pub const fn observation_frame_heads(&self) -> &BTreeMap<MemberId, u64> {
+        &self.observation_frame_heads
+    }
+
+    #[must_use]
+    pub const fn membership_generations(&self) -> &BTreeMap<String, i64> {
+        &self.membership_generations
+    }
+
+    #[must_use]
+    pub const fn operational_history_roots(&self) -> &BTreeMap<String, OperationalHistoryRootV2> {
+        &self.operational_history_roots
+    }
+
+    #[must_use]
+    pub const fn operational_mmr_receipts(&self) -> &BTreeMap<String, OperationalMmrReceiptV1> {
+        &self.operational_mmr_receipts
+    }
+
+    fn validate(&self) -> Result<(), RoomRecoveryErrorV1> {
+        if self.witness_schema != CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V3 {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+        validate_bounded_checkpoint_state(
+            &self.timers,
+            &self.observation_frame_heads,
+            &self.membership_generations,
+        )?;
+        validate_operational_history_roots(&self.operational_history_roots)?;
+        if self.operational_mmr_receipts.len() != OPERATIONAL_HISTORY_ROOT_DOMAINS_V2.len()
+            || OPERATIONAL_HISTORY_ROOT_DOMAINS_V2.iter().any(|domain| {
+                self.operational_mmr_receipts
+                    .get(*domain)
+                    .is_none_or(|receipt| {
+                        receipt.domain() != *domain || receipt.accumulator().is_err()
+                    })
+            })
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+        Ok(())
+    }
+}
+
+fn validate_bounded_checkpoint_state(
+    timers: &[RecoveredTimerMaterializationV1],
+    observation_frame_heads: &BTreeMap<MemberId, u64>,
+    membership_generations: &BTreeMap<String, i64>,
+) -> Result<(), RoomRecoveryErrorV1> {
+    let members = observation_frame_heads
+        .keys()
+        .map(ToString::to_string)
+        .collect::<std::collections::BTreeSet<_>>();
+    if members.len() != observation_frame_heads.len()
+        || members.len() != membership_generations.len()
+        || membership_generations
+            .iter()
+            .any(|(member_id, generation)| {
+                *generation < 1
+                    || !members.contains(member_id)
+                    || member_id.parse::<MemberId>().is_err()
+            })
+    {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    let mut timer_ids = std::collections::BTreeSet::new();
+    let mut scheduled = std::collections::BTreeSet::new();
+    for timer in timers {
+        if !timer_ids.insert(timer.timer_id().clone())
+            || CanonicalJsonV1::from_canonical_bytes(timer.canonical_payload_bytes()).is_err()
+            || (timer.state() == RecoveredTimerStateV1::Scheduled
+                && !scheduled.insert(timer.timer_id().clone()))
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+    }
+    Ok(())
+}
+
+fn validate_operational_history_roots(
+    roots: &BTreeMap<String, OperationalHistoryRootV2>,
+) -> Result<(), RoomRecoveryErrorV1> {
+    if roots.len() != OPERATIONAL_HISTORY_ROOT_DOMAINS_V2.len()
+        || OPERATIONAL_HISTORY_ROOT_DOMAINS_V2.iter().any(|domain| {
+            roots
+                .get(*domain)
+                .is_none_or(|root| root.domain() != *domain)
+        })
+    {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    Ok(())
 }
 
 impl RoomCheckpointOperationalWitnessV2 {
@@ -5351,42 +5542,12 @@ impl RoomCheckpointOperationalWitnessV2 {
         if self.witness_schema != CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2 {
             return Err(RoomRecoveryErrorV1::Corrupt);
         }
-        let members = self
-            .observation_frame_heads
-            .keys()
-            .map(ToString::to_string)
-            .collect::<std::collections::BTreeSet<_>>();
-        if members.len() != self.observation_frame_heads.len()
-            || members.len() != self.membership_generations.len()
-            || self.membership_generations.iter().any(|(member_id, generation)| {
-                *generation < 1
-                    || !members.contains(member_id)
-                    || member_id.parse::<MemberId>().is_err()
-            })
-        {
-            return Err(RoomRecoveryErrorV1::Corrupt);
-        }
-        let mut timer_ids = std::collections::BTreeSet::new();
-        let mut scheduled = std::collections::BTreeSet::new();
-        for timer in &self.timers {
-            if !timer_ids.insert(timer.timer_id().clone())
-                || CanonicalJsonV1::from_canonical_bytes(timer.canonical_payload_bytes()).is_err()
-                || (timer.state() == RecoveredTimerStateV1::Scheduled
-                    && !scheduled.insert(timer.timer_id().clone()))
-            {
-                return Err(RoomRecoveryErrorV1::Corrupt);
-            }
-        }
-        if self.operational_history_roots.len() != OPERATIONAL_HISTORY_ROOT_DOMAINS_V2.len()
-            || OPERATIONAL_HISTORY_ROOT_DOMAINS_V2.iter().any(|domain| {
-                self.operational_history_roots.get(*domain).is_none_or(|root| {
-                    root.domain() != *domain
-                })
-            })
-        {
-            return Err(RoomRecoveryErrorV1::Corrupt);
-        }
-        Ok(())
+        validate_bounded_checkpoint_state(
+            &self.timers,
+            &self.observation_frame_heads,
+            &self.membership_generations,
+        )?;
+        validate_operational_history_roots(&self.operational_history_roots)
     }
 }
 
@@ -6079,6 +6240,17 @@ fn recover_materializations(
             advance_operational_history_roots(roots, report, &candidate.canonical_transition_bytes)
         })
         .transpose()?;
+    let operational_mmr_receipts = candidate
+        .checkpoint()
+        .and_then(RoomRecoveryCheckpointV1::operational_mmr_receipts)
+        .map(|receipts| {
+            advance_operational_mmr_receipts(
+                receipts,
+                report,
+                &candidate.canonical_transition_bytes,
+            )
+        })
+        .transpose()?;
     Ok(RecoveredRoomMaterializationsV1 {
         room_status: report.final_state().core_state().room_status(),
         canonical_core_state_bytes,
@@ -6195,7 +6367,99 @@ fn recover_materializations(
             decisions
         },
         operational_history_roots,
+        operational_mmr_receipts,
     })
+}
+
+fn advance_operational_mmr_receipts(
+    receipts: &BTreeMap<String, OperationalMmrReceiptV1>,
+    report: &crate::ReplayReportV1,
+    tail_transition_bytes: &[Vec<u8>],
+) -> Result<BTreeMap<String, OperationalMmrReceiptV1>, RoomRecoveryErrorV1> {
+    let mut accumulators = BTreeMap::new();
+    for domain in OPERATIONAL_HISTORY_ROOT_DOMAINS_V2 {
+        let receipt = receipts.get(domain).ok_or(RoomRecoveryErrorV1::Corrupt)?;
+        if receipt.domain() != domain {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+        accumulators.insert(
+            domain.to_owned(),
+            receipt
+                .accumulator()
+                .map_err(|_| RoomRecoveryErrorV1::Corrupt)?,
+        );
+    }
+    if accumulators.len() != receipts.len() {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    for consequence in report.observation_consequences() {
+        let (domain, entry) = match consequence {
+            crate::trace::ReplayObservationConsequenceV1::ObservationFrame(frame) => (
+                "frames",
+                operational_history_entry_v2(&[
+                    frame.member_id().to_string().as_bytes(),
+                    &frame.frame_seq().to_be_bytes(),
+                    &frame.cause_room_seq().get().to_be_bytes(),
+                    frame.payload_hash().as_bytes(),
+                ])?,
+            ),
+            crate::trace::ReplayObservationConsequenceV1::ResetRequired {
+                member_id,
+                cause_room_seq,
+                projection_hash,
+            } => (
+                "consequences",
+                operational_history_entry_v2(&[
+                    member_id.to_string().as_bytes(),
+                    &cause_room_seq.get().to_be_bytes(),
+                    b"reset_required",
+                    projection_hash.as_bytes(),
+                ])?,
+            ),
+            crate::trace::ReplayObservationConsequenceV1::VisibilityLost {
+                member_id,
+                cause_room_seq,
+            } => (
+                "consequences",
+                operational_history_entry_v2(&[
+                    member_id.to_string().as_bytes(),
+                    &cause_room_seq.get().to_be_bytes(),
+                    b"visibility_lost",
+                ])?,
+            ),
+        };
+        accumulators
+            .get_mut(domain)
+            .ok_or(RoomRecoveryErrorV1::Corrupt)?
+            .append(&entry)
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    }
+    for decision in recover_activation_decisions(tail_transition_bytes)? {
+        let target_member_id = decision
+            .target_member_id()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let entry = operational_history_entry_v2(&[
+            &decision.cause_room_seq().get().to_be_bytes(),
+            decision.decision_id().as_bytes(),
+            target_member_id.as_bytes(),
+            decision.canonical_decision_bytes(),
+        ])?;
+        accumulators
+            .get_mut("activation_decisions")
+            .ok_or(RoomRecoveryErrorV1::Corrupt)?
+            .append(&entry)
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+    }
+    Ok(accumulators
+        .into_iter()
+        .map(|(domain, accumulator)| {
+            (
+                domain,
+                OperationalMmrReceiptV1::from_accumulator(&accumulator),
+            )
+        })
+        .collect())
 }
 
 fn advance_operational_history_roots(
@@ -6287,7 +6551,10 @@ fn append_operational_history_root_v2(
     domain: &str,
     entry: &[u8],
 ) -> Result<(), RoomRecoveryErrorV1> {
-    let root = roots.get(domain).cloned().ok_or(RoomRecoveryErrorV1::Corrupt)?;
+    let root = roots
+        .get(domain)
+        .cloned()
+        .ok_or(RoomRecoveryErrorV1::Corrupt)?;
     let next_count = root
         .entry_count()
         .checked_add(1)
@@ -6353,7 +6620,11 @@ mod operational_history_root_v2_tests {
                 .get(domain)
                 .unwrap_or_else(|| panic!("{domain} root remains present"));
             assert_eq!(root.entry_count(), ENTRIES, "{domain} count");
-            assert_ne!(root.root_hash(), &Blake3DigestV1::hash(b""), "{domain} root");
+            assert_ne!(
+                root.root_hash(),
+                &Blake3DigestV1::hash(b""),
+                "{domain} root"
+            );
         }
     }
 }

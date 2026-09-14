@@ -179,6 +179,11 @@ pub const CURRENT_TIMERS_MIGRATION_ID: &str = "0020-current-timers-v2";
 /// witness table or its canonical schema constraint.
 pub const CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID: &str =
     "0021-checkpoint-operational-witness-v2";
+/// Adds the append-only authenticated operational-history sidecar. The V2
+/// left-fold root receipt remains unchanged; this migration adds a separate
+/// MMR receipt for bounded serving reads.
+pub const OPERATIONAL_HISTORY_MMR_MIGRATION_ID: &str =
+    "0022-operational-history-mmr-v1";
 const OPERATION_RECEIPT_CODEC_ID: &str = "worldstream/operation-receipt/v1";
 const PAIRED_SNAPSHOT_SCHEMA_VERSION: &str = "worldstream/paired-snapshot/v1";
 const SNAPSHOT_TRANSITION_INTERVAL: i64 = 250;
@@ -862,6 +867,78 @@ CREATE TABLE room_snapshot_operational_witnesses_v2 (
     FOREIGN KEY (room_id, room_seq) REFERENCES room_snapshots(room_id, room_seq)
         ON DELETE CASCADE
 ) STRICT;
+";
+
+// The frozen V2 root receipt deliberately remains a left-fold history hash.
+// This additive sidecar has its own MMR receipt, immutable node inventory, and
+// a stable leaf coordinate on proof-eligible retained rows. Existing rows are
+// intentionally NULL: a migration must never synthesize a partial proof
+// inventory by scanning retained history.
+const OPERATIONAL_HISTORY_MMR_MIGRATION_SCHEMA: &str = r"
+ALTER TABLE observation_frames ADD COLUMN mmr_leaf_index INTEGER
+    CHECK (mmr_leaf_index BETWEEN 0 AND 9007199254740991);
+ALTER TABLE observation_consequences ADD COLUMN mmr_leaf_index INTEGER
+    CHECK (mmr_leaf_index BETWEEN 0 AND 9007199254740991);
+ALTER TABLE activation_decisions ADD COLUMN mmr_leaf_index INTEGER
+    CHECK (mmr_leaf_index BETWEEN 0 AND 9007199254740991);
+CREATE UNIQUE INDEX observation_frames_mmr_leaf_index_v1
+    ON observation_frames(room_id, mmr_leaf_index)
+    WHERE mmr_leaf_index IS NOT NULL;
+CREATE UNIQUE INDEX observation_consequences_mmr_leaf_index_v1
+    ON observation_consequences(room_id, mmr_leaf_index)
+    WHERE mmr_leaf_index IS NOT NULL;
+CREATE UNIQUE INDEX activation_decisions_mmr_leaf_index_v1
+    ON activation_decisions(room_id, mmr_leaf_index)
+    WHERE mmr_leaf_index IS NOT NULL;
+CREATE TABLE room_operational_mmr_receipts_v1 (
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    domain TEXT NOT NULL CHECK (domain IN ('frames', 'consequences', 'activation_decisions')),
+    leaf_count INTEGER NOT NULL CHECK (leaf_count BETWEEN 0 AND 9007199254740991),
+    root_hash BLOB NOT NULL CHECK (length(root_hash) = 32),
+    PRIMARY KEY (room_id, domain)
+) STRICT;
+CREATE TABLE room_operational_mmr_nodes_v1 (
+    room_id TEXT NOT NULL,
+    domain TEXT NOT NULL CHECK (domain IN ('frames', 'consequences', 'activation_decisions')),
+    height INTEGER NOT NULL CHECK (height BETWEEN 0 AND 63),
+    start_index INTEGER NOT NULL CHECK (start_index BETWEEN 0 AND 9007199254740991),
+    node_hash BLOB NOT NULL CHECK (length(node_hash) = 32),
+    PRIMARY KEY (room_id, domain, height, start_index),
+    FOREIGN KEY (room_id, domain)
+        REFERENCES room_operational_mmr_receipts_v1(room_id, domain) ON DELETE CASCADE
+) STRICT;
+CREATE TRIGGER room_operational_mmr_nodes_v1_immutable_update
+BEFORE UPDATE ON room_operational_mmr_nodes_v1 BEGIN
+    SELECT RAISE(ABORT, 'operational MMR nodes are immutable');
+END;
+CREATE TRIGGER room_operational_mmr_nodes_v1_immutable_delete
+BEFORE DELETE ON room_operational_mmr_nodes_v1 BEGIN
+    SELECT RAISE(ABORT, 'operational MMR nodes are immutable');
+END;
+CREATE TRIGGER room_operational_mmr_receipts_v1_source_transfer_fence_insert
+BEFORE INSERT ON room_operational_mmr_receipts_v1
+WHEN (SELECT state FROM source_transfer_lifecycle WHERE lifecycle_id = 1) <> 'source_authoritative'
+BEGIN
+    SELECT RAISE(ABORT, 'WorldStream source is non-serving during transfer');
+END;
+CREATE TRIGGER room_operational_mmr_receipts_v1_source_transfer_fence_update
+BEFORE UPDATE ON room_operational_mmr_receipts_v1
+WHEN (SELECT state FROM source_transfer_lifecycle WHERE lifecycle_id = 1) <> 'source_authoritative'
+BEGIN
+    SELECT RAISE(ABORT, 'WorldStream source is non-serving during transfer');
+END;
+CREATE TRIGGER room_operational_mmr_receipts_v1_source_transfer_fence_delete
+BEFORE DELETE ON room_operational_mmr_receipts_v1
+WHEN (SELECT state FROM source_transfer_lifecycle WHERE lifecycle_id = 1) <> 'source_authoritative'
+BEGIN
+    SELECT RAISE(ABORT, 'WorldStream source is non-serving during transfer');
+END;
+CREATE TRIGGER room_operational_mmr_nodes_v1_source_transfer_fence
+BEFORE INSERT ON room_operational_mmr_nodes_v1
+WHEN (SELECT state FROM source_transfer_lifecycle WHERE lifecycle_id = 1) <> 'source_authoritative'
+BEGIN
+    SELECT RAISE(ABORT, 'WorldStream source is non-serving during transfer');
+END;
 ";
 
 const INITIAL_MIGRATION_SCHEMA: &str = r"
@@ -15887,6 +15964,15 @@ fn migrate_with_failpoint_and_telemetry(
             .map_err(SqliteStoreOpenError::Sqlite)?;
         insert_migration(&transaction, history[19], has_checksum_column)?;
     }
+    if migrations.len() < 21 {
+        transaction
+            .execute_batch(history[20].sql)
+            .map_err(SqliteStoreOpenError::Sqlite)?;
+        // Existing retained rows remain deliberately unmapped. A proof
+        // coordinate may only be assigned by a post-migration atomic commit
+        // that also adds the matching receipt and node inventory.
+        insert_migration(&transaction, history[20], has_checksum_column)?;
+    }
     let persisted = read_migration_rows(&transaction, has_checksum_column)?;
     let persisted = persisted
         .into_iter()
@@ -22033,7 +22119,8 @@ mod tests {
         EXTERNAL_INPUT_PREPARATION_MIGRATION_ID, INITIAL_MIGRATION_ID, INITIAL_MIGRATION_SCHEMA,
         MAX_SAFE_INTEGER, MIGRATION_CHECKSUMS_MIGRATION_ID, MigrationFailpoint,
         OBSERVATION_MIGRATION_ID, OBSERVATION_RETENTION_MIGRATION_ID,
-        OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID, PAIRED_SNAPSHOT_SCHEMA_VERSION,
+        OPERATIONAL_HISTORY_MMR_MIGRATION_ID, OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID,
+        PAIRED_SNAPSHOT_SCHEMA_VERSION,
         SNAPSHOT_CADENCE_MIGRATION_ID, SNAPSHOT_MIGRATION_ID, SQLITE_SOURCE_ID, SQLITE_VERSION,
         STREAM_TRANSFER_V2_MIGRATION_ID, SnapshotCadenceCandidate, SqliteActivationErrorV1,
         SqliteAuthorizedReplayErrorV1, SqliteAuthorizedReplayOutcomeV1,
@@ -24890,7 +24977,7 @@ mod tests {
         assert_eq!(
             history.map(|migration| migration.version),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21
             ]
         );
         assert_eq!(
@@ -24916,6 +25003,7 @@ mod tests {
                 OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID,
                 CURRENT_TIMERS_MIGRATION_ID,
                 CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID,
+                OPERATIONAL_HISTORY_MMR_MIGRATION_ID,
             ]
         );
         let expected_checksums = [
@@ -24939,6 +25027,7 @@ mod tests {
             "blake3:7977311c54cfcdbec65d3846ddbd2071f53ca830464f5721092f5de958e0b98d",
             "blake3:00116356f2c4490438c9e923b8197ab7a3704c22d32f4d0d9e3912dfa41f8471",
             "blake3:52c9dbd493d058e5553c5b77a3ee4a5a1feecf8e6f881aedce36a4644662b8db",
+            "blake3:e00976433df9a260598f3b1e766a2eaa076b54c0fcb88a18c3f623ea9b335c28",
         ];
         assert_eq!(expected_checksums.len(), history.len());
         for (migration, expected) in history.iter().zip(expected_checksums) {

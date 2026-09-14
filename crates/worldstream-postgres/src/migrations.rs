@@ -69,6 +69,10 @@ pub const CURRENT_TIMERS_MIGRATION_ID: &str = "0020-current-timers-v2";
 /// witness table or its canonical schema constraint.
 pub const CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID: &str =
     "0021-checkpoint-operational-witness-v2";
+/// Adds MMR receipts and immutable nodes for bounded authenticated serving
+/// reads. The older V2 operational-history root remains a frozen left-fold
+/// receipt used by checkpoint recovery.
+pub const OPERATIONAL_HISTORY_MMR_MIGRATION_ID: &str = "0022-operational-history-mmr-v1";
 
 /// A migration body and its stable identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -149,17 +153,21 @@ pub const SCHEMA_FINGERPRINT_MATERIAL: &str = concat!(
     "payload_bytes:bytea:NO,state:text:NO);",
     "worldstream_room_operational_history_roots_v2(",
     "room_id:text:NO,domain:text:NO,entry_count:bigint:NO,root_hash:bytea:NO);",
+    "worldstream_room_operational_mmr_receipts_v1(",
+    "room_id:text:NO,domain:text:NO,leaf_count:bigint:NO,root_hash:bytea:NO);",
+    "worldstream_room_operational_mmr_nodes_v1(",
+    "room_id:text:NO,domain:text:NO,height:smallint:NO,start_index:bigint:NO,node_hash:bytea:NO);",
     "worldstream_transitions(",
     "room_id:text:NO,room_seq:bigint:NO,transition_bytes:bytea:NO);",
     "worldstream_frames(",
     "room_id:text:NO,member_id:text:NO,frame_seq:bigint:NO,cause_room_seq:bigint:NO,",
-    "payload_bytes:bytea:NO,payload_hash:bytea:NO,retained_at:text:NO);",
+    "payload_bytes:bytea:NO,payload_hash:bytea:NO,retained_at:text:NO,mmr_leaf_index:bigint:YES);",
     "worldstream_observation_consequences(",
     "room_id:text:NO,member_id:text:NO,cause_room_seq:bigint:NO,consequence_kind:text:NO,",
-    "payload_bytes:bytea:YES,projection_hash:bytea:YES);",
+    "payload_bytes:bytea:YES,projection_hash:bytea:YES,mmr_leaf_index:bigint:YES);",
     "worldstream_activation_decisions(",
     "room_id:text:NO,cause_room_seq:bigint:NO,decision_id:text:NO,",
-    "target_member_id:text:YES,decision_bytes:bytea:NO);",
+    "target_member_id:text:YES,decision_bytes:bytea:NO,mmr_leaf_index:bigint:YES);",
     "worldstream_activation_intents(",
     "activation_id:text:NO,room_id:text:NO,cause_room_seq:bigint:NO,decision_id:text:NO,",
     "target_member_id:text:NO,reason_code:text:NO,deduplication_key:text:NO,priority:bigint:NO,",
@@ -266,7 +274,7 @@ pub fn schema_contract_fingerprint() -> Blake3DigestV1 {
 
 /// The complete ordered migration history.
 #[must_use]
-pub fn migration_history() -> [MigrationDescriptor; 21] {
+pub fn migration_history() -> [MigrationDescriptor; 22] {
     [
         MigrationDescriptor {
             version: 1,
@@ -372,6 +380,11 @@ pub fn migration_history() -> [MigrationDescriptor; 21] {
             version: 21,
             id: CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID,
             sql: MIGRATION_0021_SQL,
+        },
+        MigrationDescriptor {
+            version: 22,
+            id: OPERATIONAL_HISTORY_MMR_MIGRATION_ID,
+            sql: MIGRATION_0022_SQL,
         },
     ]
 }
@@ -1031,6 +1044,54 @@ CREATE TRIGGER worldstream_transfer_fence_snapshot_operational_witnesses_v2
     FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
 ";
 
+/// Adds an append-only MMR sidecar without changing the frozen V2 left-fold
+/// roots. A nullable coordinate means an upgraded retained row remains legacy
+/// until a post-migration commit has atomically written its MMR evidence.
+pub const MIGRATION_0022_SQL: &str = r"
+ALTER TABLE worldstream_frames
+    ADD COLUMN mmr_leaf_index bigint CHECK (mmr_leaf_index >= 0);
+ALTER TABLE worldstream_observation_consequences
+    ADD COLUMN mmr_leaf_index bigint CHECK (mmr_leaf_index >= 0);
+ALTER TABLE worldstream_activation_decisions
+    ADD COLUMN mmr_leaf_index bigint CHECK (mmr_leaf_index >= 0);
+CREATE UNIQUE INDEX worldstream_frames_mmr_leaf_index_v1
+    ON worldstream_frames(room_id, mmr_leaf_index)
+    WHERE mmr_leaf_index IS NOT NULL;
+CREATE UNIQUE INDEX worldstream_observation_consequences_mmr_leaf_index_v1
+    ON worldstream_observation_consequences(room_id, mmr_leaf_index)
+    WHERE mmr_leaf_index IS NOT NULL;
+CREATE UNIQUE INDEX worldstream_activation_decisions_mmr_leaf_index_v1
+    ON worldstream_activation_decisions(room_id, mmr_leaf_index)
+    WHERE mmr_leaf_index IS NOT NULL;
+CREATE TABLE worldstream_room_operational_mmr_receipts_v1 (
+    room_id text NOT NULL REFERENCES worldstream_room_roots(room_id) ON DELETE CASCADE,
+    domain text NOT NULL CHECK (domain IN ('frames', 'consequences', 'activation_decisions')),
+    leaf_count bigint NOT NULL CHECK (leaf_count >= 0),
+    root_hash bytea NOT NULL CHECK (octet_length(root_hash) = 32),
+    PRIMARY KEY (room_id, domain)
+);
+CREATE TABLE worldstream_room_operational_mmr_nodes_v1 (
+    room_id text NOT NULL,
+    domain text NOT NULL CHECK (domain IN ('frames', 'consequences', 'activation_decisions')),
+    height smallint NOT NULL CHECK (height BETWEEN 0 AND 63),
+    start_index bigint NOT NULL CHECK (start_index >= 0),
+    node_hash bytea NOT NULL CHECK (octet_length(node_hash) = 32),
+    PRIMARY KEY (room_id, domain, height, start_index),
+    FOREIGN KEY (room_id, domain)
+        REFERENCES worldstream_room_operational_mmr_receipts_v1(room_id, domain)
+        ON DELETE CASCADE
+);
+CREATE TRIGGER worldstream_operational_mmr_nodes_v1_immutable
+    BEFORE UPDATE OR DELETE ON worldstream_room_operational_mmr_nodes_v1
+    FOR EACH ROW EXECUTE FUNCTION worldstream_reject_authority_fact_mutation();
+CREATE TRIGGER worldstream_transfer_fence_operational_mmr_receipts_v1
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_room_operational_mmr_receipts_v1
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_operational_mmr_nodes_v1
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_room_operational_mmr_nodes_v1
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+";
+
 /// The result of checking an ordered migration prefix.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MigrationVerification {
@@ -1396,6 +1457,7 @@ mod identity_tests {
                 OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID,
                 CURRENT_TIMERS_MIGRATION_ID,
                 CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID,
+                OPERATIONAL_HISTORY_MMR_MIGRATION_ID,
             ]
         );
         assert!(
@@ -1410,12 +1472,16 @@ mod identity_tests {
         let migration = migration_history()[19];
         assert_eq!(migration.version, 20);
         assert_eq!(migration.id, CURRENT_TIMERS_MIGRATION_ID);
-        assert!(migration
-            .sql
-            .contains("CREATE TABLE worldstream_room_current_timers_v2"));
-        assert!(migration
-            .sql
-            .contains("worldstream_transfer_fence_room_current_timers_v2"));
+        assert!(
+            migration
+                .sql
+                .contains("CREATE TABLE worldstream_room_current_timers_v2")
+        );
+        assert!(
+            migration
+                .sql
+                .contains("worldstream_transfer_fence_room_current_timers_v2")
+        );
         assert!(migration.sql.contains("PRIMARY KEY (room_id, timer_id)"));
     }
 
