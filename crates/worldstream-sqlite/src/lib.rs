@@ -78,21 +78,21 @@ use worldstream_core::{
     AuthorizedReceiptResolverV1, AuthorizedReplayV1, AuthorizedRunnerControlV1,
     AuthorizedTimerFiredV1, AuthorizedViewerV1, Blake3DigestV1,
     CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V1, CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2,
-    CanonicalJsonV1, CanonicalRequestHashV1,
-    CapabilityAuthoritySnapshotPartsV1, CapabilityAuthoritySnapshotV1, CapabilityBearerV1,
-    CapabilityExpiresAt, CapabilityId, CapabilityProfileV1, CapabilityRevokedAt,
-    CapabilityScopeSetV1, CapabilityScopeV1, CapabilityTokenHashV1, CompleteHeadV1,
-    CoreAdministrationRequestV1, CoreRecordedAt, CoreRoomStateV1, CoreTraceV1,
-    DiagnosticAdapterInputV1, DiagnosticOperationV1, DiagnosticTargetV1, ExternalInputRecordedAt,
-    ExternalInputV1, GenesisV1, HistoricalEvidencePageOutcomeV1, HistoricalEvidenceReferenceV1,
-    HistoricalReplayAccumulatorV1, HistoricalReplayErrorV1, HistoricalReplayProjectionRequestV1,
-    HistoricalReplayProjectionV1, HostClockErrorV1, HostClockSampleV1, HostClockV1,
-    IntegrityGenerationV1, MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1,
-    MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES, MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1,
-    MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_TIME_MS_V1,
-    MAX_PENDING_REFRESH_AGE_MS_V1, MAX_PENDING_REFRESH_BYTES_V1, MemberId, MemberReadOperationV1,
-    MembershipAuthoritySnapshotV1, MembershipGenerationV1, MembershipStandingV1, MembershipV1,
-    OperationIdentityV1, PackRegistryV1, PackRevisionLockV1, PackViewerV1,
+    CanonicalJsonV1, CanonicalRequestHashV1, CapabilityAuthoritySnapshotPartsV1,
+    CapabilityAuthoritySnapshotV1, CapabilityBearerV1, CapabilityExpiresAt, CapabilityId,
+    CapabilityProfileV1, CapabilityRevokedAt, CapabilityScopeSetV1, CapabilityScopeV1,
+    CapabilityTokenHashV1, CompleteHeadV1, CoreAdministrationRequestV1, CoreRecordedAt,
+    CoreRoomStateV1, CoreTraceV1, DiagnosticAdapterInputV1, DiagnosticOperationV1,
+    DiagnosticTargetV1, ExternalInputRecordedAt, ExternalInputV1, GenesisV1,
+    HistoricalEvidencePageOutcomeV1, HistoricalEvidenceReferenceV1, HistoricalReplayAccumulatorV1,
+    HistoricalReplayErrorV1, HistoricalReplayProjectionRequestV1, HistoricalReplayProjectionV1,
+    HostClockErrorV1, HostClockSampleV1, HostClockV1, IntegrityGenerationV1,
+    MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1, MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES,
+    MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1,
+    MAX_HISTORICAL_EVIDENCE_TIME_MS_V1, MAX_PENDING_REFRESH_AGE_MS_V1,
+    MAX_PENDING_REFRESH_BYTES_V1, MemberId, MemberReadOperationV1, MembershipAuthoritySnapshotV1,
+    MembershipGenerationV1, MembershipStandingV1, MembershipV1, OperationIdentityV1,
+    OperationalHistoryRootV2, PackRegistryV1, PackRevisionLockV1, PackViewerV1,
     ParticipantActionAuthorityV1, ParticipantActionRequestV1, ParticipantActionV1,
     PreparedAdvancePersistenceV1, PreparedAuthorityBootstrapV1, PreparedAuthorityChangeV1,
     PreparedAuthorityWitnessV1, PreparedCreationPersistenceV1, PreparedExistingIntentV1,
@@ -104,18 +104,21 @@ use worldstream_core::{
     RecoveredRoomMaterializationsV1, RecoveredTimerMaterializationV1, RecoveredTimerStateV1,
     RecoveryIntegrityDispositionV1, ReplayAdapterInputV1, ReplayFailureClassV1,
     ReplayProjectionKindV1, ResolutionStatusV1, ResolveOutcomeV1,
-    OperationalHistoryRootV2, RoomCheckpointOperationalWitnessV1,
-    RoomCheckpointOperationalWitnessV2, RoomCommitResolutionV1, RoomCommitStorageV1, RoomId,
-    RoomIntegrityStateV1, RoomIntegrityStatusV1, RoomRecoveryCandidateV1, RoomRecoveryCheckpointV1,
-    RoomRecoveryErrorV1, RoomRecoveryStorageV1, RoomSequenceV1, RoomStatusV1,
-    RunnerAuthoritySnapshotV1, RunnerAuthorityStatusV1, RunnerControlAdapterInputV1,
-    RunnerControlOperationV1, RunnerGenerationV1, RunnerId, RunnerMembershipSetV1,
-    SemanticResultV1, SessionBarrierV1, SessionErrorV1, StoredSemanticResultV1,
-    TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, TimerId, TimerScheduledFor, TraceErrorV1,
-    TransitionId, TransitionV1, ValidatedAuthorityBootstrapV1, ValidatedAuthorityChangeV1,
-    ValidatedPackViewV1, VerifiedCurrentRoomMaterializationV1, ViewerAdapterInputV1,
-    activation_refresh_budget_allows_v1, commit_existing_room, prepare_activation_context,
-    recover_room_from_storage, resolve_authorized_room_operation_for_adapter,
+    OperationalMmrNodeCoordinateV1, OperationalMmrNodeV1, OperationalMmrProofNodeV1,
+    OperationalMmrProofPlanV1, OperationalMmrProofV1, OperationalMmrReceiptV1, OperationalMmrV1,
+    RoomCheckpointOperationalWitnessV1, RoomCheckpointOperationalWitnessV2,
+    RoomCheckpointOperationalWitnessV3, RoomCommitResolutionV1,
+    RoomCommitStorageV1, RoomId, RoomIntegrityStateV1, RoomIntegrityStatusV1,
+    RoomRecoveryCandidateV1, RoomRecoveryCheckpointV1, RoomRecoveryErrorV1, RoomRecoveryStorageV1,
+    RoomSequenceV1, RoomStatusV1, RunnerAuthoritySnapshotV1, RunnerAuthorityStatusV1,
+    RunnerControlAdapterInputV1, RunnerControlOperationV1, RunnerGenerationV1, RunnerId,
+    RunnerMembershipSetV1, SemanticResultV1, SessionBarrierV1, SessionErrorV1,
+    StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, TimerId,
+    TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1, ValidatedAuthorityBootstrapV1,
+    ValidatedAuthorityChangeV1, ValidatedPackViewV1, VerifiedCurrentRoomMaterializationV1,
+    ViewerAdapterInputV1, activation_refresh_budget_allows_v1, commit_existing_room,
+    prepare_activation_context, recover_room_from_storage,
+    resolve_authorized_room_operation_for_adapter,
 };
 use worldstream_sqlite_open::{ExactSqliteConnection, ExactSqliteOpenError, open_exact};
 use worldstream_transfer::{
@@ -184,6 +187,10 @@ pub const CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID: &str =
 /// MMR receipt for bounded serving reads.
 pub const OPERATIONAL_HISTORY_MMR_MIGRATION_ID: &str =
     "0022-operational-history-mmr-v1";
+/// Adds the authenticated V3 checkpoint witness table. V2 witnesses remain
+/// frozen and are retained as the explicit legacy fallback.
+pub const CHECKPOINT_OPERATIONAL_WITNESS_V3_MIGRATION_ID: &str =
+    "0023-checkpoint-operational-witness-v3";
 const OPERATION_RECEIPT_CODEC_ID: &str = "worldstream/operation-receipt/v1";
 const PAIRED_SNAPSHOT_SCHEMA_VERSION: &str = "worldstream/paired-snapshot/v1";
 const SNAPSHOT_TRANSITION_INTERVAL: i64 = 250;
@@ -939,6 +946,20 @@ WHEN (SELECT state FROM source_transfer_lifecycle WHERE lifecycle_id = 1) <> 'so
 BEGIN
     SELECT RAISE(ABORT, 'WorldStream source is non-serving during transfer');
 END;
+";
+
+const CHECKPOINT_OPERATIONAL_WITNESS_V3_MIGRATION_SCHEMA: &str = r"
+CREATE TABLE room_snapshot_operational_witnesses_v3 (
+    room_id TEXT NOT NULL,
+    room_seq INTEGER NOT NULL CHECK (room_seq BETWEEN 0 AND 9007199254740991),
+    witness_schema_version TEXT NOT NULL
+        CHECK (witness_schema_version = 'worldstream/checkpoint-operational-witness/v3'),
+    witness_hash BLOB NOT NULL CHECK (length(witness_hash) = 32),
+    witness_bytes BLOB NOT NULL CHECK (length(witness_bytes) > 0),
+    PRIMARY KEY (room_id, room_seq),
+    FOREIGN KEY (room_id, room_seq) REFERENCES room_snapshots(room_id, room_seq)
+        ON DELETE CASCADE
+) STRICT;
 ";
 
 const INITIAL_MIGRATION_SCHEMA: &str = r"
@@ -9783,7 +9804,10 @@ fn inspect_checkpoint_candidate_at_path(
          core_state_hash, activity_state_hash, authoritative_state_hash, complete_head_bytes, \
          core_state_bytes, activity_state_bytes FROM room_snapshots AS snapshot \
          WHERE snapshot.room_id = ?1 AND snapshot.room_seq <= ?2 \
-         AND (EXISTS(SELECT 1 FROM room_snapshot_operational_witnesses_v2 AS witness \
+         AND (EXISTS(SELECT 1 FROM room_snapshot_operational_witnesses_v3 AS witness \
+                     WHERE witness.room_id = snapshot.room_id \
+                     AND witness.room_seq = snapshot.room_seq) \
+              OR EXISTS(SELECT 1 FROM room_snapshot_operational_witnesses_v2 AS witness \
                      WHERE witness.room_id = snapshot.room_id \
                      AND witness.room_seq = snapshot.room_seq) \
               OR EXISTS(SELECT 1 FROM room_snapshot_operational_witnesses AS witness \
@@ -9852,54 +9876,107 @@ fn inspect_checkpoint_candidate_at_path(
         transaction.commit()?;
         return Ok(None);
     }
-    let witness_v2_row: Option<(String, Vec<u8>, Vec<u8>)> = transaction.query_row(
-        "SELECT witness_schema_version, witness_hash, witness_bytes \
+    let witness_v3_row: Option<(String, Vec<u8>, Vec<u8>)> = transaction
+        .query_row(
+            "SELECT witness_schema_version, witness_hash, witness_bytes \
+             FROM room_snapshot_operational_witnesses_v3 \
+             WHERE room_id = ?1 AND room_seq = ?2",
+            params![room_id, checkpoint_seq],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let witness_v2_row: Option<(String, Vec<u8>, Vec<u8>)> = transaction
+        .query_row(
+            "SELECT witness_schema_version, witness_hash, witness_bytes \
          FROM room_snapshot_operational_witnesses_v2 \
          WHERE room_id = ?1 AND room_seq = ?2",
-        params![room_id, checkpoint_seq],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    ).optional()?;
-    let checkpoint = if let Some(witness_row) = witness_v2_row {
-        if witness_row.0 != CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2
-            || witness_row.1 != Blake3DigestV1::hash(&witness_row.2).as_bytes() {
+            params![room_id, checkpoint_seq],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let checkpoint = if let Some(witness_row) = witness_v3_row {
+        if witness_row.0 != worldstream_core::CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V3
+            || witness_row.1 != Blake3DigestV1::hash(&witness_row.2).as_bytes()
+        {
             transaction.commit()?;
             return Ok(None);
         }
-        let Ok(witness) = RoomCheckpointOperationalWitnessV2::from_canonical_bytes(
-            &witness_row.2, &checkpoint_head,
+        let Ok(witness) = RoomCheckpointOperationalWitnessV3::from_canonical_bytes(
+            &witness_row.2,
+            &checkpoint_head,
         ) else {
             transaction.commit()?;
             return Ok(None);
         };
         RoomRecoveryCheckpointV1::new(
-            checkpoint_head.clone(), record_bytes.clone(), snapshot.8.clone(), snapshot.9.clone(),
+            checkpoint_head.clone(),
+            record_bytes.clone(),
+            snapshot.8.clone(),
+            snapshot.9.clone(),
             witness.timers().to_vec(),
-        ).with_bounded_operational_witnesses(
-            witness.observation_frame_heads().clone(), Vec::new(),
-        ).with_operational_witnesses(Vec::new(), Vec::new(), witness.membership_generations().clone())
-            .with_operational_history_roots(witness.operational_history_roots().clone())
+        )
+        .with_bounded_operational_witnesses(witness.observation_frame_heads().clone(), Vec::new())
+        .with_operational_witnesses(
+            Vec::new(),
+            Vec::new(),
+            witness.membership_generations().clone(),
+        )
+        .with_operational_history_roots(witness.operational_history_roots().clone())
+        .with_operational_mmr_receipts(witness.operational_mmr_receipts().clone())
+    } else if let Some(witness_row) = witness_v2_row {
+        if witness_row.0 != CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2
+            || witness_row.1 != Blake3DigestV1::hash(&witness_row.2).as_bytes()
+        {
+            transaction.commit()?;
+            return Ok(None);
+        }
+        let Ok(witness) = RoomCheckpointOperationalWitnessV2::from_canonical_bytes(
+            &witness_row.2,
+            &checkpoint_head,
+        ) else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+        RoomRecoveryCheckpointV1::new(
+            checkpoint_head.clone(),
+            record_bytes.clone(),
+            snapshot.8.clone(),
+            snapshot.9.clone(),
+            witness.timers().to_vec(),
+        )
+        .with_bounded_operational_witnesses(witness.observation_frame_heads().clone(), Vec::new())
+        .with_operational_witnesses(
+            Vec::new(),
+            Vec::new(),
+            witness.membership_generations().clone(),
+        )
+        .with_operational_history_roots(witness.operational_history_roots().clone())
     } else {
-    let witness_row: (String, Vec<u8>, Vec<u8>) = transaction.query_row(
-        "SELECT witness_schema_version, witness_hash, witness_bytes \
+        let witness_row: (String, Vec<u8>, Vec<u8>) = transaction.query_row(
+            "SELECT witness_schema_version, witness_hash, witness_bytes \
          FROM room_snapshot_operational_witnesses \
          WHERE room_id = ?1 AND room_seq = ?2",
-        params![room_id, checkpoint_seq],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    )?;
-    if witness_row.0 != CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V1
-        || witness_row.1 != Blake3DigestV1::hash(&witness_row.2).as_bytes()
-    {
-        transaction.commit()?;
-        return Ok(None);
-    }
-    let Ok(witness) =
-        RoomCheckpointOperationalWitnessV1::from_canonical_bytes(&witness_row.2, &checkpoint_head)
-    else {
-        transaction.commit()?;
-        return Ok(None);
-    };
-    RoomRecoveryCheckpointV1::new(
-            checkpoint_head.clone(), record_bytes.clone(), snapshot.8.clone(), snapshot.9.clone(),
+            params![room_id, checkpoint_seq],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        if witness_row.0 != CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V1
+            || witness_row.1 != Blake3DigestV1::hash(&witness_row.2).as_bytes()
+        {
+            transaction.commit()?;
+            return Ok(None);
+        }
+        let Ok(witness) = RoomCheckpointOperationalWitnessV1::from_canonical_bytes(
+            &witness_row.2,
+            &checkpoint_head,
+        ) else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+        RoomRecoveryCheckpointV1::new(
+            checkpoint_head.clone(),
+            record_bytes.clone(),
+            snapshot.8.clone(),
+            snapshot.9.clone(),
             witness.timers().to_vec(),
         )
         .with_operational_witnesses(
@@ -11999,10 +12076,21 @@ fn verify_recovery_consequences(
 ) -> Result<(bool, bool), RoomRecoveryErrorV1> {
     if let Some(roots) = recovered.operational_history_roots() {
         verify_sqlite_v2_roots(transaction, room_id, roots)?;
-        let frame_heads = recovered.observation_frame_heads().iter().map(|(member, head)| {
-            Ok((member.to_string(), i64::try_from(*head).map_err(|_| RoomRecoveryErrorV1::Corrupt)?))
-        }).collect::<Result<BTreeMap<_, _>, RoomRecoveryErrorV1>>()?;
-        let rebuild_memberships = verify_recovery_memberships(transaction, room_id, recovered, &frame_heads, true)?;
+        if let Some(receipts) = recovered.operational_mmr_receipts() {
+            verify_sqlite_mmr_receipts(transaction, room_id, receipts)?;
+        }
+        let frame_heads = recovered
+            .observation_frame_heads()
+            .iter()
+            .map(|(member, head)| {
+                Ok((
+                    member.to_string(),
+                    i64::try_from(*head).map_err(|_| RoomRecoveryErrorV1::Corrupt)?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, RoomRecoveryErrorV1>>()?;
+        let rebuild_memberships =
+            verify_recovery_memberships(transaction, room_id, recovered, &frame_heads, true)?;
         verify_sqlite_v2_current_timers(transaction, room_id, recovered)?;
         return Ok((rebuild_memberships, false));
     }
@@ -12015,37 +12103,98 @@ fn verify_recovery_consequences(
     Ok((rebuild_memberships, rebuild_timers))
 }
 
+fn verify_sqlite_mmr_receipts(
+    transaction: &Transaction<'_>,
+    room_id: &str,
+    expected: &BTreeMap<String, OperationalMmrReceiptV1>,
+) -> Result<(), RoomRecoveryErrorV1> {
+    if expected.len() != OPERATIONAL_HISTORY_ROOT_DOMAINS.len() {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    for domain in OPERATIONAL_HISTORY_ROOT_DOMAINS {
+        let Some(expected_receipt) = expected.get(domain) else {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        };
+        let Some(actual) = load_operational_mmr_receipt(transaction, room_id, domain)
+            .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+        else {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        };
+        if &actual != expected_receipt {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+    }
+    Ok(())
+}
+
 fn verify_sqlite_v2_roots(
-    transaction: &Transaction<'_>, room_id: &str,
+    transaction: &Transaction<'_>,
+    room_id: &str,
     expected: &BTreeMap<String, OperationalHistoryRootV2>,
 ) -> Result<(), RoomRecoveryErrorV1> {
     let mut statement = transaction.prepare("SELECT domain, entry_count, root_hash FROM room_operational_history_roots_v2 WHERE room_id = ?1 ORDER BY domain")
         .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
-    let rows = statement.query_map([room_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, Vec<u8>>(2)?)))
+    let rows = statement
+        .query_map([room_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+            ))
+        })
         .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
-        .collect::<Result<Vec<_>, _>>().map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
-    if rows.len() != expected.len() { return Err(RoomRecoveryErrorV1::Corrupt); }
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    if rows.len() != expected.len() {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
     for (domain, count, hash) in rows {
-        let Some(root) = expected.get(&domain) else { return Err(RoomRecoveryErrorV1::Corrupt); };
+        let Some(root) = expected.get(&domain) else {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        };
         if count != i64::try_from(root.entry_count()).map_err(|_| RoomRecoveryErrorV1::Corrupt)?
-            || hash.as_slice() != root.root_hash().as_bytes() { return Err(RoomRecoveryErrorV1::Corrupt); }
+            || hash.as_slice() != root.root_hash().as_bytes()
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
     }
     Ok(())
 }
 
 fn verify_sqlite_v2_current_timers(
-    transaction: &Transaction<'_>, room_id: &str, recovered: &RecoveredRoomMaterializationsV1,
+    transaction: &Transaction<'_>,
+    room_id: &str,
+    recovered: &RecoveredRoomMaterializationsV1,
 ) -> Result<(), RoomRecoveryErrorV1> {
     let mut statement = transaction.prepare("SELECT timer_id, generation, scheduled_for, payload_bytes, state FROM room_current_timers_v2 WHERE room_id = ?1 ORDER BY timer_id")
         .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
-    let rows = statement.query_map([room_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, Vec<u8>>(3)?, row.get::<_, String>(4)?)))
+    let rows = statement
+        .query_map([room_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
         .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
-        .collect::<Result<Vec<_>, _>>().map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
-    if rows.len() != recovered.timers().len() { return Err(RoomRecoveryErrorV1::Corrupt); }
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    if rows.len() != recovered.timers().len() {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
     for (row, expected) in rows.iter().zip(recovered.timers()) {
-        if row.0 != expected.timer_id().to_string() || row.1 != i64::try_from(expected.generation().get()).map_err(|_| RoomRecoveryErrorV1::Corrupt)?
-            || row.2 != expected.scheduled_for().as_str() || row.3 != expected.canonical_payload_bytes()
-            || row.4 != recovered_timer_state(expected.state()) { return Err(RoomRecoveryErrorV1::Corrupt); }
+        if row.0 != expected.timer_id().to_string()
+            || row.1
+                != i64::try_from(expected.generation().get())
+                    .map_err(|_| RoomRecoveryErrorV1::Corrupt)?
+            || row.2 != expected.scheduled_for().as_str()
+            || row.3 != expected.canonical_payload_bytes()
+            || row.4 != recovered_timer_state(expected.state())
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
     }
     Ok(())
 }
@@ -15973,6 +16122,12 @@ fn migrate_with_failpoint_and_telemetry(
         // that also adds the matching receipt and node inventory.
         insert_migration(&transaction, history[20], has_checksum_column)?;
     }
+    if migrations.len() < 22 {
+        transaction
+            .execute_batch(history[21].sql)
+            .map_err(SqliteStoreOpenError::Sqlite)?;
+        insert_migration(&transaction, history[21], has_checksum_column)?;
+    }
     let persisted = read_migration_rows(&transaction, has_checksum_column)?;
     let persisted = persisted
         .into_iter()
@@ -16559,6 +16714,7 @@ fn commit_create(
     fail_at(failpoint, WriteBoundary::Room)?;
 
     initialize_operational_history_roots(transaction, &room_id)?;
+    initialize_operational_mmr_receipts(transaction, &room_id)?;
 
     transaction
         .execute(
@@ -16672,6 +16828,200 @@ fn initialize_operational_history_roots(
                 params![room_id, domain, [0_u8; 32]],
             )
             .map_err(statement_failure)?;
+    }
+    Ok(())
+}
+
+fn initialize_operational_mmr_receipts(
+    transaction: &Transaction<'_>,
+    room_id: &str,
+) -> Result<(), RoomCommitResolutionV1> {
+    for domain in OPERATIONAL_HISTORY_ROOT_DOMAINS {
+        let receipt = OperationalMmrReceiptV1::empty(domain)
+            .map_err(|_| RoomCommitResolutionV1::Fault)?;
+        transaction
+            .execute(
+                "INSERT INTO room_operational_mmr_receipts_v1(\
+                 room_id, domain, leaf_count, root_hash) VALUES (?1, ?2, 0, ?3)",
+                params![room_id, domain, receipt.root_hash().as_bytes()],
+            )
+            .map_err(statement_failure)?;
+    }
+    Ok(())
+}
+
+fn operational_mmr_peak_coordinates(leaf_count: u64) -> Vec<(u8, u64)> {
+    let mut peaks = Vec::with_capacity(leaf_count.count_ones() as usize);
+    let mut start_index = 0_u64;
+    for height in (0_u8..64).rev() {
+        let width = 1_u64 << height;
+        if leaf_count & width != 0 {
+            peaks.push((height, start_index));
+            start_index = start_index.saturating_add(width);
+        }
+    }
+    peaks
+}
+
+fn append_operational_mmr(
+    transaction: &Transaction<'_>,
+    room_id: &str,
+    domain: &str,
+    canonical_leaf: &[u8],
+) -> Result<Option<u64>, RoomCommitResolutionV1> {
+    let current: Option<(i64, Vec<u8>)> = transaction
+        .query_row(
+            "SELECT leaf_count, root_hash FROM room_operational_mmr_receipts_v1 \
+             WHERE room_id = ?1 AND domain = ?2",
+            params![room_id, domain],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(statement_failure)?;
+    let Some((stored_count, stored_root)) = current else {
+        // Rooms admitted before the MMR migration retain their complete
+        // replay/reset path and must never receive a forged partial proof.
+        return Ok(None);
+    };
+    let leaf_count = u64::try_from(stored_count).map_err(|_| RoomCommitResolutionV1::Fault)?;
+    let root_hash = Blake3DigestV1::from_bytes(
+        stored_root
+            .as_slice()
+            .try_into()
+            .map_err(|_| RoomCommitResolutionV1::Fault)?,
+    );
+    let coordinates = operational_mmr_peak_coordinates(leaf_count);
+    let mut peaks = Vec::with_capacity(coordinates.len());
+    for (height, start_index) in coordinates {
+        let digest: Vec<u8> = transaction
+            .query_row(
+                "SELECT node_hash FROM room_operational_mmr_nodes_v1 \
+                 WHERE room_id = ?1 AND domain = ?2 AND height = ?3 AND start_index = ?4",
+                params![room_id, domain, i64::from(height), i64::try_from(start_index).map_err(|_| RoomCommitResolutionV1::Fault)?],
+                |row| row.get(0),
+            )
+            .map_err(statement_failure)?;
+        let digest = Blake3DigestV1::from_bytes(
+            digest
+                .as_slice()
+                .try_into()
+                .map_err(|_| RoomCommitResolutionV1::Fault)?,
+        );
+        peaks.push(
+            OperationalMmrNodeV1::new(height, start_index, digest)
+                .map_err(|_| RoomCommitResolutionV1::Fault)?,
+        );
+    }
+    let mut accumulator = OperationalMmrV1::from_peaks(domain, leaf_count, peaks)
+        .map_err(|_| RoomCommitResolutionV1::Fault)?;
+    if accumulator.root() != root_hash {
+        return Err(RoomCommitResolutionV1::Fault);
+    }
+    let appended = accumulator
+        .append(canonical_leaf)
+        .map_err(|_| RoomCommitResolutionV1::Fault)?;
+    for node in appended.nodes() {
+        transaction
+            .execute(
+                "INSERT INTO room_operational_mmr_nodes_v1(\
+                 room_id, domain, height, start_index, node_hash) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    room_id,
+                    domain,
+                    i64::from(node.height()),
+                    i64::try_from(node.start_index()).map_err(|_| RoomCommitResolutionV1::Fault)?,
+                    node.digest().as_bytes(),
+                ],
+            )
+            .map_err(statement_failure)?;
+    }
+    let changed = transaction
+        .execute(
+            "UPDATE room_operational_mmr_receipts_v1 SET leaf_count = ?1, root_hash = ?2 \
+             WHERE room_id = ?3 AND domain = ?4 AND leaf_count = ?5 AND root_hash = ?6",
+            params![
+                i64::try_from(accumulator.leaf_count()).map_err(|_| RoomCommitResolutionV1::Fault)?,
+                accumulator.root().as_bytes(),
+                room_id,
+                domain,
+                stored_count,
+                stored_root,
+            ],
+        )
+        .map_err(statement_failure)?;
+    if changed != 1 {
+        return Err(RoomCommitResolutionV1::Fault);
+    }
+    Ok(Some(appended.leaf_index()))
+}
+
+fn load_operational_mmr_receipt(
+    connection: &Connection,
+    room_id: &str,
+    domain: &str,
+) -> Result<Option<OperationalMmrReceiptV1>, rusqlite::Error> {
+    let current: Option<(i64, Vec<u8>)> = connection
+        .query_row(
+            "SELECT leaf_count, root_hash FROM room_operational_mmr_receipts_v1 \
+             WHERE room_id = ?1 AND domain = ?2",
+            params![room_id, domain],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((count, root)) = current else {
+        return Ok(None);
+    };
+    let count = u64::try_from(count).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let root = Blake3DigestV1::from_bytes(
+        root.as_slice()
+            .try_into()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+    );
+    let mut peaks = Vec::new();
+    for (height, start_index) in operational_mmr_peak_coordinates(count) {
+        let digest: Vec<u8> = connection.query_row(
+            "SELECT node_hash FROM room_operational_mmr_nodes_v1 \
+             WHERE room_id = ?1 AND domain = ?2 AND height = ?3 AND start_index = ?4",
+            params![room_id, domain, i64::from(height), i64::try_from(start_index).map_err(|_| rusqlite::Error::InvalidQuery)?],
+            |row| row.get(0),
+        )?;
+        let digest = Blake3DigestV1::from_bytes(
+            digest
+                .as_slice()
+                .try_into()
+                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        );
+        peaks.push(
+            OperationalMmrNodeV1::new(height, start_index, digest)
+                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        );
+    }
+    OperationalMmrReceiptV1::new(domain, count, root, peaks)
+        .map(Some)
+        .map_err(|_| rusqlite::Error::InvalidQuery)
+}
+
+fn update_consequence_mmr_leaf_index(
+    transaction: &Transaction<'_>,
+    room_id: &str,
+    member_id: &MemberId,
+    cause_room_seq: u64,
+    leaf_index: u64,
+) -> Result<(), RoomCommitResolutionV1> {
+    let changed = transaction
+        .execute(
+            "UPDATE observation_consequences SET mmr_leaf_index = ?1 \
+             WHERE room_id = ?2 AND member_id = ?3 AND cause_room_seq = ?4",
+            params![
+                i64::try_from(leaf_index).map_err(|_| RoomCommitResolutionV1::Fault)?,
+                room_id,
+                member_id.to_string(),
+                i64::try_from(cause_room_seq).map_err(|_| RoomCommitResolutionV1::Fault)?,
+            ],
+        )
+        .map_err(statement_failure)?;
+    if changed != 1 {
+        return Err(RoomCommitResolutionV1::Fault);
     }
     Ok(())
 }
@@ -17522,6 +17872,13 @@ fn prepare_activation_claim_readonly_from_trace(
     {
         return Err(SqliteActivationErrorV1::Corrupt);
     }
+    let trusted_frames_receipt = trusted_mmr_receipt_for_head(
+        &connection,
+        &room_id,
+        trace.head(),
+        "frames",
+    )
+    .map_err(|_| SqliteActivationErrorV1::StaleContext)?;
     let delivery = if cursor.is_none()
         || reset_required_through.is_some()
         || cursor.is_some_and(|value| value.saturating_add(1) < retained_floor)
@@ -17547,7 +17904,8 @@ fn prepare_activation_claim_readonly_from_trace(
         loop {
             let metadata = connection
                 .prepare(
-                    "SELECT frame_seq, cause_room_seq, payload_hash, length(payload_bytes) \
+                    "SELECT frame_seq, cause_room_seq, payload_hash, length(payload_bytes), \
+                            mmr_leaf_index \
                      FROM observation_frames WHERE room_id = ?1 AND member_id = ?2 \
                      AND frame_seq > ?3 AND frame_seq <= ?4 ORDER BY frame_seq LIMIT ?5",
                 )
@@ -17569,6 +17927,7 @@ fn prepare_activation_claim_readonly_from_trace(
                                     row.get::<_, i64>(1)?,
                                     row.get::<_, String>(2)?,
                                     row.get::<_, i64>(3)?,
+                                    row.get::<_, Option<i64>>(4)?,
                                 ))
                             },
                         )?
@@ -17583,7 +17942,7 @@ fn prepare_activation_claim_readonly_from_trace(
             }
             let page_start = previous;
             let mut expected = previous;
-            for (frame_seq, cause_seq, stored_hash, length) in &metadata {
+            for (frame_seq, cause_seq, stored_hash, length, _mmr_leaf_index) in &metadata {
                 let frame_seq =
                     u64::try_from(*frame_seq).map_err(|_| SqliteActivationErrorV1::Corrupt)?;
                 let cause_seq =
@@ -17614,7 +17973,7 @@ fn prepare_activation_claim_readonly_from_trace(
             let page_end = i64::try_from(expected).map_err(|_| SqliteActivationErrorV1::Corrupt)?;
             let payload_rows = connection
                 .prepare(
-                    "SELECT frame_seq, cause_room_seq, payload_hash, payload_bytes \
+            "SELECT frame_seq, cause_room_seq, payload_hash, payload_bytes, mmr_leaf_index \
                      FROM observation_frames WHERE room_id = ?1 AND member_id = ?2 \
                      AND frame_seq > ?3 AND frame_seq <= ?4 ORDER BY frame_seq",
                 )
@@ -17628,6 +17987,7 @@ fn prepare_activation_claim_readonly_from_trace(
                                     row.get::<_, i64>(1)?,
                                     row.get::<_, String>(2)?,
                                     row.get::<_, Vec<u8>>(3)?,
+                                    row.get::<_, Option<i64>>(4)?,
                                 ))
                             },
                         )?
@@ -17637,7 +17997,7 @@ fn prepare_activation_claim_readonly_from_trace(
             if payload_rows.len() != metadata.len() {
                 return Err(SqliteActivationErrorV1::Corrupt);
             }
-            for ((frame_seq, cause_seq, stored_hash, payload_bytes), metadata_row) in
+            for ((frame_seq, cause_seq, stored_hash, payload_bytes, mmr_leaf_index), metadata_row) in
                 payload_rows.into_iter().zip(metadata)
             {
                 if frame_seq != metadata_row.0
@@ -17657,6 +18017,31 @@ fn prepare_activation_claim_readonly_from_trace(
                     || CanonicalJsonV1::from_canonical_bytes(&payload_bytes).is_err()
                 {
                     return Err(SqliteActivationErrorV1::Corrupt);
+                }
+                if let Some(mmr_leaf_index) = mmr_leaf_index {
+                    let receipt = trusted_frames_receipt
+                        .as_ref()
+                        .ok_or(SqliteActivationErrorV1::StaleContext)?;
+                    let leaf_index = u64::try_from(mmr_leaf_index)
+                        .map_err(|_| SqliteActivationErrorV1::Corrupt)?;
+                    let leaf = operational_history_entry(&[
+                        member_id.as_bytes(),
+                        &frame_seq.to_be_bytes(),
+                        &cause_seq.to_be_bytes(),
+                        hash.as_bytes(),
+                    ])
+                    .map_err(|_| SqliteActivationErrorV1::Corrupt)?;
+                    let valid = verify_mmr_leaf_inclusion_connection(
+                        &connection,
+                        &room_id,
+                        receipt,
+                        leaf_index,
+                        &leaf,
+                    )
+                    .map_err(|_| SqliteActivationErrorV1::Corrupt)?;
+                    if !valid {
+                        return Err(SqliteActivationErrorV1::Corrupt);
+                    }
                 }
                 frames.push(ActivationFrameV1 {
                     frame_seq,
@@ -18522,6 +18907,26 @@ fn commit_advance(
                     &cause_room_seq,
                     frame.payload_hash().as_bytes(),
                 ])?;
+                let mmr_leaf_index = append_operational_mmr(
+                    transaction,
+                    &room_id,
+                    "frames",
+                    &entry,
+                )?;
+                if let Some(index) = mmr_leaf_index {
+                    transaction
+                        .execute(
+                            "UPDATE observation_frames SET mmr_leaf_index = ?1 \
+                             WHERE room_id = ?2 AND member_id = ?3 AND frame_seq = ?4",
+                            params![
+                                i64::try_from(index).map_err(|_| RoomCommitResolutionV1::Fault)?,
+                                room_id,
+                                frame.member_id().to_string(),
+                                to_i64(frame.frame_seq())?,
+                            ],
+                        )
+                        .map_err(statement_failure)?;
+                }
                 append_operational_history_root(transaction, &room_id, "frames", &entry)?;
             }
             PreparedObservationConsequenceV1::ResetRequired(view) => {
@@ -18544,7 +18949,22 @@ fn commit_advance(
                     b"reset_required",
                     projection_hash.as_bytes(),
                 ])?;
+                let mmr_leaf_index = append_operational_mmr(
+                    transaction,
+                    &room_id,
+                    "consequences",
+                    &entry,
+                )?;
                 append_operational_history_root(transaction, &room_id, "consequences", &entry)?;
+                if let Some(index) = mmr_leaf_index {
+                    update_consequence_mmr_leaf_index(
+                        transaction,
+                        &room_id,
+                        view.viewer().member_id(),
+                        head.room_seq().get(),
+                        index,
+                    )?;
+                }
             }
             PreparedObservationConsequenceV1::VisibilityLost(member_id) => {
                 persist_delivery_consequence(
@@ -18561,7 +18981,22 @@ fn commit_advance(
                     &cause_room_seq,
                     b"visibility_lost",
                 ])?;
+                let mmr_leaf_index = append_operational_mmr(
+                    transaction,
+                    &room_id,
+                    "consequences",
+                    &entry,
+                )?;
                 append_operational_history_root(transaction, &room_id, "consequences", &entry)?;
+                if let Some(index) = mmr_leaf_index {
+                    update_consequence_mmr_leaf_index(
+                        transaction,
+                        &room_id,
+                        member_id,
+                        head.room_seq().get(),
+                        index,
+                    )?;
+                }
             }
         }
     }
@@ -18593,7 +19028,27 @@ fn commit_advance(
             target_member_id.as_bytes(),
             decision.canonical_decision_bytes(),
         ])?;
+        let mmr_leaf_index = append_operational_mmr(
+            transaction,
+            &room_id,
+            "activation_decisions",
+            &entry,
+        )?;
         append_operational_history_root(transaction, &room_id, "activation_decisions", &entry)?;
+        if let Some(index) = mmr_leaf_index {
+            transaction
+                .execute(
+                    "UPDATE activation_decisions SET mmr_leaf_index = ?1 \
+                     WHERE room_id = ?2 AND cause_room_seq = ?3 AND decision_id = ?4",
+                    params![
+                        i64::try_from(index).map_err(|_| RoomCommitResolutionV1::Fault)?,
+                        room_id,
+                        to_i64(head.room_seq().get())?,
+                        decision.decision_id(),
+                    ],
+                )
+                .map_err(statement_failure)?;
+        }
         let decision_record = worldstream_core::CanonicalJsonV1::decode_canonical::<
             ActivationDecisionV1,
         >(decision.canonical_decision_bytes())
@@ -19247,6 +19702,294 @@ fn retained_observation_range_is_bounded(
     Ok(true)
 }
 
+fn trusted_mmr_receipt_for_head(
+    transaction: &Connection,
+    room_id: &str,
+    room_head: &CompleteHeadV1,
+    domain: &str,
+) -> Result<Option<OperationalMmrReceiptV1>, rusqlite::Error> {
+    let head_seq = i64::try_from(room_head.room_seq().get())
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let row: Option<(i64, String, Vec<u8>, Vec<u8>)> = transaction
+        .query_row(
+            "SELECT room_seq, witness_schema_version, witness_hash, witness_bytes \
+             FROM room_snapshot_operational_witnesses_v3 \
+             WHERE room_id = ?1 AND room_seq <= ?2 ORDER BY room_seq DESC LIMIT 1",
+            params![room_id, head_seq],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let Some((checkpoint_seq, schema, hash, bytes)) = row else {
+        return Ok(None);
+    };
+    if schema != worldstream_core::CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V3
+        || hash.as_slice() != Blake3DigestV1::hash(&bytes).as_bytes()
+    {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let decoded = CanonicalJsonV1::decode_canonical::<RoomCheckpointOperationalWitnessV3>(&bytes)
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let witness = RoomCheckpointOperationalWitnessV3::from_canonical_bytes(
+        &bytes,
+        decoded.checkpoint_head(),
+    )
+    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    if decoded.checkpoint_head().room_id() != room_head.room_id()
+        || decoded.checkpoint_head().room_seq().get()
+            != u64::try_from(checkpoint_seq).map_err(|_| rusqlite::Error::InvalidQuery)?
+    {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let Some(base) = witness.operational_mmr_receipts().get(domain).cloned() else {
+        return Ok(None);
+    };
+    // The current MMR receipt is admissible for serving only when its
+    // sequence count agrees with the frozen V2 inventory. A valid MMR root
+    // with a stale or partial row inventory must never become a serving
+    // anchor. The checkpoint receipt may be older; the bounded tail below
+    // advances it to the current receipt before any proof is served.
+    let frozen_entry_count: i64 = transaction.query_row(
+        "SELECT entry_count FROM room_operational_history_roots_v2 \
+         WHERE room_id = ?1 AND domain = ?2",
+        params![room_id, domain],
+        |row| row.get(0),
+    )?;
+    let frozen_entry_count =
+        u64::try_from(frozen_entry_count).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let current = load_operational_mmr_receipt(transaction, room_id, domain)?
+        .ok_or(rusqlite::Error::InvalidQuery)?;
+    if current.leaf_count() != frozen_entry_count {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    if checkpoint_seq == head_seq {
+        if current != base {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        return Ok(Some(base));
+    }
+    // A V3 checkpoint authenticates the prefix. Advance only the bounded
+    // post-checkpoint tail before admitting the mutable current receipt.
+    let mut accumulator = base
+        .accumulator()
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let checkpoint_seq = u64::try_from(checkpoint_seq).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    match domain {
+        "frames" => {
+            let mut rows = transaction.prepare(
+                "SELECT member_id, frame_seq, cause_room_seq, payload_hash, payload_bytes, \
+                        mmr_leaf_index FROM observation_frames \
+                 WHERE room_id = ?1 AND cause_room_seq > ?2 ORDER BY mmr_leaf_index",
+            )?;
+            let values = rows.query_map(params![room_id, i64::try_from(checkpoint_seq).map_err(|_| rusqlite::Error::InvalidQuery)?], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, Vec<u8>>(4)?, row.get::<_, Option<i64>>(5)?))
+            })?;
+            for value in values {
+                let (member, frame, cause, hash, payload, index) = value?;
+                let index = u64::try_from(index.ok_or(rusqlite::Error::InvalidQuery)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let entry = operational_history_entry(&[
+                    member.as_bytes(),
+                    &u64::try_from(frame).map_err(|_| rusqlite::Error::InvalidQuery)?.to_be_bytes(),
+                    &u64::try_from(cause).map_err(|_| rusqlite::Error::InvalidQuery)?.to_be_bytes(),
+                    Blake3DigestV1::from_str(&hash).map_err(|_| rusqlite::Error::InvalidQuery)?.as_bytes(),
+                ]).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let appended = accumulator.append(&entry).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                if appended.leaf_index() != index || Blake3DigestV1::hash(&payload).to_string() != hash {
+                    return Err(rusqlite::Error::InvalidQuery);
+                }
+            }
+        }
+        "consequences" => {
+            let mut rows = transaction.prepare(
+                "SELECT member_id, cause_room_seq, consequence_kind, projection_hash, mmr_leaf_index \
+                 FROM observation_consequences WHERE room_id = ?1 AND cause_room_seq > ?2 \
+                 ORDER BY mmr_leaf_index",
+            )?;
+            let values = rows.query_map(params![room_id, i64::try_from(checkpoint_seq).map_err(|_| rusqlite::Error::InvalidQuery)?], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, Option<i64>>(4)?))
+            })?;
+            for value in values {
+                let (member, cause, kind, projection, index) = value?;
+                let index = u64::try_from(index.ok_or(rusqlite::Error::InvalidQuery)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let cause = u64::try_from(cause).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let cause_bytes = cause.to_be_bytes();
+                let projection_digest = projection
+                    .as_deref()
+                    .map(Blake3DigestV1::from_str)
+                    .transpose()
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let mut parts = vec![member.as_bytes(), cause_bytes.as_slice(), kind.as_bytes()];
+                if let Some(projection) = projection_digest.as_ref() {
+                    parts.push(projection.as_bytes());
+                }
+                let entry = operational_history_entry(&parts).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let appended = accumulator.append(&entry).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                if appended.leaf_index() != index {
+                    return Err(rusqlite::Error::InvalidQuery);
+                }
+            }
+        }
+        "activation_decisions" => {
+            let mut rows = transaction.prepare(
+                "SELECT cause_room_seq, decision_id, target_member_id, decision_bytes, mmr_leaf_index \
+                 FROM activation_decisions WHERE room_id = ?1 AND cause_room_seq > ?2 \
+                 ORDER BY mmr_leaf_index",
+            )?;
+            let values = rows.query_map(params![room_id, i64::try_from(checkpoint_seq).map_err(|_| rusqlite::Error::InvalidQuery)?], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Vec<u8>>(3)?, row.get::<_, Option<i64>>(4)?))
+            })?;
+            for value in values {
+                let (cause, decision, target, bytes, index) = value?;
+                let index = u64::try_from(index.ok_or(rusqlite::Error::InvalidQuery)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let cause = u64::try_from(cause).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let target = target.unwrap_or_default();
+                let entry = operational_history_entry(&[
+                    &cause.to_be_bytes(), decision.as_bytes(), target.as_bytes(), &bytes,
+                ]).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let appended = accumulator.append(&entry).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                if appended.leaf_index() != index {
+                    return Err(rusqlite::Error::InvalidQuery);
+                }
+            }
+        }
+        _ => return Err(rusqlite::Error::InvalidQuery),
+    }
+    if accumulator.leaf_count() != current.leaf_count() || accumulator.root() != *current.root_hash() {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    Ok(Some(current))
+}
+
+fn verify_mmr_leaf_inclusion(
+    transaction: &Transaction<'_>,
+    room_id: &str,
+    receipt: &OperationalMmrReceiptV1,
+    leaf_index: u64,
+    canonical_leaf: &[u8],
+) -> Result<bool, rusqlite::Error> {
+    let plan = OperationalMmrProofPlanV1::new(receipt.leaf_count(), leaf_index)
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let mut siblings = Vec::with_capacity(plan.siblings().len());
+    for coordinate in plan.siblings() {
+        siblings.push(load_mmr_proof_node(
+            transaction,
+            room_id,
+            receipt.domain(),
+            *coordinate,
+        )?);
+    }
+    let mut other_peaks = Vec::with_capacity(plan.other_peaks().len());
+    for coordinate in plan.other_peaks() {
+        other_peaks.push(load_mmr_proof_node(
+            transaction,
+            room_id,
+            receipt.domain(),
+            *coordinate,
+        )?);
+    }
+    let proof = OperationalMmrProofV1::from_nodes(
+        receipt.domain(),
+        receipt.leaf_count(),
+        leaf_index,
+        siblings,
+        other_peaks,
+    )
+    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    Ok(proof.verify(canonical_leaf, receipt.root_hash()))
+}
+
+fn load_mmr_proof_node(
+    transaction: &Transaction<'_>,
+    room_id: &str,
+    domain: &str,
+    coordinate: OperationalMmrNodeCoordinateV1,
+) -> Result<OperationalMmrProofNodeV1, rusqlite::Error> {
+    let digest: Vec<u8> = transaction.query_row(
+        "SELECT node_hash FROM room_operational_mmr_nodes_v1 \
+         WHERE room_id = ?1 AND domain = ?2 AND height = ?3 AND start_index = ?4",
+        params![
+            room_id,
+            domain,
+            i64::from(coordinate.height()),
+            i64::try_from(coordinate.start_index()).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        ],
+        |row| row.get(0),
+    )?;
+    let digest = Blake3DigestV1::from_bytes(
+        digest
+            .as_slice()
+            .try_into()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+    );
+    Ok(OperationalMmrProofNodeV1::new(coordinate, digest))
+}
+
+fn verify_mmr_leaf_inclusion_connection(
+    connection: &Connection,
+    room_id: &str,
+    receipt: &OperationalMmrReceiptV1,
+    leaf_index: u64,
+    canonical_leaf: &[u8],
+) -> Result<bool, rusqlite::Error> {
+    let plan = OperationalMmrProofPlanV1::new(receipt.leaf_count(), leaf_index)
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let mut siblings = Vec::with_capacity(plan.siblings().len());
+    for coordinate in plan.siblings() {
+        siblings.push(load_mmr_proof_node_connection(
+            connection,
+            room_id,
+            receipt.domain(),
+            *coordinate,
+        )?);
+    }
+    let mut other_peaks = Vec::with_capacity(plan.other_peaks().len());
+    for coordinate in plan.other_peaks() {
+        other_peaks.push(load_mmr_proof_node_connection(
+            connection,
+            room_id,
+            receipt.domain(),
+            *coordinate,
+        )?);
+    }
+    let proof = OperationalMmrProofV1::from_nodes(
+        receipt.domain(),
+        receipt.leaf_count(),
+        leaf_index,
+        siblings,
+        other_peaks,
+    )
+    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    Ok(proof.verify(canonical_leaf, receipt.root_hash()))
+}
+
+fn load_mmr_proof_node_connection(
+    connection: &Connection,
+    room_id: &str,
+    domain: &str,
+    coordinate: OperationalMmrNodeCoordinateV1,
+) -> Result<OperationalMmrProofNodeV1, rusqlite::Error> {
+    let digest: Vec<u8> = connection.query_row(
+        "SELECT node_hash FROM room_operational_mmr_nodes_v1 \
+         WHERE room_id = ?1 AND domain = ?2 AND height = ?3 AND start_index = ?4",
+        params![
+            room_id,
+            domain,
+            i64::from(coordinate.height()),
+            i64::try_from(coordinate.start_index()).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        ],
+        |row| row.get(0),
+    )?;
+    let digest = Blake3DigestV1::from_bytes(
+        digest
+            .as_slice()
+            .try_into()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+    );
+    Ok(OperationalMmrProofNodeV1::new(coordinate, digest))
+}
+
 fn read_observation_frames(
     transaction: &Transaction<'_>,
     authority: &ViewerAdapterInputV1,
@@ -19255,9 +19998,27 @@ fn read_observation_frames(
     _retained_floor: u64,
     room_head_seq: RoomSequenceV1,
 ) -> Result<Vec<SqliteObservationFrameV1>, SqliteObservationErrorV1> {
+    let room_head = transaction
+        .query_row(
+            "SELECT complete_head_bytes FROM rooms WHERE room_id = ?1",
+            [authority.room_id().as_str()],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)
+        .and_then(|bytes| {
+            CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&bytes)
+                .map_err(|_| SqliteObservationErrorV1::Corrupt)
+        })?;
+    let trusted_receipt = trusted_mmr_receipt_for_head(
+        transaction,
+        authority.room_id().as_str(),
+        &room_head,
+        "frames",
+    )
+    .map_err(|_| SqliteObservationErrorV1::ResetRequired)?;
     let mut statement = transaction
         .prepare(
-            "SELECT frame_seq, cause_room_seq, payload_hash, payload_bytes \
+            "SELECT frame_seq, cause_room_seq, payload_hash, payload_bytes, mmr_leaf_index \
              FROM observation_frames WHERE room_id = ?1 AND member_id = ?2 \
              AND frame_seq > ?3 AND frame_seq <= ?4 ORDER BY frame_seq",
         )
@@ -19276,6 +20037,7 @@ fn read_observation_frames(
                     row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
                 ))
             },
         )
@@ -19286,7 +20048,7 @@ fn read_observation_frames(
     // verifier must never silently normalize that gap to the retained floor.
     let mut previous = cursor;
     for row in rows {
-        let (frame_seq, cause_room_seq, payload_hash, payload_bytes) =
+        let (frame_seq, cause_room_seq, payload_hash, payload_bytes, mmr_leaf_index) =
             row.map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
         let frame_seq = u64::try_from(frame_seq).map_err(|_| SqliteObservationErrorV1::Corrupt)?;
         let cause_room_seq = u64::try_from(cause_room_seq)
@@ -19302,6 +20064,31 @@ fn read_observation_frames(
             || worldstream_core::CanonicalJsonV1::from_canonical_bytes(&payload_bytes).is_err()
         {
             return Err(SqliteObservationErrorV1::Corrupt);
+        }
+        if let Some(mmr_leaf_index) = mmr_leaf_index {
+            let receipt = trusted_receipt
+                .as_ref()
+                .ok_or(SqliteObservationErrorV1::ResetRequired)?;
+            let leaf_index = u64::try_from(mmr_leaf_index)
+                .map_err(|_| SqliteObservationErrorV1::Corrupt)?;
+            let leaf = operational_history_entry(&[
+                authority.membership().member_id().to_string().as_bytes(),
+                &frame_seq.to_be_bytes(),
+                &cause_room_seq.get().to_be_bytes(),
+                stored_hash.as_bytes(),
+            ])
+            .map_err(|_| SqliteObservationErrorV1::Corrupt)?;
+            if !verify_mmr_leaf_inclusion(
+                transaction,
+                authority.room_id().as_str(),
+                receipt,
+                leaf_index,
+                &leaf,
+            )
+            .map_err(|_| SqliteObservationErrorV1::Corrupt)?
+            {
+                return Err(SqliteObservationErrorV1::Corrupt);
+            }
         }
         previous = frame_seq;
         frames.push(SqliteObservationFrameV1 {
@@ -21236,10 +22023,9 @@ fn capture_checkpoint_operational_witness_v2(
     if current_head_bytes != snapshot.complete_head_bytes {
         return Ok(None);
     }
-    let checkpoint_head = CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(
-        &snapshot.complete_head_bytes,
-    )
-    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let checkpoint_head =
+        CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&snapshot.complete_head_bytes)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
     let mut roots = BTreeMap::new();
     let mut roots_statement = transaction.prepare(
         "SELECT domain, entry_count, root_hash FROM room_operational_history_roots_v2 \
@@ -21256,8 +22042,9 @@ fn capture_checkpoint_operational_witness_v2(
         let (domain, count, hash) = row?;
         let hash: [u8; 32] = hash.try_into().map_err(|_| rusqlite::Error::InvalidQuery)?;
         let count = u64::try_from(count).map_err(|_| rusqlite::Error::InvalidQuery)?;
-        let root = OperationalHistoryRootV2::new(domain.clone(), count, Blake3DigestV1::from_bytes(hash))
-            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let root =
+            OperationalHistoryRootV2::new(domain.clone(), count, Blake3DigestV1::from_bytes(hash))
+                .map_err(|_| rusqlite::Error::InvalidQuery)?;
         if roots.insert(domain, root).is_some() {
             return Ok(None);
         }
@@ -21280,26 +22067,48 @@ fn capture_checkpoint_operational_witness_v2(
         ),
         |row| {
             Ok((
-                row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?,
-                row.get::<_, Option<Vec<u8>>>(3)?, row.get::<_, String>(4)?,
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<Vec<u8>>>(3)?,
+                row.get::<_, String>(4)?,
             ))
         },
     )?;
     for row in timer_rows {
         let (timer_id, generation, scheduled_for, payload, state) = row?;
-        let Some(payload) = payload else { return Ok(None); };
+        let Some(payload) = payload else {
+            return Ok(None);
+        };
         let state = match state.as_str() {
             "scheduled" => RecoveredTimerStateV1::Scheduled,
             "fired" => RecoveredTimerStateV1::Fired,
             "cancelled" => RecoveredTimerStateV1::Cancelled,
             _ => return Ok(None),
         };
-        let Ok(timer_id) = timer_id.parse() else { return Ok(None); };
-        let Some(generation) = u64::try_from(generation).ok().and_then(|value| TimerGenerationV1::new(value).ok()) else { return Ok(None); };
-        let Ok(scheduled_for) = scheduled_for.parse() else { return Ok(None); };
-        timers.push(RecoveredTimerMaterializationV1::new(timer_id, generation, scheduled_for, payload, state));
+        let Ok(timer_id) = timer_id.parse() else {
+            return Ok(None);
+        };
+        let Some(generation) = u64::try_from(generation)
+            .ok()
+            .and_then(|value| TimerGenerationV1::new(value).ok())
+        else {
+            return Ok(None);
+        };
+        let Ok(scheduled_for) = scheduled_for.parse() else {
+            return Ok(None);
+        };
+        timers.push(RecoveredTimerMaterializationV1::new(
+            timer_id,
+            generation,
+            scheduled_for,
+            payload,
+            state,
+        ));
     }
-    if timers.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize { return Ok(None); }
+    if timers.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize {
+        return Ok(None);
+    }
 
     let mut heads = BTreeMap::new();
     let mut generations = BTreeMap::new();
@@ -21308,22 +22117,93 @@ fn capture_checkpoint_operational_witness_v2(
          WHERE room_id = ?1 ORDER BY member_id LIMIT ?2",
     )?;
     let member_rows = members_statement.query_map(
-        (&snapshot.room_id, MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 + 1),
-        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+        (
+            &snapshot.room_id,
+            MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 + 1,
+        ),
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        },
     )?;
     for row in member_rows {
         let (member_id, frame_head, generation) = row?;
-        let Ok(member) = member_id.parse::<MemberId>() else { return Ok(None); };
-        let Ok(frame_head) = u64::try_from(frame_head) else { return Ok(None); };
-        if generation < 1 || heads.insert(member, frame_head).is_some()
-            || generations.insert(member_id, generation).is_some() { return Ok(None); }
+        let Ok(member) = member_id.parse::<MemberId>() else {
+            return Ok(None);
+        };
+        let Ok(frame_head) = u64::try_from(frame_head) else {
+            return Ok(None);
+        };
+        if generation < 1
+            || heads.insert(member, frame_head).is_some()
+            || generations.insert(member_id, generation).is_some()
+        {
+            return Ok(None);
+        }
     }
-    if heads.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize { return Ok(None); }
-    let witness = RoomCheckpointOperationalWitnessV2::new(
-        checkpoint_head, timers, heads, generations, roots,
-    ).map_err(|_| rusqlite::Error::InvalidQuery)?;
-    let bytes = witness.canonical_bytes().map_err(|_| rusqlite::Error::InvalidQuery)?;
-    if bytes.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_BYTES { return Ok(None); }
+    if heads.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize {
+        return Ok(None);
+    }
+    let witness =
+        RoomCheckpointOperationalWitnessV2::new(checkpoint_head, timers, heads, generations, roots)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let bytes = witness
+        .canonical_bytes()
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    if bytes.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_BYTES {
+        return Ok(None);
+    }
+    Ok(Some((bytes.clone(), Blake3DigestV1::hash(&bytes))))
+}
+
+/// Captures the V3 witness from the same bounded V2 materializations and the
+/// independently validated MMR node inventory. Keeping this additive means
+/// the frozen V2 witness and rolling root remain untouched.
+fn capture_checkpoint_operational_witness_v3(
+    transaction: &Transaction<'_>,
+    snapshot: &PostCommitSnapshotV1,
+) -> Result<Option<(Vec<u8>, Blake3DigestV1)>, rusqlite::Error> {
+    let Some((v2_bytes, _)) = capture_checkpoint_operational_witness_v2(transaction, snapshot)?
+    else {
+        return Ok(None);
+    };
+    let checkpoint_head = CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(
+        &snapshot.complete_head_bytes,
+    )
+    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let v2 = RoomCheckpointOperationalWitnessV2::from_canonical_bytes(
+        &v2_bytes,
+        &checkpoint_head,
+    )
+    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let mut receipts = BTreeMap::new();
+    for domain in OPERATIONAL_HISTORY_ROOT_DOMAINS {
+        let Some(receipt) = load_operational_mmr_receipt(transaction, &snapshot.room_id, domain)?
+        else {
+            return Ok(None);
+        };
+        if receipts.insert(domain.to_owned(), receipt).is_some() {
+            return Ok(None);
+        }
+    }
+    let witness = RoomCheckpointOperationalWitnessV3::new(
+        checkpoint_head,
+        v2.timers().to_vec(),
+        v2.observation_frame_heads().clone(),
+        v2.membership_generations().clone(),
+        v2.operational_history_roots().clone(),
+        receipts,
+    )
+    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let bytes = witness
+        .canonical_bytes()
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    if bytes.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_BYTES {
+        return Ok(None);
+    }
     Ok(Some((bytes.clone(), Blake3DigestV1::hash(&bytes))))
 }
 
@@ -21669,6 +22549,29 @@ fn persist_post_commit_snapshot(
             ],
         )?;
     }
+    let existing_v3_witness: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM room_snapshot_operational_witnesses_v3 \
+         WHERE room_id = ?1 AND room_seq = ?2)",
+        params![snapshot.room_id, snapshot.room_seq],
+        |row| row.get(0),
+    )?;
+    if !existing_v3_witness
+        && let Some((witness_bytes, witness_hash)) =
+            capture_checkpoint_operational_witness_v3(&transaction, snapshot)?
+    {
+        transaction.execute(
+            "INSERT INTO room_snapshot_operational_witnesses_v3( \
+             room_id, room_seq, witness_schema_version, witness_hash, witness_bytes \
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                snapshot.room_id,
+                snapshot.room_seq,
+                worldstream_core::CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V3,
+                witness_hash.as_bytes().as_slice(),
+                witness_bytes,
+            ],
+        )?;
+    }
     let existing_v2_witness: bool = transaction.query_row(
         "SELECT EXISTS(SELECT 1 FROM room_snapshot_operational_witnesses_v2 \
          WHERE room_id = ?1 AND room_seq = ?2)",
@@ -21703,7 +22606,8 @@ fn persist_post_commit_snapshot(
         params![snapshot.room_id, snapshot.room_seq],
         |row| row.get(0),
     )?;
-    if !has_v2_roots && !existing_witness
+    if !has_v2_roots
+        && !existing_witness
         && let Some((witness_bytes, witness_hash)) =
             capture_checkpoint_operational_witness(&transaction, snapshot)?
     {
@@ -22115,6 +23019,7 @@ mod tests {
         ACTIVATION_BACKLOG_POLICY_MIGRATION_ID, ACTIVATION_MIGRATION_ID, AUTHORITY_MIGRATION_ID,
         CANONICAL_EXPORT_MIGRATION_ID, CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID,
         CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID, CURRENT_TIMERS_MIGRATION_ID,
+        CHECKPOINT_OPERATIONAL_WITNESS_V3_MIGRATION_ID,
         DEPLOYMENT_IDENTITIES_MIGRATION_ID, DiagnosticHistoryV1,
         EXTERNAL_INPUT_PREPARATION_MIGRATION_ID, INITIAL_MIGRATION_ID, INITIAL_MIGRATION_SCHEMA,
         MAX_SAFE_INTEGER, MIGRATION_CHECKSUMS_MIGRATION_ID, MigrationFailpoint,
@@ -22153,7 +23058,8 @@ mod tests {
         transfer_file_identity, verify_migration_prefix, verify_migration_records,
         wait_until_authority_change_enqueued, wait_until_guarded_commit_pauses,
         wait_until_recovery_install_pauses, wait_until_replay_projection_pauses,
-        wait_until_writer_queue_pauses,
+        wait_until_writer_queue_pauses, operational_history_entry,
+        trusted_mmr_receipt_for_head, verify_mmr_leaf_inclusion,
     };
 
     const ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -24978,6 +25884,7 @@ mod tests {
             history.map(|migration| migration.version),
             [
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21
+                , 22
             ]
         );
         assert_eq!(
@@ -25004,6 +25911,7 @@ mod tests {
                 CURRENT_TIMERS_MIGRATION_ID,
                 CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID,
                 OPERATIONAL_HISTORY_MMR_MIGRATION_ID,
+                CHECKPOINT_OPERATIONAL_WITNESS_V3_MIGRATION_ID,
             ]
         );
         let expected_checksums = [
@@ -25028,12 +25936,154 @@ mod tests {
             "blake3:00116356f2c4490438c9e923b8197ab7a3704c22d32f4d0d9e3912dfa41f8471",
             "blake3:52c9dbd493d058e5553c5b77a3ee4a5a1feecf8e6f881aedce36a4644662b8db",
             "blake3:e00976433df9a260598f3b1e766a2eaa076b54c0fcb88a18c3f623ea9b335c28",
+            "blake3:fc24f79e96a6d4e8cbeef25b753ba1c4ac229265f68991c780502338fb12418c",
         ];
         assert_eq!(expected_checksums.len(), history.len());
         for (migration, expected) in history.iter().zip(expected_checksums) {
             assert_eq!(migration.checksum().to_string(), expected);
             assert_eq!(migration.checksum(), migration.checksum());
         }
+    }
+
+    #[test]
+    fn operational_mmr_migration_preserves_legacy_fallback_and_installs_constrained_sidecars() {
+        let mut connection = Connection::open_in_memory()
+            .unwrap_or_else(|error| panic!("open MMR migration fixture: {error}"));
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap_or_else(|error| panic!("enable foreign keys: {error}"));
+        migrate(&mut connection)
+            .unwrap_or_else(|error| panic!("apply MMR migration inventory: {error}"));
+
+        let receipt_count: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM room_operational_mmr_receipts_v1",
+                (),
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|error| panic!("read empty receipt inventory: {error}"));
+        assert_eq!(receipt_count, 0, "migration must not forge legacy receipts");
+
+        let rejected = connection.execute(
+            "INSERT INTO room_operational_mmr_receipts_v1(\
+             room_id, domain, leaf_count, root_hash\
+             ) VALUES (?1, 'frames', 0, ?2)",
+            params![ROOM, [0_u8; 32]],
+        );
+        assert!(rejected.is_err(), "MMR receipt requires its durable Room");
+
+        for (index, table) in [
+            ("observation_frames_mmr_leaf_index_v1", "observation_frames"),
+            (
+                "observation_consequences_mmr_leaf_index_v1",
+                "observation_consequences",
+            ),
+            (
+                "activation_decisions_mmr_leaf_index_v1",
+                "activation_decisions",
+            ),
+        ] {
+            let sql: String = connection
+                .query_row(
+                    "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = ?1",
+                    [index],
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|error| panic!("read MMR coordinate index {index}: {error}"));
+            assert!(sql.contains(table));
+            assert!(sql.contains("WHERE mmr_leaf_index IS NOT NULL"));
+        }
+        for trigger in [
+            "room_operational_mmr_nodes_v1_immutable_update",
+            "room_operational_mmr_nodes_v1_immutable_delete",
+            "room_operational_mmr_receipts_v1_source_transfer_fence_insert",
+            "room_operational_mmr_receipts_v1_source_transfer_fence_update",
+            "room_operational_mmr_receipts_v1_source_transfer_fence_delete",
+            "room_operational_mmr_nodes_v1_source_transfer_fence",
+        ] {
+            let present: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'trigger' AND name = ?1)",
+                    [trigger],
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|error| panic!("read MMR trigger {trigger}: {error}"));
+            assert!(present, "missing MMR guard trigger {trigger}");
+        }
+    }
+
+    #[test]
+    fn operational_mmr_rejects_coordinated_payload_and_hash_mutation() {
+        let (file, store, trace, _witness) = committed_history_fixture();
+        let connection = Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open MMR proof fixture: {error}"));
+        let transaction = connection
+            .unchecked_transaction()
+            .unwrap_or_else(|error| panic!("begin MMR proof read: {error}"));
+        let receipt = trusted_mmr_receipt_for_head(&transaction, ROOM, trace.head(), "frames")
+            .unwrap_or_else(|error| panic!("load trusted MMR receipt: {error}"))
+            .unwrap_or_else(|| panic!("missing V3 MMR receipt"));
+        let (frame_seq, cause_seq, hash, payload, leaf_index): (i64, i64, String, Vec<u8>, i64) =
+            transaction
+                .query_row(
+                    "SELECT frame_seq, cause_room_seq, payload_hash, payload_bytes, mmr_leaf_index \
+                     FROM observation_frames WHERE room_id = ?1 ORDER BY frame_seq LIMIT 1",
+                    [ROOM],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                )
+                .unwrap_or_else(|error| panic!("load MMR proof row: {error}"));
+        let hash = Blake3DigestV1::from_str(&hash)
+            .unwrap_or_else(|error| panic!("decode MMR proof hash: {error}"));
+        let frame_seq_bytes = u64::try_from(frame_seq)
+            .unwrap_or_else(|error| panic!("frame sequence: {error}"))
+            .to_be_bytes();
+        let cause_seq_bytes = u64::try_from(cause_seq)
+            .unwrap_or_else(|error| panic!("cause sequence: {error}"))
+            .to_be_bytes();
+        let leaf = operational_history_entry(&[
+            PARTICIPANT.as_bytes(),
+            &frame_seq_bytes,
+            &cause_seq_bytes,
+            hash.as_bytes(),
+        ])
+        .unwrap_or_else(|error| panic!("encode MMR proof leaf: {error:?}"));
+        let leaf_index = u64::try_from(leaf_index)
+            .unwrap_or_else(|error| panic!("leaf index: {error}"));
+        assert!(verify_mmr_leaf_inclusion(&transaction, ROOM, &receipt, leaf_index, &leaf)
+            .unwrap_or_else(|error| panic!("verify original MMR proof: {error}")));
+        transaction
+            .commit()
+            .unwrap_or_else(|error| panic!("finish MMR proof read: {error}"));
+        let mut mutated = payload;
+        mutated.push(b'0');
+        let mutated_hash = Blake3DigestV1::hash(&mutated);
+        connection
+            .execute(
+                "UPDATE observation_frames SET payload_bytes = ?1, payload_hash = ?2 \
+                 WHERE room_id = ?3 AND frame_seq = ?4",
+                params![mutated, mutated_hash.to_string(), ROOM, frame_seq],
+            )
+            .unwrap_or_else(|error| panic!("mutate payload and hash: {error}"));
+        let transaction = connection
+            .unchecked_transaction()
+            .unwrap_or_else(|error| panic!("begin mutated MMR proof read: {error}"));
+        let mutated_leaf = operational_history_entry(&[
+            PARTICIPANT.as_bytes(),
+            &frame_seq_bytes,
+            &cause_seq_bytes,
+            mutated_hash.as_bytes(),
+        ])
+        .unwrap_or_else(|error| panic!("encode mutated MMR proof leaf: {error:?}"));
+        assert!(!verify_mmr_leaf_inclusion(
+            &transaction,
+            ROOM,
+            &receipt,
+            leaf_index,
+            &mutated_leaf,
+        )
+        .unwrap_or_else(|error| panic!("verify mutated MMR proof: {error}")));
+        drop(transaction);
+        drop(store);
     }
 
     #[test]
@@ -25609,9 +26659,9 @@ mod tests {
 
         let connection = Connection::open(file.path())
             .unwrap_or_else(|error| panic!("open delivery consequence mutator: {error}"));
-        connection.execute(
-            "DELETE FROM room_snapshots WHERE room_id = ?1", [ROOM],
-        ).unwrap_or_else(|error| panic!("remove delivery snapshots for full replay: {error}"));
+        connection
+            .execute("DELETE FROM room_snapshots WHERE room_id = ?1", [ROOM])
+            .unwrap_or_else(|error| panic!("remove delivery snapshots for full replay: {error}"));
         mutate(&connection);
         connection
             .execute(
@@ -26851,7 +27901,15 @@ mod tests {
                 (17, CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID.to_owned(),),
                 (18, OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID.to_owned(),),
                 (19, CURRENT_TIMERS_MIGRATION_ID.to_owned(),),
-                (20, CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID.to_owned(),),
+                (
+                    20,
+                    CHECKPOINT_OPERATIONAL_WITNESS_V2_MIGRATION_ID.to_owned(),
+                ),
+                (21, OPERATIONAL_HISTORY_MMR_MIGRATION_ID.to_owned()),
+                (
+                    22,
+                    CHECKPOINT_OPERATIONAL_WITNESS_V3_MIGRATION_ID.to_owned(),
+                ),
             ]
         );
         let retired: (String, String, i64, Vec<u8>, Vec<u8>, i64) = connection
@@ -26993,8 +28051,13 @@ mod tests {
             .unwrap_or_else(|error| panic!("read restarted migration ledger: {error}"));
         assert_eq!(
             migration_count,
-            i64::try_from(migration_history().last().expect("migration inventory").version)
-                .expect("migration version fits SQLite")
+            i64::try_from(
+                migration_history()
+                    .last()
+                    .expect("migration inventory")
+                    .version
+            )
+            .expect("migration version fits SQLite")
         );
     }
 
@@ -27290,8 +28353,13 @@ mod tests {
             .unwrap_or_else(|error| panic!("restored migration ledger: {error}"));
         assert_eq!(
             restored_migrations,
-            i64::try_from(migration_history().last().expect("migration inventory").version)
-                .expect("migration version fits SQLite")
+            i64::try_from(
+                migration_history()
+                    .last()
+                    .expect("migration inventory")
+                    .version
+            )
+            .expect("migration version fits SQLite")
         );
 
         let startup_dir = tempdir().unwrap_or_else(|error| panic!("startup directory: {error}"));
@@ -34100,8 +35168,13 @@ mod tests {
             .unwrap_or_else(|| panic!("Counter v4 full Room remains present"));
         assert_eq!(full.head(), checkpoint.head());
         assert_eq!(
-            full.core_state().canonical_bytes().unwrap_or_else(|error| panic!("Counter v4 full Core: {error}")),
-            checkpoint.core_state().canonical_bytes().unwrap_or_else(|error| panic!("Counter v4 checkpoint Core: {error}")),
+            full.core_state()
+                .canonical_bytes()
+                .unwrap_or_else(|error| panic!("Counter v4 full Core: {error}")),
+            checkpoint
+                .core_state()
+                .canonical_bytes()
+                .unwrap_or_else(|error| panic!("Counter v4 checkpoint Core: {error}")),
         );
         let after: Vec<(i64, String, Option<String>, Vec<u8>)> = connection
             .prepare(
@@ -34281,13 +35354,17 @@ mod tests {
                 "UPDATE room_snapshot_operational_witnesses_v2 \
                  SET witness_hash = ?1 \
                  WHERE room_id = ?2 AND room_seq = ?3",
-                params![
-                    [0_u8; 32].as_slice(),
-                    ROOM,
-                    checkpoint_seq,
-                ],
+                params![[0_u8; 32].as_slice(), ROOM, checkpoint_seq,],
             )
             .unwrap_or_else(|error| panic!("install forged checkpoint witness: {error}"));
+        connection
+            .execute(
+                "UPDATE room_snapshot_operational_witnesses_v3 \
+                 SET witness_hash = ?1 \
+                 WHERE room_id = ?2 AND room_seq = ?3",
+                params![[0_u8; 32].as_slice(), ROOM, checkpoint_seq,],
+            )
+            .unwrap_or_else(|error| panic!("install forged V3 checkpoint witness: {error}"));
 
         let candidate = <SqliteRoomStore as RoomRecoveryStorageV1>::inspect_recovery_candidate(
             &store,
@@ -34344,24 +35421,25 @@ mod tests {
         }
     }
 
-    fn assert_v2_proof_receipt_falls_back(
-        label: &str,
-        mutate: impl FnOnce(&Connection),
-    ) {
+    fn assert_v2_proof_receipt_falls_back(label: &str, mutate: impl FnOnce(&Connection)) {
         let (file, store, trace, _witness) = committed_history_fixture();
         let connection = Connection::open(file.path())
             .unwrap_or_else(|error| panic!("open {label} V2 proof fixture: {error}"));
         mutate(&connection);
         let registry = builtin_counter_registry()
             .unwrap_or_else(|error| panic!("{label} V2 proof registry: {error}"));
-        let recovered = store.recover_room(&registry, &parsed(ROOM))
+        let recovered = store
+            .recover_room(&registry, &parsed(ROOM))
             .unwrap_or_else(|error| panic!("{label} V2 proof fallback: {error:?}"))
             .unwrap_or_else(|| panic!("{label} Room disappeared during V2 proof fallback"));
         assert_eq!(recovered.head(), trace.head(), "{label} fallback Head");
-        let integrity: (String, i64) = connection.query_row(
-            "SELECT status, generation FROM room_integrity WHERE room_id = ?1", [ROOM],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap_or_else(|error| panic!("read {label} V2 proof integrity: {error}"));
+        let integrity: (String, i64) = connection
+            .query_row(
+                "SELECT status, generation FROM room_integrity WHERE room_id = ?1",
+                [ROOM],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or_else(|error| panic!("read {label} V2 proof integrity: {error}"));
         assert_eq!(integrity, ("healthy".to_owned(), 1), "{label} integrity");
     }
 
@@ -34401,7 +35479,9 @@ mod tests {
     fn json_object_with_members(members: &[Vec<u8>]) -> Vec<u8> {
         let mut encoded = Vec::from(&b"{"[..]);
         for (index, member) in members.iter().enumerate() {
-            if index > 0 { encoded.push(b','); }
+            if index > 0 {
+                encoded.push(b',');
+            }
             encoded.extend_from_slice(member);
         }
         encoded.push(b'}');
@@ -34412,11 +35492,13 @@ mod tests {
     fn v2_proof_receipt_omission_and_stale_count_fall_back_for_each_domain() {
         for domain in ["frames", "consequences", "activation_decisions"] {
             assert_v2_proof_receipt_falls_back(&format!("omitted {domain}"), |connection| {
-                connection.execute(
-                    "DELETE FROM room_operational_history_roots_v2 \
+                connection
+                    .execute(
+                        "DELETE FROM room_operational_history_roots_v2 \
                      WHERE room_id = ?1 AND domain = ?2",
-                    params![ROOM, domain],
-                ).unwrap_or_else(|error| panic!("omit {domain} V2 receipt: {error}"));
+                        params![ROOM, domain],
+                    )
+                    .unwrap_or_else(|error| panic!("omit {domain} V2 receipt: {error}"));
             });
             assert_v2_proof_receipt_falls_back(&format!("stale {domain}"), |connection| {
                 connection.execute(
@@ -34432,56 +35514,89 @@ mod tests {
     fn v2_witness_malformed_encoding_and_duplicate_receipts_fail_closed() {
         assert_v2_proof_receipt_falls_back("malformed witness", |connection| {
             let bytes = br#"{}"#;
-            connection.execute(
-                "UPDATE room_snapshot_operational_witnesses_v2 \
+            connection
+                .execute(
+                    "UPDATE room_snapshot_operational_witnesses_v2 \
                  SET witness_bytes = ?1, witness_hash = ?2 WHERE room_id = ?3",
-                params![bytes.as_slice(), Blake3DigestV1::hash(bytes).as_bytes().as_slice(), ROOM],
-            ).unwrap_or_else(|error| panic!("write malformed V2 witness: {error}"));
+                    params![
+                        bytes.as_slice(),
+                        Blake3DigestV1::hash(bytes).as_bytes().as_slice(),
+                        ROOM
+                    ],
+                )
+                .unwrap_or_else(|error| panic!("write malformed V2 witness: {error}"));
         });
         assert_v2_proof_receipt_falls_back("reordered witness", |connection| {
-            let bytes: Vec<u8> = connection.query_row(
-                "SELECT witness_bytes FROM room_snapshot_operational_witnesses_v2 \
+            let bytes: Vec<u8> = connection
+                .query_row(
+                    "SELECT witness_bytes FROM room_snapshot_operational_witnesses_v2 \
                  WHERE room_id = ?1 ORDER BY room_seq DESC LIMIT 1",
-                [ROOM], |row| row.get(0),
-            ).unwrap_or_else(|error| panic!("read V2 witness for reordered encoding: {error}"));
+                    [ROOM],
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|error| panic!("read V2 witness for reordered encoding: {error}"));
             let mut members = json_object_members(&bytes);
             members.reverse();
             let bytes = json_object_with_members(&members);
-            connection.execute(
-                "UPDATE room_snapshot_operational_witnesses_v2 \
+            connection
+                .execute(
+                    "UPDATE room_snapshot_operational_witnesses_v2 \
                  SET witness_bytes = ?1, witness_hash = ?2 WHERE room_id = ?3",
-                params![bytes, Blake3DigestV1::hash(&bytes).as_bytes().as_slice(), ROOM],
-            ).unwrap_or_else(|error| panic!("write reordered V2 witness: {error}"));
+                    params![
+                        bytes,
+                        Blake3DigestV1::hash(&bytes).as_bytes().as_slice(),
+                        ROOM
+                    ],
+                )
+                .unwrap_or_else(|error| panic!("write reordered V2 witness: {error}"));
         });
         assert_v2_proof_receipt_falls_back("duplicate witness member", |connection| {
-            let bytes: Vec<u8> = connection.query_row(
-                "SELECT witness_bytes FROM room_snapshot_operational_witnesses_v2 \
+            let bytes: Vec<u8> = connection
+                .query_row(
+                    "SELECT witness_bytes FROM room_snapshot_operational_witnesses_v2 \
                  WHERE room_id = ?1 ORDER BY room_seq DESC LIMIT 1",
-                [ROOM], |row| row.get(0),
-            ).unwrap_or_else(|error| panic!("read V2 witness for duplicate encoding: {error}"));
+                    [ROOM],
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|error| panic!("read V2 witness for duplicate encoding: {error}"));
             let mut members = json_object_members(&bytes);
             members.insert(1, members.first().expect("V2 witness field").clone());
             let bytes = json_object_with_members(&members);
-            connection.execute(
-                "UPDATE room_snapshot_operational_witnesses_v2 \
+            connection
+                .execute(
+                    "UPDATE room_snapshot_operational_witnesses_v2 \
                  SET witness_bytes = ?1, witness_hash = ?2 WHERE room_id = ?3",
-                params![bytes, Blake3DigestV1::hash(&bytes).as_bytes().as_slice(), ROOM],
-            ).unwrap_or_else(|error| panic!("write duplicate V2 witness member: {error}"));
+                    params![
+                        bytes,
+                        Blake3DigestV1::hash(&bytes).as_bytes().as_slice(),
+                        ROOM
+                    ],
+                )
+                .unwrap_or_else(|error| panic!("write duplicate V2 witness member: {error}"));
         });
         assert_v2_proof_receipt_falls_back("extra witness member", |connection| {
-            let bytes: Vec<u8> = connection.query_row(
-                "SELECT witness_bytes FROM room_snapshot_operational_witnesses_v2 \
+            let bytes: Vec<u8> = connection
+                .query_row(
+                    "SELECT witness_bytes FROM room_snapshot_operational_witnesses_v2 \
                  WHERE room_id = ?1 ORDER BY room_seq DESC LIMIT 1",
-                [ROOM], |row| row.get(0),
-            ).unwrap_or_else(|error| panic!("read V2 witness for extra encoding: {error}"));
+                    [ROOM],
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|error| panic!("read V2 witness for extra encoding: {error}"));
             let mut members = json_object_members(&bytes);
             members.push(br#""unexpected":null"#.to_vec());
             let bytes = json_object_with_members(&members);
-            connection.execute(
-                "UPDATE room_snapshot_operational_witnesses_v2 \
+            connection
+                .execute(
+                    "UPDATE room_snapshot_operational_witnesses_v2 \
                  SET witness_bytes = ?1, witness_hash = ?2 WHERE room_id = ?3",
-                params![bytes, Blake3DigestV1::hash(&bytes).as_bytes().as_slice(), ROOM],
-            ).unwrap_or_else(|error| panic!("write extra V2 witness member: {error}"));
+                    params![
+                        bytes,
+                        Blake3DigestV1::hash(&bytes).as_bytes().as_slice(),
+                        ROOM
+                    ],
+                )
+                .unwrap_or_else(|error| panic!("write extra V2 witness member: {error}"));
         });
         let (file, _store, _trace, _witness) = committed_history_fixture();
         let connection = Connection::open(file.path())
@@ -34492,7 +35607,10 @@ mod tests {
              WHERE room_id = ?1 AND domain = 'frames'",
             [ROOM],
         );
-        assert!(duplicate.is_err(), "the primary key must reject duplicate V2 receipts");
+        assert!(
+            duplicate.is_err(),
+            "the primary key must reject duplicate V2 receipts"
+        );
     }
 
     #[test]
@@ -34506,15 +35624,18 @@ mod tests {
             core_state_hash: trace.head().core_state_hash().to_string(),
             activity_state_hash: trace.head().activity_state_hash().to_string(),
             authoritative_state_hash: trace.head().authoritative_state_hash().to_string(),
-            complete_head_bytes: trace.head().canonical_bytes().unwrap_or_else(|error| {
-                panic!("cache-boundary Head bytes: {error}")
-            }),
-            core_state_bytes: trace.core_state().canonical_bytes().unwrap_or_else(|error| {
-                panic!("cache-boundary Core bytes: {error}")
-            }),
-            activity_state_bytes: trace.activity_state().to_bytes().unwrap_or_else(|error| {
-                panic!("cache-boundary Activity bytes: {error}")
-            }),
+            complete_head_bytes: trace
+                .head()
+                .canonical_bytes()
+                .unwrap_or_else(|error| panic!("cache-boundary Head bytes: {error}")),
+            core_state_bytes: trace
+                .core_state()
+                .canonical_bytes()
+                .unwrap_or_else(|error| panic!("cache-boundary Core bytes: {error}")),
+            activity_state_bytes: trace
+                .activity_state()
+                .to_bytes()
+                .unwrap_or_else(|error| panic!("cache-boundary Activity bytes: {error}")),
         };
         let (file, _store, trace, _witness) = committed_history_fixture();
         let snapshot = snapshot_for(&trace);
@@ -34534,9 +35655,11 @@ mod tests {
                 )
                 .unwrap_or_else(|error| panic!("insert timer {sequence}: {error}"));
         }
-        assert!(super::capture_checkpoint_operational_witness_v2(&transaction, &snapshot)
-            .unwrap_or_else(|error| panic!("capture timer-boundary witness: {error}"))
-            .is_none());
+        assert!(
+            super::capture_checkpoint_operational_witness_v2(&transaction, &snapshot)
+                .unwrap_or_else(|error| panic!("capture timer-boundary witness: {error}"))
+                .is_none()
+        );
         transaction
             .rollback()
             .unwrap_or_else(|error| panic!("rollback timer cache fixture: {error}"));
@@ -34561,9 +35684,11 @@ mod tests {
                 )
                 .unwrap_or_else(|error| panic!("insert member {sequence}: {error}"));
         }
-        assert!(super::capture_checkpoint_operational_witness_v2(&transaction, &snapshot)
-            .unwrap_or_else(|error| panic!("capture member-boundary witness: {error}"))
-            .is_none());
+        assert!(
+            super::capture_checkpoint_operational_witness_v2(&transaction, &snapshot)
+                .unwrap_or_else(|error| panic!("capture member-boundary witness: {error}"))
+                .is_none()
+        );
         drop(transaction);
 
         let (file, _store, trace, _witness) = committed_history_fixture();
@@ -34590,13 +35715,15 @@ mod tests {
         for sequence in 0..17 {
             let member_id = format!("01ARZ3NDEKTSV4RRFFA0{sequence:06}");
             let principal_id = format!("01ARZ3NDEKTSV4RRFFB0{sequence:06}");
-            transaction.execute(
-                "INSERT INTO room_members( \
+            transaction
+                .execute(
+                    "INSERT INTO room_members( \
                  room_id, member_id, principal_id, principal_kind, standing, access_mode, \
                  role, membership_bytes, frame_head, membership_generation \
                  ) VALUES (?1, ?2, ?3, 'human', 'enabled', 'participant', 'counter', ?4, 0, 1)",
-                params![ROOM, member_id, principal_id, &large],
-            ).unwrap_or_else(|error| panic!("insert source member {sequence}: {error}"));
+                    params![ROOM, member_id, principal_id, &large],
+                )
+                .unwrap_or_else(|error| panic!("insert source member {sequence}: {error}"));
         }
         let captured = super::capture_checkpoint_operational_witness_v2(&transaction, &snapshot)
             .unwrap_or_else(|error| panic!("capture source-byte witness: {error}"))
@@ -34606,7 +35733,8 @@ mod tests {
 
     #[test]
     fn checkpoint_and_forced_full_replay_preserve_timer_delivery_and_receipt_materializations() {
-        let file = NamedTempFile::new().unwrap_or_else(|error| panic!("replay comparator DB: {error}"));
+        let file =
+            NamedTempFile::new().unwrap_or_else(|error| panic!("replay comparator DB: {error}"));
         let store = SqliteRoomStore::open(file.path())
             .unwrap_or_else(|error| panic!("open replay comparator SQLite: {error}"));
         let (mut trace, witness) = committed_heist_trace(&store);
@@ -34621,55 +35749,110 @@ mod tests {
             .recover_room(&registry, &parsed(ROOM))
             .unwrap_or_else(|error| panic!("checkpoint recovery: {error:?}"))
             .unwrap_or_else(|| panic!("checkpoint Room present"));
-        let checkpoint_core = checkpoint.core_state().canonical_bytes()
+        let checkpoint_core = checkpoint
+            .core_state()
+            .canonical_bytes()
             .unwrap_or_else(|error| panic!("checkpoint Core bytes: {error}"));
-        let checkpoint_activity = checkpoint.activity_state().to_bytes()
+        let checkpoint_activity = checkpoint
+            .activity_state()
+            .to_bytes()
             .unwrap_or_else(|error| panic!("checkpoint Activity bytes: {error}"));
         let connection = Connection::open(file.path())
             .unwrap_or_else(|error| panic!("open replay comparator reader: {error}"));
         let read_materializations = |connection: &Connection| {
             macro_rules! read_rows {
                 ($sql:expr, $mapper:expr $(,)?) => {{
-                    let mut statement = connection.prepare($sql)
-                        .unwrap_or_else(|error| panic!("prepare replay materialization query: {error}"));
-                    statement.query_map([ROOM], $mapper)
+                    let mut statement = connection.prepare($sql).unwrap_or_else(|error| {
+                        panic!("prepare replay materialization query: {error}")
+                    });
+                    statement
+                        .query_map([ROOM], $mapper)
                         .unwrap_or_else(|error| panic!("read replay materialization rows: {error}"))
                         .collect::<Result<Vec<_>, _>>()
-                        .unwrap_or_else(|error| panic!("collect replay materialization rows: {error}"))
+                        .unwrap_or_else(|error| {
+                            panic!("collect replay materialization rows: {error}")
+                        })
                 }};
             }
             let timers = read_rows!(
                 "SELECT timer_id, generation, scheduled_for, payload_bytes, state FROM timers \
                  WHERE room_id = ?1 ORDER BY timer_id, generation",
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, Vec<u8>>(3)?, row.get::<_, String>(4)?)),
+                |row| Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, String>(4)?
+                )),
             );
             let frames = read_rows!(
                 "SELECT member_id, frame_seq, cause_room_seq, payload_hash, payload_bytes FROM observation_frames \
                  WHERE room_id = ?1 ORDER BY member_id, frame_seq",
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, Vec<u8>>(4)?)),
+                |row| Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Vec<u8>>(4)?
+                )),
             );
             let consequences = read_rows!(
                 "SELECT member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash \
                  FROM observation_consequences WHERE room_id = ?1 ORDER BY member_id, cause_room_seq",
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<Vec<u8>>>(3)?, row.get::<_, Option<String>>(4)?)),
+                |row| Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<Vec<u8>>>(3)?,
+                    row.get::<_, Option<String>>(4)?
+                )),
             );
             let delivery_positions = read_rows!(
                 "SELECT member_id, membership_bytes, frame_head, retained_frame_floor, last_ack_frame_seq, reset_required_through \
                  FROM room_members WHERE room_id = ?1 ORDER BY member_id",
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, Option<i64>>(4)?, row.get::<_, Option<i64>>(5)?)),
+                |row| Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<i64>>(5)?
+                )),
             );
             let decisions = read_rows!(
                 "SELECT cause_room_seq, decision_id, target_member_id, decision_bytes FROM activation_decisions \
                  WHERE room_id = ?1 ORDER BY cause_room_seq, decision_id",
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Vec<u8>>(3)?)),
+                |row| Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?
+                )),
             );
             let receipts = read_rows!(
                 "SELECT operation_kind, operation_identity_bytes, canonical_request_hash, basis_complete_head_bytes, \
                         semantic_input_bytes, semantic_time_bytes, resolution_kind, transition_seq, stored_resolution_bytes \
                  FROM semantic_receipts WHERE room_id = ?1 ORDER BY operation_kind, operation_identity_bytes",
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?, row.get::<_, Vec<u8>>(2)?, row.get::<_, Option<Vec<u8>>>(3)?, row.get::<_, Vec<u8>>(4)?, row.get::<_, Vec<u8>>(5)?, row.get::<_, String>(6)?, row.get::<_, Option<i64>>(7)?, row.get::<_, Vec<u8>>(8)?)),
+                |row| Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Option<Vec<u8>>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, Vec<u8>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Vec<u8>>(8)?
+                )),
             );
-            (timers, frames, consequences, delivery_positions, decisions, receipts)
+            (
+                timers,
+                frames,
+                consequences,
+                delivery_positions,
+                decisions,
+                receipts,
+            )
         };
         let materializations = read_materializations(&connection);
         assert!(!materializations.0.is_empty());
@@ -34678,12 +35861,23 @@ mod tests {
             "UPDATE room_snapshot_operational_witnesses_v2 SET witness_hash = ?1 WHERE room_id = ?2",
             params![[0_u8; 32].as_slice(), ROOM],
         ).unwrap_or_else(|error| panic!("force full replay: {error}"));
-        let full = store.recover_room(&registry, &parsed(ROOM))
+        let full = store
+            .recover_room(&registry, &parsed(ROOM))
             .unwrap_or_else(|error| panic!("full replay recovery: {error:?}"))
             .unwrap_or_else(|| panic!("full replay Room present"));
         assert_eq!(full.head(), checkpoint.head());
-        assert_eq!(full.core_state().canonical_bytes().unwrap_or_else(|error| panic!("full Core bytes: {error}")), checkpoint_core);
-        assert_eq!(full.activity_state().to_bytes().unwrap_or_else(|error| panic!("full Activity bytes: {error}")), checkpoint_activity);
+        assert_eq!(
+            full.core_state()
+                .canonical_bytes()
+                .unwrap_or_else(|error| panic!("full Core bytes: {error}")),
+            checkpoint_core
+        );
+        assert_eq!(
+            full.activity_state()
+                .to_bytes()
+                .unwrap_or_else(|error| panic!("full Activity bytes: {error}")),
+            checkpoint_activity
+        );
         assert_eq!(read_materializations(&connection), materializations);
     }
 
@@ -38700,8 +39894,12 @@ mod tests {
     #[test]
     fn sqlite_real_migration_and_recovery_producers_are_bounded_and_truth_independent() {
         let target_schema_version = u64::try_from(
-            migration_history().last().expect("migration inventory").version,
-        ).expect("migration version fits telemetry schema");
+            migration_history()
+                .last()
+                .expect("migration inventory")
+                .version,
+        )
+        .expect("migration version fits telemetry schema");
         let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
         let path = directory.path().join("telemetry.sqlite3");
         let sink = RecordingSqliteTelemetry::default();
@@ -38770,7 +39968,8 @@ mod tests {
             ]
         );
         assert!(final_events.iter().all(|event| match event {
-            SqliteTelemetryEventV1::Migration { schema_version, .. } => *schema_version <= target_schema_version,
+            SqliteTelemetryEventV1::Migration { schema_version, .. } =>
+                *schema_version <= target_schema_version,
             SqliteTelemetryEventV1::Recovery { .. }
             | SqliteTelemetryEventV1::Integrity { .. }
             | SqliteTelemetryEventV1::StorageDiagnostic { .. } => true,
