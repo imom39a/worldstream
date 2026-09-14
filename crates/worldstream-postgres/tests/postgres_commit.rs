@@ -15,7 +15,8 @@ use worldstream_core::{
     PackGenesisRequestV1, ParticipantActionRequestV1, ParticipantActionV1,
     PreparedAuthorityWitnessV1, PreparedRoomCommitV1, PreparedRoomCreationV1, PreparedRoomWriteV1,
     PrincipalKindV1, RecordedStimulusV1, ResolutionStatusV1, RoomCheckpointOperationalWitnessV1,
-    RoomCheckpointOperationalWitnessV2, RoomCommitResolutionV1, RoomCommitStorageV1,
+    RoomCheckpointOperationalWitnessV2, RoomCheckpointOperationalWitnessV3,
+    RoomCommitResolutionV1, RoomCommitStorageV1,
     RoomCreationRequestV1, RoomRecoveryStorageV1,
     RoomSeedV1, TransitionId, builtin_counter_registry, commit_existing_room, counter_v2_digest,
     recover_room_from_storage_with_receipt,
@@ -525,6 +526,12 @@ fn qualify_bounded_recovery_scales(
         let checkpoint_row = runtime_client
             .query_one(
                 "SELECT room_seq, complete_head_bytes, witness_schema_version, witness_hash, witness_bytes FROM (\
+                   SELECT snapshots.room_seq, snapshots.complete_head_bytes, witness.witness_schema_version, witness.witness_hash, witness.witness_bytes, 3 AS witness_version \
+                   FROM worldstream_room_snapshots AS snapshots \
+                   JOIN worldstream_room_snapshot_operational_witnesses_v3 AS witness \
+                     ON witness.room_id = snapshots.room_id AND witness.room_seq = snapshots.room_seq \
+                   WHERE snapshots.room_id = $1 \
+                   UNION ALL \
                    SELECT snapshots.room_seq, snapshots.complete_head_bytes, witness.witness_schema_version, witness.witness_hash, witness.witness_bytes, 2 AS witness_version \
                    FROM worldstream_room_snapshots AS snapshots \
                    JOIN worldstream_room_snapshot_operational_witnesses_v2 AS witness \
@@ -561,7 +568,38 @@ fn qualify_bounded_recovery_scales(
             activation_witness_entries,
             membership_generations,
             observation_frame_heads,
-        ) = if witness_schema == worldstream_core::CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2 {
+        ) = if witness_schema == worldstream_core::CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V3 {
+            let witness = RoomCheckpointOperationalWitnessV3::from_canonical_bytes(
+                &witness_bytes,
+                &checkpoint_head,
+            )
+            .unwrap_or_else(|error| panic!("scale V3 operational witness {sequence}: {error:?}"));
+            assert_eq!(witness.checkpoint_head(), trace.head());
+            assert_eq!(
+                witness.canonical_bytes().unwrap_or_else(|error| {
+                    panic!("scale V3 canonical witness {sequence}: {error:?}")
+                }),
+                witness_bytes
+            );
+            let root_entries = |domain| {
+                usize::try_from(
+                    witness
+                        .operational_history_roots()
+                        .get(domain)
+                        .unwrap_or_else(|| panic!("scale V3 root {domain} missing"))
+                        .entry_count(),
+                )
+                .unwrap_or_else(|_| panic!("scale V3 root {domain} exceeds platform capacity"))
+            };
+            (
+                witness.timers().len(),
+                root_entries("frames"),
+                root_entries("consequences"),
+                root_entries("activation_decisions"),
+                witness.membership_generations().clone(),
+                witness.observation_frame_heads().clone(),
+            )
+        } else if witness_schema == worldstream_core::CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2 {
             let witness = RoomCheckpointOperationalWitnessV2::from_canonical_bytes(
                 &witness_bytes,
                 &checkpoint_head,
