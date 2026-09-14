@@ -92,9 +92,9 @@ use worldstream_core::{
     HistoricalReplayProjectionV1, HostClockSampleV1, IntegrityGenerationV1,
     MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1, MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES,
     MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1,
-    MAX_HISTORICAL_EVIDENCE_TIME_MS_V1, MAX_PENDING_REFRESH_ACTIVATIONS_V1,
-    MAX_PENDING_REFRESH_AGE_MS_V1, MAX_PENDING_REFRESH_BYTES_V1, MemberId, MembershipStandingV1,
-    MembershipV1, OperationIdentityV1, PackRegistryV1, PackRevisionLockV1, PackViewerV1,
+    MAX_HISTORICAL_EVIDENCE_TIME_MS_V1, MAX_PENDING_REFRESH_AGE_MS_V1,
+    MAX_PENDING_REFRESH_BYTES_V1, MemberId, MembershipStandingV1, MembershipV1,
+    OperationIdentityV1, PackRegistryV1, PackRevisionLockV1, PackViewerV1,
     ParticipantActionAuthorityV1, ParticipantActionRequestV1, ParticipantActionV1,
     PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1, PreparedCreationPersistenceV1,
     PreparedExistingIntentV1, PreparedMembershipMaterializationV1,
@@ -11025,7 +11025,8 @@ mod activation_backlog_provider_tests {
         assert_eq!(pending_bytes, 63 * ATTENTION_BYTES);
         assert_eq!(
             superseded,
-            ARRIVALS - i64::try_from(MAX_PENDING_REFRESH_ACTIVATIONS_V1).unwrap_or(-1)
+            ARRIVALS
+                - i64::try_from(worldstream_core::MAX_PENDING_REFRESH_ACTIVATIONS_V1).unwrap_or(-1)
         );
         assert_eq!(age_retired, 1);
         assert_eq!(obligation, "pending");
