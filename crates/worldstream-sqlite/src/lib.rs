@@ -34196,6 +34196,77 @@ mod tests {
     }
 
     #[test]
+    fn v2_checkpoint_capture_declines_timer_and_member_serving_cache_overflow() {
+        let snapshot_for = |trace: &CoreTraceV1| super::PostCommitSnapshotV1 {
+            room_id: trace.head().room_id().to_string(),
+            room_seq: i64::try_from(trace.head().room_seq().get()).unwrap_or(-1),
+            genesis_or_transition_hash: trace.head().genesis_or_transition_hash().to_string(),
+            core_schema_version: trace.head().core_schema_version().to_owned(),
+            pack_digest: trace.head().pack_digest().to_string(),
+            core_state_hash: trace.head().core_state_hash().to_string(),
+            activity_state_hash: trace.head().activity_state_hash().to_string(),
+            authoritative_state_hash: trace.head().authoritative_state_hash().to_string(),
+            complete_head_bytes: trace.head().canonical_bytes().unwrap_or_else(|error| {
+                panic!("cache-boundary Head bytes: {error}")
+            }),
+            core_state_bytes: trace.core_state().canonical_bytes().unwrap_or_else(|error| {
+                panic!("cache-boundary Core bytes: {error}")
+            }),
+            activity_state_bytes: trace.activity_state().to_bytes().unwrap_or_else(|error| {
+                panic!("cache-boundary Activity bytes: {error}")
+            }),
+        };
+        let (file, _store, trace, _witness) = committed_history_fixture();
+        let snapshot = snapshot_for(&trace);
+        let mut connection = Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open timer cache boundary fixture: {error}"));
+        let transaction = connection
+            .transaction()
+            .unwrap_or_else(|error| panic!("start timer cache boundary transaction: {error}"));
+        for sequence in 0..=super::MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 {
+            let timer_id = format!("01ARZ3NDEKTSV4RRFFQ{sequence:06}");
+            transaction
+                .execute(
+                    "INSERT INTO room_current_timers_v2( \
+                     room_id, timer_id, generation, scheduled_for, payload_bytes, state \
+                     ) VALUES (?1, ?2, 1, '2026-08-15T12:00:00Z', X'7B7D', 'scheduled')",
+                    params![ROOM, timer_id],
+                )
+                .unwrap_or_else(|error| panic!("insert timer {sequence}: {error}"));
+        }
+        assert!(super::capture_checkpoint_operational_witness_v2(&transaction, &snapshot)
+            .unwrap_or_else(|error| panic!("capture timer-boundary witness: {error}"))
+            .is_none());
+        transaction
+            .rollback()
+            .unwrap_or_else(|error| panic!("rollback timer cache fixture: {error}"));
+
+        let (file, _store, trace, _witness) = committed_history_fixture();
+        let snapshot = snapshot_for(&trace);
+        let mut connection = Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open member cache boundary fixture: {error}"));
+        let transaction = connection
+            .transaction()
+            .unwrap_or_else(|error| panic!("start member cache boundary transaction: {error}"));
+        for sequence in 0..=super::MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 {
+            let member_id = format!("01ARZ3NDEKTSV4RRFFQ{sequence:06}");
+            let principal_id = format!("01ARZ3NDEKTSV4RRFFP{sequence:06}");
+            transaction
+                .execute(
+                    "INSERT INTO room_members( \
+                     room_id, member_id, principal_id, principal_kind, standing, access_mode, \
+                     role, membership_bytes, frame_head, membership_generation \
+                     ) VALUES (?1, ?2, ?3, 'human', 'enabled', 'participant', 'counter', X'7B7D', 0, 1)",
+                    params![ROOM, member_id, principal_id],
+                )
+                .unwrap_or_else(|error| panic!("insert member {sequence}: {error}"));
+        }
+        assert!(super::capture_checkpoint_operational_witness_v2(&transaction, &snapshot)
+            .unwrap_or_else(|error| panic!("capture member-boundary witness: {error}"))
+            .is_none());
+    }
+
+    #[test]
     fn snapshot_failure_after_commit_does_not_change_canonical_result_or_recovery() {
         let file =
             NamedTempFile::new().unwrap_or_else(|error| panic!("snapshot failpoint DB: {error}"));
