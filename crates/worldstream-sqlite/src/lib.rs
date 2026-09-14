@@ -4338,6 +4338,22 @@ impl SqliteRoomStore {
         emit_sqlite_telemetry(self.writer.telemetry.as_deref(), event);
     }
 
+    fn emit_integrity_diagnostic(&self, room_id: &RoomId) {
+        self.emit_telemetry(SqliteTelemetryEventV1::StorageDiagnostic {
+            kind: SqliteStorageDiagnosticKindV1::Integrity,
+        });
+        if let Ok(Some(integrity)) = self.room_integrity_state(room_id) {
+            let status = match integrity.status() {
+                RoomIntegrityStatusV1::Faulted => Some(SqliteIntegrityStatusV1::Faulted),
+                RoomIntegrityStatusV1::Quarantined => Some(SqliteIntegrityStatusV1::Quarantined),
+                RoomIntegrityStatusV1::Healthy => None,
+            };
+            if let Some(status) = status {
+                self.emit_telemetry(SqliteTelemetryEventV1::Integrity { status });
+            }
+        }
+    }
+
     /// Opens the local database and fails closed unless the linked engine is
     /// the exact release-selected bundled `SQLite` source. Repeated opens of the
     /// same path share one private bounded writer queue and writer connection.
@@ -5106,11 +5122,14 @@ impl SqliteRoomStore {
             .writer
             .open_read_connection()
             .map_err(|_| SqliteGatewayErrorV1::StorageUnavailable)?;
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|_| SqliteGatewayErrorV1::StorageUnavailable)?;
         // A warm executor must never hide mutation of the durable current
         // materialization. This bounded check reads only the head-named
         // Genesis/Transition and current Core/Activity bytes; it is not a
         // history replay.
-        match load_authoritative_current_materialization(&connection, room_id) {
+        match load_authoritative_current_materialization(&transaction, room_id) {
             Ok(Some(_)) => {}
             Ok(None) => return Ok(None),
             Err(AuthorityStoreErrorV1::Unavailable) => {
@@ -5118,9 +5137,6 @@ impl SqliteRoomStore {
             }
             Err(_) => return Err(SqliteGatewayErrorV1::Corrupt),
         }
-        let transaction = connection
-            .unchecked_transaction()
-            .map_err(|_| SqliteGatewayErrorV1::StorageUnavailable)?;
         let row: Option<(Vec<u8>, String, i64)> = transaction
             .query_row(
                 "SELECT r.complete_head_bytes, i.status, i.generation FROM rooms r \
@@ -5541,17 +5557,40 @@ impl SqliteRoomStore {
         // Read only the current durable serving fence before caching it: full
         // inspection would reload every canonical Transition solely to obtain
         // the Head, integrity, and frame heads that this bounded fence owns.
-        let Some(fence) = self.current_room_serving_fence(room_id)? else {
-            return Err(SqliteGatewayErrorV1::RoomUnavailable);
+        let snapshot = self.gateway_room_snapshot_from_recovered_trace(room_id, trace)?;
+        Ok(Some(snapshot))
+    }
+
+    fn gateway_room_snapshot_from_recovered_trace(
+        &self,
+        room_id: &RoomId,
+        trace: CoreTraceV1,
+    ) -> Result<SqliteGatewayRoomSnapshotV1, SqliteGatewayErrorV1> {
+        let fence = match self.current_room_serving_fence(room_id) {
+            Ok(Some(fence)) => fence,
+            Ok(None) => return Err(SqliteGatewayErrorV1::RoomUnavailable),
+            Err(error) => {
+                if matches!(
+                    error,
+                    SqliteGatewayErrorV1::Corrupt | SqliteGatewayErrorV1::IntegrityUnavailable
+                ) {
+                    self.emit_integrity_diagnostic(room_id);
+                }
+                return Err(error);
+            }
         };
+        if fence.integrity().status() == RoomIntegrityStatusV1::Quarantined {
+            self.emit_integrity_diagnostic(room_id);
+            return Err(SqliteGatewayErrorV1::IntegrityUnavailable);
+        }
         if fence.head() != trace.head() {
             return Err(SqliteGatewayErrorV1::ConcurrentChange);
         }
-        Ok(Some(SqliteGatewayRoomSnapshotV1 {
+        Ok(SqliteGatewayRoomSnapshotV1 {
             trace,
             integrity: fence.integrity().clone(),
             frame_heads: fence.frame_heads().clone(),
-        }))
+        })
     }
 
     fn gateway_room_snapshot_without_repair(
@@ -7288,21 +7327,7 @@ impl SqliteRoomStore {
             Err(SqliteRoomInspectionErrorV1::Corrupt
                 | SqliteRoomInspectionErrorV1::IntegrityUnavailable,)
         ) {
-            self.emit_telemetry(SqliteTelemetryEventV1::StorageDiagnostic {
-                kind: SqliteStorageDiagnosticKindV1::Integrity,
-            });
-            if let Ok(Some(integrity)) = self.room_integrity_state(room_id) {
-                let status = match integrity.status() {
-                    RoomIntegrityStatusV1::Faulted => Some(SqliteIntegrityStatusV1::Faulted),
-                    RoomIntegrityStatusV1::Quarantined => {
-                        Some(SqliteIntegrityStatusV1::Quarantined)
-                    }
-                    RoomIntegrityStatusV1::Healthy => None,
-                };
-                if let Some(status) = status {
-                    self.emit_telemetry(SqliteTelemetryEventV1::Integrity { status });
-                }
-            }
+            self.emit_integrity_diagnostic(room_id);
         }
         result
     }
@@ -34953,6 +34978,49 @@ mod tests {
         assert_eq!(snapshot.trace().head(), fence.head());
         assert_eq!(snapshot.integrity(), fence.integrity());
         assert_eq!(snapshot.frame_heads(), fence.frame_heads());
+    }
+
+    #[test]
+    fn gateway_cache_install_rejects_quarantine_after_guarded_recovery() {
+        let file = NamedTempFile::new().unwrap_or_else(|error| panic!("temp DB: {error}"));
+        let store = SqliteRoomStore::open(file.path())
+            .unwrap_or_else(|error| panic!("open SQLite: {error}"));
+        committed_heist_trace(&store);
+        let registry = builtin_agent_heist_registry()
+            .unwrap_or_else(|error| panic!("Agent Heist recovery registry: {error}"));
+        let room_id = parsed(ROOM);
+        let trace = store
+            .recover_room(&registry, &room_id)
+            .unwrap_or_else(|error| panic!("guarded recovery: {error:?}"))
+            .unwrap_or_else(|| panic!("durable Heist Room remains present"));
+
+        // Model the exact race boundary: recovery returned a healthy trace,
+        // then an integrity transition quarantined the Room before the bounded
+        // serving fence was captured for cache installation.
+        let connection = Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open quarantine writer: {error}"));
+        assert_eq!(
+            connection
+                .execute(
+                    "UPDATE room_integrity SET status = 'quarantined', generation = generation + 1 \
+                     WHERE room_id = ?1",
+                    [ROOM],
+                )
+                .unwrap_or_else(|error| panic!("quarantine recovered Room: {error}")),
+            1
+        );
+        drop(connection);
+
+        reset_full_history_inspection_calls();
+        assert!(matches!(
+            store.gateway_room_snapshot_from_recovered_trace(&room_id, trace),
+            Err(SqliteGatewayErrorV1::IntegrityUnavailable)
+        ));
+        assert_eq!(
+            full_history_inspection_calls(),
+            0,
+            "a quarantine race must fail closed without falling back to full history inspection"
+        );
     }
 
     #[test]
