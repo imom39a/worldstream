@@ -2431,6 +2431,13 @@ struct TimerBookV1 {
     last_generation: BTreeMap<TimerId, TimerGenerationV1>,
 }
 
+/// Maximum distinct Timer identifiers admitted for a newly prepared Room.
+///
+/// The last-generation map needs one entry for every identifier ever used,
+/// including fired and cancelled Timers. This cap therefore bounds that
+/// serving-state component; it does not reinterpret historical V1 traces.
+pub const MAX_DISTINCT_TIMER_IDS_V1: usize = 1_024;
+
 impl TimerBookV1 {
     fn from_checkpoint(
         rows: &[crate::RecoveredTimerMaterializationV1],
@@ -2475,6 +2482,9 @@ impl TimerBookV1 {
             .any(|pair| pair[0].timer_id >= pair[1].timer_id)
         {
             return Err(TraceErrorV1::TimerChangesNotStrictlySorted);
+        }
+        if initial.len() > MAX_DISTINCT_TIMER_IDS_V1 {
+            return Err(TraceErrorV1::DistinctTimerIdLimitExceeded);
         }
         let generation_one = TimerGenerationV1::new(1)?;
         let mut scheduled = BTreeMap::new();
@@ -2534,6 +2544,9 @@ impl TimerBookV1 {
                     due,
                     canonical_payload,
                 } => {
+                    if !next.admits_timer_id(&timer_id) {
+                        return Err(TraceErrorV1::DistinctTimerIdLimitExceeded);
+                    }
                     let generation = next.successor(&timer_id)?;
                     if next.scheduled.contains_key(&timer_id)
                         || compare_timestamp_text(due.as_str(), stimulus.semantic_time())
@@ -2727,6 +2740,42 @@ impl TimerBookV1 {
             Some(generation) => generation.checked_successor().map_err(Into::into),
             None => TimerGenerationV1::new(1).map_err(Into::into),
         }
+    }
+
+    fn admits_timer_id(&self, timer_id: &TimerId) -> bool {
+        self.last_generation.contains_key(timer_id)
+            || self.last_generation.len() < MAX_DISTINCT_TIMER_IDS_V1
+    }
+}
+
+#[cfg(test)]
+mod timer_book_tests {
+    use super::*;
+
+    #[test]
+    fn distinct_timer_id_cap_allows_reuse_and_rejects_one_more() {
+        let generation =
+            TimerGenerationV1::new(1).unwrap_or_else(|error| panic!("timer generation: {error}"));
+        let last_generation = (1..=MAX_DISTINCT_TIMER_IDS_V1)
+            .map(|value| {
+                let timer_id = format!("{value:026}")
+                    .parse::<TimerId>()
+                    .unwrap_or_else(|error| panic!("timer id {value}: {error}"));
+                (timer_id, generation)
+            })
+            .collect::<BTreeMap<_, _>>();
+        let book = TimerBookV1 {
+            scheduled: BTreeMap::new(),
+            last_generation,
+        };
+        let existing = "00000000000000000000000001"
+            .parse::<TimerId>()
+            .unwrap_or_else(|error| panic!("existing timer id: {error}"));
+        let one_more = format!("{:026}", MAX_DISTINCT_TIMER_IDS_V1 + 1)
+            .parse::<TimerId>()
+            .unwrap_or_else(|error| panic!("new timer id: {error}"));
+        assert!(book.admits_timer_id(&existing));
+        assert!(!book.admits_timer_id(&one_more));
     }
 }
 
@@ -3021,6 +3070,9 @@ pub enum TraceErrorV1 {
     /// Timer mutation did not match generation/current/time rules.
     #[error("invalid normalized Timer mutation")]
     InvalidTimerNormalization,
+    /// A new Timer identifier would exceed the fixed serving-state budget.
+    #[error("distinct Timer identifier limit exceeded")]
+    DistinctTimerIdLimitExceeded,
     /// Archive output left a scheduled Timer.
     #[error("archive must cancel every scheduled Timer")]
     ArchiveDidNotCancelAllTimers,

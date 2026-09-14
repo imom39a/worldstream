@@ -220,7 +220,7 @@ pub use session::{
 pub use trace::{
     AdvanceDispositionV1, CoreReducerV1, CoreTraceV1, HistoricalEvidencePageOutcomeV1,
     HistoricalEvidenceReferenceV1, HistoricalReplayAccumulatorV1, HistoricalReplayErrorV1,
-    HistoricalReplayProjectionRequestV1, HistoricalReplayProjectionV1,
+    HistoricalReplayProjectionRequestV1, HistoricalReplayProjectionV1, MAX_DISTINCT_TIMER_IDS_V1,
     MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1,
     MAX_HISTORICAL_EVIDENCE_TIME_MS_V1, PackFaultV1, PreparedCoreStateV1, PreparedRoomTransitionV1,
     ReplayActivationDecisionWitnessV1, ReplayFailureClassV1, ReplayFailureV1,

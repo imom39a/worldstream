@@ -41,6 +41,13 @@ format because this change constrains cache admission rather than changing the
 meaning of a witness. Full canonical history and the native operational rows
 are retained for forensic replay and backup verification.
 
+Newly prepared Rooms also admit at most 1,024 distinct Timer IDs. Reusing an
+existing ID is allowed; introducing an additional ID fails preparation before
+persistence. The limit bounds the Core Timer generation map and permits an
+operational table to retain only the current generation/state per ID in a
+future compatible migration. Existing V1 histories are replayed unchanged,
+including those above this limit, and remain ineligible for that acceleration.
+
 ## Consequences
 
 Eligible checkpoint capture has a fixed logical row and binary-value budget;
