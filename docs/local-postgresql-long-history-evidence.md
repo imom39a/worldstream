@@ -216,7 +216,10 @@ The live PostgreSQL 17 cadence audit is implemented in the conformance test and
 emits exact serialized snapshot bytes plus event-to-event WAL LSN deltas. The
 local live harness generated the 10,000-transition workload, but its enclosing
 adapter and full-gate run failed before an accepted cadence marker was
-recorded. PostgreSQL per-snapshot CPU remains explicitly unavailable because
+recorded. A focused direct test was then run against a fresh pinned PostgreSQL
+17.11 container; migration stopped at the reviewed schema-catalog fingerprint
+check because concurrent IMO-234 migration work has not yet updated the
+contract fingerprint. PostgreSQL per-snapshot CPU remains explicitly unavailable because
 the standard catalogs do not provide a portable callback-level counter; WAL
 event deltas include intervening canonical writes and are therefore reported
 with that limitation.
