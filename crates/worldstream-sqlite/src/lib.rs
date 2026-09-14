@@ -20728,6 +20728,12 @@ fn record_snapshot_cadence_advance(
 /// sequence; it is never consulted as canonical history and may be deleted or
 /// rebuilt by recovery.
 const MAX_CHECKPOINT_OPERATIONAL_WITNESS_BYTES: usize = 16 * 1024 * 1024;
+// A checkpoint witness is an optional serving cache. These limits bound the
+// eligible operational continuation before any unbounded row collection is
+// materialized. A Room outside them deliberately falls back to complete
+// canonical-history replay; its forensic rows are never compacted here.
+const MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2: i64 = 1_024;
+const MAX_CHECKPOINT_OPERATIONAL_WITNESS_VALUE_BYTES_V2: i64 = 4 * 1024;
 
 #[allow(clippy::too_many_lines)]
 fn capture_checkpoint_operational_witness(
@@ -20749,20 +20755,31 @@ fn capture_checkpoint_operational_witness(
     let mut timers = Vec::new();
     {
         let mut statement = transaction.prepare(
-            "SELECT timer_id, generation, scheduled_for, payload_bytes, state FROM timers \
-             WHERE room_id = ?1 ORDER BY timer_id, generation",
+            "SELECT timer_id, generation, scheduled_for, \
+             CASE WHEN length(payload_bytes) <= ?2 THEN payload_bytes ELSE NULL END, state \
+             FROM timers WHERE room_id = ?1 ORDER BY timer_id, generation LIMIT ?3",
         )?;
-        let rows = statement.query_map([&snapshot.room_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-                row.get::<_, String>(4)?,
-            ))
-        })?;
+        let rows = statement.query_map(
+            (
+                &snapshot.room_id,
+                MAX_CHECKPOINT_OPERATIONAL_WITNESS_VALUE_BYTES_V2,
+                MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 + 1,
+            ),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<Vec<u8>>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )?;
         for row in rows {
             let (timer_id, generation, scheduled_for, payload, state) = row?;
+            let Some(payload) = payload else {
+                return Ok(None);
+            };
             let state = match state.as_str() {
                 "scheduled" => RecoveredTimerStateV1::Scheduled,
                 "fired" => RecoveredTimerStateV1::Fired,
@@ -20785,21 +20802,30 @@ fn capture_checkpoint_operational_witness(
             ));
         }
     }
+    if timers.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize {
+        return Ok(None);
+    }
 
     let mut observation_frame_heads = BTreeMap::new();
     let mut membership_generations = BTreeMap::new();
     {
         let mut statement = transaction.prepare(
             "SELECT member_id, frame_head, membership_generation FROM room_members \
-             WHERE room_id = ?1 ORDER BY member_id",
+             WHERE room_id = ?1 ORDER BY member_id LIMIT ?2",
         )?;
-        let rows = statement.query_map([&snapshot.room_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        })?;
+        let rows = statement.query_map(
+            (
+                &snapshot.room_id,
+                MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 + 1,
+            ),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )?;
         for row in rows {
             let (member_id, frame_head, generation) = row?;
             let parsed = member_id
@@ -20819,21 +20845,32 @@ fn capture_checkpoint_operational_witness(
             }
         }
     }
+    if observation_frame_heads.len()
+        > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize
+    {
+        return Ok(None);
+    }
 
     let mut observation_frames = Vec::new();
     {
         let mut statement = transaction.prepare(
             "SELECT member_id, frame_seq, cause_room_seq, payload_hash FROM observation_frames \
-             WHERE room_id = ?1 ORDER BY member_id, frame_seq",
+             WHERE room_id = ?1 ORDER BY member_id, frame_seq LIMIT ?2",
         )?;
-        let rows = statement.query_map([&snapshot.room_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })?;
+        let rows = statement.query_map(
+            (
+                &snapshot.room_id,
+                MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 + 1,
+            ),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )?;
         for row in rows {
             let (member_id, frame_seq, cause_room_seq, payload_hash) = row?;
             observation_frames.push(RecoveredObservationFrameV1::from_replay(
@@ -20851,22 +20888,31 @@ fn capture_checkpoint_operational_witness(
             ));
         }
     }
+    if observation_frames.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize {
+        return Ok(None);
+    }
 
     let mut observation_consequences = Vec::new();
     {
         let mut statement = transaction.prepare(
             "SELECT member_id, cause_room_seq, consequence_kind, projection_hash \
              FROM observation_consequences WHERE room_id = ?1 \
-             ORDER BY member_id, cause_room_seq",
+             ORDER BY member_id, cause_room_seq LIMIT ?2",
         )?;
-        let rows = statement.query_map([&snapshot.room_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
-            ))
-        })?;
+        let rows = statement.query_map(
+            (
+                &snapshot.room_id,
+                MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 + 1,
+            ),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )?;
         for row in rows {
             let (member_id, cause_room_seq, kind, projection_hash) = row?;
             let member_id = member_id
@@ -20892,24 +20938,40 @@ fn capture_checkpoint_operational_witness(
             });
         }
     }
+    if observation_consequences.len()
+        > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize
+    {
+        return Ok(None);
+    }
 
     let mut activation_decisions = Vec::new();
     {
         let mut statement = transaction.prepare(
-            "SELECT cause_room_seq, decision_id, target_member_id, decision_bytes \
+            "SELECT cause_room_seq, decision_id, target_member_id, \
+             CASE WHEN length(decision_bytes) <= ?2 THEN decision_bytes ELSE NULL END \
              FROM activation_decisions WHERE room_id = ?1 \
-             ORDER BY cause_room_seq, decision_id",
+             ORDER BY cause_room_seq, decision_id LIMIT ?3",
         )?;
-        let rows = statement.query_map([&snapshot.room_id], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-            ))
-        })?;
+        let rows = statement.query_map(
+            (
+                &snapshot.room_id,
+                MAX_CHECKPOINT_OPERATIONAL_WITNESS_VALUE_BYTES_V2,
+                MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 + 1,
+            ),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<Vec<u8>>>(3)?,
+                ))
+            },
+        )?;
         for row in rows {
             let (cause_room_seq, decision_id, target_member_id, decision_bytes) = row?;
+            let Some(decision_bytes) = decision_bytes else {
+                return Ok(None);
+            };
             activation_decisions.push(RecoveredActivationDecisionV1::new(
                 RoomSequenceV1::new(
                     u64::try_from(cause_room_seq).map_err(|_| rusqlite::Error::InvalidQuery)?,
@@ -20922,6 +20984,9 @@ fn capture_checkpoint_operational_witness(
                 decision_bytes,
             ));
         }
+    }
+    if activation_decisions.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize {
+        return Ok(None);
     }
 
     let witness = RoomCheckpointOperationalWitnessV1::new(

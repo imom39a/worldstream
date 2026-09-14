@@ -9400,6 +9400,16 @@ fn persist_snapshot(
 }
 
 const MAX_CHECKPOINT_OPERATIONAL_WITNESS_BYTES: usize = 16 * 1024 * 1024;
+// A checkpoint witness is an optional serving cache.  These limits bound the
+// *eligible* operational continuation before any field values are materialized
+// in this process.  A Room beyond either limit simply has no checkpoint
+// witness and recovers from its complete canonical history instead.
+//
+// The canonical history is deliberately not compacted here: it remains the
+// forensic source of truth for every Room, including ones that outgrow this
+// cache contract.
+const MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2: i64 = 1_024;
+const MAX_CHECKPOINT_OPERATIONAL_WITNESS_VALUE_BYTES_V2: i32 = 4 * 1024;
 
 #[allow(clippy::too_many_lines)]
 fn capture_checkpoint_operational_witness(
@@ -9422,14 +9432,19 @@ fn capture_checkpoint_operational_witness(
 
     let mut timers = Vec::new();
     for row in tx.query(
-        "SELECT timer_id, generation, scheduled_for, payload_bytes, state \
-         FROM worldstream_timers WHERE room_id = $1 ORDER BY timer_id, generation",
-        &[&room_id],
+        "SELECT timer_id, generation, scheduled_for, \
+         CASE WHEN octet_length(payload_bytes) <= $2 THEN payload_bytes ELSE NULL END, state \
+         FROM worldstream_timers WHERE room_id = $1 ORDER BY timer_id, generation LIMIT $3",
+        &[
+            &room_id,
+            &MAX_CHECKPOINT_OPERATIONAL_WITNESS_VALUE_BYTES_V2,
+            &(MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 + 1),
+        ],
     )? {
         let timer_id: String = row.try_get(0)?;
         let generation: i64 = row.try_get(1)?;
         let scheduled_for: String = row.try_get(2)?;
-        let payload: Vec<u8> = row.try_get(3)?;
+        let payload: Option<Vec<u8>> = row.try_get(3)?;
         let state: String = row.try_get(4)?;
         let Ok(timer_id) = timer_id.parse() else {
             return Ok(None);
@@ -9449,6 +9464,9 @@ fn capture_checkpoint_operational_witness(
             "cancelled" => RecoveredTimerStateV1::Cancelled,
             _ => return Ok(None),
         };
+        let Some(payload) = payload else {
+            return Ok(None);
+        };
         timers.push(RecoveredTimerMaterializationV1::new(
             timer_id,
             generation,
@@ -9457,13 +9475,19 @@ fn capture_checkpoint_operational_witness(
             state,
         ));
     }
+    if timers.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize {
+        return Ok(None);
+    }
 
     let mut observation_frame_heads = BTreeMap::new();
     let mut membership_generations = BTreeMap::new();
     for row in tx.query(
         "SELECT member_id, frame_head, membership_generation FROM worldstream_members \
-         WHERE room_id = $1 ORDER BY member_id",
-        &[&room_id],
+         WHERE room_id = $1 ORDER BY member_id LIMIT $2",
+        &[
+            &room_id,
+            &(MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 + 1),
+        ],
     )? {
         let member_id: String = row.try_get(0)?;
         let frame_head: i64 = row.try_get(1)?;
@@ -9484,18 +9508,31 @@ fn capture_checkpoint_operational_witness(
             return Ok(None);
         }
     }
+    if observation_frame_heads.len()
+        > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize
+    {
+        return Ok(None);
+    }
 
     let mut observation_frames = Vec::new();
     for row in tx.query(
-        "SELECT member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash \
-         FROM worldstream_frames WHERE room_id = $1 ORDER BY member_id, frame_seq",
-        &[&room_id],
+        "SELECT member_id, frame_seq, cause_room_seq, \
+         CASE WHEN octet_length(payload_bytes) <= $2 THEN payload_bytes ELSE NULL END, payload_hash \
+         FROM worldstream_frames WHERE room_id = $1 ORDER BY member_id, frame_seq LIMIT $3",
+        &[
+            &room_id,
+            &MAX_CHECKPOINT_OPERATIONAL_WITNESS_VALUE_BYTES_V2,
+            &(MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 + 1),
+        ],
     )? {
         let member_id: String = row.try_get(0)?;
         let frame_seq: i64 = row.try_get(1)?;
         let cause_room_seq: i64 = row.try_get(2)?;
-        let payload_bytes: Vec<u8> = row.try_get(3)?;
+        let payload_bytes: Option<Vec<u8>> = row.try_get(3)?;
         let payload_hash: Vec<u8> = row.try_get(4)?;
+        let Some(payload_bytes) = payload_bytes else {
+            return Ok(None);
+        };
         let computed_hash = Blake3DigestV1::hash(&payload_bytes);
         let Some((member_id, frame_seq, cause_room_seq)) = member_id
             .parse()
@@ -9520,13 +9557,21 @@ fn capture_checkpoint_operational_witness(
             computed_hash,
         ));
     }
+    if observation_frames.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize {
+        return Ok(None);
+    }
 
     let mut observation_consequences = Vec::new();
     for row in tx.query(
-        "SELECT member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash \
+        "SELECT member_id, cause_room_seq, consequence_kind, \
+         CASE WHEN payload_bytes IS NULL OR octet_length(payload_bytes) <= $2 THEN payload_bytes ELSE NULL END, projection_hash \
          FROM worldstream_observation_consequences WHERE room_id = $1 \
-         ORDER BY member_id, cause_room_seq",
-        &[&room_id],
+         ORDER BY member_id, cause_room_seq LIMIT $3",
+        &[
+            &room_id,
+            &MAX_CHECKPOINT_OPERATIONAL_WITNESS_VALUE_BYTES_V2,
+            &(MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 + 1),
+        ],
     )? {
         let member_id: String = row.try_get(0)?;
         let cause_room_seq: i64 = row.try_get(1)?;
@@ -9561,18 +9606,28 @@ fn capture_checkpoint_operational_witness(
         };
         observation_consequences.push(consequence);
     }
+    if observation_consequences.len()
+        > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize
+    {
+        return Ok(None);
+    }
 
     let mut activation_decisions = Vec::new();
     for row in tx.query(
-        "SELECT cause_room_seq, decision_id, target_member_id, decision_bytes \
+        "SELECT cause_room_seq, decision_id, target_member_id, \
+         CASE WHEN octet_length(decision_bytes) <= $2 THEN decision_bytes ELSE NULL END \
          FROM worldstream_activation_decisions WHERE room_id = $1 \
-         ORDER BY cause_room_seq, decision_id",
-        &[&room_id],
+         ORDER BY cause_room_seq, decision_id LIMIT $3",
+        &[
+            &room_id,
+            &MAX_CHECKPOINT_OPERATIONAL_WITNESS_VALUE_BYTES_V2,
+            &(MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 + 1),
+        ],
     )? {
         let cause_room_seq: i64 = row.try_get(0)?;
         let decision_id: String = row.try_get(1)?;
         let target_member_id: Option<String> = row.try_get(2)?;
-        let decision_bytes: Vec<u8> = row.try_get(3)?;
+        let decision_bytes: Option<Vec<u8>> = row.try_get(3)?;
         let Some(cause_room_seq) = u64::try_from(cause_room_seq)
             .ok()
             .and_then(|value| RoomSequenceV1::new(value).ok())
@@ -9586,12 +9641,18 @@ fn capture_checkpoint_operational_witness(
         else {
             return Ok(None);
         };
+        let Some(decision_bytes) = decision_bytes else {
+            return Ok(None);
+        };
         activation_decisions.push(RecoveredActivationDecisionV1::new(
             cause_room_seq,
             decision_id,
             target_member_id,
             decision_bytes,
         ));
+    }
+    if activation_decisions.len() > MAX_CHECKPOINT_OPERATIONAL_WITNESS_ROWS_PER_DOMAIN_V2 as usize {
+        return Ok(None);
     }
 
     let Ok(witness) = RoomCheckpointOperationalWitnessV1::new(
