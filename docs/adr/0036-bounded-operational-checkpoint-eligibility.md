@@ -69,3 +69,24 @@ replay. Supporting bounded accelerated recovery for that Room requires a
 future Core storage-continuation interface that pages and verifies exact
 operational materializations, plus a domain-root/partition protocol. A bare
 manifest is insufficient.
+
+## Amendment: compact current-state witness
+
+The V2 continuation interface is now implemented for Rooms created after the
+root migration. It keeps the immutable Timer, Frame, consequence, and
+Activation-decision ledgers as forensic truth, while a checkpoint carries only
+the bounded current Timer materialization, member frame heads and membership
+generations, and exactly three domain-separated incremental root receipts.
+
+Each adapter updates the current-Timer cache and roots in the same transaction
+as its ledger mutation. Capture reads no retained Frame, consequence, or
+Activation-decision rows; it reads at most 1,025 current Timers, 1,025
+members, and four root rows. Recovery advances the captured roots through the
+immutable bounded tail, then compares them with the durable receipts and
+compares current Timers and members with the recovered state. A missing,
+duplicate, malformed, stale, reordered, or mismatched receipt is a checkpoint
+cache miss followed by complete replay; it never permits a partial operational
+history to become serving state.
+
+The frozen V1 witness table and full-replay recovery remain available for
+legacy Rooms, including databases upgraded after a Room already has history.
