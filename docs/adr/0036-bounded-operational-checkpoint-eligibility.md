@@ -54,6 +54,11 @@ not reinterpret stored V1 Genesis or Transition records. It bounds the
 checkpoint frame-head and membership-generation maps for rooms eligible for
 the V2 path.
 
+The host also rejects new pack descriptors declaring more than 16 MiB of
+Activity state. Together with the current 1,024 membership and Timer-ID
+admission limits, this bounds the serving data that a V2 checkpoint decodes.
+Legacy records outside these limits use the V1/full-replay path.
+
 ## Consequences
 
 Eligible checkpoint capture has a fixed logical row and binary-value budget;

@@ -1080,6 +1080,13 @@ pub struct PackLimitsV1 {
     pub maximum_text_bytes: u32,
 }
 
+/// Host-wide upper bound for one retained Activity state in a V2 checkpoint.
+///
+/// The descriptor limit is admission-controlled, so every newly admitted
+/// revision can be recovered without decoding an arbitrarily large Activity
+/// state. Older retained records remain available to the V1/full-replay path.
+pub const MAX_V2_CHECKPOINT_ACTIVITY_STATE_BYTES: u32 = 16 * 1024 * 1024;
+
 /// Fixed v1 declaration for one Host-owned pre-start `ExternalInput`.
 ///
 /// The source is deliberately absent: the Host supplies the one fixed source
@@ -1369,6 +1376,12 @@ impl PackRevisionDescriptorV1 {
             return Err(PackRegistryErrorV1::InvalidDescriptorShape {
                 revision_digest: digest.clone(),
                 detail: "every hard output bound must be nonzero",
+            });
+        }
+        if limits.maximum_state_bytes > MAX_V2_CHECKPOINT_ACTIVITY_STATE_BYTES {
+            return Err(PackRegistryErrorV1::InvalidDescriptorShape {
+                revision_digest: digest.clone(),
+                detail: "maximum Activity state bytes exceeds the host checkpoint bound",
             });
         }
         Ok(())
