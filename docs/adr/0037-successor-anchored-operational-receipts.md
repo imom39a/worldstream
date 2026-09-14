@@ -1,69 +1,51 @@
 ---
-status: proposed
+status: accepted
 date: 2026-09-14
 ---
 
-# ADR 0037: Successor-anchored operational receipts
+# ADR 0037: Merkle proofs for bounded operational reads
 
 ## Context
 
-ADR 0036 deliberately makes V2 checkpoint recovery independent of retained
-Frame, consequence, and Activation-decision rows. Its compact roots bind a
-checkpoint to the current storage receipt, but do not give a bounded serving
-read an authenticated inclusion proof for a retained row. A reader can verify
-a Frame payload hash and canonical encoding, but a coordinated replacement of
-both payload and hash remains indistinguishable from the original row.
+ADR 0036 makes V2 checkpoint recovery independent of retained Frame,
+consequence, and Activation-decision rows. Its durable V2 root receipt is
+trusted after guarded checkpoint/tail verification, but it does not yet give a
+serving read an authenticated inclusion proof for one retained row. A reader
+can verify a Frame payload hash and canonical encoding, but not a coordinated
+replacement of both payload and hash.
 
-The obvious design, putting the operational root produced by a Transition
-inside that same Transition hash, is not valid. A Pack observation receives the
-post-Transition Complete Head, including the Transition hash. Its Frame bytes
-may depend on that Head. Hashing those Frame bytes into the same Transition
-therefore creates a cryptographic fixed-point requirement.
+## Decision
 
-## Proposed decision
+Each operational domain receives an append-only Merkle-mountain-range sidecar.
+The commit transaction derives a domain-separated canonical leaf from the exact
+prepared Frame, consequence, or Activation decision, appends its logarithmic
+node set, and writes the resulting MMR root to the existing durable V2 root
+receipt. Sidecar nodes are not trusted: a bounded reader fetches the requested
+leaf and sibling path, recomputes the root, and compares it to the root guarded
+recovery already trusts. A changed row, adjacent hash, omitted, reordered,
+duplicate, stale, or malformed node cannot verify without a BLAKE3 collision.
 
-New Rooms opt into a new immutable Transition lineage version. A V2
-Transition hashes the *previous* operational receipt hash. After its semantic
-Transition hash is known, the commit coordinator obtains the exact operational
-outputs and stores one immutable per-Transition receipt. The receipt commits
-separate canonical leaf lists for Frames, consequences, and Activation
-decisions, including their address, cause sequence, canonical bytes or payload
-hash, and prior receipt hash.
-
-The successor Transition binds that receipt hash in its own immutable semantic
-lineage. A bounded serving read fetches the row's cause Transition, its
-per-cause receipt batch, and the successor anchor. It verifies the requested
-row against the batch and returns it only when the receipt has a successor
-anchor. The live tail with no successor is reset-required rather than served
-incrementally. This avoids a fixed point and keeps validation bounded by one
-Transition's output, which is capped by the V2 membership and activation
-limits.
-
-V1 Rooms remain explicit full-replay/forensic-verifier rooms. A database
-migration creates V2 receipt and leaf tables only; it must not synthesize
-anchors for existing V1 lineage. Transfers copy V2 receipts and verify their
-exact canonical bytes and successor bindings.
+The migration is additive. Rooms lacking a complete MMR inventory keep the V2
+root-only contract and use reset/full-verifier fallback for proof-required
+reads; no serving path scans legacy history to synthesize a proof. New writes
+atomically update retained rows, MMR nodes, and durable roots. SQLite and
+PostgreSQL use identical canonical leaves and node hashes; transfer verifies
+node inventory and roots before a Room serves.
 
 ## Consequences
 
-- New V2 Rooms have one-transition delivery latency for an incremental Frame.
-  A reset is safe during that tail; a later Transition anchors the row.
-- The transition decoder and hash input need a versioned V2 path, while V1
-  canonical bytes and hashes remain frozen. Genesis records select the lineage
-  version for a Room; adapters must persist and transfer that selection.
-- SQLite and PostgreSQL need the same transaction ordering, receipt schema,
-  bounded proof query, successor fence, and coordinated payload-plus-hash
-  tamper tests.
-- This design relies on the existing trust boundary that canonical Genesis and
-  Transition records are immutable. Protecting a database adversary that can
-  rewrite canonical transitions as well requires an external signature or
-  independently authenticated checkpoint service.
+- Proof work is `O(log n)` sidecar nodes plus one bounded retained row.
+- The public Room wire and frozen V1 lineage remain unchanged.
+- Both providers need matching node schemas, commit ordering, proof queries,
+  transfer checks, and coordinated payload-plus-hash tamper tests.
+- The design preserves the existing trust boundary: arbitrary rewrite of
+  canonical history, checkpoints, and their durable roots is out of scope for
+  an internal proof and requires an external authenticated store.
 
 ## Rejected alternatives
 
-- A mutable sidecar Merkle root alone is not an anchor: an attacker able to
-  replace a row can replace that root and its proof.
-- Recomputing a retained ledger root on every serving read violates the bounded
-  read contract.
-- Binding same-Transition operational output directly in its Transition hash
-  is rejected because Pack observations may depend on `head_after`.
+- Recomputing a retained ledger root on every serving read violates the bound.
+- A mutable sidecar root alone is not an anchor; a mutable sidecar path is
+  sufficient when verified against the trusted durable V2 root.
+- Binding same-Transition operational output into immutable Transition bytes
+  creates a fixed point because Pack observations may depend on `head_after`.
