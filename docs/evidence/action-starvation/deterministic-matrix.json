@@ -1,0 +1,5593 @@
+{
+  "admission_contract": {
+    "backend_commit_latency_measured": false,
+    "based_on_room_seq": "exact_current_complete_head_room_seq",
+    "production_adapter": "StrictProductionAdmission",
+    "rule_source": "crates/worldstream-core/src/trace.rs::assess_stable_action_disposition",
+    "stale_action_reused": false,
+    "stale_result": "stale_room_state"
+  },
+  "bounds": {
+    "max_attempts_per_trial": 32,
+    "max_pending_attempts": 1,
+    "max_report_scenarios": 99,
+    "max_sample_attempts": 12
+  },
+  "comparison": {
+    "during_reasoning_starts_synchronized": true,
+    "imo_217_hidden_head_lag_is_separate": true,
+    "related_updates_require_re_evaluation": true,
+    "unrelated_updates_still_change_whole_head": true,
+    "visible_updates_are_not_private_payloads": true
+  },
+  "probe_version": "deterministic-periodic-v1",
+  "scenarios": [
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "sample_trial_attempts": [
+        {
+          "action_id": "probe-action-000001",
+          "based_on_room_seq": 0,
+          "current_room_seq_at_admission": 0,
+          "decision_end_ms": 0,
+          "decision_start_ms": 0,
+          "new_action_after_stale": false,
+          "outcome": "accepted"
+        }
+      ],
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "within_envelope",
+        "thresholds": {
+          "in_stated_envelope": true,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": false,
+          "useful_action_required": true
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "within_envelope",
+        "thresholds": {
+          "in_stated_envelope": true,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": false,
+          "useful_action_required": true
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "within_envelope",
+        "thresholds": {
+          "in_stated_envelope": true,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": false,
+          "useful_action_required": true
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "within_envelope",
+        "thresholds": {
+          "in_stated_envelope": true,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": false,
+          "useful_action_required": true
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "within_envelope",
+        "thresholds": {
+          "in_stated_envelope": true,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": false,
+          "useful_action_required": true
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "within_envelope",
+        "thresholds": {
+          "in_stated_envelope": true,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": false,
+          "useful_action_required": true
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "within_envelope",
+        "thresholds": {
+          "in_stated_envelope": true,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": false,
+          "useful_action_required": true
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "within_envelope",
+        "thresholds": {
+          "in_stated_envelope": true,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": false,
+          "useful_action_required": true
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 100,
+          "p95_ms": 100,
+          "p99_ms": 100,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "within_envelope",
+        "thresholds": {
+          "in_stated_envelope": true,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": false,
+          "useful_action_required": true
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 100,
+          "p95_ms": 100,
+          "p99_ms": 100,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "within_envelope",
+        "thresholds": {
+          "in_stated_envelope": true,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": false,
+          "useful_action_required": true
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 100,
+          "p95_ms": 100,
+          "p99_ms": 100,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "within_envelope",
+        "thresholds": {
+          "in_stated_envelope": true,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": false,
+          "useful_action_required": true
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 100,
+          "p95_ms": 100,
+          "p99_ms": 100,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "within_envelope",
+        "thresholds": {
+          "in_stated_envelope": true,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": false,
+          "useful_action_required": true
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 100,
+          "p95_ms": 200,
+          "p99_ms": 200,
+          "sample_count": 8
+        },
+        "action_attempts": 9,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 1,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 1,
+        "stale_rejection_rate": 0.111111,
+        "stale_rejections": 1,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 1,
+          "total": 1,
+          "unrelated": 0,
+          "visible": 1
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "within_envelope",
+        "thresholds": {
+          "in_stated_envelope": true,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": false,
+          "useful_action_required": true
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 100,
+          "p95_ms": 200,
+          "p99_ms": 200,
+          "sample_count": 8
+        },
+        "action_attempts": 9,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 1,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 1,
+        "stale_rejection_rate": 0.111111,
+        "stale_rejections": 1,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 1,
+          "unrelated": 1,
+          "visible": 1
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "within_envelope",
+        "thresholds": {
+          "in_stated_envelope": true,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": false,
+          "useful_action_required": true
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 100,
+          "p95_ms": 200,
+          "p99_ms": 200,
+          "sample_count": 8
+        },
+        "action_attempts": 9,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 1,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 1,
+        "stale_rejection_rate": 0.111111,
+        "stale_rejections": 1,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 1,
+          "related": 1,
+          "total": 1,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "within_envelope",
+        "thresholds": {
+          "in_stated_envelope": true,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": false,
+          "useful_action_required": true
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 100,
+          "p95_ms": 200,
+          "p99_ms": 200,
+          "sample_count": 8
+        },
+        "action_attempts": 9,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 1,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 1,
+        "stale_rejection_rate": 0.111111,
+        "stale_rejections": 1,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 1,
+          "related": 0,
+          "total": 1,
+          "unrelated": 1,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "within_envelope",
+        "thresholds": {
+          "in_stated_envelope": true,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": false,
+          "useful_action_required": true
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 256,
+          "total": 256,
+          "unrelated": 0,
+          "visible": 256
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 256,
+          "unrelated": 256,
+          "visible": 256
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 256,
+          "related": 256,
+          "total": 256,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 256,
+          "related": 0,
+          "total": 256,
+          "unrelated": 256,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 500,
+          "p95_ms": 500,
+          "p99_ms": 500,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 500,
+          "p95_ms": 500,
+          "p99_ms": 500,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 500,
+          "p95_ms": 500,
+          "p99_ms": 500,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 500,
+          "p95_ms": 500,
+          "p99_ms": 500,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 256,
+          "total": 256,
+          "unrelated": 0,
+          "visible": 256
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 256,
+          "unrelated": 256,
+          "visible": 256
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 256,
+          "related": 256,
+          "total": 256,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 256,
+          "related": 0,
+          "total": 256,
+          "unrelated": 256,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 1280,
+          "total": 1280,
+          "unrelated": 0,
+          "visible": 1280
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 1280,
+          "unrelated": 1280,
+          "visible": 1280
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 1280,
+          "related": 1280,
+          "total": 1280,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 1280,
+          "related": 0,
+          "total": 1280,
+          "unrelated": 1280,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 2000,
+          "p95_ms": 2000,
+          "p99_ms": 2000,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 2000,
+          "p95_ms": 2000,
+          "p99_ms": 2000,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 2000,
+          "p95_ms": 2000,
+          "p99_ms": 2000,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 2000,
+          "p95_ms": 2000,
+          "p99_ms": 2000,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 1024,
+          "total": 1024,
+          "unrelated": 0,
+          "visible": 1024
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 1024,
+          "unrelated": 1024,
+          "visible": 1024
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 1024,
+          "related": 1024,
+          "total": 1024,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 1024,
+          "related": 0,
+          "total": 1024,
+          "unrelated": 1024,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 5120,
+          "total": 5120,
+          "unrelated": 0,
+          "visible": 5120
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 5120,
+          "unrelated": 5120,
+          "visible": 5120
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 5120,
+          "related": 5120,
+          "total": 5120,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 5120,
+          "related": 0,
+          "total": 5120,
+          "unrelated": 5120,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "during_reasoning",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 16,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 8,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 8,
+        "stale_rejection_rate": 0.5,
+        "stale_rejections": 8,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 8,
+          "related": 8,
+          "total": 8,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 16,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 8,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 8,
+        "stale_rejection_rate": 0.5,
+        "stale_rejections": 8,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 8,
+          "related": 0,
+          "total": 8,
+          "unrelated": 8,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 16,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 8,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 8,
+        "stale_rejection_rate": 0.5,
+        "stale_rejections": 8,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 8,
+          "related": 8,
+          "total": 8,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 16,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 8,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 8,
+        "stale_rejection_rate": 0.5,
+        "stale_rejections": 8,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 8,
+          "related": 0,
+          "total": 8,
+          "unrelated": 8,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 16,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 8,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 8,
+        "stale_rejection_rate": 0.5,
+        "stale_rejections": 8,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 8,
+          "related": 8,
+          "total": 8,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "sample_count": 8
+        },
+        "action_attempts": 16,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 8,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 8,
+        "stale_rejection_rate": 0.5,
+        "stale_rejections": 8,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 8,
+          "related": 0,
+          "total": 8,
+          "unrelated": 8,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 0,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 100,
+          "p95_ms": 100,
+          "p99_ms": 100,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 100,
+          "p95_ms": 100,
+          "p99_ms": 100,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 200,
+          "p95_ms": 200,
+          "p99_ms": 200,
+          "sample_count": 8
+        },
+        "action_attempts": 16,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 8,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 8,
+        "stale_rejection_rate": 0.5,
+        "stale_rejections": 8,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 8,
+          "related": 8,
+          "total": 8,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 200,
+          "p95_ms": 200,
+          "p99_ms": 200,
+          "sample_count": 8
+        },
+        "action_attempts": 16,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 8,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 8,
+        "stale_rejection_rate": 0.5,
+        "stale_rejections": 8,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 8,
+          "related": 0,
+          "total": 8,
+          "unrelated": 8,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 100,
+          "p95_ms": 200,
+          "p99_ms": 200,
+          "sample_count": 8
+        },
+        "action_attempts": 9,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 1,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 1,
+        "stale_rejection_rate": 0.111111,
+        "stale_rejections": 1,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 1,
+          "total": 1,
+          "unrelated": 0,
+          "visible": 1
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 100,
+          "p95_ms": 200,
+          "p99_ms": 200,
+          "sample_count": 8
+        },
+        "action_attempts": 9,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 1,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 1,
+        "stale_rejection_rate": 0.111111,
+        "stale_rejections": 1,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 1,
+          "unrelated": 1,
+          "visible": 1
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 200,
+          "p95_ms": 300,
+          "p99_ms": 300,
+          "sample_count": 8
+        },
+        "action_attempts": 18,
+        "attempts_per_trial_max": 3,
+        "model_equivalent_wasted_work": 10,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 10,
+        "stale_rejection_rate": 0.555556,
+        "stale_rejections": 10,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 11,
+          "related": 11,
+          "total": 11,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 200,
+          "p95_ms": 300,
+          "p99_ms": 300,
+          "sample_count": 8
+        },
+        "action_attempts": 18,
+        "attempts_per_trial_max": 3,
+        "model_equivalent_wasted_work": 10,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 10,
+        "stale_rejection_rate": 0.555556,
+        "stale_rejections": 10,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 11,
+          "related": 0,
+          "total": 11,
+          "unrelated": 11,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 256,
+          "total": 256,
+          "unrelated": 0,
+          "visible": 256
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 256,
+          "unrelated": 256,
+          "visible": 256
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 264,
+          "related": 264,
+          "total": 264,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 264,
+          "related": 0,
+          "total": 264,
+          "unrelated": 264,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 100,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 500,
+          "p95_ms": 500,
+          "p99_ms": 500,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 500,
+          "p95_ms": 500,
+          "p99_ms": 500,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 1000,
+          "p95_ms": 1000,
+          "p99_ms": 1000,
+          "sample_count": 8
+        },
+        "action_attempts": 16,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 8,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 8,
+        "stale_rejection_rate": 0.5,
+        "stale_rejections": 8,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 8,
+          "related": 8,
+          "total": 8,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 1000,
+          "p95_ms": 1000,
+          "p99_ms": 1000,
+          "sample_count": 8
+        },
+        "action_attempts": 16,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 8,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 8,
+        "stale_rejection_rate": 0.5,
+        "stale_rejections": 8,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 8,
+          "related": 0,
+          "total": 8,
+          "unrelated": 8,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 256,
+          "total": 256,
+          "unrelated": 0,
+          "visible": 256
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 256,
+          "unrelated": 256,
+          "visible": 256
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 264,
+          "related": 264,
+          "total": 264,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 264,
+          "related": 0,
+          "total": 264,
+          "unrelated": 264,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 1280,
+          "total": 1280,
+          "unrelated": 0,
+          "visible": 1280
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 1280,
+          "unrelated": 1280,
+          "visible": 1280
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 1288,
+          "related": 1288,
+          "total": 1288,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 1288,
+          "related": 0,
+          "total": 1288,
+          "unrelated": 1288,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 2000,
+          "p95_ms": 2000,
+          "p99_ms": 2000,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 2000,
+          "p95_ms": 2000,
+          "p99_ms": 2000,
+          "sample_count": 8
+        },
+        "action_attempts": 8,
+        "attempts_per_trial_max": 1,
+        "model_equivalent_wasted_work": 0,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 0,
+        "stale_rejection_rate": 0.0,
+        "stale_rejections": 0,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 0,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 4000,
+          "p95_ms": 4000,
+          "p99_ms": 4000,
+          "sample_count": 8
+        },
+        "action_attempts": 16,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 8,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 8,
+        "stale_rejection_rate": 0.5,
+        "stale_rejections": 8,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 8,
+          "related": 8,
+          "total": 8,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 8,
+        "accepted_useful_latency_ms": {
+          "p50_ms": 4000,
+          "p95_ms": 4000,
+          "p99_ms": 4000,
+          "sample_count": 8
+        },
+        "action_attempts": 16,
+        "attempts_per_trial_max": 2,
+        "model_equivalent_wasted_work": 8,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 8,
+        "stale_rejection_rate": 0.5,
+        "stale_rejections": 8,
+        "starvation_rate": 0.0,
+        "starved_trials": 0,
+        "updates": {
+          "hidden": 8,
+          "related": 0,
+          "total": 8,
+          "unrelated": 8,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 0,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 1024,
+          "total": 1024,
+          "unrelated": 0,
+          "visible": 1024
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 1024,
+          "unrelated": 1024,
+          "visible": 1024
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 1032,
+          "related": 1032,
+          "total": 1032,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 1032,
+          "related": 0,
+          "total": 1032,
+          "unrelated": 1032,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 2,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 5120,
+          "total": 5120,
+          "unrelated": 0,
+          "visible": 5120
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 5120,
+          "unrelated": 5120,
+          "visible": 5120
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 5128,
+          "related": 5128,
+          "total": 5128,
+          "unrelated": 0,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "related",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 1,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 5128,
+          "related": 0,
+          "total": 5128,
+          "unrelated": 5128,
+          "visible": 0
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 2000,
+        "mode": "hidden_head_lag",
+        "participant_count": 1,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "hidden"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 2,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 1280,
+          "unrelated": 1280,
+          "visible": 1280
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "during_reasoning",
+        "participant_count": 2,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 4,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 1280,
+          "unrelated": 1280,
+          "visible": 1280
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "during_reasoning",
+        "participant_count": 4,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    },
+    {
+      "bounds": {
+        "max_attempts_per_trial": 32,
+        "max_pending_attempts": 1,
+        "max_sample_attempts": 12
+      },
+      "measurements": {
+        "accepted_useful_actions": 0,
+        "accepted_useful_latency_ms": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "sample_count": 0
+        },
+        "action_attempts": 256,
+        "attempts_per_trial_max": 32,
+        "model_equivalent_wasted_work": 256,
+        "participant_control": {
+          "aggregate_room_rate_held_constant": true,
+          "participant_count": 8,
+          "scheduler_fairness_measured": false
+        },
+        "pending_attempts_max": 1,
+        "reevaluations_after_stale": 256,
+        "stale_rejection_rate": 1.0,
+        "stale_rejections": 256,
+        "starvation_rate": 1.0,
+        "starved_trials": 8,
+        "updates": {
+          "hidden": 0,
+          "related": 0,
+          "total": 1280,
+          "unrelated": 1280,
+          "visible": 1280
+        }
+      },
+      "scenario": {
+        "decision_delay_ms": 500,
+        "mode": "during_reasoning",
+        "participant_count": 8,
+        "room_update_rate_per_second": 10,
+        "trials": 8,
+        "update_relation": "unrelated",
+        "update_visibility": "visible"
+      },
+      "threshold_evaluation": {
+        "met": true,
+        "outcome": "outside_envelope",
+        "thresholds": {
+          "in_stated_envelope": false,
+          "max_attempts_per_trial": 8,
+          "starvation_allowed": true,
+          "useful_action_required": false
+        }
+      }
+    }
+  ],
+  "schema": "worldstream/action-starvation-probe/v1",
+  "threshold_evaluation": {
+    "current_contract_adequate_within_envelope": true,
+    "decision": "current_contract_adequate_within_stated_envelope; measure a versioned successor before changing admission",
+    "envelope_scenarios_passed": true,
+    "stated_envelope": {
+      "decision_delay_max_ms": 250,
+      "max_attempts_per_trial": 8,
+      "room_update_rate_max_per_second": 2
+    },
+    "successor_adr_needed_for_observed_outside_envelope_starvation": true
+  }
+}

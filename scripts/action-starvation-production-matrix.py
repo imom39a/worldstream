@@ -15,7 +15,7 @@ REPOSITORY_ROOT = SCRIPT_ROOT.parent
 PROBE = SCRIPT_ROOT / "action-starvation-probe.py"
 SCHEMA = "worldstream/action-starvation-production-matrix/v1"
 COMMAND = [
-    "cargo", "test", "-p", "worldstream-core", "--lib",
+    "cargo", "test", "--locked", "-p", "worldstream-core", "--lib",
     "room_commit_tests::production_action_admission_matrix_preserves_exact_basis_fence", "--", "--exact",
     "--nocapture",
 ]
