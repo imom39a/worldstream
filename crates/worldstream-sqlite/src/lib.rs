@@ -45,7 +45,7 @@ use std::{
     str::FromStr,
     sync::{
         Arc, Mutex, OnceLock, Weak,
-        atomic::{AtomicU8, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
     thread,
@@ -1349,6 +1349,8 @@ pub enum SqliteSnapshotQualificationErrorV1 {
     AlreadyArmed,
     #[error("the SQLite WAL could not be quiescently truncated")]
     WalNotQuiescent,
+    #[error("the SQLite WAL autocheckpoint setting could not be controlled and restored")]
+    WalAutoCheckpointControlFailed,
     #[error("the isolated snapshot-cache transaction did not persist")]
     SnapshotPersistenceFailed,
     #[error(
@@ -1359,7 +1361,7 @@ pub enum SqliteSnapshotQualificationErrorV1 {
 
 type SnapshotQualificationResult =
     Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1>;
-type PendingSnapshotQualification = (u64, mpsc::Sender<SnapshotQualificationResult>);
+type PendingSnapshotQualification = (mpsc::Sender<SnapshotQualificationResult>, Arc<AtomicBool>);
 
 const SNAPSHOT_QUALIFICATION_MAX_WAIT: Duration = Duration::from_secs(5);
 
@@ -1368,8 +1370,7 @@ const SNAPSHOT_QUALIFICATION_MAX_WAIT: Duration = Duration::from_secs(5);
 #[doc(hidden)]
 pub struct SqliteSnapshotQualificationHandleV1 {
     receiver: Receiver<SnapshotQualificationResult>,
-    commands: SyncSender<WriterCommand>,
-    probe_id: u64,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl SqliteSnapshotQualificationHandleV1 {
@@ -1402,11 +1403,10 @@ impl SqliteSnapshotQualificationHandleV1 {
 
 impl Drop for SqliteSnapshotQualificationHandleV1 {
     fn drop(&mut self) {
-        let _ = self
-            .commands
-            .send(WriterCommand::CancelSnapshotQualification {
-                probe_id: self.probe_id,
-            });
+        // Never enqueue from Drop: the bounded writer queue can be full while
+        // a caller abandons qualification work. The writer checks this token
+        // at the cache boundary before it can truncate WAL or measure.
+        self.cancelled.store(true, Ordering::Release);
     }
 }
 
@@ -3373,10 +3373,8 @@ impl Drop for ReplaySlicePermitV1 {
 enum WriterCommand {
     ArmSnapshotQualification {
         measurement: mpsc::Sender<SnapshotQualificationResult>,
-        reply: mpsc::Sender<Result<u64, SqliteSnapshotQualificationErrorV1>>,
-    },
-    CancelSnapshotQualification {
-        probe_id: u64,
+        cancelled: Arc<AtomicBool>,
+        reply: mpsc::Sender<Result<(), SqliteSnapshotQualificationErrorV1>>,
     },
     InitializeCanonicalMetadata {
         deployment_lineage: String,
@@ -4652,17 +4650,21 @@ impl SqliteRoomStore {
     ) -> Result<SqliteSnapshotQualificationHandleV1, SqliteSnapshotQualificationErrorV1> {
         let (measurement, receiver) = mpsc::channel();
         let (reply, receive) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
         self.writer
             .commands
-            .send(WriterCommand::ArmSnapshotQualification { measurement, reply })
+            .send(WriterCommand::ArmSnapshotQualification {
+                measurement,
+                cancelled: Arc::clone(&cancelled),
+                reply,
+            })
             .map_err(|_| SqliteSnapshotQualificationErrorV1::WriterUnavailable)?;
-        let probe_id = receive
+        receive
             .recv()
             .map_err(|_| SqliteSnapshotQualificationErrorV1::WriterUnavailable)??;
         Ok(SqliteSnapshotQualificationHandleV1 {
             receiver,
-            commands: self.writer.commands.clone(),
-            probe_id,
+            cancelled,
         })
     }
 
@@ -11182,8 +11184,7 @@ fn writer_main(
     drop(startup);
     #[cfg(test)]
     let mut failpoint = None;
-    let mut snapshot_qualification = None;
-    let mut next_snapshot_qualification_probe_id = 1_u64;
+    let mut snapshot_qualification: Option<PendingSnapshotQualification> = None;
     macro_rules! reply_after_namespace_check {
         ($reply:expr, $value:expr) => {{
             let value = $value;
@@ -11205,25 +11206,24 @@ fn writer_main(
             break;
         }
         match command {
-            WriterCommand::ArmSnapshotQualification { measurement, reply } => {
-                let result = if snapshot_qualification.is_some() {
-                    Err(SqliteSnapshotQualificationErrorV1::AlreadyArmed)
-                } else {
-                    let probe_id = next_snapshot_qualification_probe_id;
-                    next_snapshot_qualification_probe_id =
-                        next_snapshot_qualification_probe_id.wrapping_add(1).max(1);
-                    snapshot_qualification = Some((probe_id, measurement));
-                    Ok(probe_id)
-                };
-                reply_after_namespace_check!(reply, result);
-            }
-            WriterCommand::CancelSnapshotQualification { probe_id } => {
+            WriterCommand::ArmSnapshotQualification {
+                measurement,
+                cancelled,
+                reply,
+            } => {
                 if snapshot_qualification
                     .as_ref()
-                    .is_some_and(|(pending_probe_id, _)| *pending_probe_id == probe_id)
+                    .is_some_and(|(_, pending_cancelled)| pending_cancelled.load(Ordering::Acquire))
                 {
                     let _ = snapshot_qualification.take();
                 }
+                let result = if snapshot_qualification.is_some() {
+                    Err(SqliteSnapshotQualificationErrorV1::AlreadyArmed)
+                } else {
+                    snapshot_qualification = Some((measurement, cancelled));
+                    Ok(())
+                };
+                reply_after_namespace_check!(reply, result);
             }
             WriterCommand::InitializeCanonicalMetadata {
                 deployment_lineage,
@@ -22988,10 +22988,22 @@ fn maybe_persist_post_commit_snapshot(
     // so the next duplicate or new Advance may retry it.
     if due {
         if snapshot_write_enabled && let Some(snapshot) = prepared.post_commit_snapshot() {
-            if let Some((_, reply)) = snapshot_qualification.take() {
-                let result =
-                    persist_qualified_post_commit_snapshot(connection, path, &snapshot, now_text);
-                let _ = reply.send(result);
+            if let Some((reply, cancelled)) = snapshot_qualification.take() {
+                // This is deliberately the last check before the WAL fence.
+                // A dropped/timed-out handle therefore cannot make an
+                // otherwise ordinary due snapshot truncate WAL or enter the
+                // qualification measurement path.
+                if cancelled.load(Ordering::Acquire) {
+                    let _ = persist_post_commit_snapshot(connection, &snapshot, now_text);
+                } else {
+                    let result = persist_qualified_post_commit_snapshot(
+                        connection, path, &snapshot, now_text,
+                    );
+                    if result.is_err() {
+                        let _ = persist_post_commit_snapshot(connection, &snapshot, now_text);
+                    }
+                    let _ = reply.send(result);
+                }
             } else {
                 let _ = persist_post_commit_snapshot(connection, &snapshot, now_text);
             }
@@ -23013,17 +23025,58 @@ fn persist_qualified_post_commit_snapshot(
     snapshot: &PostCommitSnapshotV1,
     active_started_at: Option<&str>,
 ) -> Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1> {
+    with_wal_autocheckpoint_disabled(connection, |connection| {
+        persist_qualified_post_commit_snapshot_with_autocheckpoint_disabled(
+            connection,
+            path,
+            snapshot,
+            active_started_at,
+        )
+    })
+}
+
+fn with_wal_autocheckpoint_disabled<T>(
+    connection: &mut Connection,
+    operation: impl FnOnce(&mut Connection) -> Result<T, SqliteSnapshotQualificationErrorV1>,
+) -> Result<T, SqliteSnapshotQualificationErrorV1> {
+    let autocheckpoint: i64 = connection
+        .query_row("PRAGMA wal_autocheckpoint", (), |row| row.get(0))
+        .map_err(|_| SqliteSnapshotQualificationErrorV1::WalAutoCheckpointControlFailed)?;
+    if autocheckpoint < 0
+        || connection
+            .pragma_update(None, "wal_autocheckpoint", 0_i64)
+            .is_err()
+    {
+        return Err(SqliteSnapshotQualificationErrorV1::WalAutoCheckpointControlFailed);
+    }
+    let result = operation(connection);
+    if connection
+        .pragma_update(None, "wal_autocheckpoint", autocheckpoint)
+        .is_err()
+    {
+        return Err(SqliteSnapshotQualificationErrorV1::WalAutoCheckpointControlFailed);
+    }
+    result
+}
+
+fn persist_qualified_post_commit_snapshot_with_autocheckpoint_disabled(
+    connection: &mut Connection,
+    path: &Path,
+    snapshot: &PostCommitSnapshotV1,
+    active_started_at: Option<&str>,
+) -> Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1> {
     // This runs only after the canonical transaction has committed. A
     // successful truncate is therefore a hard measurement fence: the WAL
     // bytes recorded below can only have been produced by this cache
-    // transaction in the controlled single-writer fixture.
+    // transaction in the controlled single-writer fixture. Autocheckpoint is
+    // disabled by the caller, so SQLite cannot fold those frames into the
+    // main database before we record their physical WAL length.
     let checkpoint: (i64, i64, i64) = connection
         .query_row("PRAGMA wal_checkpoint(TRUNCATE)", (), |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })
         .map_err(|_| SqliteSnapshotQualificationErrorV1::WalNotQuiescent)?;
     if checkpoint.0 != 0 || snapshot_wal_bytes(path) != 0 {
-        let _ = persist_post_commit_snapshot(connection, snapshot, active_started_at);
         return Err(SqliteSnapshotQualificationErrorV1::WalNotQuiescent);
     }
 
@@ -23352,7 +23405,7 @@ mod tests {
         str::FromStr,
         sync::{Arc, Barrier, Mutex, mpsc},
         thread,
-        time::Duration,
+        time::{Duration, Instant},
     };
     #[cfg(unix)]
     use std::{env, process::Command};
@@ -23460,7 +23513,7 @@ mod tests {
         verify_migration_prefix, verify_migration_records, verify_mmr_leaf_inclusion,
         wait_until_authority_change_enqueued, wait_until_guarded_commit_pauses,
         wait_until_recovery_install_pauses, wait_until_replay_projection_pauses,
-        wait_until_writer_queue_pauses,
+        wait_until_writer_queue_pauses, with_wal_autocheckpoint_disabled,
     };
 
     const ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -40538,5 +40591,66 @@ mod tests {
             pending.finish_with_timeout(Duration::from_millis(50)),
             Err(SqliteSnapshotQualificationErrorV1::WriterUnavailable)
         );
+    }
+
+    #[test]
+    fn dropped_snapshot_qualification_probe_never_blocks_on_a_full_writer_queue() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let store = SqliteRoomStore::open(directory.path().join("qualification.sqlite"))
+            .unwrap_or_else(|error| panic!("open store: {error}"));
+        let pending = store
+            .arm_snapshot_qualification()
+            .unwrap_or_else(|error| panic!("arm probe: {error}"));
+        arm_writer_queue_pause();
+        store.pause_writer_queue();
+        wait_until_writer_queue_pauses();
+        for _ in 0..super::WRITER_QUEUE_CAPACITY {
+            store
+                .writer
+                .commands
+                .send(super::WriterCommand::PauseQueue)
+                .unwrap_or_else(|_| panic!("fill paused writer queue"));
+        }
+        let started = Instant::now();
+        drop(pending);
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "qualification-handle drop must not enqueue behind a full writer queue"
+        );
+        release_writer_queue();
+        let replacement = store
+            .arm_snapshot_qualification()
+            .unwrap_or_else(|error| panic!("cancelled probe must release writer state: {error}"));
+        drop(replacement);
+    }
+
+    #[test]
+    fn isolated_snapshot_measurement_disables_and_restores_wal_autocheckpoint() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let path = directory.path().join("autocheckpoint.sqlite");
+        let mut connection = Connection::open(&path)
+            .unwrap_or_else(|error| panic!("open SQLite measurement connection: {error}"));
+        let mode: String = connection
+            .query_row("PRAGMA journal_mode = WAL", (), |row| row.get(0))
+            .unwrap_or_else(|error| panic!("enable WAL: {error}"));
+        assert_eq!(mode, "wal");
+        connection
+            .pragma_update(None, "wal_autocheckpoint", 7_i64)
+            .unwrap_or_else(|error| panic!("set test autocheckpoint: {error}"));
+        with_wal_autocheckpoint_disabled(&mut connection, |connection| {
+            let observed: i64 = connection
+                .query_row("PRAGMA wal_autocheckpoint", (), |row| row.get(0))
+                .map_err(|_| SqliteSnapshotQualificationErrorV1::WalAutoCheckpointControlFailed)?;
+            assert_eq!(observed, 0);
+            connection
+                .execute_batch("CREATE TABLE measured_cache_write(value integer); INSERT INTO measured_cache_write VALUES (1);")
+                .map_err(|_| SqliteSnapshotQualificationErrorV1::SnapshotPersistenceFailed)?;
+            Ok(())
+        })
+        .unwrap_or_else(|error| panic!("isolated autocheckpoint scope: {error}"));
+        let restored: i64 = connection
+            .query_row("PRAGMA wal_autocheckpoint", (), |row| row.get(0))
+            .unwrap_or_else(|error| panic!("read restored autocheckpoint: {error}"));
+        assert_eq!(restored, 7);
     }
 }

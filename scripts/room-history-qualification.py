@@ -448,7 +448,7 @@ def run_sqlite_backend(
         or type(isolated_snapshot.get("cpu_source")) is not str
         or type(isolated_snapshot.get("exact_wal_bytes")) is not int
         or isolated_snapshot.get("exact_wal_bytes") <= 0
-        or isolated_snapshot.get("wal_source") != "wal_file_length_after_quiescent_truncate_and_one_cache_transaction"
+        or isolated_snapshot.get("wal_source") != "wal_file_length_after_quiescent_truncate_with_autocheckpoint_disabled_and_one_cache_transaction"
     ):
         return {"status": "failed", "source": "production_sqlite_core_storage", "error": "driver isolated snapshot transaction evidence incomplete"}
     cpu: dict[str, Any] = {

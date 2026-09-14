@@ -342,7 +342,7 @@ fn read_and_remove_snapshot_observer(
                 "clock_thread_cputime_id_unavailable_on_this_platform"
             },
             exact_wal_bytes: isolated.wal_bytes(),
-            wal_source: "wal_file_length_after_quiescent_truncate_and_one_cache_transaction",
+            wal_source: "wal_file_length_after_quiescent_truncate_with_autocheckpoint_disabled_and_one_cache_transaction",
         },
         cpu_attribution: AttributionUnavailable {
             value: None,
