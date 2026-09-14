@@ -100,6 +100,23 @@ impl OperationalMmrReceiptV1 {
 }
 
 impl OperationalMmrNodeV1 {
+    /// Computes the immutable height-zero node for one exact canonical row.
+    ///
+    /// Full storage verifiers use this to compare retained row bytes with the
+    /// leaf commitment before rebuilding the complete node inventory.
+    pub fn from_canonical_leaf(
+        domain: impl Into<String>,
+        leaf_index: u64,
+        canonical_leaf: &[u8],
+    ) -> Result<Self, OperationalMmrErrorV1> {
+        let domain = validated_domain(domain.into())?;
+        Ok(Self {
+            height: 0,
+            start_index: leaf_index,
+            digest: hash_leaf(&domain, leaf_index, canonical_leaf),
+        })
+    }
+
     /// Restores one persisted node after validating its coordinate alignment.
     pub fn new(
         height: u8,
@@ -409,13 +426,31 @@ impl OperationalMmrV1 {
         canonical_leaf: &[u8],
     ) -> Result<OperationalMmrAppendV1, OperationalMmrErrorV1> {
         let leaf_index = self.leaf_count;
+        let leaf = OperationalMmrNodeV1::from_canonical_leaf(
+            self.domain.clone(),
+            leaf_index,
+            canonical_leaf,
+        )?;
+        self.append_prehashed_leaf(leaf.digest)
+    }
+
+    /// Rebuilds an MMR from an already domain-and-index-bound leaf digest.
+    ///
+    /// This is reserved for full storage verification after a retained row
+    /// has been pruned. Callers must compare every still-retained row with
+    /// [`OperationalMmrNodeV1::from_canonical_leaf`] before trusting it.
+    pub fn append_prehashed_leaf(
+        &mut self,
+        leaf_digest: Blake3DigestV1,
+    ) -> Result<OperationalMmrAppendV1, OperationalMmrErrorV1> {
+        let leaf_index = self.leaf_count;
         let next_count = leaf_index
             .checked_add(1)
             .ok_or(OperationalMmrErrorV1::LeafCountOverflow)?;
         let mut node = OperationalMmrNodeV1 {
             height: 0,
             start_index: leaf_index,
-            digest: hash_leaf(&self.domain, leaf_index, canonical_leaf),
+            digest: leaf_digest,
         };
         let mut created = vec![node.clone()];
         while self
@@ -754,6 +789,58 @@ mod tests {
                 receipt.peaks().to_vec(),
             ),
             Err(OperationalMmrErrorV1::RootMismatch)
+        );
+    }
+
+    #[test]
+    fn prehashed_leaf_rebuild_reproduces_every_node_and_receipt() {
+        let leaves: Vec<Vec<u8>> = (0_u64..1_037)
+            .map(|index| format!("frame-{index}").into_bytes())
+            .collect();
+        let mut original = OperationalMmrV1::new("frames").expect("original MMR");
+        let mut original_nodes = Vec::new();
+        for leaf in &leaves {
+            original_nodes.extend(
+                original
+                    .append(leaf)
+                    .expect("append")
+                    .nodes()
+                    .iter()
+                    .cloned(),
+            );
+        }
+
+        let leaf_nodes: Vec<_> = original_nodes
+            .iter()
+            .filter(|node| node.height() == 0)
+            .cloned()
+            .collect();
+        let mut rebuilt = OperationalMmrV1::new("frames").expect("rebuilt MMR");
+        let mut rebuilt_nodes = Vec::new();
+        for node in leaf_nodes {
+            rebuilt_nodes.extend(
+                rebuilt
+                    .append_prehashed_leaf(node.digest().clone())
+                    .expect("prehashed append")
+                    .nodes()
+                    .iter()
+                    .cloned(),
+            );
+        }
+
+        assert_eq!(rebuilt_nodes, original_nodes);
+        assert_eq!(
+            OperationalMmrReceiptV1::from_accumulator(&rebuilt),
+            OperationalMmrReceiptV1::from_accumulator(&original)
+        );
+        assert_eq!(
+            OperationalMmrNodeV1::from_canonical_leaf("frames", 17, &leaves[17])
+                .expect("canonical leaf"),
+            original_nodes
+                .iter()
+                .find(|node| node.height() == 0 && node.start_index() == 17)
+                .expect("stored leaf")
+                .clone()
         );
     }
 }

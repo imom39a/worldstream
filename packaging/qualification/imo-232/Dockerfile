@@ -4,9 +4,11 @@ ARG WORLDSTREAM_RUNTIME_IMAGE="debian:bookworm-slim@sha256:88200866dfff7ea7f5cbc
 
 FROM ${WORLDSTREAM_RUST_IMAGE} AS builder
 ARG SOURCE_REVISION=unresolved
+ENV WORLDSTREAM_BUILD_REVISION=${SOURCE_REVISION}
 WORKDIR /src
 COPY . .
-RUN test "$(rustc --version | awk '{print $2}')" = "1.97.1" \
+RUN test "${SOURCE_REVISION}" != "unresolved" \
+    && test "$(rustc --version | awk '{print $2}')" = "1.97.1" \
     && cargo build --locked --release --jobs 1 \
       -p worldstream-sqlite --example history_qualification_fixture \
     && cargo build --locked --release --jobs 1 \

@@ -8357,50 +8357,123 @@ fn verify_postgres_operational_mmr_full(
     room_id: &str,
     expected: &BTreeMap<String, OperationalMmrReceiptV1>,
 ) -> Result<(), RoomRecoveryErrorV1> {
-    let mut accumulators = BTreeMap::new();
-    let mut expected_nodes = BTreeMap::new();
-    for domain in OPERATIONAL_HISTORY_ROOT_DOMAINS {
-        accumulators.insert(
-            domain,
-            OperationalMmrV1::new(domain).map_err(|_| RoomRecoveryErrorV1::Corrupt)?,
-        );
-    }
-    let mut append = |domain: &'static str, index: i64, entry: Vec<u8>| {
-        let accumulator = accumulators
-            .get_mut(domain)
-            .ok_or(RoomRecoveryErrorV1::Corrupt)?;
-        if index != i64::try_from(accumulator.leaf_count()).map_err(|_| RoomRecoveryErrorV1::Corrupt)? {
+    let mut stored_nodes = BTreeMap::new();
+    for row in tx
+        .query(
+            "SELECT domain, height, start_index, node_hash \
+         FROM worldstream_room_operational_mmr_nodes_v1 WHERE room_id = $1 \
+         ORDER BY domain, height, start_index FOR SHARE",
+            &[&room_id],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+    {
+        let domain: String = row.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let height: i16 = row.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let start: i64 = row.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let hash: Vec<u8> = row.try_get(3).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        if !OPERATIONAL_HISTORY_ROOT_DOMAINS.contains(&domain.as_str())
+            || height < 0
+            || start < 0
+            || hash.len() != 32
+            || stored_nodes.insert((domain, height, start), hash).is_some()
+        {
             return Err(RoomRecoveryErrorV1::Corrupt);
         }
-        let appended = accumulator.append(&entry).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-        for node in appended.nodes() {
-            if expected_nodes.insert(
-                (domain.to_owned(), i16::from(node.height()), i64::try_from(node.start_index()).map_err(|_| RoomRecoveryErrorV1::Corrupt)?),
-                node.digest().as_bytes().to_vec(),
-            ).is_some() {
-                return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+
+    // A retained operational row can be pruned after it has been delivered.
+    // Its immutable height-zero commitment and all parent nodes remain. Rebuild
+    // the complete MMR from those leaf commitments, then compare every derived
+    // node and the final receipt. This keeps full verification exact without
+    // requiring pruned payload bytes to remain in the serving table.
+    let mut expected_node_count = 0_usize;
+    for domain in OPERATIONAL_HISTORY_ROOT_DOMAINS {
+        let receipt = expected.get(domain).ok_or(RoomRecoveryErrorV1::Corrupt)?;
+        let mut accumulator =
+            OperationalMmrV1::new(domain).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        for leaf_index in 0..receipt.leaf_count() {
+            let start = i64::try_from(leaf_index).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+            let digest = stored_nodes
+                .get(&(domain.to_owned(), 0, start))
+                .ok_or(RoomRecoveryErrorV1::Corrupt)?;
+            let digest = <[u8; 32]>::try_from(digest.as_slice())
+                .map(Blake3DigestV1::from_bytes)
+                .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+            let appended = accumulator
+                .append_prehashed_leaf(digest)
+                .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+            for node in appended.nodes() {
+                let key = (
+                    domain.to_owned(),
+                    i16::from(node.height()),
+                    i64::try_from(node.start_index()).map_err(|_| RoomRecoveryErrorV1::Corrupt)?,
+                );
+                if stored_nodes.get(&key).map(Vec::as_slice)
+                    != Some(node.digest().as_bytes().as_slice())
+                {
+                    return Err(RoomRecoveryErrorV1::Corrupt);
+                }
+                expected_node_count = expected_node_count
+                    .checked_add(1)
+                    .ok_or(RoomRecoveryErrorV1::Corrupt)?;
             }
+        }
+        if OperationalMmrReceiptV1::from_accumulator(&accumulator) != *receipt {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+    }
+    if stored_nodes.len() != expected_node_count {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+
+    let verify_retained_leaf = |domain: &'static str, index: i64, entry: Vec<u8>| {
+        let index = u64::try_from(index).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let expected_leaf = OperationalMmrNodeV1::from_canonical_leaf(domain, index, &entry)
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let key = (
+            domain.to_owned(),
+            0_i16,
+            i64::try_from(index).map_err(|_| RoomRecoveryErrorV1::Corrupt)?,
+        );
+        if stored_nodes.get(&key).map(Vec::as_slice)
+            != Some(expected_leaf.digest().as_bytes().as_slice())
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
         }
         Ok(())
     };
-    for row in tx.query(
-        "SELECT mmr_leaf_index, member_id, frame_seq, cause_room_seq, payload_hash \
+    for row in tx
+        .query(
+            "SELECT mmr_leaf_index, member_id, frame_seq, cause_room_seq, payload_hash \
          FROM worldstream_frames WHERE room_id = $1 AND mmr_leaf_index IS NOT NULL \
          ORDER BY mmr_leaf_index FOR SHARE",
-        &[&room_id],
-    ).map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)? {
+            &[&room_id],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+    {
         let index: i64 = row.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let member: String = row.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let frame_seq: i64 = row.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let cause: i64 = row.try_get(3).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let hash: Vec<u8> = row.try_get(4).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-        let (Ok(frame_seq), Ok(cause), Ok(hash)) =
-            (u64::try_from(frame_seq), u64::try_from(cause), <[u8; 32]>::try_from(hash)) else {
+        let (Ok(frame_seq), Ok(cause), Ok(hash)) = (
+            u64::try_from(frame_seq),
+            u64::try_from(cause),
+            <[u8; 32]>::try_from(hash),
+        ) else {
             return Err(RoomRecoveryErrorV1::Corrupt);
         };
-        append("frames", index, operational_history_entry(&[
-            member.as_bytes(), &frame_seq.to_be_bytes(), &cause.to_be_bytes(), &hash,
-        ]).map_err(|_| RoomRecoveryErrorV1::Corrupt)?)?;
+        verify_retained_leaf(
+            "frames",
+            index,
+            operational_history_entry(&[
+                member.as_bytes(),
+                &frame_seq.to_be_bytes(),
+                &cause.to_be_bytes(),
+                &hash,
+            ])
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?,
+        )?;
     }
     for row in tx.query(
         "SELECT mmr_leaf_index, member_id, cause_room_seq, consequence_kind, projection_hash \
@@ -8423,53 +8496,41 @@ fn verify_postgres_operational_mmr_full(
             ]),
             _ => return Err(RoomRecoveryErrorV1::Corrupt),
         }.map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-        append("consequences", index, entry)?;
+        verify_retained_leaf("consequences", index, entry)?;
     }
-    for row in tx.query(
-        "SELECT mmr_leaf_index, cause_room_seq, decision_id, target_member_id, decision_bytes \
+    for row in tx
+        .query(
+            "SELECT mmr_leaf_index, cause_room_seq, decision_id, target_member_id, decision_bytes \
          FROM worldstream_activation_decisions WHERE room_id = $1 AND mmr_leaf_index IS NOT NULL \
          ORDER BY mmr_leaf_index FOR SHARE",
-        &[&room_id],
-    ).map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)? {
+            &[&room_id],
+        )
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+    {
         let index: i64 = row.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let cause: i64 = row.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let decision: String = row.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let target: Option<String> = row.try_get(3).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let bytes: Vec<u8> = row.try_get(4).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         let cause = u64::try_from(cause).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-        append("activation_decisions", index, operational_history_entry(&[
-            &cause.to_be_bytes(), decision.as_bytes(), target.unwrap_or_default().as_bytes(), &bytes,
-        ]).map_err(|_| RoomRecoveryErrorV1::Corrupt)?)?;
+        verify_retained_leaf(
+            "activation_decisions",
+            index,
+            operational_history_entry(&[
+                &cause.to_be_bytes(),
+                decision.as_bytes(),
+                target.unwrap_or_default().as_bytes(),
+                &bytes,
+            ])
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?,
+        )?;
     }
-    drop(append);
     let Some(stored) = capture_operational_mmr_receipts(tx, room_id)
-        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)? else {
+        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?
+    else {
         return Err(RoomRecoveryErrorV1::Corrupt);
     };
     if &stored != expected || stored.len() != OPERATIONAL_HISTORY_ROOT_DOMAINS.len() {
-        return Err(RoomRecoveryErrorV1::Corrupt);
-    }
-    for (domain, accumulator) in accumulators {
-        if expected.get(domain) != Some(&OperationalMmrReceiptV1::from_accumulator(&accumulator)) {
-            return Err(RoomRecoveryErrorV1::Corrupt);
-        }
-    }
-    let mut stored_nodes = BTreeMap::new();
-    for row in tx.query(
-        "SELECT domain, height, start_index, node_hash \
-         FROM worldstream_room_operational_mmr_nodes_v1 WHERE room_id = $1 \
-         ORDER BY domain, height, start_index FOR SHARE",
-        &[&room_id],
-    ).map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)? {
-        let domain: String = row.try_get(0).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-        let height: i16 = row.try_get(1).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-        let start: i64 = row.try_get(2).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-        let hash: Vec<u8> = row.try_get(3).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-        if stored_nodes.insert((domain, height, start), hash).is_some() {
-            return Err(RoomRecoveryErrorV1::Corrupt);
-        }
-    }
-    if stored_nodes != expected_nodes {
         return Err(RoomRecoveryErrorV1::Corrupt);
     }
     Ok(())
