@@ -36,14 +36,14 @@ pub use migrations::{
     MIGRATION_0004_SQL, MIGRATION_0005_SQL, MIGRATION_0006_SQL, MIGRATION_0007_SQL,
     MIGRATION_0008_SQL, MIGRATION_0009_SQL, MIGRATION_0010_SQL, MIGRATION_0011_SQL,
     MIGRATION_0012_SQL, MIGRATION_0013_SQL, MIGRATION_0014_SQL, MIGRATION_0015_SQL,
-    MIGRATION_0016_SQL, MIGRATION_0017_SQL, MIGRATION_0018_SQL, MigrationDescriptor,
-    MigrationFailpoint, MigrationRecord, MigrationVerification, MigrationVerificationError,
-    OBSERVATION_RESET_GENERATION_MIGRATION_ID, OBSERVATION_RETENTION_MIGRATION_ID,
-    SCHEMA_CONTRACT_ID, SCHEMA_FINGERPRINT_MATERIAL, SNAPSHOT_CADENCE_MIGRATION_ID,
-    STREAM_TRANSFER_V2_MIGRATION_ID, TRANSFER_PUBLICATION_MIGRATION_ID,
-    TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID, TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID,
-    migration_history, schema_contract_fingerprint, verify_migration_prefix,
-    verify_runtime_migration_history,
+    MIGRATION_0016_SQL, MIGRATION_0017_SQL, MIGRATION_0018_SQL, MIGRATION_0019_SQL,
+    MigrationDescriptor, MigrationFailpoint, MigrationRecord, MigrationVerification,
+    MigrationVerificationError, OBSERVATION_RESET_GENERATION_MIGRATION_ID,
+    OBSERVATION_RETENTION_MIGRATION_ID, OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID, SCHEMA_CONTRACT_ID,
+    SCHEMA_FINGERPRINT_MATERIAL, SNAPSHOT_CADENCE_MIGRATION_ID, STREAM_TRANSFER_V2_MIGRATION_ID,
+    TRANSFER_PUBLICATION_MIGRATION_ID, TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID,
+    TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID, migration_history, schema_contract_fingerprint,
+    verify_migration_prefix, verify_runtime_migration_history,
 };
 pub use retention::PostgresObservationRetentionV1;
 pub use telemetry::{
@@ -3278,7 +3278,7 @@ const GLOBAL_RESOURCE_IDENTITY_INDEXES: [(&str, &str); 2] = [
     ),
 ];
 
-const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 33] = [
+const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 34] = [
     (
         "worldstream_transfer_fence_operation_guards",
         "worldstream_operation_guards",
@@ -3326,6 +3326,10 @@ const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 33] = [
     (
         "worldstream_transfer_fence_snapshot_operational_witnesses",
         "worldstream_room_snapshot_operational_witnesses",
+    ),
+    (
+        "worldstream_transfer_fence_operational_history_roots_v2",
+        "worldstream_room_operational_history_roots_v2",
     ),
     (
         "worldstream_transfer_fence_snapshot_schedules",
@@ -9362,6 +9366,7 @@ fn insert_creation(
     for timer in &p.initial_timers {
         tx.execute("INSERT INTO worldstream_timers(room_id, timer_id, generation, scheduled_for, payload_bytes, state) VALUES ($1, $2, $3, $4, $5, 'scheduled')", &[&head, &timer.timer_id().to_string(), &i64::try_from(timer.generation().get()).unwrap_or(-1), &timer.scheduled_for().to_string(), &timer.canonical_payload_bytes()])?;
     }
+    initialize_operational_history_roots(tx, &head)?;
     persist_snapshot(
         tx,
         &head,
@@ -9375,6 +9380,111 @@ fn insert_creation(
         "INSERT INTO worldstream_room_snapshot_schedules(room_id, last_snapshot_room_seq, transitions_since_snapshot, active_started_at) VALUES ($1, 0, 0, NULL) ON CONFLICT (room_id) DO NOTHING",
         &[&head],
     )?;
+    Ok(())
+}
+
+const OPERATIONAL_HISTORY_ROOT_DOMAIN_TAG: &[u8] = b"worldstream/operational-history-root/v2\0";
+const OPERATIONAL_HISTORY_ROOT_DOMAINS: [&str; 3] =
+    ["frames", "consequences", "activation_decisions"];
+
+fn initialize_operational_history_roots(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+) -> Result<(), postgres::Error> {
+    for domain in OPERATIONAL_HISTORY_ROOT_DOMAINS {
+        tx.execute(
+            "INSERT INTO worldstream_room_operational_history_roots_v2(\
+             room_id, domain, entry_count, root_hash\
+             ) VALUES ($1, $2, 0, $3)",
+            &[&room_id, &domain, &([0_u8; 32]).as_slice()],
+        )?;
+    }
+    Ok(())
+}
+
+fn operational_history_entry(parts: &[&[u8]]) -> Result<Vec<u8>, CommitDecision> {
+    let mut entry = Vec::new();
+    for part in parts {
+        let length = u64::try_from(part.len())
+            .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?;
+        entry.extend_from_slice(&length.to_be_bytes());
+        entry.extend_from_slice(part);
+    }
+    Ok(entry)
+}
+
+fn append_operational_history_root(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    domain: &str,
+    entry: &[u8],
+) -> Result<(), CommitDecision> {
+    let current = tx
+        .query_opt(
+            "SELECT entry_count, root_hash FROM worldstream_room_operational_history_roots_v2 \
+             WHERE room_id = $1 AND domain = $2 FOR UPDATE",
+            &[&room_id, &domain],
+        )
+        .map_err(CommitDecision::Provider)?;
+    let Some(row) = current else {
+        // A pre-V2 Room has no complete incremental root. It remains on the
+        // V1/full-replay path rather than starting a partial root mid-history.
+        return Ok(());
+    };
+    let count: i64 = row.try_get(0).map_err(CommitDecision::Provider)?;
+    let root: Vec<u8> = row.try_get(1).map_err(CommitDecision::Provider)?;
+    if count < 0 || root.len() != 32 {
+        return Err(CommitDecision::Resolution(RoomCommitResolutionV1::Fault));
+    }
+    let next_count = count
+        .checked_add(1)
+        .ok_or(CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?;
+    let domain_bytes = domain.as_bytes();
+    let mut input = Vec::with_capacity(
+        OPERATIONAL_HISTORY_ROOT_DOMAIN_TAG.len()
+            + root.len()
+            + domain_bytes.len()
+            + entry.len()
+            + 24,
+    );
+    input.extend_from_slice(OPERATIONAL_HISTORY_ROOT_DOMAIN_TAG);
+    input.extend_from_slice(
+        &u64::try_from(domain_bytes.len())
+            .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?
+            .to_be_bytes(),
+    );
+    input.extend_from_slice(domain_bytes);
+    input.extend_from_slice(
+        &u64::try_from(count)
+            .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?
+            .to_be_bytes(),
+    );
+    input.extend_from_slice(&root);
+    input.extend_from_slice(
+        &u64::try_from(entry.len())
+            .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?
+            .to_be_bytes(),
+    );
+    input.extend_from_slice(entry);
+    let next = Blake3DigestV1::hash(&input);
+    let changed = tx
+        .execute(
+            "UPDATE worldstream_room_operational_history_roots_v2 \
+             SET entry_count = $1, root_hash = $2 \
+             WHERE room_id = $3 AND domain = $4 AND entry_count = $5 AND root_hash = $6",
+            &[
+                &next_count,
+                &next.as_bytes().as_slice(),
+                &room_id,
+                &domain,
+                &count,
+                &root,
+            ],
+        )
+        .map_err(CommitDecision::Provider)?;
+    if changed != 1 {
+        return Err(CommitDecision::Resolution(RoomCommitResolutionV1::Fault));
+    }
     Ok(())
 }
 
@@ -9885,6 +9995,20 @@ fn persist_advance(
     }
     for decision in &advance.activation_decisions {
         tx.execute("INSERT INTO worldstream_activation_decisions(room_id, cause_room_seq, decision_id, target_member_id, decision_bytes) VALUES ($1, $2, $3, $4, $5)", &[&room_id, &seq, &decision.decision_id(), &decision.target_member_id().map(ToString::to_string), &decision.canonical_decision_bytes()]).map_err(CommitDecision::Provider)?;
+        let cause_room_seq = u64::try_from(seq)
+            .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?
+            .to_be_bytes();
+        let target_member_id = decision
+            .target_member_id()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let entry = operational_history_entry(&[
+            &cause_room_seq,
+            decision.decision_id().as_bytes(),
+            target_member_id.as_bytes(),
+            decision.canonical_decision_bytes(),
+        ])?;
+        append_operational_history_root(tx, room_id, "activation_decisions", &entry)?;
         let decision_record = CanonicalJsonV1::decode_canonical::<
             worldstream_core::ActivationDecisionV1,
         >(decision.canonical_decision_bytes())
@@ -10138,6 +10262,16 @@ fn persist_consequence(
             if changed != 1 {
                 return Err(CommitDecision::Resolution(RoomCommitResolutionV1::Fault));
             }
+            let frame_seq = frame.frame_seq().to_be_bytes();
+            let cause_room_seq = frame.cause_room_seq().get().to_be_bytes();
+            let entry = operational_history_entry(&[
+                frame.member_id().to_string().as_bytes(),
+                &frame_seq,
+                &cause_room_seq,
+                frame.payload_hash().as_bytes(),
+                frame.canonical_payload_bytes(),
+            ])?;
+            append_operational_history_root(tx, room_id, "frames", &entry)?;
         }
         PreparedObservationConsequenceV1::ResetRequired(view) => {
             let projection_hash = view
@@ -10147,7 +10281,18 @@ fn persist_consequence(
             if changed != 1 {
                 return Err(CommitDecision::Resolution(RoomCommitResolutionV1::Fault));
             }
-            tx.execute("INSERT INTO worldstream_observation_consequences(room_id, member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash) VALUES ($1, $2, $3, 'reset_required', $4, $5)", &[&room_id, &view.viewer().member_id().to_string(), &cause_room_seq, &view.canonical_bytes(), &projection_hash.as_bytes().as_slice()]).map_err(CommitDecision::Provider)?;
+            let payload = view.canonical_bytes();
+            tx.execute("INSERT INTO worldstream_observation_consequences(room_id, member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash) VALUES ($1, $2, $3, 'reset_required', $4, $5)", &[&room_id, &view.viewer().member_id().to_string(), &cause_room_seq, &payload, &projection_hash.as_bytes().as_slice()]).map_err(CommitDecision::Provider)?;
+            let cause_room_seq = u64::try_from(cause_room_seq)
+                .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?
+                .to_be_bytes();
+            let entry = operational_history_entry(&[
+                view.viewer().member_id().to_string().as_bytes(),
+                &cause_room_seq,
+                b"reset_required",
+                payload,
+            ])?;
+            append_operational_history_root(tx, room_id, "consequences", &entry)?;
         }
         PreparedObservationConsequenceV1::VisibilityLost(member_id) => {
             let changed = tx.execute("UPDATE worldstream_members SET reset_required_through = greatest(coalesce(reset_required_through, 0), frame_head), reset_generation = reset_generation + 1 WHERE room_id = $1 AND member_id = $2", &[&room_id, &member_id.to_string()]).map_err(CommitDecision::Provider)?;
@@ -10155,6 +10300,15 @@ fn persist_consequence(
                 return Err(CommitDecision::Resolution(RoomCommitResolutionV1::Fault));
             }
             tx.execute("INSERT INTO worldstream_observation_consequences(room_id, member_id, cause_room_seq, consequence_kind) VALUES ($1, $2, $3, 'visibility_lost')", &[&room_id, &member_id.to_string(), &cause_room_seq]).map_err(CommitDecision::Provider)?;
+            let cause_room_seq = u64::try_from(cause_room_seq)
+                .map_err(|_| CommitDecision::Resolution(RoomCommitResolutionV1::Fault))?
+                .to_be_bytes();
+            let entry = operational_history_entry(&[
+                member_id.to_string().as_bytes(),
+                &cause_room_seq,
+                b"visibility_lost",
+            ])?;
+            append_operational_history_root(tx, room_id, "consequences", &entry)?;
         }
     }
     Ok(())
@@ -11130,7 +11284,7 @@ mod native_hydration_tests {
     #[test]
     fn transfer_safety_catalog_contract_matches_the_reviewed_migration() {
         let transfer_fence_migrations = format!(
-            "{MIGRATION_0011_SQL}{MIGRATION_0012_SQL}{MIGRATION_0015_SQL}{MIGRATION_0018_SQL}"
+            "{MIGRATION_0011_SQL}{MIGRATION_0012_SQL}{MIGRATION_0015_SQL}{MIGRATION_0018_SQL}{MIGRATION_0019_SQL}"
         );
         for (index, table) in GLOBAL_RESOURCE_IDENTITY_INDEXES {
             assert!(
