@@ -1351,6 +1351,8 @@ pub enum SqliteSnapshotQualificationErrorV1 {
     WalNotQuiescent,
     #[error("the SQLite WAL autocheckpoint setting could not be controlled and restored")]
     WalAutoCheckpointControlFailed,
+    #[error("the SQLite WAL autocheckpoint setting could not be restored; the writer is poisoned")]
+    WalAutoCheckpointRestoreFailed,
     #[error("the isolated snapshot-cache transaction did not persist")]
     SnapshotPersistenceFailed,
     #[error(
@@ -11185,6 +11187,10 @@ fn writer_main(
     #[cfg(test)]
     let mut failpoint = None;
     let mut snapshot_qualification: Option<PendingSnapshotQualification> = None;
+    // A failed restoration of a per-connection SQLite runtime setting cannot
+    // be repaired safely by an ordinary cache fallback. End this writer after
+    // replying to the already-durable canonical commit instead.
+    let mut snapshot_writer_poisoned = false;
     macro_rules! reply_after_namespace_check {
         ($reply:expr, $value:expr) => {{
             let value = $value;
@@ -11345,8 +11351,12 @@ fn writer_main(
                     clock,
                     path,
                     &mut snapshot_qualification,
+                    &mut snapshot_writer_poisoned,
                 );
                 reply_after_namespace_check!(reply, resolution);
+                if snapshot_writer_poisoned {
+                    break;
+                }
             }
             WriterCommand::Commit(prepared, reply) => {
                 #[cfg(test)]
@@ -11357,6 +11367,7 @@ fn writer_main(
                     failpoint,
                     path,
                     &mut snapshot_qualification,
+                    &mut snapshot_writer_poisoned,
                 );
                 #[cfg(not(test))]
                 let resolution = commit_prepared(
@@ -11365,8 +11376,12 @@ fn writer_main(
                     clock,
                     path,
                     &mut snapshot_qualification,
+                    &mut snapshot_writer_poisoned,
                 );
                 reply_after_namespace_check!(reply, resolution);
+                if snapshot_writer_poisoned {
+                    break;
+                }
             }
             WriterCommand::ReserveExternalInputPreparation {
                 identity_bytes,
@@ -16667,6 +16682,7 @@ fn commit_prepared(
     clock: &dyn TrustedAuthorityClock,
     path: &Path,
     snapshot_qualification: &mut Option<PendingSnapshotQualification>,
+    snapshot_writer_poisoned: &mut bool,
 ) -> RoomCommitResolutionV1 {
     commit_prepared_inner(
         connection,
@@ -16675,6 +16691,7 @@ fn commit_prepared(
         None,
         path,
         snapshot_qualification,
+        snapshot_writer_poisoned,
     )
 }
 
@@ -16686,6 +16703,7 @@ fn commit_prepared(
     failpoint: Option<WriteBoundary>,
     path: &Path,
     snapshot_qualification: &mut Option<PendingSnapshotQualification>,
+    snapshot_writer_poisoned: &mut bool,
 ) -> RoomCommitResolutionV1 {
     commit_prepared_inner(
         connection,
@@ -16694,6 +16712,7 @@ fn commit_prepared(
         failpoint,
         path,
         snapshot_qualification,
+        snapshot_writer_poisoned,
     )
 }
 
@@ -16704,6 +16723,7 @@ fn commit_prepared_inner(
     failpoint: Option<WriteBoundary>,
     path: &Path,
     snapshot_qualification: &mut Option<PendingSnapshotQualification>,
+    snapshot_writer_poisoned: &mut bool,
 ) -> RoomCommitResolutionV1 {
     let Ok(transaction) = connection.transaction_with_behavior(TransactionBehavior::Immediate)
     else {
@@ -16733,6 +16753,7 @@ fn commit_prepared_inner(
                 snapshot_write_enabled,
                 path,
                 snapshot_qualification,
+                snapshot_writer_poisoned,
             );
             return resolution;
         }
@@ -16809,6 +16830,7 @@ fn commit_prepared_inner(
         snapshot_write_enabled,
         path,
         snapshot_qualification,
+        snapshot_writer_poisoned,
     );
     if failpoint == Some(WriteBoundary::AfterCommitUnknown) {
         RoomCommitResolutionV1::Indeterminate
@@ -16824,6 +16846,7 @@ fn commit_creation_with_authority(
     clock: &dyn TrustedAuthorityClock,
     path: &Path,
     snapshot_qualification: &mut Option<PendingSnapshotQualification>,
+    snapshot_writer_poisoned: &mut bool,
 ) -> RoomCommitResolutionV1 {
     if changes.is_empty() || !matches!(&prepared.branch, PreparedSqliteBranch::Create(_)) {
         return RoomCommitResolutionV1::Fault;
@@ -16875,6 +16898,7 @@ fn commit_creation_with_authority(
                 true,
                 path,
                 snapshot_qualification,
+                snapshot_writer_poisoned,
             );
             return resolution;
         }
@@ -16926,6 +16950,7 @@ fn commit_creation_with_authority(
         true,
         path,
         snapshot_qualification,
+        snapshot_writer_poisoned,
     );
     RoomCommitResolutionV1::resolved(ResolutionStatusV1::New, prepared.receipt.stored_result)
 }
@@ -22971,6 +22996,7 @@ fn maybe_persist_post_commit_snapshot(
     snapshot_write_enabled: bool,
     path: &Path,
     snapshot_qualification: &mut Option<PendingSnapshotQualification>,
+    snapshot_writer_poisoned: &mut bool,
 ) {
     let Some(candidate) = prepared.snapshot_cadence_candidate() else {
         return;
@@ -22999,8 +23025,19 @@ fn maybe_persist_post_commit_snapshot(
                     let result = persist_qualified_post_commit_snapshot(
                         connection, path, &snapshot, now_text,
                     );
-                    if result.is_err() {
+                    if result.is_err()
+                        && !matches!(
+                            &result,
+                            Err(SqliteSnapshotQualificationErrorV1::WalAutoCheckpointRestoreFailed)
+                        )
+                    {
                         let _ = persist_post_commit_snapshot(connection, &snapshot, now_text);
+                    }
+                    if matches!(
+                        &result,
+                        Err(SqliteSnapshotQualificationErrorV1::WalAutoCheckpointRestoreFailed)
+                    ) {
+                        *snapshot_writer_poisoned = true;
                     }
                     let _ = reply.send(result);
                 }
@@ -23039,6 +23076,18 @@ fn with_wal_autocheckpoint_disabled<T>(
     connection: &mut Connection,
     operation: impl FnOnce(&mut Connection) -> Result<T, SqliteSnapshotQualificationErrorV1>,
 ) -> Result<T, SqliteSnapshotQualificationErrorV1> {
+    with_wal_autocheckpoint_disabled_with_restore(connection, operation, |connection, value| {
+        connection
+            .pragma_update(None, "wal_autocheckpoint", value)
+            .map_err(|_| ())
+    })
+}
+
+fn with_wal_autocheckpoint_disabled_with_restore<T>(
+    connection: &mut Connection,
+    operation: impl FnOnce(&mut Connection) -> Result<T, SqliteSnapshotQualificationErrorV1>,
+    restore: impl FnOnce(&mut Connection, i64) -> Result<(), ()>,
+) -> Result<T, SqliteSnapshotQualificationErrorV1> {
     let autocheckpoint: i64 = connection
         .query_row("PRAGMA wal_autocheckpoint", (), |row| row.get(0))
         .map_err(|_| SqliteSnapshotQualificationErrorV1::WalAutoCheckpointControlFailed)?;
@@ -23050,11 +23099,14 @@ fn with_wal_autocheckpoint_disabled<T>(
         return Err(SqliteSnapshotQualificationErrorV1::WalAutoCheckpointControlFailed);
     }
     let result = operation(connection);
-    if connection
-        .pragma_update(None, "wal_autocheckpoint", autocheckpoint)
-        .is_err()
-    {
-        return Err(SqliteSnapshotQualificationErrorV1::WalAutoCheckpointControlFailed);
+    if restore(connection, autocheckpoint).is_err() {
+        // A restoration failure means this writer connection no longer has
+        // its reviewed runtime settings. Make it read-only defensively; the
+        // caller also terminates the writer after the current, already-durable
+        // canonical commit rather than silently continuing with
+        // autocheckpoint disabled.
+        let _ = connection.pragma_update(None, "query_only", true);
+        return Err(SqliteSnapshotQualificationErrorV1::WalAutoCheckpointRestoreFailed);
     }
     result
 }
@@ -23514,6 +23566,7 @@ mod tests {
         wait_until_authority_change_enqueued, wait_until_guarded_commit_pauses,
         wait_until_recovery_install_pauses, wait_until_replay_projection_pauses,
         wait_until_writer_queue_pauses, with_wal_autocheckpoint_disabled,
+        with_wal_autocheckpoint_disabled_with_restore,
     };
 
     const ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -40652,5 +40705,34 @@ mod tests {
             .query_row("PRAGMA wal_autocheckpoint", (), |row| row.get(0))
             .unwrap_or_else(|error| panic!("read restored autocheckpoint: {error}"));
         assert_eq!(restored, 7);
+    }
+
+    #[test]
+    fn failed_snapshot_autocheckpoint_restore_poisoned_writer_connection_before_fallback() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let path = directory.path().join("autocheckpoint-restore.sqlite");
+        let mut connection = Connection::open(&path)
+            .unwrap_or_else(|error| panic!("open SQLite measurement connection: {error}"));
+        let mode: String = connection
+            .query_row("PRAGMA journal_mode = WAL", (), |row| row.get(0))
+            .unwrap_or_else(|error| panic!("enable WAL: {error}"));
+        assert_eq!(mode, "wal");
+        assert_eq!(
+            with_wal_autocheckpoint_disabled_with_restore(
+                &mut connection,
+                |_| Ok(()),
+                |_, _| Err(())
+            ),
+            Err(SqliteSnapshotQualificationErrorV1::WalAutoCheckpointRestoreFailed)
+        );
+        let query_only: i64 = connection
+            .query_row("PRAGMA query_only", (), |row| row.get(0))
+            .unwrap_or_else(|error| panic!("read poisoned writer setting: {error}"));
+        assert_eq!(query_only, 1);
+        assert!(
+            connection
+                .execute_batch("CREATE TABLE must_not_write(value integer);")
+                .is_err()
+        );
     }
 }
