@@ -23,6 +23,8 @@ history_fixture_bin="${WORLDSTREAM_HISTORY_FIXTURE_BIN:-}"
 warm_test_bin="${WORLDSTREAM_WARM_TEST_BIN:-}"
 evidence_file=""
 samples="$DEFAULT_SAMPLES"
+provided_source_database=""
+provided_fixture_report=""
 temp_root=""
 temp_parent="${WORLDSTREAM_IMO220_TEMP_ROOT:-/tmp}"
 tiers=()
@@ -34,6 +36,7 @@ warm_test_sha256=""
 usage() {
   cat <<'USAGE'
 Usage: scripts/imo-220-warm-claim-qualification.sh --evidence PATH [--samples N] [--tier N]...
+       [--source-database PATH --fixture-report PATH]
 
 By default, creates the ticket's 1k, 10k, and 100k canonical SQLite histories
 in a private temporary location. Repeat --tier to select one or more supported
@@ -45,6 +48,11 @@ Set WORLDSTREAM_HISTORY_FIXTURE_BIN and WORLDSTREAM_WARM_TEST_BIN to reusable
 release binaries to avoid Cargo builds. The evidence records only each supplied
 binary's SHA-256, never its path. The warm test binary is invoked with its
 exact filter and --ignored/--nocapture test-harness arguments.
+
+To repeat the warm phase without rebuilding an expensive history, supply one
+--tier together with a disposable writable --source-database and its retained
+--fixture-report. The source is deliberately corrupted by the qualification
+and remains the caller's cleanup responsibility.
 USAGE
 }
 
@@ -87,6 +95,16 @@ while [[ "$#" -gt 0 ]]; do
       tiers+=("$2")
       shift 2
       ;;
+    --source-database)
+      [[ "$#" -ge 2 ]] || { usage >&2; exit 2; }
+      provided_source_database="$2"
+      shift 2
+      ;;
+    --fixture-report)
+      [[ "$#" -ge 2 ]] || { usage >&2; exit 2; }
+      provided_fixture_report="$2"
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -126,7 +144,24 @@ if [[ -n "$warm_test_bin" ]]; then
   warm_test_sha256="$(file_sha256 "$warm_test_bin")"
 fi
 
-if [[ "${#tiers[@]}" -eq 0 ]]; then
+if [[ -n "$provided_source_database" || -n "$provided_fixture_report" ]]; then
+  [[ -n "$provided_source_database" && -n "$provided_fixture_report" ]] || {
+    printf '%s\n' 'IMO-220 existing source requires both --source-database and --fixture-report' >&2
+    exit 2
+  }
+  [[ "${#tiers[@]}" -eq 1 ]] || {
+    printf '%s\n' 'IMO-220 existing source requires exactly one explicit --tier' >&2
+    exit 2
+  }
+  [[ -f "$provided_source_database" && -w "$provided_source_database" && ! -L "$provided_source_database" ]] || {
+    printf '%s\n' 'IMO-220 existing source must be a writable regular non-symlink file' >&2
+    exit 2
+  }
+  [[ -f "$provided_fixture_report" && ! -L "$provided_fixture_report" ]] || {
+    printf '%s\n' 'IMO-220 existing fixture report must be a regular non-symlink file' >&2
+    exit 2
+  }
+elif [[ "${#tiers[@]}" -eq 0 ]]; then
   tiers=("${DEFAULT_TIERS[@]}")
 fi
 for tier in "${tiers[@]}"; do
@@ -152,26 +187,35 @@ PY
 )"
 
 for tier in "${tiers[@]}"; do
-  source_database="$temp_root/history-${tier}.sqlite"
-  fixture_report="$temp_root/history-${tier}.json"
+  if [[ -n "$provided_source_database" ]]; then
+    source_database="$provided_source_database"
+    fixture_report="$provided_fixture_report"
+  else
+    source_database="$temp_root/history-${tier}.sqlite"
+    fixture_report="$temp_root/history-${tier}.json"
+  fi
   fixture_log="$temp_root/history-${tier}.fixture.log"
   warm_report="$temp_root/history-${tier}.warm.json"
   warm_log="$temp_root/history-${tier}.warm.log"
 
-  if [[ "$history_fixture_mode" == "prebuilt" ]]; then
-    fixture_command=("$history_fixture_bin")
+  if [[ -z "$provided_source_database" ]]; then
+    if [[ "$history_fixture_mode" == "prebuilt" ]]; then
+      fixture_command=("$history_fixture_bin")
+    else
+      fixture_command=("$cargo_bin" run --locked --release -p worldstream-sqlite --example history_qualification_fixture --)
+    fi
+    if ! "${fixture_command[@]}" \
+      --database "$source_database" \
+      --transition-count "$tier" \
+      --stream-metadata \
+      --output "$fixture_report" \
+      >"$fixture_log" 2>&1; then
+      printf 'IMO-220 fixture failed for %s transitions; tail follows:\n' "$tier" >&2
+      tail -n 160 "$fixture_log" >&2
+      exit 1
+    fi
   else
-    fixture_command=("$cargo_bin" run --locked --release -p worldstream-sqlite --example history_qualification_fixture --)
-  fi
-  if ! "${fixture_command[@]}" \
-    --database "$source_database" \
-    --transition-count "$tier" \
-    --stream-metadata \
-    --output "$fixture_report" \
-    >"$fixture_log" 2>&1; then
-    printf 'IMO-220 fixture failed for %s transitions; tail follows:\n' "$tier" >&2
-    tail -n 160 "$fixture_log" >&2
-    exit 1
+    cp "$fixture_report" "$temp_root/history-${tier}.json"
   fi
 
   if [[ "$warm_test_mode" == "prebuilt" ]]; then
