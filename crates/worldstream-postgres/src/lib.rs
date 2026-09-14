@@ -859,6 +859,8 @@ pub enum PostgresRoomCommitError {
     Recovery(#[from] RoomRecoveryErrorV1),
     #[error("PostgreSQL Room commit preparation failed")]
     Preparation,
+    #[error("PostgreSQL external input basis is no longer current")]
+    StaleExternalInputBasis,
 }
 
 /// Closed failures from exact PostgreSQL Timer witness reads.
@@ -5162,7 +5164,12 @@ impl PostgresRoomStore {
             authority,
             &frame_heads,
         )
-        .map_err(|_| PostgresRoomCommitError::Preparation)?;
+        .map_err(|error| match error {
+            worldstream_core::PrepareRoomWriteErrorV1::PreparedBasisMismatch => {
+                PostgresRoomCommitError::StaleExternalInputBasis
+            }
+            _ => PostgresRoomCommitError::Preparation,
+        })?;
         Ok(commit_existing_room(self, &mut trace, prepared)
             .into_parts()
             .0)

@@ -2,9 +2,9 @@ import type { CanonicalJson } from "@worldstream/pack-sdk";
 
 export const privacyFixture = {
   audiences: [
-    { member_id: "late-analyst", viewer_type: "participant" },
-    { member_id: "late-reviewer", viewer_type: "participant" },
-    { member_id: "spectator-member", viewer_type: "public" },
+    { member_id: "01ARZ3NDEKTSV4RRFFQ69G5FN0", viewer_type: "participant" },
+    { member_id: "01ARZ3NDEKTSV4RRFFQ69G5FN1", viewer_type: "participant" },
+    { member_id: "01ARZ3NDEKTSV4RRFFQ69G5FN2", viewer_type: "public" },
   ],
   forbiddenPublic: ["role_guidance", "assessor_member_id", "arrival_version", "minimum_transfer_minutes"],
   mutations: [{
@@ -22,7 +22,7 @@ export const privacyFixture = {
       open_work: [{
         connection_id: "C17",
         last_assessment: {
-          assessor_member_id: "late-reviewer",
+          assessor_member_id: "01ARZ3NDEKTSV4RRFFQ69G5FN1",
           arrival_version: 2,
           claim: "connection_at_risk",
           departure_version: 1,
@@ -41,7 +41,7 @@ export const privacyFixture = {
       },
       room_seq: 4,
     },
-    hidden_from: ["late-reviewer"],
+    hidden_from: ["01ARZ3NDEKTSV4RRFFQ69G5FN1"],
   }],
-  private_viewers: ["late-analyst", "late-reviewer"],
+  private_viewers: ["01ARZ3NDEKTSV4RRFFQ69G5FN0", "01ARZ3NDEKTSV4RRFFQ69G5FN1"],
 } as const satisfies CanonicalJson;

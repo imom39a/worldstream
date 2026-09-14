@@ -1,7 +1,7 @@
 import type { CanonicalObject } from "@worldstream/pack-sdk";
 
-const analyst = participant("late-analyst", "analyst");
-const reviewer = participant("late-reviewer", "reviewer");
+const analyst = participant("01ARZ3NDEKTSV4RRFFQ69G5FN0", "analyst");
+const reviewer = participant("01ARZ3NDEKTSV4RRFFQ69G5FN1", "reviewer");
 
 export const goldenFixture = {
   accepted: [
@@ -67,7 +67,7 @@ function participant(member_id: string, role: string): CanonicalObject {
   return {
     access_mode: "participant",
     member_id,
-    principal_id: `principal-${member_id}`,
+    principal_id: member_id === "01ARZ3NDEKTSV4RRFFQ69G5FN0" ? "01ARZ3NDEKTSV4RRFFQ69G5FM0" : "01ARZ3NDEKTSV4RRFFQ69G5FM1",
     principal_kind: "agent",
     role,
     standing: "enabled",

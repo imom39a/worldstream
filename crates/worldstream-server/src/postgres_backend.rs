@@ -198,6 +198,22 @@ impl PostgresGatewayBackend {
         Self::with_runtime(store, registry, host_clock, RoomAdmissionLanesV1::default())
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_test_admission_lanes(
+        store: PostgresRoomStore,
+        registry: Arc<PackRegistryV1>,
+        admission_lanes: RoomAdmissionLanesV1,
+    ) -> Self {
+        let mut backend = Self::new(store, registry);
+        backend.admission_lanes = admission_lanes;
+        backend
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_admission_lanes(&self) -> &RoomAdmissionLanesV1 {
+        &self.admission_lanes
+    }
+
     fn with_runtime(
         store: PostgresRoomStore,
         registry: Arc<PackRegistryV1>,
@@ -3841,7 +3857,21 @@ fn map_room_commit_error(error: PostgresRoomCommitError) -> BackendError {
     match error {
         PostgresRoomCommitError::Recovery(error) => map_recovery_error(error),
         PostgresRoomCommitError::Preparation => BackendError::InvalidResult,
+        PostgresRoomCommitError::StaleExternalInputBasis => BackendError::Rejected,
     }
+}
+
+#[cfg(test)]
+#[test]
+fn external_input_stale_basis_is_a_refusal_without_masking_invalid_output() {
+    assert!(matches!(
+        map_room_commit_error(PostgresRoomCommitError::StaleExternalInputBasis),
+        BackendError::Rejected
+    ));
+    assert!(matches!(
+        map_room_commit_error(PostgresRoomCommitError::Preparation),
+        BackendError::InvalidResult
+    ));
 }
 
 fn map_session_error(error: SessionErrorV1) -> BackendError {

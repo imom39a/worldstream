@@ -216,6 +216,22 @@ impl SqliteGatewayBackend {
         Ok(self)
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_test_admission_lanes(
+        store: SqliteRoomStore,
+        registry: Arc<PackRegistryV1>,
+        admission_lanes: RoomAdmissionLanesV1,
+    ) -> Self {
+        let mut backend = Self::new(store, registry);
+        backend.admission_lanes = admission_lanes;
+        backend
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_admission_lanes(&self) -> &RoomAdmissionLanesV1 {
+        &self.admission_lanes
+    }
+
     fn with_runtime(
         store: SqliteRoomStore,
         registry: Arc<PackRegistryV1>,
@@ -3641,7 +3657,7 @@ impl GatewayBackend for SqliteGatewayBackend {
         let snapshot = self
             .store
             .gateway_room_snapshot(&self.registry, &plan.room_id)
-            .map_err(|_| BackendError::StorageUnavailable)?
+            .map_err(|error| map_gateway_error(&error))?
             .ok_or(BackendError::NotFound)?;
         if snapshot.trace().head().pack_digest() != &plan.pack_digest {
             return Err(BackendError::Conflict);

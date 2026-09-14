@@ -3,6 +3,7 @@ import {
   defineActivityPack,
   encodeCanonical,
   type ActivityPackDefinition,
+  type ActivityPackViewerClass,
   type CanonicalJson,
   type CanonicalObject,
   type PackActionOffer,
@@ -32,12 +33,15 @@ import {
   sourceActionSchema,
   stateSchema,
 } from "./schemas.js";
+import { addSecondsToTimestamp } from "./time.js";
 
 export const MAX_OPEN_WORK = 16;
 export const MAX_PROJECTION_BYTES = 24576;
 /** The one Host Stimulus Source allowlisted by the generic ingress adapter. */
 export const EXTERNAL_INPUT_SOURCE_ID = "01ARZ3NDEKTSV4RRFFQ69G5FH2";
 export const EXTERNAL_INPUT_TYPE = "worldstream.external_input.v1";
+/** At most one pending, one-shot reminder per Room; a newer feed replaces it. */
+export const ASSESSMENT_TIMER_ID = "01ARZ3NDEKTSV4RRFFQ69G5FH3";
 const MAX_SOURCE_TEXT_BYTES = 128;
 
 function initialConnections(): readonly SourceFact[] {
@@ -147,6 +151,11 @@ function nextStateForSource(state: ReferenceState, incoming: SourceFact): Refere
   }
   const arrivalChanged = incoming.arrival_version > previous.arrival_version;
   const departureChanged = incoming.departure_version > previous.departure_version;
+  if ((!arrivalChanged && incoming.arrival_minute !== previous.arrival_minute) ||
+    (!departureChanged && incoming.departure_minute !== previous.departure_minute) ||
+    incoming.minimum_transfer_minutes !== previous.minimum_transfer_minutes) {
+    throw new RuleRejection("invalid_source", "changed values require a newer corresponding revision; transfer policy is fixed");
+  }
   if (!arrivalChanged && !departureChanged) throw new RuleRejection("stale_source_revision", "source revision is already current");
   const connections = [...state.connections];
   connections[index] = incoming;
@@ -192,6 +201,33 @@ function stateBytes(state: ReferenceState): number {
   return encodeCanonical(state as unknown as CanonicalJson).length;
 }
 
+function requiresAssessment(work: WorkItem): boolean {
+  return work.status === "needs_assessment" && work.last_assessment?.validity !== "current";
+}
+
+function attention(state: ReferenceState, core: CanonicalObject, key: string): readonly CanonicalJson[] {
+  const members = asRecord(core.memberships, "memberships");
+  const eligible = Object.keys(members).filter((id) => asRecord(members[id], "membership").principal_kind === "agent").sort();
+  const target = eligible.find((id) => roleFor(core, id) === "reviewer") ?? eligible.find((id) => roleFor(core, id) === "analyst");
+  if (target === undefined) return [];
+  return state.open_work.some(requiresAssessment) ? [{
+    action_types: ["record_assessment"], deduplication_key: key, priority: 1,
+    reason: "assessment_required", target_member_id: target,
+  }] : [];
+}
+
+function reminder(input: CanonicalObject, recordedAt: string): CanonicalJson {
+  const scheduled = asRecord(input.scheduled_timers, "scheduled_timers");
+  const current = scheduled[ASSESSMENT_TIMER_ID];
+  const due = addSecondsToTimestamp(recordedAt, 30);
+  return current === undefined
+    ? { timer_request_type: "schedule_next", timer_id: ASSESSMENT_TIMER_ID,
+      due, canonical_payload: { timer: "assessment_reminder" } }
+    : { timer_request_type: "reschedule_current", timer_id: ASSESSMENT_TIMER_ID,
+      expected_generation: integerValue(asRecord(current, "scheduled reminder").generation, "reminder generation"),
+      new_due: due, new_canonical_payload: { timer: "assessment_reminder" } };
+}
+
 function validateBoundedState(state: ReferenceState): void {
   if (state.connections.length > MAX_OPEN_WORK || state.open_work.length > MAX_OPEN_WORK) {
     throw new RuleRejection("capacity_exhausted", "bounded current state exceeds active work capacity");
@@ -211,22 +247,39 @@ export function reduceReference(input: CanonicalObject): PackReduceOutput {
         !Array.isArray(stimulus.immutable_resource_references) || stimulus.immutable_resource_references.length !== 0) {
         throw new RuleRejection("unsupported_stimulus", "the source update is not from the allowlisted Host Stimulus Source");
       }
-      const source = sourceFromPayload(asRecord(stimulus.canonical_payload, "external input payload"));
-      const next = { ...nextStateForSource(state, source), room_seq: nextRoomSeq };
-      validateBoundedState(next);
+      let source: SourceFact;
+      let next: ReferenceState;
+      try {
+        source = sourceFromPayload(asRecord(stimulus.canonical_payload, "external input payload"));
+        next = { ...nextStateForSource(state, source), room_seq: nextRoomSeq };
+        validateBoundedState(next);
+      } catch (error) {
+        if (!(error instanceof RuleRejection)) throw error;
+        // ExternalInput is mandatory once admitted by Core. Domain ordering
+        // failures are recorded as ignored facts; rejecting would fault Room.
+        return { activity_disposition_type: "apply",
+          next_activity_state: { ...state, room_seq: nextRoomSeq } as unknown as CanonicalJson,
+          ordered_attention_signals: [], timer_requests: [],
+          ordered_domain_events: [{ event_type: "source_fact_ignored", code: error.code,
+            source_id: stimulus.source_id!, input_id: stimulus.input_id!, recorded_at: stimulus.recorded_at! }] };
+      }
       return {
         activity_disposition_type: "apply",
         next_activity_state: next as unknown as CanonicalJson,
-        ordered_attention_signals: next.open_work.some((work) => work.status === "needs_assessment") ? [{
-          action_types: ["record_assessment"],
-          deduplication_key: `assessment:${nextRoomSeq}`,
-          priority: 1,
-          reason: "assessment_required",
-          target_member_id: null,
-        }] : [],
-        ordered_domain_events: [{ event_type: "source_fact_replaced", connection_id: source.connection_id, source: "external_input" }],
-        timer_requests: [],
+        ordered_attention_signals: attention(next, core, `assessment:${nextRoomSeq}`),
+        ordered_domain_events: [{ event_type: "source_fact_replaced", connection_id: source.connection_id,
+          source: "external_input", source_id: stimulus.source_id!, input_id: stimulus.input_id!, recorded_at: stimulus.recorded_at! }],
+        timer_requests: [reminder(input, stringValue(stimulus.recorded_at, "recorded_at"))],
       };
+    }
+    if (stimulus.stimulus_type === "timer_fired") {
+      if (stimulus.timer_id !== ASSESSMENT_TIMER_ID) throw new RuleRejection("unsupported_stimulus", "unknown reminder Timer");
+      // Core consumes the exact current Timer generation before reduction.
+      // Never reschedule: the source must change to create another reminder.
+      const next = { ...state, room_seq: nextRoomSeq };
+      return { activity_disposition_type: "apply", next_activity_state: next as unknown as CanonicalJson,
+        ordered_attention_signals: attention(next, core, `assessment-reminder:${nextRoomSeq}`),
+        ordered_domain_events: [{ event_type: "assessment_reminder_due" }], timer_requests: [] };
     }
     if (stimulus.stimulus_type !== "participant_action") throw new RuleRejection("unsupported_stimulus", "this reference Pack accepts participant Actions or its allowlisted source input");
     ensureCurrentBasis(stimulus, state);
@@ -244,7 +297,7 @@ export function reduceReference(input: CanonicalObject): PackReduceOutput {
     } else if (actionType === "record_assessment") {
       const workId = stringValue(payload.work_id, "assessment work_id");
       const work = findWork(state, workId);
-      if (work.status === "resolved") throw new RuleRejection("work_already_resolved", "resolved work cannot be assessed again");
+      if (!requiresAssessment(work)) throw new RuleRejection("work_already_resolved", "the current work revision is already assessed");
       const source = findSource(state, work.connection_id);
       const assessment = assessmentFromPayload(payload, memberId, source, work);
       next = nextStateForAssessment(state, workId, assessment);
@@ -256,17 +309,10 @@ export function reduceReference(input: CanonicalObject): PackReduceOutput {
     }
     next = { ...next, room_seq: nextRoomSeq };
     validateBoundedState(next);
-    const newlyOpen = next.open_work.some((work) => work.status === "needs_assessment");
     return {
       activity_disposition_type: "apply",
       next_activity_state: next as unknown as CanonicalJson,
-      ordered_attention_signals: newlyOpen ? [{
-        action_types: ["record_assessment"],
-        deduplication_key: `assessment:${nextRoomSeq}`,
-        priority: 1,
-        reason: "assessment_required",
-        target_member_id: null,
-      }] : [],
+      ordered_attention_signals: actionType === "record_source_update" ? attention(next, core, `assessment:${nextRoomSeq}`) : [],
       ordered_domain_events: [event],
       timer_requests: [],
     };
@@ -276,15 +322,24 @@ export function reduceReference(input: CanonicalObject): PackReduceOutput {
   }
 }
 
-function audience(input: CanonicalObject): "public" | "participant" {
+function audience(input: CanonicalObject): ActivityPackViewerClass {
   const viewer = asRecord(input.viewer, "viewer");
-  return viewer.viewer_type === "participant" && typeof viewer.member_id === "string" && roleFor(asRecord(input.core, "core"), viewer.member_id) !== null
-    ? "participant" : "public";
+  const core = asRecord(input.core, "core");
+  const participant = typeof viewer.member_id === "string" && roleFor(core, viewer.member_id) !== null;
+  if (viewer.viewer_type === "operator") return "operator";
+  if (viewer.viewer_type === "final_reveal") return "final_reveal";
+  if (viewer.viewer_type === "historical") {
+    const members = asRecord(core.memberships, "memberships");
+    const membership = members[String(viewer.member_id)];
+    if (membership !== undefined && asRecord(membership, "membership").access_mode === "operator") return "historical_operator";
+    return participant ? "historical_participant" : "historical_public";
+  }
+  return viewer.viewer_type === "participant" && participant ? "participant" : "public";
 }
 
-function authorizedView(state: ReferenceState, input: CanonicalObject): { readonly projection: CanonicalObject; readonly schema: "public" | "participant"; readonly offers: readonly PackActionOffer[] } {
+function authorizedView(state: ReferenceState, input: CanonicalObject): { readonly projection: CanonicalObject; readonly schema: ActivityPackViewerClass; readonly offers: readonly PackActionOffer[] } {
   const kind = audience(input);
-  if (kind === "public") return {
+  if (kind !== "participant" && kind !== "historical_participant") return {
     offers: [],
     projection: {
       objective: state.objective,
@@ -292,16 +347,17 @@ function authorizedView(state: ReferenceState, input: CanonicalObject): { readon
       phase: state.phase,
       source_count: state.connections.length,
     },
-    schema: "public",
+    schema: kind,
   };
   const viewer = asRecord(input.viewer, "viewer");
   const role = roleFor(asRecord(input.core, "core"), stringValue(viewer.member_id, "viewer.member_id"))!;
   const openWork = state.open_work.filter((work) => work.status === "needs_assessment");
+  const assessmentRequired = openWork.some(requiresAssessment);
   const offers: PackActionOffer[] = role === "analyst"
-    ? [{ actionType: "record_source_update", eligibilityWindow: null }, ...(openWork.length > 0 ? [{ actionType: "record_assessment", eligibilityWindow: null }] : [])]
-    : (openWork.length > 0 ? [{ actionType: "record_assessment", eligibilityWindow: null }] : []);
+    ? [{ actionType: "record_source_update", eligibilityWindow: null }, ...(assessmentRequired ? [{ actionType: "record_assessment", eligibilityWindow: null }] : [])]
+    : (assessmentRequired ? [{ actionType: "record_assessment", eligibilityWindow: null }] : []);
   const projection: CanonicalObject = {
-    action_policy: { can_record_assessment: openWork.length > 0, can_record_source_update: role === "analyst" },
+    action_policy: { can_record_assessment: assessmentRequired, can_record_source_update: role === "analyst" },
     connections: state.connections as unknown as CanonicalJson,
     objective: state.objective,
     open_work: openWork as unknown as CanonicalJson,
@@ -311,7 +367,19 @@ function authorizedView(state: ReferenceState, input: CanonicalObject): { readon
   };
   const bytes = encodeCanonical(projection).length;
   if (bytes > MAX_PROJECTION_BYTES) throw new TypeError(`participant Projection exceeds ${MAX_PROJECTION_BYTES} bytes`);
-  return { offers, projection, schema: "participant" };
+  return { offers: kind === "participant" ? offers : [], projection, schema: kind };
+}
+
+function audienceSchemas(observation = false): Readonly<Record<ActivityPackViewerClass, CanonicalObject>> {
+  const schema = (participant: boolean): CanonicalObject => {
+    const projection = participant ? participantProjectionSchema() : publicProjectionSchema();
+    return observation ? { type: "object", additionalProperties: false,
+      properties: { change_type: { const: "projection_replaced", type: "string" }, projection },
+      required: ["change_type", "projection"] } : projection;
+  };
+  return { participant: schema(true), public: schema(false), operator: schema(false),
+    historical_participant: schema(true), historical_public: schema(false),
+    historical_operator: schema(false), final_reveal: schema(false) };
 }
 
 export default defineActivityPack({
@@ -326,12 +394,14 @@ export default defineActivityPack({
     configurationSchema: configurationSchema(),
     events: [
       { eventType: "source_fact_replaced", payloadSchema: { type: "object" } },
+      { eventType: "source_fact_ignored", payloadSchema: { type: "object" } },
       { eventType: "assessment_recorded", payloadSchema: { type: "object" } },
+      { eventType: "assessment_reminder_due", payloadSchema: { type: "object" } },
     ],
     name: "Late Join Reference",
-    observationSchemas: { participant: participantProjectionSchema(), public: publicProjectionSchema() },
+    observationSchemas: audienceSchemas(true),
     packId: "worldstream.late-join-reference",
-    projectionSchemas: { participant: participantProjectionSchema(), public: publicProjectionSchema() },
+    projectionSchemas: audienceSchemas(),
     rejectionCodes: [
       "assessment_inconsistent", "capacity_exhausted", "input_too_large", "invalid_source", "role_violation",
       "stale_room_head", "stale_source_revision", "stale_work_revision", "state_too_large", "unknown_connection",

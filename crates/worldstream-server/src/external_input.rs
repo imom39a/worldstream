@@ -13,6 +13,10 @@ use worldstream_protocol::{
 
 use crate::BackendError;
 
+#[cfg(test)]
+#[path = "external_input_acceptance.rs"]
+mod acceptance;
+
 pub(crate) const EXTERNAL_INPUT_INGRESS_VERSION: &str = EXTERNAL_INPUT_INGRESS_REQUEST_VERSION;
 pub(crate) const EXTERNAL_INPUT_INGRESS_MAX_PAYLOAD_BYTES: usize = 64 * 1024;
 

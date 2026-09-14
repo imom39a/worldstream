@@ -107,11 +107,21 @@ export class DeterministicLateJoinRunner {
   startContribution(): RunnerContribution | null {
     const context = this.#newInvocation();
     const work = context.projection.open_work;
-    if (!Array.isArray(work) || work.length === 0) {
+    if (context.action_schemas.record_assessment === undefined || !Array.isArray(work) || work.length === 0) {
       this.#invocation = { context, contribution: null };
       return null;
     }
-    const first = work[0];
+    const first = work.find((candidate) => {
+      if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+      const item = candidate as CanonicalObject;
+      const assessment = item.last_assessment;
+      return item.status === "needs_assessment" && (assessment === undefined || assessment === null ||
+        typeof assessment !== "object" || Array.isArray(assessment) || (assessment as CanonicalObject).validity !== "current");
+    });
+    if (first === undefined) {
+      this.#invocation = { context, contribution: null };
+      return null;
+    }
     if (first === null || typeof first !== "object" || Array.isArray(first)) throw new RunnerBudgetError("open_work item is not an object");
     const item = first as CanonicalObject;
     const connectionId = item.connection_id;
