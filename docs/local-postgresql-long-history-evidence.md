@@ -164,6 +164,23 @@ recorded exactly 100,001 transitions, models, invocations, attempts, reducer
 callbacks, and observation consequences. Crash/reopen completed. The latest
 snapshot was at Room sequence 100,000, leaving a one-transition snapshot lag.
 
+The fixed-state SQLite cadence rerun now records the serialized materialization
+bytes for every snapshot write instead of attributing the whole database delta
+to the cache. At 1,000 transitions it observed five writes at sequences 0,
+250, 500, 750, and 1,000, with serialized byte totals 886, 888, 888, 888,
+and 889 respectively; three rows were retained. SQLite does not expose a
+portable writer CPU counter or a per-snapshot WAL delta without forcing a
+checkpoint, so both fields are emitted as unavailable with that reason. The
+existing 10,000 and 100,001 cadence runs remain valid for count, retention,
+and lag; they are not retroactively given per-snapshot CPU/WAL claims.
+
+The bounded 10,000-transition rerun also showed an independent recovery limit:
+cadence writes occurred at sequences 9,500, 9,750, and 10,000, but the bounded
+operational-witness collection had no eligible rows for the resulting
+checkpoint. This is an operational-witness bound issue, rather than evidence
+that the cadence writer skipped its scheduled writes, and remains tracked by
+the witness-limit work.
+
 The retained source was then streamed into a fresh local PostgreSQL 17.11
 container with the production transfer coordinator. The source history was not
 regenerated for the measured transfer. Results:
@@ -195,6 +212,15 @@ source remained pending. A one-byte corruption at the stream midpoint was
 rejected after its durable checkpoint; it hydrated zero Rooms and zero
 Transitions and never published authority.
 
+The live PostgreSQL 17 cadence audit is implemented in the conformance test and
+emits exact serialized snapshot bytes plus event-to-event WAL LSN deltas. The
+local live harness generated the 10,000-transition workload, but its enclosing
+adapter and full-gate run failed before an accepted cadence marker was
+recorded. PostgreSQL per-snapshot CPU remains explicitly unavailable because
+the standard catalogs do not provide a portable callback-level counter; WAL
+event deltas include intervening canonical writes and are therefore reported
+with that limitation.
+
 The high import RSS is material. The transfer iterates source records and chunks
 with bounded cursors, but the observed 1.54 GB process peak is comparable to the
 complete 870 MB stream. This does not yet prove IMO-225's requirement that peak
@@ -211,7 +237,7 @@ remaining work:
 | --- | --- | --- |
 | IMO-220 | Production warm-claim path preserves four history rows and reducer counters; 1,000 claims measured p50 9,602 us, p95 11,159 us, p99 15,439 us. | Keep open. Run the 10k/100k warm-claim scales, PostgreSQL parity, and the requested contention matrix. |
 | IMO-222 | SQLite and PostgreSQL persist and verify cut-consistent operational witnesses; both adapters completed receipt-confirmed 1k/10k/100k checkpoint recoveries with zero prefix delivery and zero reducer callbacks; PostgreSQL 17.11/PgBouncer passed corrupt-snapshot and canonical-witness fallbacks, missing-materialization rebuild, malformed-Head quarantine, and the stale-Head failure fence. | Close from local implementation evidence. Hosted-provider qualification is tracked separately and the 16 MiB operational-witness limit remains explicit future work. |
-| IMO-223 | Production SQLite snapshot cadence was measured at 1k, 10k, and 100,001 with three retained rows. | Keep open. Attribute CPU/bytes/WAL specifically to snapshots versus canonical transitions, cover the full failure matrix, and run PostgreSQL scale parity. |
+| IMO-223 | Production SQLite cadence count/retention was measured at 1k, 10k, and 100,001 with three retained rows; the 1k run now reports exact serialized-byte samples with bounded memory and explicit CPU/WAL attribution limits. A PostgreSQL 17 audit path is implemented, but the live run did not produce an accepted marker because the enclosing adapter/full-gate run failed. | Keep open. Complete the restart/write-failure/duplicate/concurrent-Head matrix and obtain accepted PostgreSQL scale-parity evidence. |
 | IMO-225 | 100,001-transition production source, bounded 5,299-chunk stream, resumable PostgreSQL import, corruption/disk-full rejection, exact digests, and final authority all passed. The new 100k recovery lane also exposed row-wise PostgreSQL staging and hydration across high-cardinality relations. | Keep open. Replace per-row round trips with bounded in-memory chunks, durable chunk commits, `COPY`/set-based validation, and a final publication fence; also resolve or bound the measured peak RSS and complete the malformed-stream matrix. |
 | IMO-226 | Observation-frame retention passed live PostgreSQL age/count/bytes, busy-Room cursor, and bounded deletion checks. | Keep open. Measure actual Activation backlog behavior during sustained arrivals, outages, and bursts, including pending age, supersession, execution, oldest-useful latency, and Timer behavior. |
 | IMO-227 | A deterministic 99-scenario no-model matrix now uses production admission and reports stale rate, useful latency, starvation, attempts, successful actions, and model-equivalent waste. The stated low-rate/short-delay envelope passed. | Keep open. Measure scheduler fairness/backoff and record the post-IMO-217 fixed-baseline comparison; high-rate/long-delay scenarios currently show complete starvation. |

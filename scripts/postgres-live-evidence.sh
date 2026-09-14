@@ -119,6 +119,8 @@ live_marker_checkpoint_recovery="not_observed"
 live_marker_full_recovery_fallback="not_observed"
 live_marker_checkpoint_recovery_scales="not_observed"
 live_recovery_scale_summary="[]"
+live_marker_snapshot_cadence="not_observed"
+live_snapshot_cadence_summary="{}"
 pooler_marker_duplicate_resolve="not_observed"
 transfer_status="not_run"
 transfer_reason="not_run"
@@ -248,6 +250,8 @@ json_report() {
     POSTGRES_LIVE_MARKER_FULL_RECOVERY_FALLBACK="$live_marker_full_recovery_fallback" \
     POSTGRES_LIVE_MARKER_CHECKPOINT_RECOVERY_SCALES="$live_marker_checkpoint_recovery_scales" \
     POSTGRES_LIVE_RECOVERY_SCALE_SUMMARY="$live_recovery_scale_summary" \
+    POSTGRES_LIVE_MARKER_SNAPSHOT_CADENCE="$live_marker_snapshot_cadence" \
+    POSTGRES_LIVE_SNAPSHOT_CADENCE_SUMMARY="$live_snapshot_cadence_summary" \
     POSTGRES_LIVE_MARKER_POOLER="$pooler_marker_duplicate_resolve" \
     POSTGRES_LIVE_TRANSFER_STATUS="$transfer_status" \
     POSTGRES_LIVE_TRANSFER_REASON="$transfer_reason" \
@@ -271,6 +275,7 @@ transfer_status = os.environ.get("POSTGRES_LIVE_TRANSFER_STATUS", "not_run")
 transfer_summary = json.loads(os.environ.get("POSTGRES_LIVE_TRANSFER_SUMMARY", "{}"))
 harness_summary = json.loads(os.environ.get("POSTGRES_LIVE_HARNESS_SUMMARY", "{}"))
 recovery_scale_summary = json.loads(os.environ.get("POSTGRES_LIVE_RECOVERY_SCALE_SUMMARY", "[]"))
+snapshot_cadence_summary = json.loads(os.environ.get("POSTGRES_LIVE_SNAPSHOT_CADENCE_SUMMARY", "{}"))
 report = {
     "schema": os.environ["POSTGRES_LIVE_SCHEMA"],
     "status": os.environ["POSTGRES_LIVE_STATUS"],
@@ -306,9 +311,11 @@ report = {
         "bounded_checkpoint_recovery_and_tamper_fallback": os.environ.get("POSTGRES_LIVE_MARKER_CHECKPOINT_RECOVERY", "not_observed"),
         "full_recovery_rebuild_and_malformed_head_quarantine": os.environ.get("POSTGRES_LIVE_MARKER_FULL_RECOVERY_FALLBACK", "not_observed"),
         "bounded_checkpoint_recovery_1k_10k_100k": os.environ.get("POSTGRES_LIVE_MARKER_CHECKPOINT_RECOVERY_SCALES", "not_observed"),
+        "snapshot_cadence_1k_10k": os.environ.get("POSTGRES_LIVE_MARKER_SNAPSHOT_CADENCE", "not_observed"),
         "pooler_duplicate_resolve": os.environ.get("POSTGRES_LIVE_MARKER_POOLER", "not_observed"),
     },
     "bounded_checkpoint_recovery_scales": recovery_scale_summary,
+    "snapshot_cadence": snapshot_cadence_summary,
     "imo_50_shared_conformance": {
         "catalog": "worldstream-conformance::SCENARIOS",
         "scenario_count": 7,
@@ -629,6 +636,43 @@ if grep -Fq 'LIVE_POSTGRES_RECOVERY_FALLBACK=PASS corrupt-snapshot-full-fallback
   live_marker_full_recovery_fallback="pass"
 else
   add_error "live_full_recovery_fallback_marker_missing"
+fi
+if live_snapshot_cadence_summary="$($python_bin - "$adapter_log" <<'PY'
+import json
+import sys
+
+prefix = "LIVE_POSTGRES_SNAPSHOT_CADENCE="
+reports = []
+with open(sys.argv[1], encoding="utf-8") as source:
+    for line in source:
+        if line.startswith(prefix):
+            reports.append(json.loads(line[len(prefix):]))
+if len(reports) != 1:
+    raise SystemExit(1)
+report = reports[0]
+if report.get("source") != "production_postgresql_17":
+    raise SystemExit(1)
+cadence = report.get("cadence")
+if cadence != {"transition_interval": 250, "time_interval": "5 minutes", "retained_rows": 3}:
+    raise SystemExit(1)
+snapshots = report.get("snapshots")
+if not isinstance(snapshots, list) or not snapshots:
+    raise SystemExit(1)
+if any(not isinstance(item, dict) for item in snapshots):
+    raise SystemExit(1)
+cpu = report.get("cpu_attribution")
+wal = report.get("wal_attribution")
+if cpu != {"value": None, "source": "postgres_standard_catalog_has_no_portable_per_snapshot_cpu_counter"}:
+    raise SystemExit(1)
+if wal != {"exact": False, "source": "pg_lsn_delta_between_snapshot_events_includes_intervening_canonical_writes"}:
+    raise SystemExit(1)
+print(json.dumps(report, sort_keys=True, separators=(",", ":")))
+PY
+)"; then
+  live_marker_snapshot_cadence="pass"
+else
+  live_snapshot_cadence_summary="{}"
+  add_error "live_snapshot_cadence_marker_missing_or_invalid"
 fi
 # Build a fresh SQLite 100k source with its current operational checkpoint
 # witness, then use only the public SQLite-to-PostgreSQL v2 transfer and the

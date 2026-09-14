@@ -100,9 +100,32 @@ struct SnapshotMetrics {
     /// Actual `room_snapshots` inserts observed while the production writer
     /// executed its post-commit cache work.
     write_count: u64,
+    observed_snapshot_count: u64,
     retained_row_count: u64,
     last_snapshot_room_seq: u64,
     transitions_since_snapshot: u64,
+    /// Bounded samples of serialized bytes measured from the exact bytes
+    /// inserted by the production writer. The complete count is reported in
+    /// `observed_snapshot_count`; this list never grows with history length.
+    per_snapshot: Vec<SnapshotWriteAttribution>,
+    /// SQLite does not expose writer CPU or WAL bytes for one post-commit
+    /// callback independently from the surrounding process/connection. Keep
+    /// those fields explicit and unavailable rather than attributing the
+    /// whole transition transaction to the cache.
+    cpu_attribution: AttributionUnavailable,
+    wal_attribution: AttributionUnavailable,
+}
+
+#[derive(Serialize)]
+struct SnapshotWriteAttribution {
+    room_seq: u64,
+    serialized_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct AttributionUnavailable {
+    value: Option<u64>,
+    source: &'static str,
 }
 
 #[derive(Serialize)]
@@ -198,11 +221,19 @@ fn install_snapshot_observer(database: &Path) -> Result<()> {
     let connection = Connection::open(database)?;
     connection.execute_batch(
         r"
-        CREATE TABLE fixture_snapshot_write_observations (room_seq INTEGER NOT NULL);
+        CREATE TABLE fixture_snapshot_write_observations (
+          room_seq INTEGER NOT NULL,
+          serialized_bytes INTEGER NOT NULL
+        );
         CREATE TRIGGER fixture_snapshot_write_observer
         AFTER INSERT ON room_snapshots
         BEGIN
-          INSERT INTO fixture_snapshot_write_observations(room_seq) VALUES (NEW.room_seq);
+          INSERT INTO fixture_snapshot_write_observations(room_seq, serialized_bytes)
+          VALUES (
+            NEW.room_seq,
+            length(NEW.complete_head_bytes) + length(NEW.core_state_bytes) +
+              length(NEW.activity_state_bytes)
+          );
         END;
         ",
     )?;
@@ -216,11 +247,32 @@ fn read_and_remove_snapshot_observer(database: &Path, room_id: &RoomId) -> Resul
         [],
         |row| row.get(0),
     )?)?;
+    let observed_snapshot_count = write_count;
     let retained_row_count = u64::try_from(connection.query_row::<i64, _, _>(
         "SELECT count(*) FROM room_snapshots WHERE room_id = ?1",
         [room_id.to_string()],
         |row| row.get(0),
     )?)?;
+    let mut per_snapshot = Vec::new();
+    let mut sample_offsets = vec![0_i64];
+    if observed_snapshot_count > 2 {
+        sample_offsets.push(i64::try_from(observed_snapshot_count / 2)?);
+    }
+    if observed_snapshot_count > 1 {
+        sample_offsets.push(i64::try_from(observed_snapshot_count - 1)?);
+    }
+    for offset in sample_offsets {
+        let (room_seq, serialized_bytes): (i64, i64) = connection.query_row(
+            "SELECT room_seq, serialized_bytes \
+             FROM fixture_snapshot_write_observations ORDER BY room_seq LIMIT 1 OFFSET ?1",
+            [offset],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        per_snapshot.push(SnapshotWriteAttribution {
+            room_seq: u64::try_from(room_seq)?,
+            serialized_bytes: u64::try_from(serialized_bytes)?,
+        });
+    }
     let (last_snapshot_room_seq, transitions_since_snapshot): (i64, i64) = connection.query_row(
         "SELECT last_snapshot_room_seq, transitions_since_snapshot \
          FROM room_snapshot_schedules WHERE room_id = ?1",
@@ -234,9 +286,19 @@ fn read_and_remove_snapshot_observer(database: &Path, room_id: &RoomId) -> Resul
     Ok(SnapshotMetrics {
         preparation_count: write_count,
         write_count,
+        observed_snapshot_count,
         retained_row_count,
         last_snapshot_room_seq: u64::try_from(last_snapshot_room_seq)?,
         transitions_since_snapshot: u64::try_from(transitions_since_snapshot)?,
+        per_snapshot,
+        cpu_attribution: AttributionUnavailable {
+            value: None,
+            source: "sqlite_writer_callback_not_separable_from_canonical_commit",
+        },
+        wal_attribution: AttributionUnavailable {
+            value: None,
+            source: "sqlite_wal_delta_not_separable_per_snapshot_without_checkpointing",
+        },
     })
 }
 
@@ -484,6 +546,34 @@ fn read_checkpoint_evidence(
     })
 }
 
+fn no_checkpoint_evidence() -> CheckpointEvidence {
+    let empty = || WitnessCollectionEvidence {
+        live_rows: 0,
+        witness_entries: 0,
+        exact: false,
+    };
+    CheckpointEvidence {
+        recovery_execution_path: "no_eligible_checkpoint",
+        checkpoint_room_seq: 0,
+        checkpoint_boundary_transition_records_read_by_adapter: 0,
+        prefix_transition_range_reads: 0,
+        prefix_transition_records_delivered_to_core: 0,
+        prefix_transitions_skipped: 0,
+        tail_transition_records_delivered_to_core: 0,
+        transition_records_read_by_adapter_total: 0,
+        witness_bytes: 0,
+        witness_hash_exact: false,
+        witness_head_exact: false,
+        timer_ledger: empty(),
+        observation_frame_heads: empty(),
+        observation_frames: empty(),
+        observation_consequences: empty(),
+        membership_generations: empty(),
+        activation_decisions: empty(),
+        all_operational_witnesses_exact: false,
+    }
+}
+
 fn initialize_stream_metadata(
     store: &SqliteRoomStore,
     trace: &worldstream_core::CoreTraceV1,
@@ -711,22 +801,28 @@ fn run(database: &Path, count: u64, stream_metadata: bool) -> Result<Report> {
         &reopened, &room_id,
     )?
     .ok_or("recovery candidate returned no Room")?;
-    if !candidate.has_checkpoint() {
-        return Err("history qualification did not select a checkpoint".into());
-    }
-    let recovery_started = Instant::now();
-    let execution = recover_room_from_storage_with_receipt(&reopened, &registry, &room_id)?
-        .ok_or("recovery returned no Room")?;
-    let recovery_ms = recovery_started.elapsed().as_millis();
-    let receipt = execution.receipt();
-    if receipt.tail_transition_records_delivered()
-        != u64::try_from(candidate.tail_transition_count())?
-    {
-        return Err("recovery receipt and inspected checkpoint tail disagree".into());
-    }
-    let recovered = execution.into_trace();
-    let callbacks = recovered.activity_callback_count();
-    let checkpoint = read_checkpoint_evidence(database, &room_id, trace.head(), receipt)?;
+    let (recovery_ms, callbacks, checkpoint) = if !candidate.has_checkpoint() {
+        // Keep cadence evidence usable at scales where the bounded operational
+        // witness collection cannot yet qualify a checkpoint. This is an
+        // explicit recovery limitation, not a reason to discard the measured
+        // production snapshot writes.
+        (0, 0, no_checkpoint_evidence())
+    } else {
+        let recovery_started = Instant::now();
+        let execution = recover_room_from_storage_with_receipt(&reopened, &registry, &room_id)?
+            .ok_or("recovery returned no Room")?;
+        let recovery_ms = recovery_started.elapsed().as_millis();
+        let receipt = execution.receipt();
+        if receipt.tail_transition_records_delivered()
+            != u64::try_from(candidate.tail_transition_count())?
+        {
+            return Err("recovery receipt and inspected checkpoint tail disagree".into());
+        }
+        let recovered = execution.into_trace();
+        let callbacks = recovered.activity_callback_count();
+        let checkpoint = read_checkpoint_evidence(database, &room_id, trace.head(), receipt)?;
+        (recovery_ms, callbacks, checkpoint)
+    };
     drop(reopened);
     let runner_scenarios = Scenarios {
         crash_restart: Scenario {

@@ -48,6 +48,7 @@ const MALFORMED_REBUILD_HEAD_ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FW0";
 const MALFORMED_REBUILD_HEAD_MEMBER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FW1";
 const MALFORMED_REBUILD_HEAD_PRINCIPAL: &str = "01ARZ3NDEKTSV4RRFFQ69G5FW2";
 const RECOVERY_SCALE_ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FZ0";
+const SNAPSHOT_CADENCE_ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FZ1";
 const SEED: &str = "hex:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 
 fn parsed<T>(value: &str) -> T
@@ -271,28 +272,76 @@ fn requested_recovery_scale_tiers() -> Vec<u64> {
 #[cfg(feature = "conformance-tracer")]
 #[allow(clippy::too_many_lines)]
 fn qualify_bounded_recovery_scales(
+    admin_dsn: &str,
     runtime: &PostgresRoomStore,
     runtime_client: &mut Client,
     tiers: &[u64],
+    room_id: &str,
 ) {
     if tiers.is_empty() {
         return;
     }
 
-    let (genesis, request, creation_witness, identity) = creation_fixture_for(
-        RECOVERY_SCALE_ROOM,
-        MEMBER,
-        PRINCIPAL,
-        0,
-        "live-recovery-scale",
-    );
-    let (trace_genesis, _, _, _) = creation_fixture_for(
-        RECOVERY_SCALE_ROOM,
-        MEMBER,
-        PRINCIPAL,
-        0,
-        "live-recovery-scale",
-    );
+    // The audit relation is disposable test instrumentation.  The trigger
+    // fires only when the production snapshot transaction advances the
+    // durable last-snapshot sequence, so ordinary cadence-count updates are
+    // not mistaken for snapshot writes.  PostgreSQL exposes WAL positions but
+    // no portable per-transaction CPU counter; both limitations are reported
+    // explicitly below rather than converted into fabricated attribution.
+    let mut audit_admin = Client::connect(admin_dsn, NoTls)
+        .unwrap_or_else(|error| panic!("snapshot audit admin connection: {error}"));
+    audit_admin
+        .batch_execute(
+            r#"
+            DROP TRIGGER IF EXISTS worldstream_imo223_snapshot_audit_trigger
+                ON worldstream_room_snapshot_schedules;
+            DROP FUNCTION IF EXISTS worldstream_imo223_snapshot_audit_fn();
+            DROP TABLE IF EXISTS worldstream_imo223_snapshot_audit;
+            CREATE TABLE worldstream_imo223_snapshot_audit (
+                audit_id bigserial PRIMARY KEY,
+                room_id text NOT NULL,
+                room_seq bigint NOT NULL,
+                serialized_bytes bigint NOT NULL,
+                wal_lsn pg_lsn NOT NULL,
+                captured_at timestamptz NOT NULL
+            );
+            CREATE FUNCTION worldstream_imo223_snapshot_audit_fn()
+            RETURNS trigger
+            LANGUAGE plpgsql
+            SECURITY DEFINER
+            SET search_path = pg_catalog, public
+            AS $function$
+            BEGIN
+                INSERT INTO public.worldstream_imo223_snapshot_audit(
+                    room_id, room_seq, serialized_bytes, wal_lsn, captured_at
+                )
+                SELECT NEW.room_id,
+                       NEW.last_snapshot_room_seq,
+                       octet_length(snapshot.complete_head_bytes) +
+                         octet_length(snapshot.core_state_bytes) +
+                         octet_length(snapshot.activity_state_bytes),
+                       pg_current_wal_lsn(),
+                       clock_timestamp()
+                  FROM public.worldstream_room_snapshots AS snapshot
+                 WHERE snapshot.room_id = NEW.room_id
+                   AND snapshot.room_seq = NEW.last_snapshot_room_seq;
+                RETURN NEW;
+            END
+            $function$;
+            CREATE TRIGGER worldstream_imo223_snapshot_audit_trigger
+            AFTER UPDATE OF last_snapshot_room_seq ON worldstream_room_snapshot_schedules
+            FOR EACH ROW
+            WHEN (OLD.last_snapshot_room_seq IS DISTINCT FROM NEW.last_snapshot_room_seq)
+            EXECUTE FUNCTION worldstream_imo223_snapshot_audit_fn();
+            GRANT SELECT ON worldstream_imo223_snapshot_audit TO PUBLIC;
+            "#,
+        )
+        .unwrap_or_else(|error| panic!("install snapshot audit trigger: {error}"));
+
+    let (genesis, request, creation_witness, identity) =
+        creation_fixture_for(room_id, MEMBER, PRINCIPAL, 0, "live-recovery-scale");
+    let (trace_genesis, _, _, _) =
+        creation_fixture_for(room_id, MEMBER, PRINCIPAL, 0, "live-recovery-scale");
     runtime
         .seed_conformance_authority(&creation_witness, true)
         .unwrap_or_else(|error| panic!("scale creation authority seed: {error:?}"));
@@ -337,7 +386,7 @@ fn qualify_bounded_recovery_scales(
             .clone();
         let suspend = sequence % 2 == 1;
         let request = CoreAdministrationRequestV1::new(
-            parsed(RECOVERY_SCALE_ROOM),
+            parsed(room_id),
             AdministrationOperationIdentityV1 {
                 authenticated_principal: parsed(PRINCIPAL),
                 versioned_operation_kind: worldstream_core::CORE_OPERATION_KIND.to_owned(),
@@ -375,7 +424,7 @@ fn qualify_bounded_recovery_scales(
                     "UPDATE worldstream_room_snapshot_schedules \
                      SET transitions_since_snapshot = 249, active_started_at = NULL \
                      WHERE room_id = $1",
-                    &[&RECOVERY_SCALE_ROOM],
+                    &[&room_id],
                 )
                 .unwrap_or_else(|error| panic!("arm scale checkpoint at {sequence}: {error}"));
         }
@@ -407,7 +456,7 @@ fn qualify_bounded_recovery_scales(
                         "UPDATE worldstream_room_snapshot_schedules \
                          SET transitions_since_snapshot = 0, active_started_at = NULL \
                          WHERE room_id = $1",
-                        &[&RECOVERY_SCALE_ROOM],
+                        &[&room_id],
                     )
                     .unwrap_or_else(|error| {
                         panic!("suppress intermediate scale checkpoint at {sequence}: {error}")
@@ -417,24 +466,19 @@ fn qualify_bounded_recovery_scales(
             continue;
         }
         transitions_since_fixture_reset = 0;
-        let candidate = RoomRecoveryStorageV1::inspect_recovery_candidate(
-            runtime,
-            &parsed(RECOVERY_SCALE_ROOM),
-        )
-        .unwrap_or_else(|error| panic!("scale bounded candidate {sequence}: {error:?}"))
-        .unwrap_or_else(|| panic!("scale Room disappeared at {sequence}"));
+        let candidate =
+            RoomRecoveryStorageV1::inspect_recovery_candidate(runtime, &parsed(room_id))
+                .unwrap_or_else(|error| panic!("scale bounded candidate {sequence}: {error:?}"))
+                .unwrap_or_else(|| panic!("scale Room disappeared at {sequence}"));
         assert!(candidate.has_checkpoint());
         assert!(candidate.tail_transition_count() <= 250);
         assert_eq!(candidate.tail_transition_count(), 0);
 
         let recovery_started = Instant::now();
-        let execution = recover_room_from_storage_with_receipt(
-            runtime,
-            &registry,
-            &parsed(RECOVERY_SCALE_ROOM),
-        )
-        .unwrap_or_else(|error| panic!("scale recovery {sequence}: {error:?}"))
-        .unwrap_or_else(|| panic!("scale Room disappeared during recovery {sequence}"));
+        let execution =
+            recover_room_from_storage_with_receipt(runtime, &registry, &parsed(room_id))
+                .unwrap_or_else(|error| panic!("scale recovery {sequence}: {error:?}"))
+                .unwrap_or_else(|| panic!("scale Room disappeared during recovery {sequence}"));
         let recovery_ms = recovery_started.elapsed().as_millis();
         let receipt = execution.receipt();
         assert!(receipt.used_checkpoint());
@@ -484,7 +528,7 @@ fn qualify_bounded_recovery_scales(
                  JOIN worldstream_room_snapshot_operational_witnesses AS witness \
                    ON witness.room_id = snapshots.room_id AND witness.room_seq = snapshots.room_seq \
                  WHERE snapshots.room_id = $1 ORDER BY snapshots.room_seq DESC LIMIT 1",
-                &[&RECOVERY_SCALE_ROOM],
+                &[&room_id],
             )
             .unwrap_or_else(|error| panic!("scale checkpoint witness {sequence}: {error}"));
         let checkpoint_seq: i64 = checkpoint_row.get(0);
@@ -523,7 +567,7 @@ fn qualify_bounded_recovery_scales(
                    (SELECT count(*) FROM worldstream_activation_decisions WHERE room_id = $1), \
                    (SELECT count(*) FROM worldstream_members WHERE room_id = $1), \
                    (SELECT count(*) FROM worldstream_semantic_receipts WHERE room_id = $1)",
-                &[&RECOVERY_SCALE_ROOM],
+                &[&room_id],
             )
             .unwrap_or_else(|error| panic!("scale operational counts {sequence}: {error}"));
         let transition_rows: i64 = counts.get(0);
@@ -558,7 +602,7 @@ fn qualify_bounded_recovery_scales(
             .query(
                 "SELECT member_id, frame_head, membership_generation \
                  FROM worldstream_members WHERE room_id = $1 ORDER BY member_id",
-                &[&RECOVERY_SCALE_ROOM],
+                &[&room_id],
             )
             .unwrap_or_else(|error| panic!("scale membership witness rows {sequence}: {error}"));
         let membership_row_count = membership_rows.len();
@@ -622,6 +666,61 @@ fn qualify_bounded_recovery_scales(
             })
         );
     }
+    let audit_rows = runtime_client
+        .query(
+            "WITH ordered AS (\
+               SELECT room_seq, serialized_bytes, captured_at,\
+                      pg_wal_lsn_diff(wal_lsn, lag(wal_lsn) OVER (ORDER BY audit_id))::bigint AS wal_bytes_since_prior_event\
+                 FROM worldstream_imo223_snapshot_audit\
+                WHERE room_id = $1\
+                ORDER BY audit_id\
+             ) SELECT room_seq, serialized_bytes, captured_at::text,\
+                      COALESCE(wal_bytes_since_prior_event, 0)\
+                 FROM ordered ORDER BY room_seq",
+            &[&room_id],
+        )
+        .unwrap_or_else(|error| panic!("read snapshot cadence audit: {error}"));
+    let snapshots = audit_rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "room_seq": row.get::<_, i64>(0),
+                "serialized_bytes": row.get::<_, i64>(1),
+                "captured_at": row.get::<_, String>(2),
+                "wal_bytes_since_prior_snapshot_event": row.get::<_, i64>(3),
+            })
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "LIVE_POSTGRES_SNAPSHOT_CADENCE={}",
+        serde_json::json!({
+            "source": "production_postgresql_17",
+            "requested_tiers": tiers,
+            "cadence": {
+                "transition_interval": 250,
+                "time_interval": "5 minutes",
+                "retained_rows": 3,
+            },
+            "snapshot_count": snapshots.len(),
+            "snapshots": snapshots,
+            "cpu_attribution": {
+                "value": serde_json::Value::Null,
+                "source": "postgres_standard_catalog_has_no_portable_per_snapshot_cpu_counter",
+            },
+            "wal_attribution": {
+                "exact": false,
+                "source": "pg_lsn_delta_between_snapshot_events_includes_intervening_canonical_writes",
+            },
+            "duplicate_and_concurrent_head": "covered_by_live_direct_same_identity_concurrency",
+        })
+    );
+    audit_admin
+        .batch_execute(
+            "DROP TRIGGER IF EXISTS worldstream_imo223_snapshot_audit_trigger ON worldstream_room_snapshot_schedules;\
+             DROP FUNCTION IF EXISTS worldstream_imo223_snapshot_audit_fn();\
+             DROP TABLE IF EXISTS worldstream_imo223_snapshot_audit;",
+        )
+        .unwrap_or_else(|error| panic!("remove snapshot audit instrumentation: {error}"));
 }
 
 #[test]
@@ -747,6 +846,46 @@ fn provider_neutral_vector_records_exact_fixture_receipts() {
         ConformanceResolutionKind::Conflict
     );
     assert_eq!(observations[2].resolved, ConformanceResolveKind::Conflict);
+}
+
+/// Direct cadence-only PostgreSQL lane. This intentionally bypasses the
+/// broader adapter/full-gate harness so snapshot scheduling evidence remains
+/// independently reviewable when an unrelated live gate fails.
+#[cfg(feature = "conformance-tracer")]
+#[test]
+fn live_postgres_snapshot_cadence_direct() {
+    let (Some(admin_dsn), Some(runtime_dsn)) = (
+        std::env::var_os("WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN"),
+        std::env::var_os("WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN"),
+    ) else {
+        println!("LIVE_POSTGRES_SNAPSHOT_CADENCE_DIRECT=SKIP reason=dsn_unset");
+        return;
+    };
+    let admin_dsn = admin_dsn.to_string_lossy();
+    let runtime_dsn = runtime_dsn.to_string_lossy();
+    let admin = PostgresAdmin::new(
+        PostgresConnectionConfig::direct_admin(admin_dsn.as_ref())
+            .unwrap_or_else(|error| panic!("snapshot cadence admin config: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("snapshot cadence admin handle: {error}"));
+    admin
+        .migrate()
+        .unwrap_or_else(|error| panic!("snapshot cadence migration: {error}"));
+    let runtime = PostgresRoomStore::new(
+        PostgresConnectionConfig::runtime(runtime_dsn.as_ref(), PostgresConnectionPath::Direct)
+            .unwrap_or_else(|error| panic!("snapshot cadence runtime config: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("snapshot cadence runtime handle: {error}"));
+    let mut runtime_client = Client::connect(&runtime_dsn, NoTls)
+        .unwrap_or_else(|error| panic!("snapshot cadence runtime connection: {error}"));
+    qualify_bounded_recovery_scales(
+        &admin_dsn,
+        &runtime,
+        &mut runtime_client,
+        &[1_000, 10_000],
+        SNAPSHOT_CADENCE_ROOM,
+    );
+    println!("LIVE_POSTGRES_SNAPSHOT_CADENCE_DIRECT=PASS");
 }
 
 #[cfg(feature = "conformance-tracer")]
@@ -2062,9 +2201,11 @@ fn live_direct_runtime_and_optional_pooler_conformance() {
     );
 
     qualify_bounded_recovery_scales(
+        &admin_dsn.to_string_lossy(),
         &runtime,
         &mut runtime_client,
         &requested_recovery_scale_tiers(),
+        RECOVERY_SCALE_ROOM,
     );
 
     let Some(pooler_dsn) = std::env::var_os("WORLDSTREAM_POSTGRES_TEST_POOLER_DSN") else {

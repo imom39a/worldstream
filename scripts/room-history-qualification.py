@@ -400,10 +400,36 @@ def run_sqlite_backend(
     snapshots = report.get("snapshots", {})
     required_snapshot_fields = (
         "preparation_count", "write_count", "retained_row_count",
-        "last_snapshot_room_seq", "transitions_since_snapshot",
+        "observed_snapshot_count", "last_snapshot_room_seq", "transitions_since_snapshot",
     )
     if any(type(snapshots.get(field)) is not int for field in required_snapshot_fields):
         return {"status": "failed", "source": "production_sqlite_core_storage", "error": "driver snapshot counters incomplete"}
+    if snapshots["observed_snapshot_count"] != snapshots["write_count"]:
+        return {"status": "failed", "source": "production_sqlite_core_storage", "error": "driver snapshot observation count mismatch"}
+    per_snapshot = snapshots.get("per_snapshot")
+    if (
+        type(per_snapshot) is not list
+        or len(per_snapshot) > 3
+        or any(
+            type(item) is not dict
+            or type(item.get("room_seq")) is not int
+            or type(item.get("serialized_bytes")) is not int
+            or item["room_seq"] < 0
+            or item["serialized_bytes"] < 0
+            for item in per_snapshot
+        )
+    ):
+        return {"status": "failed", "source": "production_sqlite_core_storage", "error": "driver per-snapshot attribution incomplete"}
+    for attribution_field in ("cpu_attribution", "wal_attribution"):
+        attribution = snapshots.get(attribution_field)
+        if (
+            type(attribution) is not dict
+            or "value" not in attribution
+            or "source" not in attribution
+            or attribution["value"] is not None
+            or type(attribution["source"]) is not str
+        ):
+            return {"status": "failed", "source": "production_sqlite_core_storage", "error": f"driver {attribution_field} honesty marker incomplete"}
     cpu: dict[str, Any] = {
         "wall_elapsed_ms": wall_elapsed_ms,
         "source": "child_process_getrusage" if child_before and child_after else "unavailable",
