@@ -20,16 +20,16 @@ use rusqlite::Connection;
 use serde::Serialize;
 use worldstream_core::{
     AccessModeV1, AdministrationOperationIdentityV1, AuthorityBootstrapV1, AuthorityV1,
-    Blake3DigestV1, CapabilityBearerV1, CompleteHeadV1, CoreAdministrationIngressV1,
-    CoreAdministrationRequestV1, CoreChangeSetV1, CoreProposedKindV1, CoreRoomStateV1,
-    InitialMembershipProposalV1, MembershipChangeV1, MembershipStandingV1, MembershipV1,
-    PackGenesisRequestV1, PackViewerV1, PreparedRoomCommitV1, PreparedRoomCreationV1,
+    Blake3DigestV1, CachedRoomTraceV1, CapabilityBearerV1, CompleteHeadV1,
+    CoreAdministrationIngressV1, CoreAdministrationRequestV1, CoreChangeSetV1, CoreProposedKindV1,
+    CoreRoomStateV1, InitialMembershipProposalV1, MembershipChangeV1, MembershipStandingV1,
+    MembershipV1, PackGenesisRequestV1, PackViewerV1, PreparedRoomCommitV1, PreparedRoomCreationV1,
     PresentedCapabilityV1, PrincipalKindV1, RecoveredActivationDecisionV1,
     RecoveredObservationConsequenceV1, RecoveredObservationFrameV1,
     RecoveredTimerMaterializationV1, RecoveredTimerStateV1, ResolutionStatusV1,
-    RoomCheckpointOperationalWitnessV1, RoomCheckpointOperationalWitnessV2, RoomCommitResolutionV1, RoomCreationIngressV1,
-    RoomCreationRequestV1, RoomId, RoomRecoveryStorageV1, RoomSeedV1, RoomSequenceV1,
-    TimerGenerationV1, ViewInputV1, authorize_core_administration_operation,
+    RoomCheckpointOperationalWitnessV1, RoomCheckpointOperationalWitnessV2, RoomCommitResolutionV1,
+    RoomCreationIngressV1, RoomCreationRequestV1, RoomId, RoomRecoveryStorageV1, RoomSeedV1,
+    RoomSequenceV1, TimerGenerationV1, ViewInputV1, authorize_core_administration_operation,
     authorize_room_creation_operation, builtin_counter_registry, commit_existing_room,
     commit_room_creation, counter_v2_digest, recover_room_from_storage_with_receipt,
 };
@@ -76,6 +76,8 @@ struct History {
     reducer_callbacks: usize,
     recovery_ms: u128,
     context_bytes: usize,
+    executor_retained_transition_records: usize,
+    max_executor_retained_transition_records: usize,
 }
 
 #[derive(Serialize)]
@@ -334,18 +336,26 @@ fn read_checkpoint_evidence(
     )?;
     if witness_schema == worldstream_core::CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2 {
         let witness = RoomCheckpointOperationalWitnessV2::from_canonical_bytes(
-            &witness_bytes, &checkpoint_head,
-        ).map_err(|error| format!("decode V2 checkpoint witness: {error:?}"))?;
+            &witness_bytes,
+            &checkpoint_head,
+        )
+        .map_err(|error| format!("decode V2 checkpoint witness: {error:?}"))?;
         let checkpoint_room_seq = u64::try_from(checkpoint_room_seq)?;
         if !receipt.used_checkpoint()
             || receipt.checkpoint_room_seq().map(|value| value.get()) != Some(checkpoint_room_seq)
             || receipt.prefix_transition_records_delivered() != 0
-            || receipt.prefix_transitions_skipped() != checkpoint_room_seq {
+            || receipt.prefix_transitions_skipped() != checkpoint_room_seq
+        {
             return Err("recovery receipt did not prove the selected checkpoint path".into());
         }
         let root_entries = |domain| -> Result<usize> {
-            Ok(usize::try_from(witness.operational_history_roots()
-                .get(domain).ok_or("missing V2 root")?.entry_count())?)
+            Ok(usize::try_from(
+                witness
+                    .operational_history_roots()
+                    .get(domain)
+                    .ok_or("missing V2 root")?
+                    .entry_count(),
+            )?)
         };
         // These roots are snapshot-bound. Comparing them to the mutable
         // durable roots at the current Head is wrong when a checkpoint has a
@@ -370,24 +380,39 @@ fn read_checkpoint_evidence(
             && checkpoint_head.room_seq().get() <= current_head.room_seq().get()
             && roots_exact;
         let collection = |live_rows, witness_entries| WitnessCollectionEvidence {
-            live_rows, witness_entries, exact,
+            live_rows,
+            witness_entries,
+            exact,
         };
         let tail = receipt.tail_transition_records_delivered();
         return Ok(CheckpointEvidence {
             recovery_execution_path: "checkpoint_v2",
             checkpoint_room_seq,
-            checkpoint_boundary_transition_records_read_by_adapter: u64::from(checkpoint_room_seq > 0),
+            checkpoint_boundary_transition_records_read_by_adapter: u64::from(
+                checkpoint_room_seq > 0,
+            ),
             prefix_transition_range_reads: 0,
-            prefix_transition_records_delivered_to_core: receipt.prefix_transition_records_delivered(),
+            prefix_transition_records_delivered_to_core: receipt
+                .prefix_transition_records_delivered(),
             prefix_transitions_skipped: receipt.prefix_transitions_skipped(),
             tail_transition_records_delivered_to_core: tail,
-            transition_records_read_by_adapter_total: u64::from(checkpoint_room_seq > 0).checked_add(tail).ok_or("checkpoint Transition read count overflow")?,
-            witness_bytes: witness_bytes.len(), witness_hash_exact: exact, witness_head_exact: exact,
+            transition_records_read_by_adapter_total: u64::from(checkpoint_room_seq > 0)
+                .checked_add(tail)
+                .ok_or("checkpoint Transition read count overflow")?,
+            witness_bytes: witness_bytes.len(),
+            witness_hash_exact: exact,
+            witness_head_exact: exact,
             timer_ledger: collection(witness.timers().len(), witness.timers().len()),
-            observation_frame_heads: collection(witness.observation_frame_heads().len(), witness.observation_frame_heads().len()),
+            observation_frame_heads: collection(
+                witness.observation_frame_heads().len(),
+                witness.observation_frame_heads().len(),
+            ),
             observation_frames: collection(root_entries("frames")?, 1),
             observation_consequences: collection(root_entries("consequences")?, 1),
-            membership_generations: collection(witness.membership_generations().len(), witness.membership_generations().len()),
+            membership_generations: collection(
+                witness.membership_generations().len(),
+                witness.membership_generations().len(),
+            ),
             activation_decisions: collection(root_entries("activation_decisions")?, 1),
             all_operational_witnesses_exact: exact,
         });
@@ -753,6 +778,8 @@ fn run(database: &Path, count: u64, stream_metadata: bool) -> Result<Report> {
         .ok_or("missing snapshot")?;
     let mut frame_heads = gateway_snapshot.frame_heads().clone();
     let integrity = gateway_snapshot.integrity_generation();
+    let integrity_state = gateway_snapshot.integrity().clone();
+    let mut max_executor_retained_transition_records = trace.transitions().len();
     for index in 1..=count {
         let current = trace
             .core_state()
@@ -809,16 +836,26 @@ fn run(database: &Path, count: u64, stream_metadata: bool) -> Result<Report> {
                 }
             }
         }
-        let committed = commit_existing_room(&store, &mut trace, prepared);
-        if !matches!(
-            committed.resolution(),
-            RoomCommitResolutionV1::TransitionCommitted {
-                status: ResolutionStatusV1::New,
-                ..
-            }
-        ) {
+        let committed_new = {
+            let committed = commit_existing_room(&store, &mut trace, prepared);
+            matches!(
+                committed.resolution(),
+                RoomCommitResolutionV1::TransitionCommitted {
+                    status: ResolutionStatusV1::New,
+                    ..
+                }
+            )
+        };
+        if !committed_new {
             return Err(format!("Transition {index} did not commit").into());
         }
+        max_executor_retained_transition_records =
+            max_executor_retained_transition_records.max(trace.transitions().len());
+        // The production Room trace cache releases canonical history after
+        // each storage-fenced operation. Exercise that exact compaction seam
+        // so this long-history fixture measures the resident executor rather
+        // than retaining a second copy of durable SQLite history in memory.
+        trace = CachedRoomTraceV1::new(trace, integrity_state.clone()).into_trace();
     }
     let room_id: RoomId = parsed(ROOM)?;
     // The alternating administration workload can end with the measured
@@ -926,6 +963,8 @@ fn run(database: &Path, count: u64, stream_metadata: bool) -> Result<Report> {
         )
         && checkpoint.prefix_transition_range_reads == 0
         && checkpoint.prefix_transition_records_delivered_to_core == 0
+        && trace.transitions().is_empty()
+        && max_executor_retained_transition_records <= 1
         && checkpoint.witness_hash_exact
         && checkpoint.witness_head_exact
         && checkpoint.all_operational_witnesses_exact;
@@ -946,6 +985,8 @@ fn run(database: &Path, count: u64, stream_metadata: bool) -> Result<Report> {
             reducer_callbacks: callbacks,
             recovery_ms,
             context_bytes,
+            executor_retained_transition_records: trace.transitions().len(),
+            max_executor_retained_transition_records,
         },
         storage: Storage {
             db_bytes,
