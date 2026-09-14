@@ -25520,6 +25520,9 @@ mod tests {
 
         let connection = Connection::open(file.path())
             .unwrap_or_else(|error| panic!("open delivery consequence mutator: {error}"));
+        connection.execute(
+            "DELETE FROM room_snapshots WHERE room_id = ?1", [ROOM],
+        ).unwrap_or_else(|error| panic!("remove delivery snapshots for full replay: {error}"));
         mutate(&connection);
         connection
             .execute(
@@ -34250,6 +34253,157 @@ mod tests {
                 .unwrap_or_else(|error| panic!("read {domain} integrity: {error}"));
             assert_eq!(integrity, ("healthy".to_owned(), 1), "{domain} integrity");
         }
+    }
+
+    fn assert_v2_proof_receipt_falls_back(
+        label: &str,
+        mutate: impl FnOnce(&Connection),
+    ) {
+        let (file, store, trace, _witness) = committed_history_fixture();
+        let connection = Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open {label} V2 proof fixture: {error}"));
+        mutate(&connection);
+        let registry = builtin_counter_registry()
+            .unwrap_or_else(|error| panic!("{label} V2 proof registry: {error}"));
+        let recovered = store.recover_room(&registry, &parsed(ROOM))
+            .unwrap_or_else(|error| panic!("{label} V2 proof fallback: {error:?}"))
+            .unwrap_or_else(|| panic!("{label} Room disappeared during V2 proof fallback"));
+        assert_eq!(recovered.head(), trace.head(), "{label} fallback Head");
+        let integrity: (String, i64) = connection.query_row(
+            "SELECT status, generation FROM room_integrity WHERE room_id = ?1", [ROOM],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap_or_else(|error| panic!("read {label} V2 proof integrity: {error}"));
+        assert_eq!(integrity, ("healthy".to_owned(), 1), "{label} integrity");
+    }
+
+    fn json_object_members(bytes: &[u8]) -> Vec<Vec<u8>> {
+        assert!(bytes.starts_with(b"{") && bytes.ends_with(b"}"));
+        let mut members = Vec::new();
+        let mut start = 1;
+        let mut depth = 0_u64;
+        let mut in_string = false;
+        let mut escaped = false;
+        for (index, byte) in bytes.iter().enumerate().skip(1).take(bytes.len() - 2) {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if *byte == b'\\' {
+                    escaped = true;
+                } else if *byte == b'"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match *byte {
+                b'"' => in_string = true,
+                b'{' | b'[' => depth += 1,
+                b'}' | b']' => depth = depth.checked_sub(1).expect("balanced JSON object"),
+                b',' if depth == 0 => {
+                    members.push(bytes[start..index].to_vec());
+                    start = index + 1;
+                }
+                _ => {}
+            }
+        }
+        members.push(bytes[start..bytes.len() - 1].to_vec());
+        members
+    }
+
+    fn json_object_with_members(members: &[Vec<u8>]) -> Vec<u8> {
+        let mut encoded = Vec::from(&b"{"[..]);
+        for (index, member) in members.iter().enumerate() {
+            if index > 0 { encoded.push(b','); }
+            encoded.extend_from_slice(member);
+        }
+        encoded.push(b'}');
+        encoded
+    }
+
+    #[test]
+    fn v2_proof_receipt_omission_and_stale_count_fall_back_for_each_domain() {
+        for domain in ["frames", "consequences", "activation_decisions"] {
+            assert_v2_proof_receipt_falls_back(&format!("omitted {domain}"), |connection| {
+                connection.execute(
+                    "DELETE FROM room_operational_history_roots_v2 \
+                     WHERE room_id = ?1 AND domain = ?2",
+                    params![ROOM, domain],
+                ).unwrap_or_else(|error| panic!("omit {domain} V2 receipt: {error}"));
+            });
+            assert_v2_proof_receipt_falls_back(&format!("stale {domain}"), |connection| {
+                connection.execute(
+                    "UPDATE room_operational_history_roots_v2 SET entry_count = entry_count + 1 \
+                     WHERE room_id = ?1 AND domain = ?2",
+                    params![ROOM, domain],
+                ).unwrap_or_else(|error| panic!("stale {domain} V2 receipt: {error}"));
+            });
+        }
+    }
+
+    #[test]
+    fn v2_witness_malformed_encoding_and_duplicate_receipts_fail_closed() {
+        assert_v2_proof_receipt_falls_back("malformed witness", |connection| {
+            let bytes = br#"{}"#;
+            connection.execute(
+                "UPDATE room_snapshot_operational_witnesses_v2 \
+                 SET witness_bytes = ?1, witness_hash = ?2 WHERE room_id = ?3",
+                params![bytes.as_slice(), Blake3DigestV1::hash(bytes).as_bytes().as_slice(), ROOM],
+            ).unwrap_or_else(|error| panic!("write malformed V2 witness: {error}"));
+        });
+        assert_v2_proof_receipt_falls_back("reordered witness", |connection| {
+            let bytes: Vec<u8> = connection.query_row(
+                "SELECT witness_bytes FROM room_snapshot_operational_witnesses_v2 \
+                 WHERE room_id = ?1 ORDER BY room_seq DESC LIMIT 1",
+                [ROOM], |row| row.get(0),
+            ).unwrap_or_else(|error| panic!("read V2 witness for reordered encoding: {error}"));
+            let mut members = json_object_members(&bytes);
+            members.reverse();
+            let bytes = json_object_with_members(&members);
+            connection.execute(
+                "UPDATE room_snapshot_operational_witnesses_v2 \
+                 SET witness_bytes = ?1, witness_hash = ?2 WHERE room_id = ?3",
+                params![bytes, Blake3DigestV1::hash(&bytes).as_bytes().as_slice(), ROOM],
+            ).unwrap_or_else(|error| panic!("write reordered V2 witness: {error}"));
+        });
+        assert_v2_proof_receipt_falls_back("duplicate witness member", |connection| {
+            let bytes: Vec<u8> = connection.query_row(
+                "SELECT witness_bytes FROM room_snapshot_operational_witnesses_v2 \
+                 WHERE room_id = ?1 ORDER BY room_seq DESC LIMIT 1",
+                [ROOM], |row| row.get(0),
+            ).unwrap_or_else(|error| panic!("read V2 witness for duplicate encoding: {error}"));
+            let mut members = json_object_members(&bytes);
+            members.insert(1, members.first().expect("V2 witness field").clone());
+            let bytes = json_object_with_members(&members);
+            connection.execute(
+                "UPDATE room_snapshot_operational_witnesses_v2 \
+                 SET witness_bytes = ?1, witness_hash = ?2 WHERE room_id = ?3",
+                params![bytes, Blake3DigestV1::hash(&bytes).as_bytes().as_slice(), ROOM],
+            ).unwrap_or_else(|error| panic!("write duplicate V2 witness member: {error}"));
+        });
+        assert_v2_proof_receipt_falls_back("extra witness member", |connection| {
+            let bytes: Vec<u8> = connection.query_row(
+                "SELECT witness_bytes FROM room_snapshot_operational_witnesses_v2 \
+                 WHERE room_id = ?1 ORDER BY room_seq DESC LIMIT 1",
+                [ROOM], |row| row.get(0),
+            ).unwrap_or_else(|error| panic!("read V2 witness for extra encoding: {error}"));
+            let mut members = json_object_members(&bytes);
+            members.push(br#""unexpected":null"#.to_vec());
+            let bytes = json_object_with_members(&members);
+            connection.execute(
+                "UPDATE room_snapshot_operational_witnesses_v2 \
+                 SET witness_bytes = ?1, witness_hash = ?2 WHERE room_id = ?3",
+                params![bytes, Blake3DigestV1::hash(&bytes).as_bytes().as_slice(), ROOM],
+            ).unwrap_or_else(|error| panic!("write extra V2 witness member: {error}"));
+        });
+        let (file, _store, _trace, _witness) = committed_history_fixture();
+        let connection = Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open duplicate V2 receipt fixture: {error}"));
+        let duplicate = connection.execute(
+            "INSERT INTO room_operational_history_roots_v2(room_id, domain, entry_count, root_hash) \
+             SELECT room_id, domain, entry_count, root_hash FROM room_operational_history_roots_v2 \
+             WHERE room_id = ?1 AND domain = 'frames'",
+            [ROOM],
+        );
+        assert!(duplicate.is_err(), "the primary key must reject duplicate V2 receipts");
     }
 
     #[test]

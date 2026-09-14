@@ -88,5 +88,24 @@ duplicate, malformed, stale, reordered, or mismatched receipt is a checkpoint
 cache miss followed by complete replay; it never permits a partial operational
 history to become serving state.
 
+The V2 receipt is a compact equality fence between a snapshot witness and the
+durable current root receipt. It is not an inclusion proof fetched for every
+retained forensic row. Consequently, a mutation of a retained Frame,
+consequence, or decision row that leaves its root receipt unchanged is outside
+the bounded V2 recovery check. Complete replay and the full forensic verifier
+validate those rows; the V2 path deliberately does not scan them. This is the
+tradeoff that makes recovery independent of retained-ledger size.
+
+Observation catch-up and activation-context reads are separately bounded. In
+both SQLite and PostgreSQL they require consecutive frame sequence numbers, a
+cause no later than the current Head, canonical payload bytes, and a BLAKE3
+payload-hash match. They therefore reject a payload-only mutation. They do not
+bind a coordinated replacement of both a retained payload and its hash to the
+V2 root on every serving read, nor do they recompute the complete root. A
+storage adversary able to perform that coordinated substitution remains a
+separate integrity gap. Closing it requires a bounded per-row authenticated
+proof protocol or a serving-read root recomputation design; it cannot be
+claimed from the compact V2 receipt alone.
+
 The frozen V1 witness table and full-replay recovery remain available for
 legacy Rooms, including databases upgraded after a Room already has history.
