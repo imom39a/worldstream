@@ -6471,6 +6471,9 @@ mod tests {
         const AGENT_PRINCIPAL: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC6";
         const JOIN_OPERATION: &str = "01ARZ3NDEKTSV4RRFFQ69G5FJ2";
         const JOIN_TRANSITION: &str = "01ARZ3NDEKTSV4RRFFQ69G5FJ3";
+        const RUNNER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FF2";
+        const RUNNER_CAPABILITY: &str = "01ARZ3NDEKTSV4RRFFQ69G5FF4";
+        const MEMBER_CAPABILITY: &str = "01ARZ3NDEKTSV4RRFFQ69G5FJ7";
 
         assert_eq!(
             env::var("WORLDSTREAM_WARM_CLAIM_MUTABLE_SOURCE").as_deref(),
@@ -6537,20 +6540,18 @@ mod tests {
             &source_recovery_head,
             source_recovery_receipt,
         );
-        let source_snapshot = store
-            .gateway_room_snapshot(&registry, &room_id)
-            .unwrap_or_else(|error| panic!("load qualification source snapshot: {error:?}"))
-            .unwrap_or_else(|| panic!("qualification source Room absent"));
         assert_eq!(
-            source_snapshot.trace().head(),
-            &source_recovery_head,
-            "gateway snapshot changed after guarded checkpoint recovery"
-        );
-        assert_eq!(
-            source_snapshot.trace().head().room_seq().get(),
+            source_recovery_head.room_seq().get(),
             source_transition_rows,
             "recovered source head must match its canonical Transition row count"
         );
+        let join_basis = source_recovery_head.room_seq();
+        // The qualifier already has an authenticated current Head from the
+        // guarded recovery above. Calling `gateway_room_snapshot` here would
+        // materialize the historical inspection view solely to recover that
+        // same Head, making the test setup consume O(history) memory before it
+        // reaches the bounded warm path being measured.
+        drop(source_recovery);
         let joined = MembershipV1::new(
             AGENT_MEMBER
                 .parse()
@@ -6574,7 +6575,7 @@ mod tests {
                 idempotency_key: JOIN_OPERATION.to_owned(),
             },
             CoreProposedKindV1::Join,
-            source_snapshot.trace().head().room_seq(),
+            join_basis,
             "imo220_warm_claim_agent_join",
             CoreChangeSetV1::one(MembershipChangeV1::join(joined)),
         )
@@ -6621,45 +6622,125 @@ mod tests {
             "Agent Join did not advance canonical state: {join_resolution:?}"
         );
 
-        // Provision through a throwaway backend: its snapshot validates the
-        // new target, but the measured backend below starts with an empty
-        // executor cache, so the first claim is a true production cold path.
-        let provisioning_backend = SqliteGatewayBackend::new(store.clone(), Arc::clone(&registry));
-        let host = session(0xa7, HOST_CAPABILITY);
-        let runner_capability = provisioning_backend
-            .provision_runner_capability(&host, sealed_runner_request(ROOM_ID, AGENT_MEMBER, 0xd1))
-            .unwrap_or_else(|error| panic!("provision qualification Runner: {error:?}"));
-        let member_capability = provisioning_backend
-            .issue_member_capability(
-                &host,
-                MemberCapabilityIssueRequest {
-                    room_id: ROOM_ID.to_owned(),
-                    member_id: HUMAN_MEMBER.to_owned(),
-                    principal_id: HOST_PRINCIPAL.to_owned(),
-                    scopes: vec![
-                        CapabilityScopeV1::RoomAct,
-                        CapabilityScopeV1::RoomObserveMember,
-                    ],
-                    idempotency_key: "01ARZ3NDEKTSV4RRFFQ69G5FJ4".to_owned(),
-                    expires_at: None,
+        // The membership was just committed through the production Core
+        // administration path. Register the two fixed qualification
+        // capabilities through the production authority API directly. Going
+        // back through the operator provisioning endpoints here would perform
+        // two unrelated historical diagnostic inspections before the one
+        // cache-miss claim this test intentionally measures.
+        let agent_principal = AGENT_PRINCIPAL
+            .parse::<worldstream_core::PrincipalId>()
+            .unwrap_or_else(|_| panic!("Agent Principal ID"));
+        let runner_id = RUNNER_ID
+            .parse::<RunnerId>()
+            .unwrap_or_else(|_| panic!("qualification Runner ID"));
+        authority
+            .change(
+                &presented,
+                AuthorityChangeV1::CreatePrincipal {
+                    change_id: AGENT_PRINCIPAL
+                        .parse()
+                        .unwrap_or_else(|_| panic!("Agent Principal change ID")),
+                    principal_id: agent_principal.clone(),
+                    kind: PrincipalKindV1::Agent,
                 },
+                SqliteGatewayBackend::checked_at()
+                    .unwrap_or_else(|_| panic!("Agent Principal checked time")),
             )
-            .unwrap_or_else(|error| panic!("provision qualification Member: {error:?}"));
-        let member_wire = BearerWireV1::parse(&member_capability.bearer)
-            .unwrap_or_else(|_| panic!("qualification Member bearer"));
-        let member_bearer = CapabilityBearerV1::from_bytes(
-            BearerWireV1::parse(&member_capability.bearer)
-                .unwrap_or_else(|_| panic!("qualification Member bearer"))
-                .into_bytes(),
-        );
-        let member = GatewaySession::new_with_wire(
-            "01ARZ3NDEKTSV4RRFFQ69G5FJD"
+            .unwrap_or_else(|error| panic!("register qualification Agent: {error:?}"));
+        authority
+            .change(
+                &presented,
+                AuthorityChangeV1::RegisterRunner {
+                    change_id: "01ARZ3NDEKTSV4RRFFQ69G5FF3"
+                        .parse()
+                        .unwrap_or_else(|_| panic!("Runner change ID")),
+                    runner_id: runner_id.clone(),
+                    owner_principal_id: agent_principal.clone(),
+                },
+                SqliteGatewayBackend::checked_at()
+                    .unwrap_or_else(|_| panic!("Runner checked time")),
+            )
+            .unwrap_or_else(|error| panic!("register qualification Runner: {error:?}"));
+        let runner_memberships = RunnerMembershipSetV1::new([RoomMembershipKeyV1 {
+            room_id: room_id.clone(),
+            member_id: AGENT_MEMBER
                 .parse()
-                .unwrap_or_else(|_| panic!("qualification Member session")),
-            member_bearer,
-            member_wire,
-        );
-        drop(provisioning_backend);
+                .unwrap_or_else(|_| panic!("Agent Member ID")),
+        }])
+        .unwrap_or_else(|error| panic!("qualification Runner memberships: {error:?}"));
+        let runner_bearer = CapabilityBearerV1::from_bytes([0xd1; 32]);
+        let runner_capability = NewCapabilityV1::new(
+            RUNNER_CAPABILITY
+                .parse()
+                .unwrap_or_else(|_| panic!("Runner Capability ID")),
+            runner_bearer.token_hash(),
+            agent_principal,
+            CapabilityProfileV1::RunnerControl {
+                runner_id: runner_id.clone(),
+                permitted_memberships: runner_memberships,
+            },
+            CapabilityScopeSetV1::new([
+                CapabilityScopeV1::ActivationOfferReceive,
+                CapabilityScopeV1::ActivationClaim,
+                CapabilityScopeV1::ActivationComplete,
+            ])
+            .unwrap_or_else(|error| panic!("qualification Runner scopes: {error:?}")),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("qualification Runner Capability: {error:?}"));
+        authority
+            .change(
+                &presented,
+                AuthorityChangeV1::RegisterCapability {
+                    change_id: "01ARZ3NDEKTSV4RRFFQ69G5FF5"
+                        .parse()
+                        .unwrap_or_else(|_| panic!("Runner Capability change ID")),
+                    capability: runner_capability,
+                },
+                SqliteGatewayBackend::checked_at()
+                    .unwrap_or_else(|_| panic!("Runner Capability checked time")),
+            )
+            .unwrap_or_else(|error| panic!("register qualification Runner Capability: {error:?}"));
+        let member_bearer = CapabilityBearerV1::from_bytes([0xb8; 32]);
+        let member_capability = NewCapabilityV1::new(
+            MEMBER_CAPABILITY
+                .parse()
+                .unwrap_or_else(|_| panic!("Member Capability ID")),
+            member_bearer.token_hash(),
+            HOST_PRINCIPAL
+                .parse()
+                .unwrap_or_else(|_| panic!("host Principal ID")),
+            CapabilityProfileV1::RoomMember {
+                room_id: room_id.clone(),
+                member_id: HUMAN_MEMBER
+                    .parse()
+                    .unwrap_or_else(|_| panic!("human Member ID")),
+            },
+            CapabilityScopeSetV1::new([
+                CapabilityScopeV1::RoomAct,
+                CapabilityScopeV1::RoomObserveMember,
+            ])
+            .unwrap_or_else(|error| panic!("qualification Member scopes: {error:?}")),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("qualification Member Capability: {error:?}"));
+        authority
+            .change(
+                &presented,
+                AuthorityChangeV1::RegisterCapability {
+                    change_id: "01ARZ3NDEKTSV4RRFFQ69G5FJ4"
+                        .parse()
+                        .unwrap_or_else(|_| panic!("Member Capability change ID")),
+                    capability: member_capability,
+                },
+                SqliteGatewayBackend::checked_at()
+                    .unwrap_or_else(|_| panic!("Member Capability checked time")),
+            )
+            .unwrap_or_else(|error| panic!("register qualification Member Capability: {error:?}"));
+        let runner = session(0xd1, RUNNER_CAPABILITY);
+        let member = session(0xb8, MEMBER_CAPABILITY);
+        let host = session(0xa7, HOST_CAPABILITY);
 
         let head = store
             .current_room_serving_fence(&room_id)
@@ -6700,14 +6781,13 @@ mod tests {
         drop(connection);
 
         let backend = SqliteGatewayBackend::new(store.clone(), Arc::clone(&registry));
-        let runner = session(0xd1, &runner_capability.capability_id);
         let cold_started = Instant::now();
         let cold_claim = backend
             .activation_claim(
                 &runner,
                 ActivationClaim {
                     activation_id: activation_id.clone(),
-                    runner_id: runner_capability.runner_id.clone(),
+                    runner_id: runner_id.to_string(),
                     claim_id: "imo220-cold-claim".to_owned(),
                     requested_lease_ms: 30_000,
                 },
@@ -6732,7 +6812,7 @@ mod tests {
                 &runner,
                 ActivationLeaseOperation {
                     activation_id: activation_id.clone(),
-                    runner_id: runner_capability.runner_id.clone(),
+                    runner_id: runner_id.to_string(),
                     claim_id: "imo220-cold-claim".to_owned(),
                     operation_id: "imo220-cold-release".to_owned(),
                     lease_generation: cold_generation,
@@ -6944,7 +7024,7 @@ mod tests {
                         &runner,
                         ActivationLeaseOperation {
                             activation_id: activation_id.clone(),
-                            runner_id: runner_capability.runner_id.clone(),
+                            runner_id: runner_id.to_string(),
                             claim_id,
                             operation_id: format!("imo220-warm-release-{index}"),
                             lease_generation,
@@ -6962,7 +7042,7 @@ mod tests {
                     &runner,
                     ActivationClaim {
                         activation_id: activation_id.clone(),
-                        runner_id: runner_capability.runner_id.clone(),
+                        runner_id: runner_id.to_string(),
                         claim_id: claim_id.clone(),
                         requested_lease_ms: 30_000,
                     },
@@ -6999,7 +7079,7 @@ mod tests {
                     &runner,
                     ActivationLeaseOperation {
                         activation_id: activation_id.clone(),
-                        runner_id: runner_capability.runner_id.clone(),
+                        runner_id: runner_id.to_string(),
                         claim_id,
                         operation_id: "imo220-warm-release-final".to_owned(),
                         lease_generation,
