@@ -7698,7 +7698,9 @@ fn inspect_postgres_checkpoint_candidate(
              FROM worldstream_room_snapshots AS snapshot \
              WHERE snapshot.room_id = $1 AND snapshot.room_seq <= $2 \
                AND snapshot.room_seq >= $3 \
-               AND (EXISTS(SELECT 1 FROM worldstream_room_snapshot_operational_witnesses_v2 AS witness \
+               AND (EXISTS(SELECT 1 FROM worldstream_room_snapshot_operational_witnesses_v3 AS witness \
+                           WHERE witness.room_id = snapshot.room_id AND witness.room_seq = snapshot.room_seq) \
+                    OR EXISTS(SELECT 1 FROM worldstream_room_snapshot_operational_witnesses_v2 AS witness \
                            WHERE witness.room_id = snapshot.room_id AND witness.room_seq = snapshot.room_seq) \
                     OR EXISTS(SELECT 1 FROM worldstream_room_snapshot_operational_witnesses AS witness \
                               WHERE witness.room_id = snapshot.room_id AND witness.room_seq = snapshot.room_seq)) \

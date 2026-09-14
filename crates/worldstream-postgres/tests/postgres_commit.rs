@@ -2163,7 +2163,7 @@ fn live_direct_runtime_and_optional_pooler_conformance() {
     let witness_row = runtime_client
         .query_one(
             "SELECT witness_hash, witness_bytes \
-             FROM worldstream_room_snapshot_operational_witnesses_v2 \
+             FROM worldstream_room_snapshot_operational_witnesses_v3 \
              WHERE room_id = $1 AND room_seq = 0",
             &[&ROOM],
         )
@@ -2174,7 +2174,7 @@ fn live_direct_runtime_and_optional_pooler_conformance() {
     let malformed_hash = worldstream_core::Blake3DigestV1::hash(&malformed_witness);
     runtime_client
         .execute(
-            "UPDATE worldstream_room_snapshot_operational_witnesses_v2 \
+            "UPDATE worldstream_room_snapshot_operational_witnesses_v3 \
              SET witness_hash = $1, witness_bytes = $2 \
              WHERE room_id = $3 AND room_seq = 0",
             &[
@@ -2195,7 +2195,7 @@ fn live_direct_runtime_and_optional_pooler_conformance() {
     assert_eq!(fallback.tail_transition_count(), 2);
     runtime_client
         .execute(
-            "UPDATE worldstream_room_snapshot_operational_witnesses_v2 \
+            "UPDATE worldstream_room_snapshot_operational_witnesses_v3 \
              SET witness_hash = $1, witness_bytes = $2 \
              WHERE room_id = $3 AND room_seq = 0",
             &[&witness_hash, &witness_bytes, &ROOM],
@@ -2218,7 +2218,7 @@ fn live_direct_runtime_and_optional_pooler_conformance() {
     let forged_hash = worldstream_core::Blake3DigestV1::hash(&forged_bytes);
     runtime_client
         .execute(
-            "UPDATE worldstream_room_snapshot_operational_witnesses_v2 \
+            "UPDATE worldstream_room_snapshot_operational_witnesses_v3 \
              SET witness_hash = $1, witness_bytes = $2 \
              WHERE room_id = $3 AND room_seq = 0",
             &[&forged_hash.as_bytes().as_slice(), &forged_bytes, &ROOM],
@@ -2248,7 +2248,7 @@ fn live_direct_runtime_and_optional_pooler_conformance() {
     assert_eq!(integrity.get::<_, i64>(1), 1);
     runtime_client
         .execute(
-            "UPDATE worldstream_room_snapshot_operational_witnesses_v2 \
+            "UPDATE worldstream_room_snapshot_operational_witnesses_v3 \
              SET witness_hash = $1, witness_bytes = $2 \
              WHERE room_id = $3 AND room_seq = 0",
             &[&witness_hash, &witness_bytes, &ROOM],
