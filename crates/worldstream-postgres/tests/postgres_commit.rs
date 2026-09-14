@@ -732,9 +732,9 @@ fn qualify_bounded_recovery_scales(
             "WITH ordered AS (\
                SELECT room_seq, serialized_bytes, captured_at,\
                       pg_wal_lsn_diff(wal_lsn, lag(wal_lsn) OVER (ORDER BY audit_id))::bigint AS wal_bytes_since_prior_event\
-                 FROM worldstream_imo223_snapshot_audit\
-                WHERE room_id = $1\
-                ORDER BY audit_id\
+                 FROM worldstream_imo223_snapshot_audit \
+                WHERE room_id = $1 \
+                ORDER BY audit_id \
              ) SELECT room_seq, serialized_bytes, captured_at::text,\
                       COALESCE(wal_bytes_since_prior_event, 0)\
                  FROM ordered ORDER BY room_seq",
