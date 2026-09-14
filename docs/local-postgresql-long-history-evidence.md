@@ -224,6 +224,16 @@ the standard catalogs do not provide a portable callback-level counter; WAL
 event deltas include intervening canonical writes and are therefore reported
 with that limitation.
 
+The SQLite source suite contains the matrix rows for cadence count/time
+(`snapshot_cadence_uses_transition_count_and_persisted_active_time`), restart
+and snapshot fallback (`drop_reopen_resolves_exact_receipts_and_replays_durable_history_with_snapshot_fallback`), write failure
+(`snapshot_failure_after_commit_does_not_change_canonical_result_or_recovery`),
+duplicate/concurrent admission (`real_contention_serializes_duplicates_head_candidates_and_inflight_resolve`),
+and complete snapshot removal (`recovery_rebuilds_materializations_after_every_paired_snapshot_is_removed`).
+Those tests could not be rerun in this worktree while IMO-234's new migration
+was between implementation and its expected inventory update; the test target
+failed to compile on the 20-versus-19 migration array mismatch.
+
 The high import RSS is material. The transfer iterates source records and chunks
 with bounded cursors, but the observed 1.54 GB process peak is comparable to the
 complete 870 MB stream. This does not yet prove IMO-225's requirement that peak
