@@ -437,14 +437,14 @@ def run_codex(codex_bin: str, model: str, reasoning: str, prompt: str) -> tuple[
         schema_path.write_text(json.dumps(OUTPUT_SCHEMA), encoding="utf-8")
         command = [
             codex_bin,
+            "--ask-for-approval",
+            "never",
             "exec",
             "--ephemeral",
             "--ignore-user-config",
             "--skip-git-repo-check",
             "--sandbox",
             "read-only",
-            "--ask-for-approval",
-            "never",
             "--model",
             model,
             "--config",
