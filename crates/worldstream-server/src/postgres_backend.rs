@@ -3964,6 +3964,7 @@ mod tests {
         os::unix::{fs::PermissionsExt, io::AsRawFd},
         sync::Arc,
         thread,
+        time::Instant,
     };
 
     use postgres::{Client, NoTls};
@@ -3989,8 +3990,8 @@ mod tests {
         PostgresRoomStore,
     };
     use worldstream_protocol::{
-        AccessMode, ActivationClaim, ActivationResultCode, BearerWireV1, CreateMember,
-        CreateRoomRequest, LobbyLaunchRequest, MemberCapabilityProvisionRequestV1,
+        AccessMode, ActivationClaim, ActivationLeaseOperation, ActivationResultCode, BearerWireV1,
+        CreateMember, CreateRoomRequest, LobbyLaunchRequest, MemberCapabilityProvisionRequestV1,
         OperatorActivityPhase, OperatorRoomIntegrityStatus, OperatorRoomInventoryRequest,
         PackReference, PrincipalKind, RunnerCapabilityProvisionRequestV1,
     };
@@ -4465,7 +4466,15 @@ mod tests {
         };
         let dsn = read_postgres_dsn(&SecretSource::File(path.into()))
             .unwrap_or_else(|error| unreachable!("live runtime DSN file: {error}"));
-        let config = PostgresConnectionConfig::runtime(dsn.clone(), PostgresConnectionPath::Direct)
+        let connection_path = match env::var("WORLDSTREAM_POSTGRES_GATEWAY_CONNECTION_PATH")
+            .ok()
+            .as_deref()
+        {
+            None | Some("direct") => PostgresConnectionPath::Direct,
+            Some("transaction_pool") => PostgresConnectionPath::TransactionPool,
+            Some(other) => unreachable!("unsupported live gateway connection path: {other}"),
+        };
+        let config = PostgresConnectionConfig::runtime(dsn.clone(), connection_path)
             .unwrap_or_else(|error| unreachable!("runtime config: {error}"));
         let store = PostgresRoomStore::new(config)
             .unwrap_or_else(|error| unreachable!("runtime store: {error}"));
@@ -5204,7 +5213,7 @@ mod tests {
         drop(backend);
         let restarted = PostgresGatewayBackend::new(
             PostgresRoomStore::new(
-                PostgresConnectionConfig::runtime(dsn.clone(), PostgresConnectionPath::Direct)
+                PostgresConnectionConfig::runtime(dsn.clone(), connection_path)
                     .unwrap_or_else(|error| unreachable!("restart config: {error}")),
             )
             .unwrap_or_else(|error| unreachable!("restart store: {error}")),
@@ -5395,10 +5404,169 @@ mod tests {
         assert_eq!(granted.code, ActivationResultCode::Granted);
         assert_eq!(
             restarted
-                .activation_claim(&runner, warm_claim)
+                .activation_claim(&runner, warm_claim.clone())
                 .unwrap_or_else(|error| unreachable!("warm claim retry: {error:?}")),
             granted
         );
+        let initial_generation = granted
+            .lease_generation
+            .unwrap_or_else(|| unreachable!("warm Activation omitted lease generation"));
+        let released = restarted
+            .activation_release(
+                &runner,
+                ActivationLeaseOperation {
+                    activation_id: warm_claim.activation_id.clone(),
+                    runner_id: warm_claim.runner_id.clone(),
+                    claim_id: warm_claim.claim_id.clone(),
+                    operation_id: "postgres-warm-retry-release".to_owned(),
+                    lease_generation: initial_generation,
+                    requested_lease_ms: None,
+                    disposition: None,
+                },
+            )
+            .unwrap_or_else(|error| unreachable!("release retried warm claim: {error:?}"));
+        assert_eq!(released.code, ActivationResultCode::Released);
+
+        // A duplicate claim is intentionally receipt-first. Fresh identities
+        // are the qualification vector: every iteration must borrow the same
+        // restart-installed executor and prepare a new durable claim context.
+        let warm_samples = env::var("WORLDSTREAM_POSTGRES_WARM_CLAIM_SAMPLES")
+            .ok()
+            .map(|value| {
+                value
+                    .parse::<usize>()
+                    .unwrap_or_else(|error| unreachable!("warm sample count: {error}"))
+            })
+            .unwrap_or(32);
+        assert!(
+            (1..=4096).contains(&warm_samples),
+            "warm sample count must stay bounded"
+        );
+        let warm_room_id = room_id
+            .parse::<worldstream_core::RoomId>()
+            .unwrap_or_else(|_| unreachable!("warm Activation Room"));
+        let callbacks_before = restarted
+            .traces
+            .with_room(&warm_room_id, |slot| {
+                slot.as_ref()
+                    .map(|cached| cached.trace().activity_callback_count())
+                    .unwrap_or_else(|| unreachable!("warm serving trace was not cached"))
+            })
+            .unwrap_or_else(|error| unreachable!("inspect warm trace: {error:?}"));
+        // Current reads use the same fenced executor as claims. Sample them
+        // independently so the production PostgreSQL audit does not mistake
+        // claim preparation latency for projection latency.
+        let mut current_read_latencies = Vec::with_capacity(warm_samples);
+        for index in 0..warm_samples {
+            let started = Instant::now();
+            let projection = restarted
+                .projection(&member, &room_id)
+                .unwrap_or_else(|error| unreachable!("warm current read {index}: {error:?}"));
+            assert_eq!(projection.room_head.room_seq, 1);
+            current_read_latencies.push(started.elapsed());
+        }
+        let callbacks_after_current_reads = restarted
+            .traces
+            .with_room(&warm_room_id, |slot| {
+                slot.as_ref()
+                    .map(|cached| cached.trace().activity_callback_count())
+                    .unwrap_or_else(|| unreachable!("warm serving trace was evicted"))
+            })
+            .unwrap_or_else(|error| unreachable!("inspect warm current reads: {error:?}"));
+        assert_eq!(callbacks_after_current_reads, callbacks_before);
+        current_read_latencies.sort_unstable();
+        let current_read_latency_us = |percentile: usize| {
+            u64::try_from(
+                current_read_latencies[((current_read_latencies.len().saturating_sub(1)
+                    * percentile)
+                    / 100)
+                    .min(current_read_latencies.len() - 1)]
+                .as_micros(),
+            )
+            .unwrap_or(u64::MAX)
+        };
+        let current_read_p50_us = current_read_latency_us(50);
+        let current_read_p95_us = current_read_latency_us(95);
+        let current_read_p99_us = current_read_latency_us(99);
+        let warm_transition_rows_before_claims = Client::connect(&dsn, NoTls)
+            .unwrap_or_else(|error| unreachable!("warm claim row counter connection: {error}"))
+            .query_one(
+                "SELECT count(*) FROM worldstream_transitions WHERE room_id = $1",
+                &[&room_id],
+            )
+            .unwrap_or_else(|error| unreachable!("warm claim row counter before: {error}"))
+            .get::<_, i64>(0);
+        let mut latencies = Vec::with_capacity(warm_samples);
+        for index in 0..warm_samples {
+            let claim_id = format!("postgres-warm-fresh-claim-{index}");
+            let started = Instant::now();
+            let reply = restarted
+                .activation_claim(
+                    &runner,
+                    ActivationClaim {
+                        activation_id: warm_claim.activation_id.clone(),
+                        runner_id: warm_claim.runner_id.clone(),
+                        claim_id: claim_id.clone(),
+                        requested_lease_ms: 30_000,
+                    },
+                )
+                .unwrap_or_else(|error| unreachable!("fresh warm claim {index}: {error:?}"));
+            assert_eq!(reply.code, ActivationResultCode::Granted);
+            latencies.push(started.elapsed());
+            let lease_generation = reply
+                .lease_generation
+                .unwrap_or_else(|| unreachable!("fresh warm claim omitted lease generation"));
+            let released = restarted
+                .activation_release(
+                    &runner,
+                    ActivationLeaseOperation {
+                        activation_id: warm_claim.activation_id.clone(),
+                        runner_id: warm_claim.runner_id.clone(),
+                        claim_id,
+                        operation_id: format!("postgres-warm-fresh-release-{index}"),
+                        lease_generation,
+                        requested_lease_ms: None,
+                        disposition: None,
+                    },
+                )
+                .unwrap_or_else(|error| {
+                    unreachable!("fresh warm claim release {index}: {error:?}")
+                });
+            assert_eq!(released.code, ActivationResultCode::Released);
+        }
+        let callbacks_after = restarted
+            .traces
+            .with_room(&warm_room_id, |slot| {
+                slot.as_ref()
+                    .map(|cached| cached.trace().activity_callback_count())
+                    .unwrap_or_else(|| unreachable!("warm serving trace was evicted"))
+            })
+            .unwrap_or_else(|error| unreachable!("inspect final warm trace: {error:?}"));
+        assert_eq!(callbacks_after, callbacks_before);
+        let warm_transition_rows_after_claims = Client::connect(&dsn, NoTls)
+            .unwrap_or_else(|error| unreachable!("warm claim row counter connection: {error}"))
+            .query_one(
+                "SELECT count(*) FROM worldstream_transitions WHERE room_id = $1",
+                &[&room_id],
+            )
+            .unwrap_or_else(|error| unreachable!("warm claim row counter after: {error}"))
+            .get::<_, i64>(0);
+        assert_eq!(
+            warm_transition_rows_after_claims, warm_transition_rows_before_claims,
+            "fresh warm claim/release cycles must not append canonical Transitions"
+        );
+        latencies.sort_unstable();
+        let latency_us = |percentile: usize| {
+            u64::try_from(
+                latencies[((latencies.len().saturating_sub(1) * percentile) / 100)
+                    .min(latencies.len() - 1)]
+                .as_micros(),
+            )
+            .unwrap_or(u64::MAX)
+        };
+        let warm_p50_us = latency_us(50);
+        let warm_p95_us = latency_us(95);
+        let warm_p99_us = latency_us(99);
 
         let connector = native_tls::TlsConnector::builder()
             .build()
@@ -5428,7 +5596,7 @@ mod tests {
         assert_eq!(counts.get::<_, i64>(6), 1);
 
         eprintln!(
-            "LIVE_POSTGRES_GATEWAY=PASS create+duplicate+conflict+projection+replay+attach+sync+resync+action+stale+live+ack+restart+lobby-launch+sealed-provision-replay-conflict+warm-activation-no-recovery"
+            "LIVE_POSTGRES_GATEWAY=PASS create+duplicate+conflict+projection+replay+attach+sync+resync+action+stale+live+ack+restart+lobby-launch+sealed-provision-replay-conflict+warm-activation-no-recovery+warm-activation-fresh-leases-no-recovery path={connection_path:?} samples={warm_samples} current_read_p50_us={current_read_p50_us} current_read_p95_us={current_read_p95_us} current_read_p99_us={current_read_p99_us} current_read_callbacks={callbacks_after_current_reads} p50_us={warm_p50_us} p95_us={warm_p95_us} p99_us={warm_p99_us} reducer_callbacks={callbacks_after} canonical_transition_rows_before_claims={warm_transition_rows_before_claims} canonical_transition_rows_after_claims={warm_transition_rows_after_claims}"
         );
     }
 }

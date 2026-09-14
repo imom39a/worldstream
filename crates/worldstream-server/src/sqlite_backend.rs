@@ -5121,18 +5121,23 @@ mod tests {
     use super::*;
     use std::{
         env, fs,
+        process::Command,
         sync::atomic::{AtomicUsize, Ordering},
         thread,
     };
     use tempfile::{NamedTempFile, TempDir, tempdir};
     use worldstream_component_host::ComponentPackHostV1;
     use worldstream_core::{
-        AuthorityBootstrapV1, AuthorityChangeV1, AuthorityCheckedAt, AuthorityV1,
-        CapabilityBearerV1, CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1,
-        CapabilityScopeV1, ExternalInputV1, NewCapabilityV1, PresentedCapabilityV1,
-        PrincipalKindV1, SourceId, agent_heist_lobby_digest, agent_heist_schema_safe_digest,
-        builtin_agent_heist_registry, builtin_counter_registry, counter_v2_digest,
-        counter_v3_digest, counter_v4_digest, external_input_request_hash,
+        AccessModeV1, AdministrationOperationIdentityV1, AuthorityBootstrapV1, AuthorityChangeV1,
+        AuthorityCheckedAt, AuthorityV1, CapabilityBearerV1, CapabilityId, CapabilityProfileV1,
+        CapabilityScopeSetV1, CapabilityScopeV1, CoreAdministrationIngressV1,
+        CoreAdministrationRequestV1, CoreChangeSetV1, CoreProposedKindV1, ExternalInputV1,
+        MembershipChangeV1, MembershipStandingV1, MembershipV1, NewCapabilityV1,
+        PresentedCapabilityV1, PrincipalKindV1, RoomCommitResolutionV1, RoomId, SourceId,
+        TransitionId, agent_heist_lobby_digest, agent_heist_schema_safe_digest,
+        authorize_core_administration_operation, builtin_agent_heist_registry,
+        builtin_counter_registry, counter_v2_digest, counter_v3_digest, counter_v4_digest,
+        external_input_request_hash,
     };
     use worldstream_pack_bundle::PackBundleVerifierV1;
     use worldstream_protocol::{
@@ -5300,6 +5305,190 @@ mod tests {
             2
         );
         assert_scheduler_publication(backend, &host, &room, &clock, now).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn warm_activation_claim_reuses_executor_after_due_timer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_database_directory, file) = database_fixture();
+        let store = SqliteRoomStore::open(file.path())?;
+        let host_bearer = CapabilityBearerV1::from_bytes([0xa9; 32]);
+        AuthorityV1::new(Arc::new(store.clone())).bootstrap(
+            AuthorityBootstrapV1::new(
+                "01ARZ3NDEKTSV4RRFFQ69G5FC4".parse()?,
+                "01ARZ3NDEKTSV4RRFFQ69G5FC2".parse()?,
+                PrincipalKindV1::Human,
+                "01ARZ3NDEKTSV4RRFFQ69G5FC3".parse()?,
+                host_bearer.token_hash(),
+                None,
+            )?,
+            "2026-08-15T12:00:00Z".parse()?,
+        )?;
+        let now = OffsetDateTime::now_utc();
+        let clock = Arc::new(SchedulerClock(Mutex::new(HostClockSampleV1::new(
+            now.format(&Rfc3339)?,
+        )?)));
+        let backend = SqliteGatewayBackend::with_host_clock(
+            store.clone(),
+            Arc::new(builtin_agent_heist_registry()?),
+            clock.clone(),
+        )
+        .with_timer_authority(host_bearer)?;
+        let host = session(0xa9, "01ARZ3NDEKTSV4RRFFQ69G5FC3");
+        let room = backend.create_room(&host, CreateRoomRequest {
+            pack: PackReference {
+                id: "worldstream.agent-heist".to_owned(),
+                version: "0.2.0".to_owned(),
+                digest: agent_heist_lobby_digest().to_string(),
+            },
+            configuration: json!({
+                "pack_id":"worldstream.agent-heist","pack_schema":1,
+                "roles":["navigator","insider","broker"],
+                "briefing_duration_seconds":30,"negotiation_duration_seconds":90,
+                "commitment_duration_seconds":30,"commitment_reminder_seconds_before_deadline":10,
+                "result_duration_seconds":20,"maximum_plans":12,"maximum_open_offers_per_role":4
+            }),
+            members: vec![
+                CreateMember {
+                    principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FC6".to_owned(),
+                    principal_kind: PrincipalKind::Agent,
+                    role: Some("navigator".to_owned()),
+                    access_mode: AccessMode::Participant,
+                },
+                CreateMember {
+                    principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FD3".to_owned(),
+                    principal_kind: PrincipalKind::Human,
+                    role: Some("insider".to_owned()),
+                    access_mode: AccessMode::Participant,
+                },
+                CreateMember {
+                    principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FD4".to_owned(),
+                    principal_kind: PrincipalKind::Human,
+                    role: Some("broker".to_owned()),
+                    access_mode: AccessMode::Participant,
+                },
+            ],
+            idempotency_key: "imo220-warm-timer-room".to_owned(),
+        })?;
+        let navigator_member = room.member_ids[0].clone();
+        backend.launch_lobby(
+            &host,
+            &room.room_id,
+            LobbyLaunchRequest {
+                input_id: "01ARZ3NDEKTSV4RRFFQ69G5FG0".to_owned(),
+                based_on_room_seq: 0,
+                pack_digest: None,
+            },
+        )?;
+        let runner_capability = backend.provision_runner_capability(
+            &host,
+            sealed_runner_request(&room.room_id, &navigator_member, 0xd1),
+        )?;
+        let room_id: RoomId = room.room_id.parse()?;
+        let head = store
+            .current_room_serving_fence(&room_id)?
+            .unwrap_or_else(|| panic!("warm Timer serving fence absent"));
+        let activation_id = "imo220-warm-timer-activation".to_owned();
+        let connection = rusqlite::Connection::open(file.path())?;
+        connection.execute(
+            "INSERT INTO activation_intents(\
+             activation_id, room_id, cause_room_seq, decision_id, target_member_id,\
+             reason_code, deduplication_key, priority, policy_revision, state,\
+             intent_generation, lease_generation)\
+             VALUES (?1, ?2, ?3, ?4, ?5, 'imo220-warm-timer', ?6, 1, 1, 'pending', 1, 0)",
+            rusqlite::params![
+                activation_id,
+                room.room_id,
+                i64::try_from(head.head().room_seq().get())?,
+                "imo220-warm-timer-decision",
+                navigator_member,
+                "imo220-warm-timer-dedup",
+            ],
+        )?;
+        drop(connection);
+        let runner = session(0xd1, &runner_capability.capability_id);
+        let initial_claim = backend.activation_claim(
+            &runner,
+            ActivationClaim {
+                activation_id: activation_id.clone(),
+                runner_id: runner_capability.runner_id.clone(),
+                claim_id: "imo220-warm-timer-initial".to_owned(),
+                requested_lease_ms: 30_000,
+            },
+        )?;
+        assert_eq!(initial_claim.code, ActivationResultCode::Granted);
+        let initial_generation = initial_claim
+            .lease_generation
+            .unwrap_or_else(|| panic!("initial warm Timer claim omitted lease generation"));
+        assert_eq!(
+            backend
+                .activation_release(
+                    &runner,
+                    ActivationLeaseOperation {
+                        activation_id: activation_id.clone(),
+                        runner_id: runner_capability.runner_id.clone(),
+                        claim_id: "imo220-warm-timer-initial".to_owned(),
+                        operation_id: "imo220-warm-timer-initial-release".to_owned(),
+                        lease_generation: initial_generation,
+                        requested_lease_ms: None,
+                        disposition: None,
+                    },
+                )?
+                .code,
+            ActivationResultCode::Released
+        );
+        let callbacks_before_timer = backend.trace_cache.with_room(&room_id, |slot| {
+            slot.as_ref()
+                .map(|cached| cached.trace().activity_callback_count())
+                .unwrap_or_else(|| panic!("warm Timer executor was not installed"))
+        })?;
+        backend.forbid_recovery_for_test();
+        *clock.0.lock().map_err(|_| "clock unavailable")? =
+            HostClockSampleV1::new((now + time::Duration::seconds(60)).format(&Rfc3339)?)?;
+        backend.scheduler_tick()?;
+        assert_eq!(
+            backend
+                .operator_room_detail(&host, &room.room_id)?
+                .room_head
+                .room_seq,
+            2
+        );
+        let callbacks_after_timer = backend.trace_cache.with_room(&room_id, |slot| {
+            slot.as_ref()
+                .map(|cached| cached.trace().activity_callback_count())
+                .unwrap_or_else(|| panic!("warm Timer executor was evicted"))
+        })?;
+        assert!(callbacks_after_timer > callbacks_before_timer);
+        let timer_claim = backend.activation_claim(
+            &runner,
+            ActivationClaim {
+                activation_id: activation_id.clone(),
+                runner_id: runner_capability.runner_id.clone(),
+                claim_id: "imo220-warm-timer-after".to_owned(),
+                requested_lease_ms: 30_000,
+            },
+        )?;
+        assert_eq!(timer_claim.code, ActivationResultCode::Granted);
+        assert_eq!(
+            backend
+                .activation_release(
+                    &runner,
+                    ActivationLeaseOperation {
+                        activation_id,
+                        runner_id: runner_capability.runner_id,
+                        claim_id: "imo220-warm-timer-after".to_owned(),
+                        operation_id: "imo220-warm-timer-after-release".to_owned(),
+                        lease_generation: timer_claim.lease_generation.unwrap_or_else(|| {
+                            panic!("Timer-adjacent warm claim omitted lease generation")
+                        }),
+                        requested_lease_ms: None,
+                        disposition: None,
+                    },
+                )?
+                .code,
+            ActivationResultCode::Released
+        );
         Ok(())
     }
 
@@ -6079,7 +6268,950 @@ mod tests {
                 },
             )
             .unwrap_or_else(|_| panic!("inspect post-claim trace"));
-        assert_eq!(after_callbacks, before_callbacks);
+        assert_eq!(
+            after_callbacks, action_after_callbacks,
+            "the post-Action warm claim must not invoke the canonical reducer"
+        );
+    }
+
+    fn warm_claim_percentile_us(samples: &mut [std::time::Duration], percentile: usize) -> u64 {
+        assert!(!samples.is_empty(), "warm Claim sample set is empty");
+        samples.sort_unstable();
+        u64::try_from(
+            samples[((samples.len().saturating_sub(1) * percentile) / 100).min(samples.len() - 1)]
+                .as_micros(),
+        )
+        .unwrap_or(u64::MAX)
+    }
+
+    fn warm_claim_rss_bytes() -> Option<u64> {
+        let output = Command::new("ps")
+            .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let kib = std::str::from_utf8(&output.stdout)
+            .ok()?
+            .trim()
+            .parse::<u64>()
+            .ok()?;
+        kib.checked_mul(1024)
+    }
+
+    /// Verifies the compact V2 checkpoint contract at its actual boundary.
+    ///
+    /// A snapshot witness carries the head and compact roots at
+    /// `checkpoint_room_seq`, while a recovered Room normally has a later
+    /// current head after its tail is replayed. The recovery guard advances
+    /// the roots through that tail before comparing them with durable storage;
+    /// comparing the boundary roots directly to current rows would reject
+    /// every checkpoint with a nonempty tail.
+    fn verify_source_v2_checkpoint_contract(
+        source: &std::path::Path,
+        room_id: &RoomId,
+        recovered_current_head: &worldstream_core::CompleteHeadV1,
+        recovery_receipt: worldstream_core::RoomRecoveryExecutionReceiptV1,
+    ) -> serde_json::Value {
+        let connection = rusqlite::Connection::open(source)
+            .unwrap_or_else(|error| panic!("open V2 checkpoint verifier source: {error}"));
+        let room_id_text = room_id.to_string();
+        let (checkpoint_room_seq, checkpoint_head_bytes, witness_schema, witness_hash, witness_bytes): (
+            i64,
+            Vec<u8>,
+            String,
+            Vec<u8>,
+            Vec<u8>,
+        ) = connection
+            .query_row(
+                "SELECT snapshots.room_seq, snapshots.complete_head_bytes, \
+                        witness.witness_schema_version, witness.witness_hash, witness.witness_bytes \
+                 FROM room_snapshots AS snapshots \
+                 JOIN room_snapshot_operational_witnesses_v2 AS witness \
+                   ON witness.room_id = snapshots.room_id AND witness.room_seq = snapshots.room_seq \
+                 WHERE snapshots.room_id = ?1 \
+                 ORDER BY snapshots.room_seq DESC LIMIT 1",
+                [&room_id_text],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .unwrap_or_else(|error| panic!("read V2 checkpoint witness: {error}"));
+        assert_eq!(
+            witness_schema,
+            worldstream_core::CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2,
+            "selected checkpoint must use the compact V2 witness schema"
+        );
+        let checkpoint_room_seq = u64::try_from(checkpoint_room_seq)
+            .unwrap_or_else(|_| panic!("negative V2 checkpoint Room sequence"));
+        let checkpoint_head = worldstream_core::CanonicalJsonV1::decode_canonical::<
+            worldstream_core::CompleteHeadV1,
+        >(&checkpoint_head_bytes)
+        .unwrap_or_else(|error| panic!("decode V2 checkpoint head: {error:?}"));
+        assert_eq!(checkpoint_head.room_seq().get(), checkpoint_room_seq);
+        let witness = worldstream_core::RoomCheckpointOperationalWitnessV2::from_canonical_bytes(
+            &witness_bytes,
+            &checkpoint_head,
+        )
+        .unwrap_or_else(|error| panic!("decode V2 checkpoint witness: {error:?}"));
+        let witness_hash_exact = witness_hash.as_slice()
+            == worldstream_core::Blake3DigestV1::hash(&witness_bytes)
+                .as_bytes()
+                .as_slice();
+        assert!(witness_hash_exact, "V2 witness hash differs from its bytes");
+        assert_eq!(
+            witness.checkpoint_head(),
+            &checkpoint_head,
+            "V2 witness head differs from its selected snapshot head"
+        );
+        assert!(
+            checkpoint_head.room_seq().get() <= recovered_current_head.room_seq().get(),
+            "checkpoint must not be ahead of the recovered current head"
+        );
+        assert!(
+            recovery_receipt.used_checkpoint(),
+            "source recovery must use the selected V2 checkpoint"
+        );
+        assert_eq!(
+            recovery_receipt
+                .checkpoint_room_seq()
+                .map(|sequence| sequence.get()),
+            Some(checkpoint_room_seq),
+            "source recovery selected a different checkpoint boundary"
+        );
+        assert_eq!(
+            recovery_receipt.prefix_transition_records_delivered(),
+            0,
+            "checkpoint recovery must not deliver a canonical prefix to Core"
+        );
+        assert_eq!(
+            recovery_receipt.prefix_transitions_skipped(),
+            checkpoint_room_seq,
+            "checkpoint recovery skipped the wrong canonical prefix"
+        );
+        let expected_tail = recovered_current_head
+            .room_seq()
+            .get()
+            .checked_sub(checkpoint_room_seq)
+            .unwrap_or_else(|| panic!("checkpoint tail underflow"));
+        assert_eq!(
+            recovery_receipt.tail_transition_records_delivered(),
+            expected_tail,
+            "checkpoint recovery delivered the wrong canonical tail"
+        );
+
+        let stored_roots = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT domain, entry_count, root_hash \
+                     FROM room_operational_history_roots_v2 \
+                     WHERE room_id = ?1 ORDER BY domain",
+                )
+                .unwrap_or_else(|error| panic!("prepare V2 root verifier: {error}"));
+            statement
+                .query_map([&room_id_text], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                })
+                .unwrap_or_else(|error| panic!("read V2 operational roots: {error}"))
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap_or_else(|error| panic!("decode V2 operational roots: {error}"))
+        };
+        let root_inventory_exact = stored_roots.len() == witness.operational_history_roots().len()
+            && stored_roots.iter().all(|(domain, count, hash)| {
+                witness.operational_history_roots().contains_key(domain)
+                    && *count >= 0
+                    && hash.len() == 32
+            });
+        assert!(
+            root_inventory_exact,
+            "durable V2 operational root inventory is malformed"
+        );
+        // `recover_room_from_storage_with_receipt` can return the checkpoint
+        // receipt only after SQLite's guarded install has called
+        // `verify_sqlite_v2_roots` with Core's tail-advanced roots. Its
+        // success is the exact final-root proof; the boundary witness above
+        // separately authenticates the selected snapshot root/head.
+        json!({
+            "schema": worldstream_core::CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2,
+            "checkpoint_room_seq": checkpoint_room_seq,
+            "checkpoint_head_room_seq": checkpoint_head.room_seq().get(),
+            "recovered_current_head_room_seq": recovered_current_head.room_seq().get(),
+            "witness_hash_exact": witness_hash_exact,
+            "witness_snapshot_head_exact": witness.checkpoint_head() == &checkpoint_head,
+            "durable_operational_root_count": stored_roots.len(),
+            "durable_operational_root_inventory_exact": root_inventory_exact,
+            "durable_operational_roots_exact": true,
+            "durable_operational_roots_verified_by": "guarded_checkpoint_v2_recovery",
+            "checkpoint_recovery_tail_transition_records": recovery_receipt.tail_transition_records_delivered(),
+        })
+    }
+
+    /// Qualifies the actual production warm Activation preparation path against
+    /// one generated canonical-history tier. The source is intentionally
+    /// mutable only when the caller opts in: after the cold cache-miss claim,
+    /// this test corrupts an in-head historical record to prove every following
+    /// claim comes from the retained executor plus the bounded serving fence,
+    /// rather than replaying that history.
+    ///
+    /// `scripts/imo-220-warm-claim-qualification.sh` creates a fresh source
+    /// with `history_qualification_fixture`, invokes this test for 1k/10k/100k,
+    /// and retains only the redacted JSON emitted below.
+    #[test]
+    #[ignore = "requires a fresh WORLDSTREAM_WARM_CLAIM_SOURCE_DB generated by the qualification fixture"]
+    #[allow(clippy::too_many_lines)]
+    fn source_backed_warm_activation_claim_qualification() {
+        const ROOM_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        const HUMAN_MEMBER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC0";
+        const HOST_PRINCIPAL: &str = "01ARZ3NDEKTSV4RRFFQ69G5FD0";
+        const HOST_CAPABILITY: &str = "01ARZ3NDEKTSV4RRFFQ69G5FH2";
+        const AGENT_MEMBER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FJ1";
+        const AGENT_PRINCIPAL: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC6";
+        const JOIN_OPERATION: &str = "01ARZ3NDEKTSV4RRFFQ69G5FJ2";
+        const JOIN_TRANSITION: &str = "01ARZ3NDEKTSV4RRFFQ69G5FJ3";
+
+        assert_eq!(
+            env::var("WORLDSTREAM_WARM_CLAIM_MUTABLE_SOURCE").as_deref(),
+            Ok("1"),
+            "the source is deliberately mutated after cache installation; use the fixture-owned disposable source"
+        );
+        let source = env::var_os("WORLDSTREAM_WARM_CLAIM_SOURCE_DB")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| panic!("missing WORLDSTREAM_WARM_CLAIM_SOURCE_DB"));
+        let expected_history = env::var("WORLDSTREAM_WARM_CLAIM_EXPECTED_HISTORY")
+            .unwrap_or_else(|_| panic!("missing WORLDSTREAM_WARM_CLAIM_EXPECTED_HISTORY"))
+            .parse::<u64>()
+            .unwrap_or_else(|error| panic!("invalid expected history: {error}"));
+        let warm_claim_count = env::var("WORLDSTREAM_WARM_CLAIM_SAMPLES")
+            .unwrap_or_else(|_| "1000".to_owned())
+            .parse::<usize>()
+            .unwrap_or_else(|error| panic!("invalid warm claim sample count: {error}"));
+        assert!(expected_history > 0);
+        assert!(warm_claim_count > 0);
+
+        let store = SqliteRoomStore::open(&source)
+            .unwrap_or_else(|error| panic!("open qualification source: {error}"));
+        assert_eq!(
+            store.source_transfer_state(),
+            worldstream_sqlite::SqliteSourceTransferStateV1::SourceAuthoritative,
+            "the source must carry the fixture's verified source-authoritative metadata"
+        );
+        let registry =
+            Arc::new(builtin_counter_registry().unwrap_or_else(|_| panic!("counter registry")));
+        let room_id = ROOM_ID
+            .parse::<RoomId>()
+            .unwrap_or_else(|_| panic!("qualification Room ID"));
+        let source_transition_rows: u64 = rusqlite::Connection::open(&source)
+            .unwrap_or_else(|error| panic!("open source row counter: {error}"))
+            .query_row(
+                "SELECT count(*) FROM transitions WHERE room_id = ?1",
+                [ROOM_ID],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| u64::try_from(count).unwrap_or_else(|_| panic!("negative row count")))
+            .unwrap_or_else(|error| panic!("count source transitions: {error}"));
+        assert_eq!(
+            source_transition_rows, expected_history,
+            "fixture transition count must be the requested canonical history tier"
+        );
+
+        // Append one normal Core-authorized Agent Membership so the unchanged
+        // fixture's human-only counter Room can legitimately receive an
+        // Activation target. This is a canonical transition, never SQL state
+        // fabrication, and it makes the subsequent Runner authority binding
+        // exercise the ordinary production checks.
+        let source_recovery = worldstream_core::recover_room_from_storage_with_receipt(
+            &store,
+            registry.as_ref(),
+            &room_id,
+        )
+        .unwrap_or_else(|error| panic!("recover qualification source: {error:?}"))
+        .unwrap_or_else(|| panic!("qualification source Room absent"));
+        let source_recovery_receipt = source_recovery.receipt();
+        let source_recovery_head = source_recovery.trace().head().clone();
+        let checkpoint_v2_contract = verify_source_v2_checkpoint_contract(
+            &source,
+            &room_id,
+            &source_recovery_head,
+            source_recovery_receipt,
+        );
+        let source_snapshot = store
+            .gateway_room_snapshot(&registry, &room_id)
+            .unwrap_or_else(|error| panic!("load qualification source snapshot: {error:?}"))
+            .unwrap_or_else(|| panic!("qualification source Room absent"));
+        assert_eq!(
+            source_snapshot.trace().head(),
+            &source_recovery_head,
+            "gateway snapshot changed after guarded checkpoint recovery"
+        );
+        assert_eq!(
+            source_snapshot.trace().head().room_seq().get(),
+            source_transition_rows,
+            "recovered source head must match its canonical Transition row count"
+        );
+        let joined = MembershipV1::new(
+            AGENT_MEMBER
+                .parse()
+                .unwrap_or_else(|_| panic!("Agent Member ID")),
+            AGENT_PRINCIPAL
+                .parse()
+                .unwrap_or_else(|_| panic!("Agent Principal ID")),
+            PrincipalKindV1::Agent,
+            MembershipStandingV1::Enabled,
+            AccessModeV1::Participant,
+            Some("counter".to_owned()),
+        )
+        .unwrap_or_else(|error| panic!("Agent Membership shape: {error:?}"));
+        let join = CoreAdministrationRequestV1::new(
+            room_id.clone(),
+            AdministrationOperationIdentityV1 {
+                authenticated_principal: HOST_PRINCIPAL
+                    .parse()
+                    .unwrap_or_else(|_| panic!("host Principal")),
+                versioned_operation_kind: worldstream_core::CORE_OPERATION_KIND.to_owned(),
+                idempotency_key: JOIN_OPERATION.to_owned(),
+            },
+            CoreProposedKindV1::Join,
+            source_snapshot.trace().head().room_seq(),
+            "imo220_warm_claim_agent_join",
+            CoreChangeSetV1::one(MembershipChangeV1::join(joined)),
+        )
+        .unwrap_or_else(|error| panic!("prepare Agent Join request: {error:?}"));
+        let authority = AuthorityV1::new(Arc::new(store.clone()));
+        let presented = PresentedCapabilityV1::new(
+            HOST_CAPABILITY
+                .parse()
+                .unwrap_or_else(|_| panic!("host Capability")),
+            CapabilityBearerV1::from_bytes([0xa7; 32]),
+        );
+        let join_grant = match authorize_core_administration_operation(
+            &authority,
+            &store,
+            &presented,
+            &join,
+            "2026-08-15T12:00:00Z"
+                .parse()
+                .unwrap_or_else(|_| panic!("join checked at")),
+        )
+        .unwrap_or_else(|error| panic!("authorize Agent Join: {error:?}"))
+        {
+            CoreAdministrationIngressV1::Authorized(grant) => *grant,
+            other => panic!("Agent Join must be newly authorized: {other:?}"),
+        };
+        let join_resolution = store
+            .commit_authorized_core_administration(
+                &registry,
+                join_grant,
+                &join,
+                "2026-08-15T12:00:00Z"
+                    .parse()
+                    .unwrap_or_else(|_| panic!("join recorded at")),
+                JOIN_TRANSITION
+                    .parse::<TransitionId>()
+                    .unwrap_or_else(|_| panic!("join Transition ID")),
+            )
+            .unwrap_or_else(|error| panic!("commit Agent Join: {error:?}"));
+        assert!(
+            matches!(
+                join_resolution,
+                RoomCommitResolutionV1::TransitionCommitted { .. }
+            ),
+            "Agent Join did not advance canonical state: {join_resolution:?}"
+        );
+
+        // Provision through a throwaway backend: its snapshot validates the
+        // new target, but the measured backend below starts with an empty
+        // executor cache, so the first claim is a true production cold path.
+        let provisioning_backend = SqliteGatewayBackend::new(store.clone(), Arc::clone(&registry));
+        let host = session(0xa7, HOST_CAPABILITY);
+        let runner_capability = provisioning_backend
+            .provision_runner_capability(&host, sealed_runner_request(ROOM_ID, AGENT_MEMBER, 0xd1))
+            .unwrap_or_else(|error| panic!("provision qualification Runner: {error:?}"));
+        let member_capability = provisioning_backend
+            .issue_member_capability(
+                &host,
+                MemberCapabilityIssueRequest {
+                    room_id: ROOM_ID.to_owned(),
+                    member_id: HUMAN_MEMBER.to_owned(),
+                    principal_id: HOST_PRINCIPAL.to_owned(),
+                    scopes: vec![
+                        CapabilityScopeV1::RoomAct,
+                        CapabilityScopeV1::RoomObserveMember,
+                    ],
+                    idempotency_key: "01ARZ3NDEKTSV4RRFFQ69G5FJ4".to_owned(),
+                    expires_at: None,
+                },
+            )
+            .unwrap_or_else(|error| panic!("provision qualification Member: {error:?}"));
+        let member_wire = BearerWireV1::parse(&member_capability.bearer)
+            .unwrap_or_else(|_| panic!("qualification Member bearer"));
+        let member_bearer = CapabilityBearerV1::from_bytes(
+            BearerWireV1::parse(&member_capability.bearer)
+                .unwrap_or_else(|_| panic!("qualification Member bearer"))
+                .into_bytes(),
+        );
+        let member = GatewaySession::new_with_wire(
+            "01ARZ3NDEKTSV4RRFFQ69G5FJD"
+                .parse()
+                .unwrap_or_else(|_| panic!("qualification Member session")),
+            member_bearer,
+            member_wire,
+        );
+        drop(provisioning_backend);
+
+        let head = store
+            .current_room_serving_fence(&room_id)
+            .unwrap_or_else(|error| panic!("read post-Join serving fence: {error:?}"))
+            .unwrap_or_else(|| panic!("post-Join serving fence absent"));
+        let canonical_transition_rows = rusqlite::Connection::open(&source)
+            .unwrap_or_else(|error| panic!("open post-Join row counter: {error}"))
+            .query_row(
+                "SELECT count(*) FROM transitions WHERE room_id = ?1",
+                [ROOM_ID],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| u64::try_from(count).unwrap_or_else(|_| panic!("negative row count")))
+            .unwrap_or_else(|error| panic!("count post-Join transitions: {error}"));
+        assert_eq!(canonical_transition_rows, expected_history + 1);
+        let activation_id = format!("imo220-warm-activation-{expected_history}");
+        let connection = rusqlite::Connection::open(&source)
+            .unwrap_or_else(|error| panic!("open Activation fixture: {error}"));
+        connection
+            .execute(
+                "INSERT INTO activation_intents(\
+                 activation_id, room_id, cause_room_seq, decision_id, target_member_id,\
+                 reason_code, deduplication_key, priority, policy_revision, state,\
+                 intent_generation, lease_generation, created_at)\
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'imo220-warm', ?6, 1, 1, 'pending', 1, 0, \
+                         strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                rusqlite::params![
+                    activation_id,
+                    ROOM_ID,
+                    i64::try_from(head.head().room_seq().get())
+                        .unwrap_or_else(|_| panic!("head sequence exceeds SQLite range")),
+                    format!("imo220-warm-decision-{expected_history}"),
+                    AGENT_MEMBER,
+                    format!("imo220-warm-dedup-{expected_history}"),
+                ],
+            )
+            .unwrap_or_else(|error| panic!("seed qualification Activation: {error}"));
+        drop(connection);
+
+        let backend = SqliteGatewayBackend::new(store.clone(), Arc::clone(&registry));
+        let runner = session(0xd1, &runner_capability.capability_id);
+        let cold_started = Instant::now();
+        let cold_claim = backend
+            .activation_claim(
+                &runner,
+                ActivationClaim {
+                    activation_id: activation_id.clone(),
+                    runner_id: runner_capability.runner_id.clone(),
+                    claim_id: "imo220-cold-claim".to_owned(),
+                    requested_lease_ms: 30_000,
+                },
+            )
+            .unwrap_or_else(|error| panic!("cold Activation claim: {error:?}"));
+        let cold_elapsed_us = u64::try_from(cold_started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        assert_eq!(cold_claim.code, ActivationResultCode::Granted);
+        let cold_context_bytes = cold_claim
+            .context
+            .as_ref()
+            .map(|context| {
+                serde_json::to_vec(context)
+                    .unwrap_or_else(|error| panic!("encode redacted context size: {error}"))
+                    .len()
+            })
+            .unwrap_or_else(|| panic!("cold claim omitted invocation Context"));
+        let cold_generation = cold_claim
+            .lease_generation
+            .unwrap_or_else(|| panic!("cold claim omitted lease generation"));
+        let cold_release = backend
+            .activation_release(
+                &runner,
+                ActivationLeaseOperation {
+                    activation_id: activation_id.clone(),
+                    runner_id: runner_capability.runner_id.clone(),
+                    claim_id: "imo220-cold-claim".to_owned(),
+                    operation_id: "imo220-cold-release".to_owned(),
+                    lease_generation: cold_generation,
+                    requested_lease_ms: None,
+                    disposition: None,
+                },
+            )
+            .unwrap_or_else(|error| panic!("cold Activation release: {error:?}"));
+        assert_eq!(cold_release.code, ActivationResultCode::Released);
+
+        let callbacks_before = backend
+            .trace_cache
+            .with_room(&room_id, |slot| {
+                slot.as_ref()
+                    .map(|cached| cached.trace().activity_callback_count())
+                    .unwrap_or_else(|| panic!("cold claim did not install cached trace"))
+            })
+            .unwrap_or_else(|_| panic!("inspect cold cached trace"));
+        let fence_before = store
+            .current_room_serving_fence(&room_id)
+            .unwrap_or_else(|error| panic!("read warm serving fence: {error:?}"))
+            .unwrap_or_else(|| panic!("warm serving fence absent"));
+
+        // This row is inside the current canonical prefix. A recovery or a
+        // whole-history verifier after this point would fail. A warm claim
+        // must instead validate only the bounded current materialization and
+        // its ordinary activation witnesses.
+        let connection = rusqlite::Connection::open(&source)
+            .unwrap_or_else(|error| panic!("open history corruptor: {error}"));
+        // The fixture source is explicitly disposable. Its normal immutable
+        // Transition guard is removed only to make an in-prefix corruption
+        // observable to a hypothetical replay; production callers cannot
+        // perform this mutation.
+        connection
+            .execute_batch("DROP TRIGGER transitions_immutable_update;")
+            .unwrap_or_else(|error| panic!("open disposable corruption seam: {error}"));
+        assert_eq!(
+            connection
+                .execute(
+                    "UPDATE transitions SET transition_bytes = x'00' \
+                     WHERE room_id = ?1 AND room_seq = 1",
+                    [ROOM_ID],
+                )
+                .unwrap_or_else(|error| panic!("corrupt in-head history row: {error}")),
+            1,
+            "fixture must have canonical Transition 1 to corrupt"
+        );
+        drop(connection);
+        backend.forbid_recovery_for_test();
+
+        const MAX_LATENCY_SAMPLES: usize = 4096;
+        const MAX_RSS_SAMPLES: usize = 128;
+        // The deterministic qualification Counter offers two `increment`
+        // Actions before it switches to its `private_ack` offer. Keep this
+        // metric tied to the real offered-action domain instead of inventing
+        // a third payload merely to enlarge a percentile sample.
+        const WARM_ACTION_COUNT: usize = 2;
+        const STALE_ACTION_COUNT: usize = 4;
+        let action_ids = ["01ARZ3NDEKTSV4RRFFQ69G5FJ5", "01ARZ3NDEKTSV4RRFFQ69G5FJ6"];
+        let stale_action_ids = [
+            "01ARZ3NDEKTSV4RRFFQ69G5FJ9",
+            "01ARZ3NDEKTSV4RRFFQ69G5FJA",
+            "01ARZ3NDEKTSV4RRFFQ69G5FJB",
+            "01ARZ3NDEKTSV4RRFFQ69G5FJC",
+        ];
+        assert_eq!(action_ids.len(), WARM_ACTION_COUNT);
+        assert_eq!(stale_action_ids.len(), STALE_ACTION_COUNT);
+
+        // These are the fixture Counter's real accepted participant Actions
+        // after corruption and after a cold Claim installed the trace. They
+        // prove that the cache can keep serving and advancing the canonical
+        // executor without re-reading the corrupted prefix.
+        let mut action_latencies = Vec::with_capacity(WARM_ACTION_COUNT);
+        let mut next_action_basis = fence_before.head().room_seq().get();
+        for action_id in action_ids {
+            let started = Instant::now();
+            let accepted = match backend
+                .action(
+                    &member,
+                    ActionSubmit {
+                        room_id: ROOM_ID.to_owned(),
+                        member_id: HUMAN_MEMBER.to_owned(),
+                        action_id: action_id.to_owned(),
+                        based_on_room_seq: next_action_basis,
+                        action_type: "increment".to_owned(),
+                        payload: json!({}),
+                    },
+                )
+                .unwrap_or_else(|error| panic!("warm Action {action_id}: {error:?}"))
+            {
+                ActionReply::Accepted(reply) => reply,
+                ActionReply::Rejected(reply) => {
+                    panic!("warm Action {action_id} rejected: {reply:?}")
+                }
+            };
+            assert!(!accepted.duplicate, "warm Action {action_id} duplicated");
+            next_action_basis = next_action_basis
+                .checked_add(1)
+                .unwrap_or_else(|| panic!("warm Action basis overflow"));
+            assert_eq!(accepted.room_head.room_seq, next_action_basis);
+            action_latencies.push(started.elapsed());
+        }
+        let fence_after_actions = store
+            .current_room_serving_fence(&room_id)
+            .unwrap_or_else(|error| panic!("read post-Action serving fence: {error:?}"))
+            .unwrap_or_else(|| panic!("post-Action serving fence absent"));
+        assert_eq!(
+            fence_after_actions.head().room_seq().get(),
+            next_action_basis,
+            "accepted Actions must advance the durable serving fence"
+        );
+        assert_eq!(fence_after_actions.integrity(), fence_before.integrity());
+        let callbacks_after_actions = backend
+            .trace_cache
+            .with_room(&room_id, |slot| {
+                slot.as_ref()
+                    .map(|cached| cached.trace().activity_callback_count())
+                    .unwrap_or_else(|| panic!("warm Action evicted cached trace"))
+            })
+            .unwrap_or_else(|_| panic!("inspect post-Action cached trace"));
+        assert_eq!(
+            callbacks_after_actions,
+            callbacks_before + WARM_ACTION_COUNT,
+            "each accepted Counter Action must execute one canonical reducer callback"
+        );
+
+        // This is the production current-read endpoint. It verifies the
+        // serving fence before and after borrowing the cached executor, and
+        // recovery is forbidden above, so every successful sample is a real
+        // warm read rather than an unbounded historical reconstruction.
+        let mut current_read_latencies =
+            Vec::with_capacity(MAX_LATENCY_SAMPLES.min(warm_claim_count));
+        for index in 0..warm_claim_count {
+            let started = Instant::now();
+            let response = backend
+                .projection_response(&member, ROOM_ID)
+                .unwrap_or_else(|error| panic!("warm current read {index}: {error:?}"));
+            assert_eq!(
+                response.room_head.room_seq,
+                fence_after_actions.head().room_seq().get(),
+                "warm current read {index} observed an unexpected serving head"
+            );
+            let elapsed = started.elapsed();
+            if current_read_latencies.len() < MAX_LATENCY_SAMPLES {
+                current_read_latencies.push(elapsed);
+            } else {
+                current_read_latencies[index % MAX_LATENCY_SAMPLES] = elapsed;
+            }
+        }
+        let callbacks_after_current_reads = backend
+            .trace_cache
+            .with_room(&room_id, |slot| {
+                slot.as_ref()
+                    .map(|cached| cached.trace().activity_callback_count())
+                    .unwrap_or_else(|| panic!("warm current read evicted cached trace"))
+            })
+            .unwrap_or_else(|_| panic!("inspect post-read cached trace"));
+        assert_eq!(
+            callbacks_after_current_reads, callbacks_after_actions,
+            "warm current reads may render a view but must not run canonical reducers"
+        );
+
+        // Use fresh Action identities and an obsolete basis to measure the
+        // real stale-admission path. A rejection must not change the cached
+        // trace or the durable head.
+        let mut stale_action_latencies = Vec::with_capacity(STALE_ACTION_COUNT);
+        let mut stale_action_rejections = 0usize;
+        let stale_basis = fence_before.head().room_seq().get();
+        for action_id in stale_action_ids {
+            let started = Instant::now();
+            let rejected = match backend
+                .action(
+                    &member,
+                    ActionSubmit {
+                        room_id: ROOM_ID.to_owned(),
+                        member_id: HUMAN_MEMBER.to_owned(),
+                        action_id: action_id.to_owned(),
+                        based_on_room_seq: stale_basis,
+                        action_type: "increment".to_owned(),
+                        payload: json!({}),
+                    },
+                )
+                .unwrap_or_else(|error| panic!("stale Action {action_id}: {error:?}"))
+            {
+                ActionReply::Rejected(reply) => reply,
+                ActionReply::Accepted(reply) => {
+                    panic!("stale Action {action_id} accepted: {reply:?}")
+                }
+            };
+            assert_eq!(rejected.code, "stale_room_state");
+            assert_eq!(
+                rejected.current_room_seq,
+                fence_after_actions.head().room_seq().get()
+            );
+            assert!(!rejected.duplicate, "stale Action {action_id} duplicated");
+            stale_action_rejections += 1;
+            stale_action_latencies.push(started.elapsed());
+        }
+        assert_eq!(stale_action_rejections, STALE_ACTION_COUNT);
+
+        let mut claim_latencies = Vec::with_capacity(MAX_LATENCY_SAMPLES.min(warm_claim_count));
+        let mut rss_samples = Vec::with_capacity(MAX_RSS_SAMPLES);
+        let rss_stride = (warm_claim_count / MAX_RSS_SAMPLES).max(1);
+        let mut previous: Option<(String, u64)> = None;
+        for index in 0..warm_claim_count {
+            if let Some((claim_id, lease_generation)) = previous.take() {
+                let release = backend
+                    .activation_release(
+                        &runner,
+                        ActivationLeaseOperation {
+                            activation_id: activation_id.clone(),
+                            runner_id: runner_capability.runner_id.clone(),
+                            claim_id,
+                            operation_id: format!("imo220-warm-release-{index}"),
+                            lease_generation,
+                            requested_lease_ms: None,
+                            disposition: None,
+                        },
+                    )
+                    .unwrap_or_else(|error| panic!("warm Activation release {index}: {error:?}"));
+                assert_eq!(release.code, ActivationResultCode::Released);
+            }
+            let claim_id = format!("imo220-warm-claim-{index}");
+            let started = Instant::now();
+            let claim = backend
+                .activation_claim(
+                    &runner,
+                    ActivationClaim {
+                        activation_id: activation_id.clone(),
+                        runner_id: runner_capability.runner_id.clone(),
+                        claim_id: claim_id.clone(),
+                        requested_lease_ms: 30_000,
+                    },
+                )
+                .unwrap_or_else(|error| panic!("warm Activation claim {index}: {error:?}"));
+            assert_eq!(claim.code, ActivationResultCode::Granted);
+            let elapsed = started.elapsed();
+            if claim_latencies.len() < MAX_LATENCY_SAMPLES {
+                claim_latencies.push(elapsed);
+            } else {
+                // Keep latency and RSS evidence bounded even for a caller
+                // requesting a larger operator sample count.
+                claim_latencies[index % MAX_LATENCY_SAMPLES] = elapsed;
+            }
+            if index % rss_stride == 0 {
+                if let Some(rss) = warm_claim_rss_bytes() {
+                    if rss_samples.len() < MAX_RSS_SAMPLES {
+                        rss_samples.push(rss);
+                    } else {
+                        rss_samples[index % MAX_RSS_SAMPLES] = rss;
+                    }
+                }
+            }
+            previous = Some((
+                claim_id,
+                claim
+                    .lease_generation
+                    .unwrap_or_else(|| panic!("warm claim {index} omitted lease generation")),
+            ));
+        }
+        if let Some((claim_id, lease_generation)) = previous {
+            let release = backend
+                .activation_release(
+                    &runner,
+                    ActivationLeaseOperation {
+                        activation_id: activation_id.clone(),
+                        runner_id: runner_capability.runner_id.clone(),
+                        claim_id,
+                        operation_id: "imo220-warm-release-final".to_owned(),
+                        lease_generation,
+                        requested_lease_ms: None,
+                        disposition: None,
+                    },
+                )
+                .unwrap_or_else(|error| panic!("final warm Activation release: {error:?}"));
+            assert_eq!(release.code, ActivationResultCode::Released);
+        }
+
+        let callbacks_after = backend
+            .trace_cache
+            .with_room(&room_id, |slot| {
+                slot.as_ref()
+                    .map(|cached| cached.trace().activity_callback_count())
+                    .unwrap_or_else(|| panic!("warm cache was evicted"))
+            })
+            .unwrap_or_else(|_| panic!("inspect final cached trace"));
+        assert_eq!(
+            callbacks_after, callbacks_after_actions,
+            "warm current reads, stale Actions, and warm claims must not run canonical reducers"
+        );
+        let fence_after = store
+            .current_room_serving_fence(&room_id)
+            .unwrap_or_else(|error| panic!("read final serving fence: {error:?}"))
+            .unwrap_or_else(|| panic!("final serving fence absent"));
+        assert_eq!(fence_after.head(), fence_after_actions.head());
+        assert_eq!(fence_after.integrity(), fence_after_actions.integrity());
+        let connection = rusqlite::Connection::open(&source)
+            .unwrap_or_else(|error| panic!("open final qualifier inspection: {error}"));
+        let final_transition_rows: u64 = connection
+            .query_row(
+                "SELECT count(*) FROM transitions WHERE room_id = ?1",
+                [ROOM_ID],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| u64::try_from(count).unwrap_or_else(|_| panic!("negative row count")))
+            .unwrap_or_else(|error| panic!("count final transitions: {error}"));
+        let (final_state, final_lease_generation): (String, i64) = connection
+            .query_row(
+                "SELECT state, lease_generation FROM activation_intents WHERE activation_id = ?1",
+                [&activation_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or_else(|error| panic!("read final Activation state: {error}"));
+        let (pending_rows, oldest_pending_cause_room_seq, oldest_pending_created_at): (
+            i64,
+            Option<i64>,
+            Option<String>,
+        ) = connection
+            .query_row(
+                "SELECT count(*), min(cause_room_seq), min(created_at) \
+                 FROM activation_intents \
+                 WHERE room_id = ?1 AND target_member_id = ?2 AND state = 'pending'",
+                [ROOM_ID, AGENT_MEMBER],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap_or_else(|error| panic!("read durable Activation queue: {error}"));
+        drop(connection);
+        let expected_final_transition_rows = canonical_transition_rows
+            .checked_add(u64::try_from(WARM_ACTION_COUNT).unwrap_or(u64::MAX))
+            .unwrap_or_else(|| panic!("expected canonical row count overflow"));
+        assert_eq!(final_transition_rows, expected_final_transition_rows);
+        assert_eq!(final_state, "pending");
+        assert_eq!(
+            pending_rows, 1,
+            "one durable pending Activation must remain"
+        );
+        let oldest_pending_cause_room_seq = oldest_pending_cause_room_seq
+            .and_then(|value| u64::try_from(value).ok())
+            .unwrap_or_else(|| panic!("pending Activation omitted cause Room sequence"));
+        let oldest_pending_created_at = oldest_pending_created_at
+            .unwrap_or_else(|| panic!("pending Activation omitted creation time"));
+        let oldest_pending_created_at = OffsetDateTime::parse(&oldest_pending_created_at, &Rfc3339)
+            .unwrap_or_else(|error| panic!("parse pending Activation creation time: {error}"));
+        let oldest_pending_age_ms = u64::try_from(
+            (OffsetDateTime::now_utc() - oldest_pending_created_at)
+                .whole_milliseconds()
+                .max(0),
+        )
+        .unwrap_or(u64::MAX);
+        let operator_queue = backend
+            .operator_activation_status(&host, ROOM_ID, AGENT_MEMBER)
+            .unwrap_or_else(|error| panic!("query host-authorized Activation queue: {error:?}"));
+        assert_eq!(operator_queue.waiting, 1);
+        assert_eq!(operator_queue.leased, 0);
+
+        let action_latency_p50_us = warm_claim_percentile_us(&mut action_latencies, 50);
+        let action_latency_p95_us = warm_claim_percentile_us(&mut action_latencies, 95);
+        let action_latency_p99_us = warm_claim_percentile_us(&mut action_latencies, 99);
+        let current_read_latency_p50_us = warm_claim_percentile_us(&mut current_read_latencies, 50);
+        let current_read_latency_p95_us = warm_claim_percentile_us(&mut current_read_latencies, 95);
+        let current_read_latency_p99_us = warm_claim_percentile_us(&mut current_read_latencies, 99);
+        let stale_action_latency_p50_us = warm_claim_percentile_us(&mut stale_action_latencies, 50);
+        let stale_action_latency_p95_us = warm_claim_percentile_us(&mut stale_action_latencies, 95);
+        let stale_action_latency_p99_us = warm_claim_percentile_us(&mut stale_action_latencies, 99);
+        let claim_latency_p50_us = warm_claim_percentile_us(&mut claim_latencies, 50);
+        let claim_latency_p95_us = warm_claim_percentile_us(&mut claim_latencies, 95);
+        let claim_latency_p99_us = warm_claim_percentile_us(&mut claim_latencies, 99);
+        let rss = if rss_samples.is_empty() {
+            serde_json::Value::Null
+        } else {
+            let mut sorted = rss_samples;
+            sorted.sort_unstable();
+            let at = |percentile: usize| {
+                sorted[((sorted.len().saturating_sub(1) * percentile) / 100).min(sorted.len() - 1)]
+            };
+            json!({
+                "sample_count": sorted.len(),
+                "p50": at(50),
+                "p95": at(95),
+                "p99": at(99),
+                "max": sorted.last(),
+            })
+        };
+        let evidence = json!({
+            "schema": "worldstream/imo-220-warm-claim-qualification/sqlite-v2",
+            "backend": "sqlite",
+            "source": {
+                "fixture_transition_rows": source_transition_rows,
+                "canonical_transition_rows_after_agent_join": canonical_transition_rows,
+                "canonical_transition_rows_after_warm_actions": final_transition_rows,
+                "expected_fixture_transition_rows": expected_history,
+                "checkpoint_v2_contract": checkpoint_v2_contract,
+            },
+            "cold_claim": {
+                "latency_us": cold_elapsed_us,
+                "context_bytes": cold_context_bytes,
+                "result": "granted",
+            },
+            "warm_actions": {
+                "accepted_count": WARM_ACTION_COUNT,
+                "bounded_latency_sample_count": action_latencies.len(),
+                "latency_us": {
+                    "p50": action_latency_p50_us,
+                    "p95": action_latency_p95_us,
+                    "p99": action_latency_p99_us,
+                },
+                "reducer_callbacks_before": callbacks_before,
+                "reducer_callbacks_after": callbacks_after_actions,
+                "canonical_transition_rows_before": canonical_transition_rows,
+                "canonical_transition_rows_after": final_transition_rows,
+            },
+            "warm_current_reads": {
+                "read_count": warm_claim_count,
+                "bounded_latency_sample_count": current_read_latencies.len(),
+                "latency_us": {
+                    "p50": current_read_latency_p50_us,
+                    "p95": current_read_latency_p95_us,
+                    "p99": current_read_latency_p99_us,
+                },
+                "reducer_callbacks_before": callbacks_after_actions,
+                "reducer_callbacks_after": callbacks_after_current_reads,
+            },
+            "warm_claims": {
+                "claim_count": warm_claim_count,
+                "bounded_latency_sample_count": claim_latencies.len(),
+                "latency_us": {
+                    "p50": claim_latency_p50_us,
+                    "p95": claim_latency_p95_us,
+                    "p99": claim_latency_p99_us,
+                },
+                "rss_bytes": rss,
+                "reducer_callbacks_before": callbacks_after_actions,
+                "reducer_callbacks_after": callbacks_after,
+            },
+            "stale_actions": {
+                "submitted_count": STALE_ACTION_COUNT,
+                "stale_rejection_count": stale_action_rejections,
+                "stale_rate": stale_action_rejections as f64 / STALE_ACTION_COUNT as f64,
+                "bounded_latency_sample_count": stale_action_latencies.len(),
+                "latency_us": {
+                    "p50": stale_action_latency_p50_us,
+                    "p95": stale_action_latency_p95_us,
+                    "p99": stale_action_latency_p99_us,
+                },
+            },
+            "activation_queue": {
+                "operator_waiting": operator_queue.waiting,
+                "operator_leased": operator_queue.leased,
+                "durable_pending_rows": u64::try_from(pending_rows).unwrap_or(0),
+                "oldest_pending_cause_room_seq": oldest_pending_cause_room_seq,
+                "oldest_pending_age_ms": oldest_pending_age_ms,
+            },
+            "fence": {
+                "head_room_seq_before_warm_actions": fence_before.head().room_seq().get(),
+                "head_room_seq": fence_after.head().room_seq().get(),
+                "integrity_generation": fence_after.integrity().generation().get(),
+                "head_stable_after_warm_actions": fence_after.head() == fence_after_actions.head(),
+                "integrity_unchanged": fence_after.integrity() == fence_after_actions.integrity(),
+            },
+            "corruption_proof": {
+                "in_head_transition_row_corrupted_after_cold_cache_install": true,
+                "recovery_forbidden_after_corruption": true,
+                "warm_actions_accepted_after_corruption": WARM_ACTION_COUNT,
+                "warm_current_reads_served_after_corruption": warm_claim_count,
+                "warm_claims_granted": warm_claim_count,
+                "canonical_transition_rows_unchanged_after_warm_actions": final_transition_rows == expected_final_transition_rows,
+            },
+            "activation_final": {
+                "state": final_state,
+                "lease_generation": u64::try_from(final_lease_generation).unwrap_or(0),
+            },
+        });
+        let evidence_text = serde_json::to_string(&evidence)
+            .unwrap_or_else(|error| panic!("serialize qualification evidence: {error}"));
+        if let Some(path) = env::var_os("WORLDSTREAM_WARM_CLAIM_EVIDENCE_FILE") {
+            fs::write(path, format!("{evidence_text}\n"))
+                .unwrap_or_else(|error| panic!("write qualification evidence: {error}"));
+        }
+        eprintln!("IMO220_SQLITE_WARM_CLAIM_EVIDENCE={evidence_text}");
     }
 
     struct CountingWallClock {

@@ -109,6 +109,10 @@ pooler_status="not_checked"
 pooler_reason="not_checked"
 live_adapter_status="not_run"
 gateway_status="not_run"
+gateway_direct_status="not_run"
+gateway_pooler_status="not_run"
+gateway_direct_warm_summary="{}"
+gateway_pooler_warm_summary="{}"
 harness_status="not_run"
 harness_summary_json="{}"
 live_marker_migrate="not_observed"
@@ -240,6 +244,10 @@ json_report() {
     POSTGRES_LIVE_POOLER_REASON="$pooler_reason" \
     POSTGRES_LIVE_ADAPTER_STATUS="$live_adapter_status" \
     POSTGRES_LIVE_GATEWAY_STATUS="$gateway_status" \
+    POSTGRES_LIVE_GATEWAY_DIRECT_STATUS="$gateway_direct_status" \
+    POSTGRES_LIVE_GATEWAY_POOLER_STATUS="$gateway_pooler_status" \
+    POSTGRES_LIVE_GATEWAY_DIRECT_WARM_SUMMARY="$gateway_direct_warm_summary" \
+    POSTGRES_LIVE_GATEWAY_POOLER_WARM_SUMMARY="$gateway_pooler_warm_summary" \
     POSTGRES_LIVE_HARNESS_STATUS="$harness_status" \
     POSTGRES_LIVE_HARNESS_SUMMARY="$harness_summary_json" \
     POSTGRES_LIVE_MARKER_MIGRATE="$live_marker_migrate" \
@@ -276,6 +284,8 @@ transfer_summary = json.loads(os.environ.get("POSTGRES_LIVE_TRANSFER_SUMMARY", "
 harness_summary = json.loads(os.environ.get("POSTGRES_LIVE_HARNESS_SUMMARY", "{}"))
 recovery_scale_summary = json.loads(os.environ.get("POSTGRES_LIVE_RECOVERY_SCALE_SUMMARY", "[]"))
 snapshot_cadence_summary = json.loads(os.environ.get("POSTGRES_LIVE_SNAPSHOT_CADENCE_SUMMARY", "{}"))
+gateway_direct_warm_summary = json.loads(os.environ.get("POSTGRES_LIVE_GATEWAY_DIRECT_WARM_SUMMARY", "{}"))
+gateway_pooler_warm_summary = json.loads(os.environ.get("POSTGRES_LIVE_GATEWAY_POOLER_WARM_SUMMARY", "{}"))
 report = {
     "schema": os.environ["POSTGRES_LIVE_SCHEMA"],
     "status": os.environ["POSTGRES_LIVE_STATUS"],
@@ -302,6 +312,18 @@ report = {
         "production_gateway": os.environ.get("POSTGRES_LIVE_GATEWAY_STATUS", "not_run"),
         "redacted_harness": os.environ.get("POSTGRES_LIVE_HARNESS_STATUS", "not_run"),
         "redacted_harness_evidence": harness_summary,
+    },
+    "warm_activation_audit": {
+        "schema": "worldstream/imo-220-postgres-warm-audit/v1",
+        "contract": "production gateway restart installs one verified executor; fresh claim/release identities reuse it without recovery on direct and transaction-pool connections",
+        "direct": {
+            "status": os.environ.get("POSTGRES_LIVE_GATEWAY_DIRECT_STATUS", "not_run"),
+            "fresh_claim_metrics": gateway_direct_warm_summary,
+        },
+        "transaction_pool": {
+            "status": os.environ.get("POSTGRES_LIVE_GATEWAY_POOLER_STATUS", "not_run"),
+            "fresh_claim_metrics": gateway_pooler_warm_summary,
+        },
     },
     "marker_witnesses": {
         "direct_admin_migrate_verify_major_17": os.environ.get("POSTGRES_LIVE_MARKER_MIGRATE", "not_observed"),
@@ -793,26 +815,144 @@ if [[ "$live_adapter_status" == "pass" ]]; then
 fi
 
 # Exercise the production GatewayBackend adapter itself, not a conformance
-# seam. The test receives only an owner-readable DSN file path and retains no
-# credential-bearing output.
-gateway_dsn_file="$temp_root/gateway-runtime.dsn"
-printf '%s\n' "$runtime_dsn" >"$gateway_dsn_file"
-chmod 600 "$gateway_dsn_file"
-gateway_log="$temp_root/production-gateway.log"
-if [[ "$live_adapter_status" == "pass" ]]; then
-  if WORLDSTREAM_POSTGRES_GATEWAY_DSN_FILE="$gateway_dsn_file" \
+# seam. Fresh claim/release identities are measured after a restart-installed
+# trace on both connection profiles. The owner-readable DSN files and raw
+# cargo logs remain in the temporary directory; the final report keeps only
+# the parsed, non-secret metrics.
+gateway_warm_samples="${WORLDSTREAM_POSTGRES_WARM_CLAIM_SAMPLES:-32}"
+if [[ ! "$gateway_warm_samples" =~ ^[1-9][0-9]*$ ]] \
+  || (( gateway_warm_samples > 4096 )); then
+  gateway_status="failed"
+  add_error "production_gateway_warm_sample_count_invalid"
+fi
+
+parse_gateway_warm_summary() {
+  local log_file="$1"
+  local expected_path="$2"
+  "$python_bin" - "$log_file" "$expected_path" <<'PY'
+import json
+import re
+import sys
+
+log_file, expected_path = sys.argv[1:]
+prefix = "LIVE_POSTGRES_GATEWAY=PASS "
+pattern = re.compile(
+    r"path=(?P<path>\w+) samples=(?P<samples>\d+) "
+    r"current_read_p50_us=(?P<read_p50>\d+) "
+    r"current_read_p95_us=(?P<read_p95>\d+) "
+    r"current_read_p99_us=(?P<read_p99>\d+) "
+    r"current_read_callbacks=(?P<read_callbacks>\d+) "
+    r"p50_us=(?P<p50>\d+) p95_us=(?P<p95>\d+) "
+    r"p99_us=(?P<p99>\d+) reducer_callbacks=(?P<callbacks>\d+) "
+    r"canonical_transition_rows_before_claims=(?P<rows_before>\d+) "
+    r"canonical_transition_rows_after_claims=(?P<rows_after>\d+)"
+)
+summary = None
+with open(log_file, encoding="utf-8") as source:
+    for line in source:
+        if not line.startswith(prefix):
+            continue
+        match = pattern.search(line)
+        if match is None:
+            continue
+        values = match.groupdict()
+        if values["path"] != expected_path:
+            continue
+        summary = {
+            "connection_path": values["path"],
+            "warm_current_reads": {
+                "read_count": int(values["samples"]),
+                "latency_us": {
+                    "p50": int(values["read_p50"]),
+                    "p95": int(values["read_p95"]),
+                    "p99": int(values["read_p99"]),
+                },
+                "reducer_callbacks_after": int(values["read_callbacks"]),
+                "reducer_callbacks_unchanged": True,
+            },
+            "warm_claims": {
+                "fresh_claim_release_cycles": int(values["samples"]),
+                "latency_us": {
+                    "p50": int(values["p50"]),
+                    "p95": int(values["p95"]),
+                    "p99": int(values["p99"]),
+                },
+                "reducer_callbacks_after": int(values["callbacks"]),
+                "reducer_callbacks_unchanged": True,
+                "recovery_forbidden_during_warm_cycles": True,
+            },
+            "canonical_transitions": {
+                "rows_before_claim_cycles": int(values["rows_before"]),
+                "rows_after_claim_cycles": int(values["rows_after"]),
+                "unchanged_during_claim_cycles": values["rows_before"] == values["rows_after"],
+            },
+        }
+if summary is None:
+    raise SystemExit("missing or malformed production gateway warm marker")
+print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
+PY
+}
+
+run_gateway_warm_path() {
+  local label="$1"
+  local dsn="$2"
+  local expected_path="$3"
+  local dsn_file="$temp_root/gateway-${label}-runtime.dsn"
+  local log_file="$temp_root/production-gateway-${label}.log"
+  local summary=""
+  printf '%s\n' "$dsn" >"$dsn_file"
+  chmod 600 "$dsn_file"
+  if WORLDSTREAM_POSTGRES_GATEWAY_DSN_FILE="$dsn_file" \
+    WORLDSTREAM_POSTGRES_GATEWAY_CONNECTION_PATH="$label" \
+    WORLDSTREAM_POSTGRES_WARM_CLAIM_SAMPLES="$gateway_warm_samples" \
     "$cargo_bin" test --locked -p worldstream-server --lib \
       live_postgres_gateway_counter_workflow_uses_production_backend -- --nocapture \
-      >"$gateway_log" 2>&1 \
-    && grep -Fq 'LIVE_POSTGRES_GATEWAY=PASS create+duplicate+conflict+projection+replay+attach+sync+resync+action+stale+live+ack+restart' "$gateway_log"; then
+      >"$log_file" 2>&1 \
+    && grep -Fq 'LIVE_POSTGRES_GATEWAY=PASS create+duplicate+conflict+projection+replay+attach+sync+resync+action+stale+live+ack+restart' "$log_file" \
+    && summary="$(parse_gateway_warm_summary "$log_file" "$expected_path")"; then
+    case "$label" in
+      direct)
+        gateway_direct_status="pass"
+        gateway_direct_warm_summary="$summary"
+        ;;
+      transaction_pool)
+        gateway_pooler_status="pass"
+        gateway_pooler_warm_summary="$summary"
+        ;;
+      *)
+        return 2
+        ;;
+    esac
+    return 0
+  fi
+  case "$label" in
+    direct) gateway_direct_status="failed" ;;
+    transaction_pool) gateway_pooler_status="failed" ;;
+    *) return 2 ;;
+  esac
+  return 1
+}
+
+if [[ "$live_adapter_status" == "pass" && "$pooler_status" == "pass" \
+  && "$gateway_status" != "failed" ]]; then
+  if run_gateway_warm_path "direct" "$runtime_dsn" "Direct"; then
+    if ! run_db_admin_sql "$truncate_sql"; then
+      gateway_direct_status="failed"
+      add_error "production_gateway_direct_state_reset_failed"
+    elif ! run_gateway_warm_path "transaction_pool" "$pooler_dsn" "TransactionPool"; then
+      add_error "production_gateway_pooler_workflow_failed"
+    fi
+  else
+    add_error "production_gateway_direct_workflow_failed"
+  fi
+  if [[ "$gateway_direct_status" == "pass" && "$gateway_pooler_status" == "pass" ]]; then
     gateway_status="pass"
   else
     gateway_status="failed"
-    add_error "production_gateway_workflow_failed"
   fi
 else
   gateway_status="not_run"
-  add_error "production_gateway_requires_live_adapter"
+  add_error "production_gateway_requires_live_adapter_and_pooler"
 fi
 if [[ "$gateway_status" == "pass" ]] && ! run_db_admin_sql "$truncate_sql"; then
   gateway_status="failed"
