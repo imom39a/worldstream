@@ -62,6 +62,9 @@ pub const CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID: &str =
     "0018-checkpoint-operational-witness-v1";
 /// Adds incrementally maintained roots for guard-only checkpoint histories.
 pub const OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID: &str = "0019-operational-history-roots-v2";
+/// Adds the bounded current Timer materialization used only by V2 checkpoint
+/// recovery. The immutable Timer ledger remains the forensic authority.
+pub const CURRENT_TIMERS_MIGRATION_ID: &str = "0020-current-timers-v2";
 
 /// A migration body and its stable identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -135,6 +138,9 @@ pub const SCHEMA_FINGERPRINT_MATERIAL: &str = concat!(
     "membership_generation:bigint:NO,retained_frame_floor:bigint:NO,last_ack_frame_seq:bigint:YES,",
     "reset_required_through:bigint:YES,reset_generation:bigint:NO);",
     "worldstream_timers(",
+    "room_id:text:NO,timer_id:text:NO,generation:bigint:NO,scheduled_for:text:NO,",
+    "payload_bytes:bytea:NO,state:text:NO);",
+    "worldstream_room_current_timers_v2(",
     "room_id:text:NO,timer_id:text:NO,generation:bigint:NO,scheduled_for:text:NO,",
     "payload_bytes:bytea:NO,state:text:NO);",
     "worldstream_transitions(",
@@ -251,7 +257,7 @@ pub fn schema_contract_fingerprint() -> Blake3DigestV1 {
 
 /// The complete ordered migration history.
 #[must_use]
-pub fn migration_history() -> [MigrationDescriptor; 19] {
+pub fn migration_history() -> [MigrationDescriptor; 20] {
     [
         MigrationDescriptor {
             version: 1,
@@ -347,6 +353,11 @@ pub fn migration_history() -> [MigrationDescriptor; 19] {
             version: 19,
             id: OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID,
             sql: MIGRATION_0019_SQL,
+        },
+        MigrationDescriptor {
+            version: 20,
+            id: CURRENT_TIMERS_MIGRATION_ID,
+            sql: MIGRATION_0020_SQL,
         },
     ]
 }
@@ -972,6 +983,23 @@ CREATE TRIGGER worldstream_transfer_fence_operational_history_roots_v2
     FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
 ";
 
+/// Retains the latest Timer generation per identity for bounded V2 checkpoint
+/// recovery. Historical generations remain in `worldstream_timers`.
+pub const MIGRATION_0020_SQL: &str = r"
+CREATE TABLE worldstream_room_current_timers_v2 (
+    room_id text NOT NULL REFERENCES worldstream_room_roots(room_id) ON DELETE CASCADE,
+    timer_id text NOT NULL,
+    generation bigint NOT NULL CHECK (generation > 0),
+    scheduled_for text NOT NULL,
+    payload_bytes bytea NOT NULL,
+    state text NOT NULL CHECK (state IN ('scheduled', 'cancelled', 'fired')),
+    PRIMARY KEY (room_id, timer_id)
+);
+CREATE TRIGGER worldstream_transfer_fence_room_current_timers_v2
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_room_current_timers_v2
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+";
+
 /// The result of checking an ordered migration prefix.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MigrationVerification {
@@ -1335,6 +1363,7 @@ mod identity_tests {
                 STREAM_TRANSFER_V2_MIGRATION_ID,
                 CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID,
                 OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID,
+                CURRENT_TIMERS_MIGRATION_ID,
             ]
         );
         assert!(
@@ -1342,5 +1371,19 @@ mod identity_tests {
                 .sql
                 .contains("CREATE TABLE worldstream_room_snapshot_schedules")
         );
+    }
+
+    #[test]
+    fn current_timers_migration_is_forward_only_and_transfer_fenced() {
+        let migration = migration_history()[19];
+        assert_eq!(migration.version, 20);
+        assert_eq!(migration.id, CURRENT_TIMERS_MIGRATION_ID);
+        assert!(migration
+            .sql
+            .contains("CREATE TABLE worldstream_room_current_timers_v2"));
+        assert!(migration
+            .sql
+            .contains("worldstream_transfer_fence_room_current_timers_v2"));
+        assert!(migration.sql.contains("PRIMARY KEY (room_id, timer_id)"));
     }
 }

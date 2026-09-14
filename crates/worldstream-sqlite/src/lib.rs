@@ -170,6 +170,9 @@ pub const STREAM_TRANSFER_V2_MIGRATION_ID: &str = "0017-stream-transfer-v2";
 pub const CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID: &str =
     "0018-checkpoint-operational-witness-v1";
 pub const OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID: &str = "0019-operational-history-roots-v2";
+/// Adds the bounded current Timer materialization used only by V2 checkpoint
+/// recovery. The immutable Timer ledger remains the forensic authority.
+pub const CURRENT_TIMERS_MIGRATION_ID: &str = "0020-current-timers-v2";
 const OPERATION_RECEIPT_CODEC_ID: &str = "worldstream/operation-receipt/v1";
 const PAIRED_SNAPSHOT_SCHEMA_VERSION: &str = "worldstream/paired-snapshot/v1";
 const SNAPSHOT_TRANSITION_INTERVAL: i64 = 250;
@@ -823,6 +826,21 @@ CREATE TABLE room_operational_history_roots_v2 (
     root_hash BLOB NOT NULL CHECK (length(root_hash) = 32),
     PRIMARY KEY (room_id, domain),
     FOREIGN KEY (room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
+) STRICT;
+";
+
+// One current Timer generation per identity for a Room admitted after the V2
+// operational-history migration. The full `timers` ledger is deliberately
+// retained for forensic replay, backup, and transfer verification.
+const CURRENT_TIMERS_MIGRATION_SCHEMA: &str = r"
+CREATE TABLE room_current_timers_v2 (
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    timer_id TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK (generation BETWEEN 1 AND 9007199254740991),
+    scheduled_for TEXT NOT NULL,
+    payload_bytes BLOB NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('scheduled', 'cancelled', 'fired')),
+    PRIMARY KEY (room_id, timer_id)
 ) STRICT;
 ";
 
@@ -15757,6 +15775,15 @@ fn migrate_with_failpoint_and_telemetry(
             .map_err(SqliteStoreOpenError::Sqlite)?;
         insert_migration(&transaction, history[17], has_checksum_column)?;
     }
+    if migrations.len() < 19 {
+        transaction
+            .execute_batch(history[18].sql)
+            .map_err(SqliteStoreOpenError::Sqlite)?;
+        // Do not backfill existing Rooms. Their retained Timer ledger may
+        // predate the V2 operational-root contract, so they keep the
+        // V1/full-replay recovery path.
+        insert_migration(&transaction, history[18], has_checksum_column)?;
+    }
     let persisted = read_migration_rows(&transaction, has_checksum_column)?;
     let persisted = persisted
         .into_iter()
@@ -16415,6 +16442,15 @@ fn commit_create(
                 ],
             )
             .map_err(statement_failure)?;
+        upsert_current_timer(
+            transaction,
+            &room_id,
+            timer.timer_id().as_ref(),
+            timer.generation().get(),
+            timer.scheduled_for().as_str(),
+            timer.canonical_payload_bytes(),
+            "scheduled",
+        )?;
     }
     fail_at(failpoint, WriteBoundary::Timers)?;
 
@@ -16521,6 +16557,73 @@ fn append_operational_history_root(
         )
         .map_err(statement_failure)?;
     if changed != 1 {
+        return Err(RoomCommitResolutionV1::Fault);
+    }
+    Ok(())
+}
+
+/// Mirrors the newest Timer generation into the bounded V2 materialization.
+/// The append-only ledger stays authoritative; the cache is only read by a
+/// checkpoint path after its Room has also proved V2 root admission.
+fn upsert_current_timer(
+    transaction: &Transaction<'_>,
+    room_id: &str,
+    timer_id: &str,
+    generation: u64,
+    scheduled_for: &str,
+    payload_bytes: &[u8],
+    state: &str,
+) -> Result<(), RoomCommitResolutionV1> {
+    transaction
+        .execute(
+            "INSERT INTO room_current_timers_v2(\
+             room_id, timer_id, generation, scheduled_for, payload_bytes, state\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT(room_id, timer_id) DO UPDATE SET \
+             generation = excluded.generation, scheduled_for = excluded.scheduled_for, \
+             payload_bytes = excluded.payload_bytes, state = excluded.state \
+             WHERE room_current_timers_v2.generation <= excluded.generation",
+            params![
+                room_id,
+                timer_id,
+                to_i64(generation)?,
+                scheduled_for,
+                payload_bytes,
+                state,
+            ],
+        )
+        .map_err(statement_failure)?;
+    Ok(())
+}
+
+/// A legacy Room has no V2 history roots and therefore no current-Timer cache.
+/// A V2 Room must update an existing identity exactly or the commit faults
+/// before its canonical transition can become visible.
+fn update_current_timer_state_if_v2(
+    transaction: &Transaction<'_>,
+    room_id: &str,
+    timer_id: &str,
+    generation: u64,
+    state: &str,
+) -> Result<(), RoomCommitResolutionV1> {
+    let changed = transaction
+        .execute(
+            "UPDATE room_current_timers_v2 SET state = ?1 \
+             WHERE room_id = ?2 AND timer_id = ?3 AND generation = ?4",
+            params![state, room_id, timer_id, to_i64(generation)?],
+        )
+        .map_err(statement_failure)?;
+    if changed == 1 {
+        return Ok(());
+    }
+    let v2_room: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM room_operational_history_roots_v2 WHERE room_id = ?1)",
+            [room_id],
+            |row| row.get(0),
+        )
+        .map_err(statement_failure)?;
+    if v2_room {
         return Err(RoomCommitResolutionV1::Fault);
     }
     Ok(())
@@ -18178,6 +18281,13 @@ fn commit_advance(
         if changed != 1 {
             return Err(RoomCommitResolutionV1::NotApplicable);
         }
+        update_current_timer_state_if_v2(
+            transaction,
+            &room_id,
+            witness.request.timer_id().as_ref(),
+            witness.request.generation().get(),
+            "fired",
+        )?;
     }
     apply_timer_mutations(transaction, &room_id, advance)?;
     fail_at(failpoint, WriteBoundary::ExistingTimers)?;
@@ -18519,6 +18629,15 @@ fn apply_timer_mutations(
                         ],
                     )
                     .map_err(statement_failure)?;
+                upsert_current_timer(
+                    transaction,
+                    room_id,
+                    timer_id.as_ref(),
+                    generation.get(),
+                    scheduled_for.as_str(),
+                    canonical_payload_bytes,
+                    "scheduled",
+                )?;
             }
             PreparedTimerMutationKindV1::Cancel {
                 timer_id,
@@ -18535,6 +18654,13 @@ fn apply_timer_mutations(
                 if changed != 1 {
                     return Err(RoomCommitResolutionV1::Fault);
                 }
+                update_current_timer_state_if_v2(
+                    transaction,
+                    room_id,
+                    timer_id.as_ref(),
+                    generation.get(),
+                    "cancelled",
+                )?;
             }
             PreparedTimerMutationKindV1::Reschedule {
                 timer_id,
@@ -18584,6 +18710,15 @@ fn apply_timer_mutations(
                         ],
                     )
                     .map_err(statement_failure)?;
+                upsert_current_timer(
+                    transaction,
+                    room_id,
+                    timer_id.as_ref(),
+                    generation.get(),
+                    scheduled_for.as_str(),
+                    canonical_payload_bytes,
+                    "scheduled",
+                )?;
             }
         }
     }
@@ -21656,6 +21791,7 @@ mod tests {
     use super::{
         ACTIVATION_BACKLOG_POLICY_MIGRATION_ID, ACTIVATION_MIGRATION_ID, AUTHORITY_MIGRATION_ID,
         CANONICAL_EXPORT_MIGRATION_ID, CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID,
+        CURRENT_TIMERS_MIGRATION_ID,
         DEPLOYMENT_IDENTITIES_MIGRATION_ID, DiagnosticHistoryV1,
         EXTERNAL_INPUT_PREPARATION_MIGRATION_ID, INITIAL_MIGRATION_ID, INITIAL_MIGRATION_SCHEMA,
         MAX_SAFE_INTEGER, MIGRATION_CHECKSUMS_MIGRATION_ID, MigrationFailpoint,
@@ -24517,7 +24653,7 @@ mod tests {
         assert_eq!(
             history.map(|migration| migration.version),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
             ]
         );
         assert_eq!(
@@ -24541,6 +24677,7 @@ mod tests {
                 STREAM_TRANSFER_V2_MIGRATION_ID,
                 CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID,
                 OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID,
+                CURRENT_TIMERS_MIGRATION_ID,
             ]
         );
         let expected_checksums = [
@@ -24562,6 +24699,7 @@ mod tests {
             "blake3:aaa152c1107748f774197bd8a59600150e9d209c7e4eb14ec5e911394b23c3e2",
             "blake3:95b31dc300e31bbdafada55d7d7d9f6b3c05d0dd2e067c3f41e3f39a27655847",
             "blake3:7977311c54cfcdbec65d3846ddbd2071f53ca830464f5721092f5de958e0b98d",
+            "blake3:00116356f2c4490438c9e923b8197ab7a3704c22d32f4d0d9e3912dfa41f8471",
         ];
         assert_eq!(expected_checksums.len(), history.len());
         for (migration, expected) in history.iter().zip(expected_checksums) {
@@ -26381,6 +26519,7 @@ mod tests {
                 (16, STREAM_TRANSFER_V2_MIGRATION_ID.to_owned()),
                 (17, CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID.to_owned(),),
                 (18, OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID.to_owned(),),
+                (19, CURRENT_TIMERS_MIGRATION_ID.to_owned(),),
             ]
         );
         let retired: (String, String, i64, Vec<u8>, Vec<u8>, i64) = connection

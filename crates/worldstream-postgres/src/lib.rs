@@ -29,18 +29,19 @@ mod transfer;
 pub use authority::{PostgresAuthenticatedCapabilityV1, PostgresAuthorityAuthenticationError};
 pub use migrations::{
     ACTIVATION_BACKLOG_POLICY_MIGRATION_ID, AUTHORITY_FACTS_MIGRATION_ID, AUTHORITY_MIGRATION_ID,
-    CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID, DEPLOYMENT_IDENTITY_MIGRATION_ID,
-    DEPLOYMENT_METADATA_MIGRATION_ID, EXTERNAL_INPUT_PREPARATION_MIGRATION_ID,
-    FixtureMigrationProvider, INITIAL_MIGRATION_ID, KERNEL_CONFORMANCE_MIGRATION_ID,
-    KERNEL_PARITY_MIGRATION_ID, LOGICAL_HISTORY_ID, MIGRATION_0002_SQL, MIGRATION_0003_SQL,
-    MIGRATION_0004_SQL, MIGRATION_0005_SQL, MIGRATION_0006_SQL, MIGRATION_0007_SQL,
-    MIGRATION_0008_SQL, MIGRATION_0009_SQL, MIGRATION_0010_SQL, MIGRATION_0011_SQL,
-    MIGRATION_0012_SQL, MIGRATION_0013_SQL, MIGRATION_0014_SQL, MIGRATION_0015_SQL,
-    MIGRATION_0016_SQL, MIGRATION_0017_SQL, MIGRATION_0018_SQL, MIGRATION_0019_SQL,
-    MigrationDescriptor, MigrationFailpoint, MigrationRecord, MigrationVerification,
-    MigrationVerificationError, OBSERVATION_RESET_GENERATION_MIGRATION_ID,
-    OBSERVATION_RETENTION_MIGRATION_ID, OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID, SCHEMA_CONTRACT_ID,
-    SCHEMA_FINGERPRINT_MATERIAL, SNAPSHOT_CADENCE_MIGRATION_ID, STREAM_TRANSFER_V2_MIGRATION_ID,
+    CHECKPOINT_OPERATIONAL_WITNESS_MIGRATION_ID, CURRENT_TIMERS_MIGRATION_ID,
+    DEPLOYMENT_IDENTITY_MIGRATION_ID, DEPLOYMENT_METADATA_MIGRATION_ID,
+    EXTERNAL_INPUT_PREPARATION_MIGRATION_ID, FixtureMigrationProvider, INITIAL_MIGRATION_ID,
+    KERNEL_CONFORMANCE_MIGRATION_ID, KERNEL_PARITY_MIGRATION_ID, LOGICAL_HISTORY_ID,
+    MIGRATION_0002_SQL, MIGRATION_0003_SQL, MIGRATION_0004_SQL, MIGRATION_0005_SQL,
+    MIGRATION_0006_SQL, MIGRATION_0007_SQL, MIGRATION_0008_SQL, MIGRATION_0009_SQL,
+    MIGRATION_0010_SQL, MIGRATION_0011_SQL, MIGRATION_0012_SQL, MIGRATION_0013_SQL,
+    MIGRATION_0014_SQL, MIGRATION_0015_SQL, MIGRATION_0016_SQL, MIGRATION_0017_SQL,
+    MIGRATION_0018_SQL, MIGRATION_0019_SQL, MIGRATION_0020_SQL, MigrationDescriptor,
+    MigrationFailpoint, MigrationRecord, MigrationVerification, MigrationVerificationError,
+    OBSERVATION_RESET_GENERATION_MIGRATION_ID, OBSERVATION_RETENTION_MIGRATION_ID,
+    OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID, SCHEMA_CONTRACT_ID, SCHEMA_FINGERPRINT_MATERIAL,
+    SNAPSHOT_CADENCE_MIGRATION_ID, STREAM_TRANSFER_V2_MIGRATION_ID,
     TRANSFER_PUBLICATION_MIGRATION_ID, TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID,
     TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID, migration_history, schema_contract_fingerprint,
     verify_migration_prefix, verify_runtime_migration_history,
@@ -3202,6 +3203,7 @@ const SCHEMA_TABLE_ORDER: &[&str] = &[
     "worldstream_materializations",
     "worldstream_members",
     "worldstream_timers",
+    "worldstream_room_current_timers_v2",
     "worldstream_transitions",
     "worldstream_frames",
     "worldstream_observation_consequences",
@@ -3278,7 +3280,7 @@ const GLOBAL_RESOURCE_IDENTITY_INDEXES: [(&str, &str); 2] = [
     ),
 ];
 
-const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 34] = [
+const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 35] = [
     (
         "worldstream_transfer_fence_operation_guards",
         "worldstream_operation_guards",
@@ -3298,6 +3300,10 @@ const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 34] = [
     ),
     ("worldstream_transfer_fence_members", "worldstream_members"),
     ("worldstream_transfer_fence_timers", "worldstream_timers"),
+    (
+        "worldstream_transfer_fence_room_current_timers_v2",
+        "worldstream_room_current_timers_v2",
+    ),
     (
         "worldstream_transfer_fence_transitions",
         "worldstream_transitions",
@@ -9286,6 +9292,13 @@ fn validate_advance_witnesses(
                 RoomCommitResolutionV1::NotApplicable,
             ));
         }
+        update_current_timer_state_if_v2(
+            tx,
+            room_id,
+            &identity.timer_id.to_string(),
+            identity.generation.get(),
+            "fired",
+        )?;
     }
 
     for consequence in &advance.delivery_consequences {
@@ -9373,6 +9386,19 @@ fn insert_creation(
     }
     for timer in &p.initial_timers {
         tx.execute("INSERT INTO worldstream_timers(room_id, timer_id, generation, scheduled_for, payload_bytes, state) VALUES ($1, $2, $3, $4, $5, 'scheduled')", &[&head, &timer.timer_id().to_string(), &i64::try_from(timer.generation().get()).unwrap_or(-1), &timer.scheduled_for().to_string(), &timer.canonical_payload_bytes()])?;
+        upsert_current_timer(
+            tx,
+            &head,
+            timer.timer_id().as_ref(),
+            timer.generation().get(),
+            &timer.scheduled_for().to_string(),
+            timer.canonical_payload_bytes(),
+            "scheduled",
+        )
+        .map_err(|error| match error {
+            CommitDecision::Provider(error) => error,
+            CommitDecision::Resolution(_) => unreachable!("creation uses a fresh Timer identity"),
+        })?;
     }
     initialize_operational_history_roots(tx, &head)?;
     persist_snapshot(
@@ -9491,6 +9517,77 @@ fn append_operational_history_root(
         )
         .map_err(CommitDecision::Provider)?;
     if changed != 1 {
+        return Err(CommitDecision::Resolution(RoomCommitResolutionV1::Fault));
+    }
+    Ok(())
+}
+
+/// Mirrors one newest Timer generation into the bounded V2 materialization.
+/// The append-only `worldstream_timers` ledger stays authoritative.
+fn upsert_current_timer(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    timer_id: &str,
+    generation: u64,
+    scheduled_for: &str,
+    payload_bytes: &[u8],
+    state: &str,
+) -> Result<(), CommitDecision> {
+    tx.execute(
+        "INSERT INTO worldstream_room_current_timers_v2(\
+         room_id, timer_id, generation, scheduled_for, payload_bytes, state\
+         ) VALUES ($1, $2, $3, $4, $5, $6) \
+         ON CONFLICT(room_id, timer_id) DO UPDATE SET \
+         generation = EXCLUDED.generation, scheduled_for = EXCLUDED.scheduled_for, \
+         payload_bytes = EXCLUDED.payload_bytes, state = EXCLUDED.state \
+         WHERE worldstream_room_current_timers_v2.generation <= EXCLUDED.generation",
+        &[
+            &room_id,
+            &timer_id,
+            &i64::try_from(generation).unwrap_or(-1),
+            &scheduled_for,
+            &payload_bytes,
+            &state,
+        ],
+    )
+    .map_err(CommitDecision::Provider)?;
+    Ok(())
+}
+
+/// Legacy Rooms do not carry V2 history roots or this cache. A V2 Room must
+/// update exactly its current generation before the enclosing commit can win.
+fn update_current_timer_state_if_v2(
+    tx: &mut Transaction<'_>,
+    room_id: &str,
+    timer_id: &str,
+    generation: u64,
+    state: &str,
+) -> Result<(), CommitDecision> {
+    let changed = tx
+        .execute(
+            "UPDATE worldstream_room_current_timers_v2 SET state = $1 \
+             WHERE room_id = $2 AND timer_id = $3 AND generation = $4",
+            &[
+                &state,
+                &room_id,
+                &timer_id,
+                &i64::try_from(generation).unwrap_or(-1),
+            ],
+        )
+        .map_err(CommitDecision::Provider)?;
+    if changed == 1 {
+        return Ok(());
+    }
+    let v2_room: bool = tx
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM worldstream_room_operational_history_roots_v2 \
+             WHERE room_id = $1)",
+            &[&room_id],
+        )
+        .map_err(CommitDecision::Provider)?
+        .try_get(0)
+        .map_err(CommitDecision::Provider)?;
+    if v2_room {
         return Err(CommitDecision::Resolution(RoomCommitResolutionV1::Fault));
     }
     Ok(())
@@ -10217,6 +10314,15 @@ fn persist_timer_mutation(
                 return Err(CommitDecision::Resolution(RoomCommitResolutionV1::Fault));
             }
             tx.execute("INSERT INTO worldstream_timers(room_id, timer_id, generation, scheduled_for, payload_bytes, state) VALUES ($1, $2, $3, $4, $5, 'scheduled')", &[&room_id, &timer_id.to_string(), &generation_value, &scheduled_for.to_string(), &canonical_payload_bytes]).map_err(CommitDecision::Provider)?;
+            upsert_current_timer(
+                tx,
+                room_id,
+                timer_id.as_ref(),
+                generation.get(),
+                &scheduled_for.to_string(),
+                canonical_payload_bytes,
+                "scheduled",
+            )?;
         }
         PreparedTimerMutationKindV1::Cancel {
             timer_id,
@@ -10226,6 +10332,13 @@ fn persist_timer_mutation(
             if changed != 1 {
                 return Err(CommitDecision::Resolution(RoomCommitResolutionV1::Fault));
             }
+            update_current_timer_state_if_v2(
+                tx,
+                room_id,
+                timer_id.as_ref(),
+                generation.get(),
+                "cancelled",
+            )?;
         }
         PreparedTimerMutationKindV1::Reschedule {
             timer_id,
@@ -10252,6 +10365,15 @@ fn persist_timer_mutation(
                 return Err(CommitDecision::Resolution(RoomCommitResolutionV1::Fault));
             }
             tx.execute("INSERT INTO worldstream_timers(room_id, timer_id, generation, scheduled_for, payload_bytes, state) VALUES ($1, $2, $3, $4, $5, 'scheduled')", &[&room_id, &timer_id.to_string(), &next, &scheduled_for.to_string(), &canonical_payload_bytes]).map_err(CommitDecision::Provider)?;
+            upsert_current_timer(
+                tx,
+                room_id,
+                timer_id.as_ref(),
+                generation.get(),
+                &scheduled_for.to_string(),
+                canonical_payload_bytes,
+                "scheduled",
+            )?;
         }
     }
     Ok(())
