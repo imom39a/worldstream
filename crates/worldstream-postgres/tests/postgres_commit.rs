@@ -724,7 +724,10 @@ fn qualify_bounded_recovery_scales(
             })
         );
     }
-    let audit_rows = runtime_client
+    // The audit relation is admin-owned disposable instrumentation. Read it
+    // through that same direct-admin connection so cadence evidence does not
+    // expand the runtime role's production grant surface.
+    let audit_rows = audit_admin
         .query(
             "WITH ordered AS (\
                SELECT room_seq, serialized_bytes, captured_at,\
