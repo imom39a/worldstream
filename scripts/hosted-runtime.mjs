@@ -16,6 +16,10 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
+import { retryHostedServerStart } from "./hosted-server-start.mjs";
+
+export { retryHostedServerStart };
+
 const DEFAULT_VOLUME_ROOT = "/var/lib/worldstream";
 const DEFAULT_ASSET_ROOT = "/opt/worldstream/hosted";
 const DEFAULT_BINARY_ROOT = "/usr/local/bin";
@@ -780,8 +784,16 @@ async function startManaged(layout, controllerAuthority) {
   // Hosted Browser Sessions read the public HTTPS client origin directly.
   // The legacy local Participant Console handoff retains its loopback default
   // and is not routed by the public Gateway.
-  const result = await ctl(layout, ["server", "start"], controllerAuthority);
-  if (!hostedStatusReady(result)) throw new Error("managed_services_not_ready");
+  const attempt = () => ctlResult(layout, ["server", "start"], controllerAuthority);
+  const result = await retryHostedServerStart(attempt);
+  if (result.code !== 0) throw new Error("hosted_ctl_server_start_failed");
+  let report;
+  try {
+    report = JSON.parse(result.stdout);
+  } catch {
+    throw new Error("hosted_ctl_server_start_failed");
+  }
+  if (!hostedStatusReady(report)) throw new Error("managed_services_not_ready");
 }
 
 async function stopManaged(layout, controllerAuthority) {
@@ -840,6 +852,18 @@ async function requiredServicesReady(layout, controllerAuthority, gatewayConfigu
 }
 
 async function ctl(layout, command, controllerAuthority, allowFailure = false) {
+  try {
+    const result = await ctlResult(layout, command, controllerAuthority);
+    if (result.code !== 0) throw new Error(`required_command_failed:${result.signal ?? result.code}`);
+    return JSON.parse(result.stdout);
+  } catch (error) {
+    if (allowFailure) return null;
+    const operation = command.slice(0, 2).join("_").replace(/[^a-z-]/gu, "_");
+    throw new Error(`hosted_ctl_${operation}_failed`, { cause: error });
+  }
+}
+
+async function ctlResult(layout, command, controllerAuthority) {
   const environment = {
     ...process.env,
     WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY: controllerAuthority,
@@ -853,17 +877,18 @@ async function ctl(layout, command, controllerAuthority, allowFailure = false) {
     "--controller", "127.0.0.1:9420",
     "--json",
   ];
-  try {
-    const result = await run(layout.ctl, args, environment);
-    return JSON.parse(result.stdout);
-  } catch (error) {
-    if (allowFailure) return null;
-    const operation = command.slice(0, 2).join("_").replace(/[^a-z-]/gu, "_");
-    throw new Error(`hosted_ctl_${operation}_failed`, { cause: error });
-  }
+  return runResult(layout.ctl, args, environment);
 }
 
 async function run(command, args, environment) {
+  const result = await runResult(command, args, environment);
+  if (result.code !== 0) {
+    throw new Error(`required_command_failed:${result.signal ?? result.code ?? "unknown"}`);
+  }
+  return result;
+}
+
+async function runResult(command, args, environment) {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(command, args, { env: environment, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
@@ -875,8 +900,7 @@ async function run(command, args, environment) {
     child.stderr.on("data", (value) => { stderr = append(stderr, value); });
     child.once("error", () => rejectPromise(new Error("required_command_unavailable")));
     child.once("exit", (code, signal) => {
-      if (code === 0) resolvePromise({ stdout, stderr });
-      else rejectPromise(new Error(`required_command_failed:${signal ?? code ?? "unknown"}`));
+      resolvePromise({ code, signal, stdout, stderr });
     });
   });
 }

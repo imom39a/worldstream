@@ -27,6 +27,7 @@ import {
   retainRunnerExecutable,
   reuseExactInstalledRunnerTemplate,
 } from "./hosted-runtime.mjs";
+import { retryHostedServerStart } from "./hosted-server-start.mjs";
 import { runHostedAcceptancePrerequisites } from "./hosted-acceptance-prerequisites.mjs";
 import { readInternalCandidates } from "./hosted-internal-candidates.mjs";
 import {
@@ -153,32 +154,7 @@ export function hostedDevelopmentLaunchHttpAccepted(status) {
 }
 
 /** Retry only the bounded Runtime-restart startup races. */
-export async function retryHostedServerStart(
-  start,
-  pause = delay,
-  maximumAttempts = SERVER_START_MAX_ATTEMPTS,
-) {
-  let result = await start();
-  for (let attempt = 1;
-    attempt < maximumAttempts && isTransientHostedServerStartFailure(result);
-    attempt += 1) {
-    await pause(SERVER_START_RETRY_DELAY_MS);
-    result = await start();
-  }
-  return result;
-}
-
-function isTransientHostedServerStartFailure(result) {
-  if ((result?.code !== 3 && result?.code !== 4) || typeof result.stdout !== "string") return false;
-  try {
-    const report = JSON.parse(result.stdout);
-    if (report?.command !== "server start") return false;
-    return (result.code === 3 && report.code === "controller_unavailable") ||
-      (result.code === 4 && report.code === "lifecycle_incomplete" && report.stage === "runtime_restart");
-  } catch {
-    return false;
-  }
-}
+export { retryHostedServerStart };
 
 /**
  * A retained local installation may legitimately hold the single pre-Genesis
@@ -217,8 +193,6 @@ const FAKE_OPENROUTER_KEY = "worldstream-development-key-000000000000";
 const SUPABASE_EXCLUDES =
   "realtime,storage-api,imgproxy,mailpit,postgres-meta,studio,edge-runtime,logflare,vector,supavisor";
 const READINESS_TIMEOUT_MS = 60_000;
-const SERVER_START_RETRY_DELAY_MS = 1_000;
-const SERVER_START_MAX_ATTEMPTS = 30;
 
 export function hostedDevelopmentPorts(environment = process.env) {
   const ports = {

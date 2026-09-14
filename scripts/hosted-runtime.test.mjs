@@ -9,6 +9,7 @@ import {
   hostedGatewayConfiguration,
   hostedRuntimeLayout,
   hostedStatusReady,
+  retryHostedServerStart,
   writeHostedClientImport,
   renderArchiveHouseAgentProfiles,
   renderArchiveHouseRunnerTemplate,
@@ -224,6 +225,10 @@ test("the packaged managed Host digest is raw hex and mismatches fail closed", a
   assert.match(
     dockerfile,
     /worldstream-hosted-artifact-digest\s+\\\n?\s*target\/release\/worldstream-managed-agent-host\s+\\\n?\s*> \/out\/managed-agent-host\.blake3/u,
+  );
+  assert.match(
+    dockerfile,
+    /COPY scripts\/hosted-server-start\.mjs \/opt\/worldstream\/hosted\/hosted-server-start\.mjs/u,
   );
   const raw = "a".repeat(64);
   assert.equal(verifyManagedAgentHostDigest(raw, raw), raw);
@@ -499,6 +504,65 @@ test("managed status requires the complete ready contract", () => {
   }), true);
   assert.equal(hostedStatusReady({ status: "complete", server: { runtime: "ready" } }), false);
   assert.equal(hostedStatusReady({ status: "complete", code: "complete", server: { runtime: "stopped" } }), false);
+});
+
+test("production startup resumes recoverable retained Runtime-start checkpoints", async () => {
+  const attempts = [];
+  const pauses = [];
+  const result = await retryHostedServerStart(async () => {
+    attempts.push("start");
+    return [
+      {
+        code: 3,
+        stdout: JSON.stringify({ command: "server start", code: "controller_unavailable" }),
+        stderr: "The local controller is unavailable.",
+      },
+      {
+        code: 4,
+        stdout: JSON.stringify({
+          command: "server start",
+          code: "lifecycle_incomplete",
+          stage: "runtime_restart",
+        }),
+        stderr: "The Runtime is restarting.",
+      },
+      {
+        code: 0,
+        stdout: JSON.stringify({
+          command: "server start",
+          status: "complete",
+          code: "complete",
+          server: { runtime: "ready" },
+        }),
+        stderr: "",
+      },
+    ][attempts.length - 1];
+  }, async (milliseconds) => {
+    pauses.push(milliseconds);
+  });
+  assert.equal(result.code, 0);
+  assert.deepEqual(attempts, ["start", "start", "start"]);
+  assert.deepEqual(pauses, [1_000, 1_000]);
+});
+
+test("production startup does not retry unrelated or malformed failures", async () => {
+  for (const result of [
+    {
+      code: 4,
+      stdout: JSON.stringify({ command: "server start", code: "lifecycle_incomplete", stage: "runtime_stop" }),
+    },
+    { code: 4, stdout: "not-json" },
+    { code: 1, stdout: JSON.stringify({ command: "server start", code: "controller_unavailable" }) },
+  ]) {
+    let attempts = 0;
+    assert.equal(await retryHostedServerStart(async () => {
+      attempts += 1;
+      return result;
+    }, async () => {
+      throw new Error("non-recoverable failures must not pause");
+    }), result);
+    assert.equal(attempts, 1);
+  }
 });
 
 test("Fly package exposes only the Gateway and forbids automatic stop", async () => {
