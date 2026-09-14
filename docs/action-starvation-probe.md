@@ -27,8 +27,23 @@ the Complete Head sequence at admission. The rule is mirrored from
 `crates/worldstream-core/src/trace.rs::assess_stable_action_disposition`; the
 probe does not invoke a live backend commit. A stale proposal is discarded. The
 production matrix command also executes
-`CoreTraceV1::assess_stable_action_disposition` over the same delay, rate,
-visibility, and relation dimensions and fails closed if that check fails.
+`CoreTraceV1::assess_stable_action_disposition` across 240 scenarios: five
+decision delays (0, 100, 250, 500, and 1000 ms), three periodic update rates
+(0, 2, and 5 per second), four active participant counts (1, 2, 4, and 8),
+and the visible/hidden and related/unrelated scenario dimensions. Each delayed
+decision advances a real Core trace with `private_ack` Actions, then retries
+with a new Action identity after the exact production stale rejection. The
+test emits a `production_action_contention` measurement line containing the
+scenario, acceptance, starvation, stale-rejection, attempt, and backoff
+counts; the wrapper parses that line into its JSON report. It fails closed if
+the production admission check fails.
+
+The local run produced `scenarios=240`, `accepted_trials=160`,
+`starved_trials=80`, `stale_rejections=240`, `max_attempts=3`, and
+`max_backoff_ms=2`; each participant-count lane ran 60 trials, with 40
+accepted and a maximum of three attempts. This is evidence for bounded
+exact-Head admission contention in Core; it does not establish a backend or
+scheduler throughput bound.
 The Runner refreshes, re-evaluates, and creates a new Action identity; the
 probe never auto-rebases a stale Action.
 
@@ -50,5 +65,10 @@ envelope is required. Participant count is included as a controlled occupancy
 dimension while the aggregate Room update rate stays fixed. This probe
 measures one target Runner's pending work and the production check confirms the
 whole-Head fence; it does not claim scheduler fairness across participants,
-backend commit throughput, storage, network, or model-quality results. IMO-217's
-live synchronization implementation remains a separate concern.
+backend commit throughput, storage, network, or model-quality results. The
+Core admission layer has no delivery metadata, so visibility and relatedness
+are controlled scenario dimensions while the trace measures the common
+whole-Head behavior. A before/after comparison with hidden-head recovery is
+blocked until IMO-217 has an implementation and baseline evidence; this probe
+records that dependency in its production report. IMO-217's live
+synchronization implementation remains a separate concern.

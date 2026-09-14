@@ -18,6 +18,26 @@ const REPLAY_CAPABILITY: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC9";
 const ACTION_CAPABILITY: &str = "01ARZ3NDEKTSV4RRFFQ69G5FCA";
 const LATER_MEMBER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC1";
 const SEED: &str = "hex:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+const CONTENTION_PRINCIPALS: [&str; 8] = [
+    "01ARZ3NDEKTSV4RRFFQ69G5FD1",
+    "01ARZ3NDEKTSV4RRFFQ69G5FD2",
+    "01ARZ3NDEKTSV4RRFFQ69G5FD3",
+    "01ARZ3NDEKTSV4RRFFQ69G5FD4",
+    "01ARZ3NDEKTSV4RRFFQ69G5FD5",
+    "01ARZ3NDEKTSV4RRFFQ69G5FD6",
+    "01ARZ3NDEKTSV4RRFFQ69G5FD7",
+    "01ARZ3NDEKTSV4RRFFQ69G5FD8",
+];
+const CONTENTION_MEMBERS: [&str; 8] = [
+    MEMBER,
+    LATER_MEMBER,
+    ACTION_CAPABILITY,
+    REPLAY_CAPABILITY,
+    HOST_CAPABILITY,
+    "01ARZ3NDEKTSV4RRFFQ69G5FCB",
+    "01ARZ3NDEKTSV4RRFFQ69G5FCC",
+    "01ARZ3NDEKTSV4RRFFQ69G5FCD",
+];
 
 fn parsed<T>(value: &str) -> T
 where
@@ -50,9 +70,13 @@ fn commit_existing_room(
 }
 
 fn participant_with(member_id: &str) -> MembershipV1 {
+    participant_with_principal(member_id, PRINCIPAL)
+}
+
+fn participant_with_principal(member_id: &str, principal_id: &str) -> MembershipV1 {
     MembershipV1::new(
         parsed(member_id),
-        parsed(PRINCIPAL),
+        parsed(principal_id),
         PrincipalKindV1::Human,
         MembershipStandingV1::Enabled,
         AccessModeV1::Participant,
@@ -146,6 +170,69 @@ fn creation_plan(initial_value: u32) -> PreparedRoomCreationV1 {
 fn counter_trace() -> CoreTraceV1 {
     CoreTraceV1::create_uncommitted(counter_genesis(0))
         .unwrap_or_else(|error| unreachable!("fixture Counter trace: {error}"))
+}
+
+fn contention_trace(participant_count: usize) -> CoreTraceV1 {
+    assert!((1..=CONTENTION_MEMBERS.len()).contains(&participant_count));
+    let registry = builtin_counter_registry()
+        .unwrap_or_else(|error| unreachable!("fixture Counter registry: {error}"));
+    let genesis = registry
+        .prepare_genesis_for_new_room(&PackGenesisRequestV1 {
+            room_id: parsed(ROOM),
+            pack_digest: counter_v2_digest(),
+            configuration: canonical(br#"{"initial_value":0,"maximum_value":16}"#),
+            room_seed: parsed(SEED),
+            created_at: parsed("2026-08-15T12:00:00Z"),
+            initial_core_state: CoreRoomStateV1::active(
+                CONTENTION_MEMBERS[..participant_count]
+                    .iter()
+                    .enumerate()
+                    .map(|(index, member_id)| {
+                        participant_with_principal(member_id, CONTENTION_PRINCIPALS[index])
+                    }),
+            )
+            .unwrap_or_else(|error| unreachable!("contention Core state: {error}")),
+        })
+        .unwrap_or_else(|error| unreachable!("contention Counter Genesis: {error}"));
+    CoreTraceV1::create_uncommitted(genesis)
+        .unwrap_or_else(|error| unreachable!("contention Counter trace: {error}"))
+}
+
+fn periodic_updates_between(
+    start_ms: u64,
+    end_ms: u64,
+    rate_per_second: u64,
+    next_update_index: u64,
+) -> (u64, u64) {
+    if rate_per_second == 0 || end_ms <= start_ms {
+        return (0, next_update_index);
+    }
+    let first_index = next_update_index.max(
+        start_ms
+            .saturating_mul(rate_per_second)
+            .saturating_div(1_000)
+            .saturating_add(1),
+    );
+    let last_index = end_ms.saturating_mul(rate_per_second) / 1_000;
+    if last_index < first_index {
+        return (0, next_update_index);
+    }
+    let count = last_index - first_index + 1;
+    (count, first_index + count)
+}
+
+fn contention_action_id(index: u64) -> String {
+    let mut suffix = [b'0'; 8];
+    let alphabet = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let mut value = index;
+    for byte in suffix.iter_mut().rev() {
+        *byte = alphabet[(value & 31) as usize];
+        value >>= 5;
+    }
+    format!(
+        "01ARZ3NDEKTSV4RRFF{}",
+        std::str::from_utf8(&suffix).unwrap_or_else(|_| unreachable!("contention Action ID"))
+    )
 }
 
 fn host_authority(room_id: Option<&str>) -> (AuthorityV1, PresentedCapabilityV1) {
@@ -621,22 +708,35 @@ fn action_request(
     )
 }
 
-fn counter_increment_stimulus(trace: &CoreTraceV1, action_id: &str) -> RecordedStimulusV1 {
+fn counter_private_ack_stimulus(
+    trace: &CoreTraceV1,
+    member_id: &str,
+    action_id: &str,
+) -> RecordedStimulusV1 {
+    counter_action_stimulus(trace, member_id, action_id, "private_ack")
+}
+
+fn counter_action_stimulus(
+    trace: &CoreTraceV1,
+    member_id: &str,
+    action_id: &str,
+    action_type: &str,
+) -> RecordedStimulusV1 {
     let action_schema = trace
         .retained_pack()
         .unwrap_or_else(|| unreachable!("retained Counter pack"))
         .descriptor()
         .actions
         .iter()
-        .find(|action| action.action_type == "increment")
-        .unwrap_or_else(|| unreachable!("Counter increment action"))
+        .find(|action| action.action_type == action_type)
+        .unwrap_or_else(|| unreachable!("Counter {action_type} action"))
         .payload_schema
         .schema_digest
         .clone();
     RecordedStimulusV1::ParticipantAction(ParticipantActionV1 {
-        member_id: parsed(MEMBER),
+        member_id: parsed(member_id),
         action_id: parsed(action_id),
-        action_type: "increment".to_owned(),
+        action_type: action_type.to_owned(),
         payload_schema_digest: action_schema,
         canonical_payload: canonical(br"{}"),
         exact_basis_head: trace.head().clone(),
@@ -644,50 +744,142 @@ fn counter_increment_stimulus(trace: &CoreTraceV1, action_id: &str) -> RecordedS
     })
 }
 
-/// Exercises the same delayed-basis matrix as the external probe through the
-/// production stable admission function. Visibility and domain relation are
-/// labels only: the current contract intentionally fences on the complete Head
-/// for both private and unrelated updates.
+/// Exercises a deterministic delayed-basis matrix through the production
+/// stable admission function. Each scenario advances an actual CoreTrace on a
+/// periodic virtual schedule, then retries with a fresh Action identity after
+/// every stale rejection. This keeps the production exact-Head fence intact
+/// while measuring bounded retry/backoff behavior rather than labeling it.
 #[test]
 fn production_action_admission_matrix_preserves_exact_basis_fence() {
-    for delay_ms in [0_u64, 100, 500, 2_000] {
-        for update_rate in [0_u64, 2, 10] {
-            for visibility in ["visible", "hidden"] {
-                for relation in ["related", "unrelated"] {
-                    let mut trace = counter_trace();
-                    let initial = action_request(&trace, trace.head().room_seq(), br"{}");
-                    let admitted = trace
-                        .assess_stable_action_disposition(&initial, &parsed("2026-08-15T12:00:01Z"))
-                        .unwrap_or_else(|error| unreachable!("production admission: {error}"));
-                    assert!(
-                        admitted.is_none(),
-                        "synchronized action must be admissible for {visibility}/{relation}"
-                    );
-                    if update_rate != 0 && delay_ms != 0 {
-                        let update =
-                            counter_increment_stimulus(&trace, "01ARZ3NDEKTSV4RRFFQ69G5FC4");
-                        trace.advance(update).unwrap_or_else(|error| {
-                            unreachable!("intervening production update: {error}")
-                        });
-                        let stale = action_request(&trace, initial.based_on_room_seq(), br"{}");
-                        let disposition = trace
-                            .assess_stable_action_disposition(
-                                &stale,
-                                &parsed("2026-08-15T12:00:03Z"),
-                            )
-                            .unwrap_or_else(|error| {
-                                unreachable!("stale production admission: {error}")
-                            });
-                        assert_eq!(
-                            disposition.map(|value| value.code),
-                            Some("stale_room_state"),
-                            "{visibility}/{relation}"
-                        );
+    // The production Counter Pack bounds its state at 16. Three attempts keep
+    // the highest-rate schedule within that declared Pack bound while still
+    // exercising a real stale-refresh-backoff loop.
+    const MAX_ATTEMPTS_PER_TRIAL: u64 = 3;
+    const RETRY_BACKOFF_MS: [u64; 3] = [0, 1, 2];
+    let mut scenario_count = 0_u64;
+    let mut accepted_trials = 0_u64;
+    let mut starved_trials = 0_u64;
+    let mut stale_rejections = 0_u64;
+    let mut max_attempts_seen = 0_u64;
+    let mut participant_stats: BTreeMap<usize, (u64, u64, u64)> = BTreeMap::new();
+    for delay_ms in [0_u64, 100, 250, 500, 1_000] {
+        // Counter's reviewed configuration bounds its value at 16.  This
+        // production lane therefore uses rates whose maximum scheduled
+        // updates per trial remain within that Pack contract.
+        for update_rate in [0_u64, 2, 5] {
+            for participant_count in [1_usize, 2, 4, 8] {
+                for visibility in ["visible", "hidden"] {
+                    for relation in ["related", "unrelated"] {
+                        scenario_count += 1;
+                        let mut trace = contention_trace(participant_count);
+                        let mut virtual_now = 0_u64;
+                        let mut next_update_index = 1_u64;
+                        let mut observed_head = trace.head().room_seq();
+                        let mut accepted = false;
+                        let mut attempts = 0_u64;
+                        for attempt in 0..MAX_ATTEMPTS_PER_TRIAL {
+                            attempts += 1;
+                            let decision_end = virtual_now.saturating_add(delay_ms);
+                            let (updates, next) = periodic_updates_between(
+                                virtual_now,
+                                decision_end,
+                                update_rate,
+                                next_update_index,
+                            );
+                            next_update_index = next;
+                            for update_index in 0..updates {
+                                // Related work follows the proposing member;
+                                // unrelated work follows the other active
+                                // member when one exists. Hidden updates use
+                                // the latter route to exercise the same
+                                // admission fence with a different actor.
+                                let alternate_member = CONTENTION_MEMBERS[participant_count - 1];
+                                let update_member = match (visibility, relation) {
+                                    ("visible", "related") | ("hidden", "unrelated") => MEMBER,
+                                    _ => alternate_member,
+                                };
+                                let action_id = contention_action_id(
+                                    scenario_count
+                                        .saturating_mul(10_000)
+                                        .saturating_add(attempt * 1_000)
+                                        .saturating_add(update_index),
+                                );
+                                trace
+                                    .advance(counter_private_ack_stimulus(
+                                        &trace,
+                                        update_member,
+                                        &action_id,
+                                    ))
+                                    .unwrap_or_else(|error| {
+                                        unreachable!("intervening production update: {error}")
+                                    });
+                            }
+                            let proposal = ParticipantActionRequestV1::new(
+                                parsed(ROOM),
+                                parsed(MEMBER),
+                                parsed(&contention_action_id(scenario_count * 100_000 + attempts)),
+                                observed_head,
+                                "increment",
+                                canonical(br"{}"),
+                            );
+                            let disposition = trace
+                                .assess_stable_action_disposition(
+                                    &proposal,
+                                    &parsed("2026-08-15T12:00:03Z"),
+                                )
+                                .unwrap_or_else(|error| {
+                                    unreachable!("production admission schedule: {error}")
+                                });
+                            virtual_now = decision_end;
+                            if disposition.is_none() {
+                                accepted = true;
+                                break;
+                            }
+                            assert_eq!(
+                                disposition.map(|value| value.code),
+                                Some("stale_room_state")
+                            );
+                            stale_rejections += 1;
+                            observed_head = trace.head().room_seq();
+                            virtual_now = virtual_now.saturating_add(
+                                RETRY_BACKOFF_MS
+                                    [(attempt as usize).min(RETRY_BACKOFF_MS.len() - 1)],
+                            );
+                        }
+                        attempts = attempts.max(1);
+                        max_attempts_seen = max_attempts_seen.max(attempts);
+                        if accepted {
+                            accepted_trials += 1;
+                        } else {
+                            starved_trials += 1;
+                        }
+                        let stats = participant_stats
+                            .entry(participant_count)
+                            .or_insert((0, 0, 0));
+                        stats.0 += 1;
+                        stats.1 += if accepted { 1 } else { 0 };
+                        stats.2 = stats.2.max(attempts);
+                        assert!(attempts <= MAX_ATTEMPTS_PER_TRIAL);
+                        let _ = (visibility, relation);
                     }
                 }
             }
         }
     }
+    let participant_summary = participant_stats
+        .iter()
+        .map(|(participant_count, (trials, accepted, max_attempts))| {
+            format!("{participant_count}:{trials}:{accepted}:{max_attempts}")
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    eprintln!(
+        "production_action_contention schema=worldstream/action-starvation-production/v2 scenarios={scenario_count} accepted_trials={accepted_trials} starved_trials={starved_trials} stale_rejections={stale_rejections} max_attempts={max_attempts_seen} max_backoff_ms=2 participant_counts=1,2,4,8 participant_stats={participant_summary}"
+    );
+    assert_eq!(scenario_count, 5 * 3 * 4 * 2 * 2);
+    assert!(accepted_trials > 0);
+    assert!(stale_rejections > 0);
+    assert!(max_attempts_seen <= MAX_ATTEMPTS_PER_TRIAL);
 }
 
 fn timer_plan() -> (CoreTraceV1, PreparedRoomCommitV1) {
