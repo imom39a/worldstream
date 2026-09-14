@@ -740,7 +740,7 @@ fn qualify_bounded_recovery_scales(
                  FROM ordered ORDER BY room_seq",
             &[&room_id],
         )
-        .unwrap_or_else(|error| panic!("read snapshot cadence audit: {error}"));
+        .unwrap_or_else(|error| panic!("read snapshot cadence audit: {error:?}"));
     let snapshots = audit_rows
         .iter()
         .map(|row| {
