@@ -431,7 +431,10 @@ def run_sqlite_backend(
         ):
             return {"status": "failed", "source": "production_sqlite_core_storage", "error": f"driver {attribution_field} honesty marker incomplete"}
     isolated_snapshot = snapshots.get("isolated_cache_transaction")
-    if (
+    # `sqlite-v1` reports predate this additive field. Retained evidence must
+    # remain readable; current producers include it and are checked when it is
+    # present.
+    if isolated_snapshot is not None and (
         type(isolated_snapshot) is not dict
         or isolated_snapshot.get("scope") != "quiescent_post_commit_snapshot_cache_transaction"
         or type(isolated_snapshot.get("room_seq")) is not int

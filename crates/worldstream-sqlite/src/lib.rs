@@ -1351,15 +1351,25 @@ pub enum SqliteSnapshotQualificationErrorV1 {
     WalNotQuiescent,
     #[error("the isolated snapshot-cache transaction did not persist")]
     SnapshotPersistenceFailed,
+    #[error(
+        "the next due snapshot-cache transaction did not occur before the qualification wait expired"
+    )]
+    TimedOut,
 }
+
+type SnapshotQualificationResult =
+    Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1>;
+type PendingSnapshotQualification = (u64, mpsc::Sender<SnapshotQualificationResult>);
+
+const SNAPSHOT_QUALIFICATION_MAX_WAIT: Duration = Duration::from_secs(5);
 
 /// Handle for the next due post-commit snapshot-cache transaction after a
 /// qualification probe is armed.
 #[doc(hidden)]
 pub struct SqliteSnapshotQualificationHandleV1 {
-    receiver: Receiver<
-        Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1>,
-    >,
+    receiver: Receiver<SnapshotQualificationResult>,
+    commands: SyncSender<WriterCommand>,
+    probe_id: u64,
 }
 
 impl SqliteSnapshotQualificationHandleV1 {
@@ -1368,9 +1378,35 @@ impl SqliteSnapshotQualificationHandleV1 {
     pub fn finish(
         self,
     ) -> Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1> {
+        self.finish_with_timeout(SNAPSHOT_QUALIFICATION_MAX_WAIT)
+    }
+
+    /// Waits for no longer than `timeout`. Dropping this handle, including
+    /// after a timeout, cancels its still-pending writer probe.
+    pub fn finish_with_timeout(
+        self,
+        timeout: Duration,
+    ) -> Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1> {
         self.receiver
-            .recv()
-            .unwrap_or(Err(SqliteSnapshotQualificationErrorV1::WriterUnavailable))
+            .recv_timeout(timeout)
+            .unwrap_or_else(|error| match error {
+                mpsc::RecvTimeoutError::Timeout => {
+                    Err(SqliteSnapshotQualificationErrorV1::TimedOut)
+                }
+                mpsc::RecvTimeoutError::Disconnected => {
+                    Err(SqliteSnapshotQualificationErrorV1::WriterUnavailable)
+                }
+            })
+    }
+}
+
+impl Drop for SqliteSnapshotQualificationHandleV1 {
+    fn drop(&mut self) {
+        let _ = self
+            .commands
+            .send(WriterCommand::CancelSnapshotQualification {
+                probe_id: self.probe_id,
+            });
     }
 }
 
@@ -3336,10 +3372,11 @@ impl Drop for ReplaySlicePermitV1 {
 
 enum WriterCommand {
     ArmSnapshotQualification {
-        measurement: mpsc::Sender<
-            Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1>,
-        >,
-        reply: mpsc::Sender<Result<(), SqliteSnapshotQualificationErrorV1>>,
+        measurement: mpsc::Sender<SnapshotQualificationResult>,
+        reply: mpsc::Sender<Result<u64, SqliteSnapshotQualificationErrorV1>>,
+    },
+    CancelSnapshotQualification {
+        probe_id: u64,
     },
     InitializeCanonicalMetadata {
         deployment_lineage: String,
@@ -4619,10 +4656,14 @@ impl SqliteRoomStore {
             .commands
             .send(WriterCommand::ArmSnapshotQualification { measurement, reply })
             .map_err(|_| SqliteSnapshotQualificationErrorV1::WriterUnavailable)?;
-        receive
+        let probe_id = receive
             .recv()
             .map_err(|_| SqliteSnapshotQualificationErrorV1::WriterUnavailable)??;
-        Ok(SqliteSnapshotQualificationHandleV1 { receiver })
+        Ok(SqliteSnapshotQualificationHandleV1 {
+            receiver,
+            commands: self.writer.commands.clone(),
+            probe_id,
+        })
     }
 
     /// Creates and atomically publishes a standalone online backup from the
@@ -11142,6 +11183,7 @@ fn writer_main(
     #[cfg(test)]
     let mut failpoint = None;
     let mut snapshot_qualification = None;
+    let mut next_snapshot_qualification_probe_id = 1_u64;
     macro_rules! reply_after_namespace_check {
         ($reply:expr, $value:expr) => {{
             let value = $value;
@@ -11167,10 +11209,21 @@ fn writer_main(
                 let result = if snapshot_qualification.is_some() {
                     Err(SqliteSnapshotQualificationErrorV1::AlreadyArmed)
                 } else {
-                    snapshot_qualification = Some(measurement);
-                    Ok(())
+                    let probe_id = next_snapshot_qualification_probe_id;
+                    next_snapshot_qualification_probe_id =
+                        next_snapshot_qualification_probe_id.wrapping_add(1).max(1);
+                    snapshot_qualification = Some((probe_id, measurement));
+                    Ok(probe_id)
                 };
                 reply_after_namespace_check!(reply, result);
+            }
+            WriterCommand::CancelSnapshotQualification { probe_id } => {
+                if snapshot_qualification
+                    .as_ref()
+                    .is_some_and(|(pending_probe_id, _)| *pending_probe_id == probe_id)
+                {
+                    let _ = snapshot_qualification.take();
+                }
             }
             WriterCommand::InitializeCanonicalMetadata {
                 deployment_lineage,
@@ -16613,11 +16666,7 @@ fn commit_prepared(
     prepared: SqlitePreparedWrite,
     clock: &dyn TrustedAuthorityClock,
     path: &Path,
-    snapshot_qualification: &mut Option<
-        mpsc::Sender<
-            Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1>,
-        >,
-    >,
+    snapshot_qualification: &mut Option<PendingSnapshotQualification>,
 ) -> RoomCommitResolutionV1 {
     commit_prepared_inner(
         connection,
@@ -16636,11 +16685,7 @@ fn commit_prepared(
     clock: &dyn TrustedAuthorityClock,
     failpoint: Option<WriteBoundary>,
     path: &Path,
-    snapshot_qualification: &mut Option<
-        mpsc::Sender<
-            Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1>,
-        >,
-    >,
+    snapshot_qualification: &mut Option<PendingSnapshotQualification>,
 ) -> RoomCommitResolutionV1 {
     commit_prepared_inner(
         connection,
@@ -16658,11 +16703,7 @@ fn commit_prepared_inner(
     clock: &dyn TrustedAuthorityClock,
     failpoint: Option<WriteBoundary>,
     path: &Path,
-    snapshot_qualification: &mut Option<
-        mpsc::Sender<
-            Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1>,
-        >,
-    >,
+    snapshot_qualification: &mut Option<PendingSnapshotQualification>,
 ) -> RoomCommitResolutionV1 {
     let Ok(transaction) = connection.transaction_with_behavior(TransactionBehavior::Immediate)
     else {
@@ -16782,11 +16823,7 @@ fn commit_creation_with_authority(
     changes: &[PreparedAuthorityChangeV1],
     clock: &dyn TrustedAuthorityClock,
     path: &Path,
-    snapshot_qualification: &mut Option<
-        mpsc::Sender<
-            Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1>,
-        >,
-    >,
+    snapshot_qualification: &mut Option<PendingSnapshotQualification>,
 ) -> RoomCommitResolutionV1 {
     if changes.is_empty() || !matches!(&prepared.branch, PreparedSqliteBranch::Create(_)) {
         return RoomCommitResolutionV1::Fault;
@@ -22933,11 +22970,7 @@ fn maybe_persist_post_commit_snapshot(
     is_new_transition: bool,
     snapshot_write_enabled: bool,
     path: &Path,
-    snapshot_qualification: &mut Option<
-        mpsc::Sender<
-            Result<SqliteSnapshotQualificationMeasurementV1, SqliteSnapshotQualificationErrorV1>,
-        >,
-    >,
+    snapshot_qualification: &mut Option<PendingSnapshotQualification>,
 ) {
     let Some(candidate) = prepared.snapshot_cadence_candidate() else {
         return;
@@ -22955,7 +22988,7 @@ fn maybe_persist_post_commit_snapshot(
     // so the next duplicate or new Advance may retry it.
     if due {
         if snapshot_write_enabled && let Some(snapshot) = prepared.post_commit_snapshot() {
-            if let Some(reply) = snapshot_qualification.take() {
+            if let Some((_, reply)) = snapshot_qualification.take() {
                 let result =
                     persist_qualified_post_commit_snapshot(connection, path, &snapshot, now_text);
                 let _ = reply.send(result);
@@ -23405,13 +23438,13 @@ mod tests {
         SqliteObservationErrorV1, SqliteObservationFrameV1, SqliteObservationPositionsV1,
         SqliteObservationResetReasonV1, SqliteRecoveryPhaseV1, SqliteRoomDiagnosticRecordKindV1,
         SqliteRoomRecoveryV1, SqliteRoomRuntimeStateV1, SqliteRoomStore,
-        SqliteSourceTransferErrorV1, SqliteSourceTransferStateV1, SqliteTelemetryEventV1,
-        SqliteTelemetrySink, SqliteTimerStateV1, StoredPairedSnapshotRow,
-        TRANSFER_BACKUP_IDENTITY_MIGRATION_ID, TRANSFER_LIFECYCLE_MIGRATION_ID,
-        TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID, TestAuthorityClock, WriteBoundary,
-        arm_guarded_commit_pause, arm_recovery_install_pause, arm_replay_projection_pause,
-        arm_writer_exact_open_hook, arm_writer_post_command_hook, arm_writer_queue_pause,
-        canonical_history_digest, clear_replay_slice_row_budget,
+        SqliteSnapshotQualificationErrorV1, SqliteSourceTransferErrorV1,
+        SqliteSourceTransferStateV1, SqliteTelemetryEventV1, SqliteTelemetrySink,
+        SqliteTimerStateV1, StoredPairedSnapshotRow, TRANSFER_BACKUP_IDENTITY_MIGRATION_ID,
+        TRANSFER_LIFECYCLE_MIGRATION_ID, TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID,
+        TestAuthorityClock, WriteBoundary, arm_guarded_commit_pause, arm_recovery_install_pause,
+        arm_replay_projection_pause, arm_writer_exact_open_hook, arm_writer_post_command_hook,
+        arm_writer_queue_pause, canonical_history_digest, clear_replay_slice_row_budget,
         create_verified_transfer_backup_with_hooks,
         create_verified_transfer_backup_with_publish_hook, expire_deferred_replay_sessions,
         load_current_paired_snapshot_materializations, lookup_activation_receipt,
@@ -40456,6 +40489,54 @@ mod tests {
                 .initialize_canonical_metadata("deployment/panic-safe", 11)
                 .unwrap_or_else(|error| panic!("metadata replay: {error}")),
             SqliteCanonicalMetadataInitializationV1::AlreadyInitialized
+        );
+    }
+
+    #[test]
+    fn dropped_snapshot_qualification_probe_is_cancelled_before_a_later_probe() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let store = SqliteRoomStore::open(directory.path().join("qualification.sqlite"))
+            .unwrap_or_else(|error| panic!("open store: {error}"));
+        let abandoned = store
+            .arm_snapshot_qualification()
+            .unwrap_or_else(|error| panic!("arm first probe: {error}"));
+        drop(abandoned);
+        let replacement = store
+            .arm_snapshot_qualification()
+            .unwrap_or_else(|error| panic!("dropped probe must release writer state: {error}"));
+        drop(replacement);
+    }
+
+    #[test]
+    fn snapshot_qualification_timeout_cancels_a_probe_when_no_snapshot_is_due() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let store = SqliteRoomStore::open(directory.path().join("qualification.sqlite"))
+            .unwrap_or_else(|error| panic!("open store: {error}"));
+        let pending = store
+            .arm_snapshot_qualification()
+            .unwrap_or_else(|error| panic!("arm probe: {error}"));
+        assert_eq!(
+            pending.finish_with_timeout(Duration::from_millis(1)),
+            Err(SqliteSnapshotQualificationErrorV1::TimedOut)
+        );
+        let replacement = store
+            .arm_snapshot_qualification()
+            .unwrap_or_else(|error| panic!("timed-out probe must release writer state: {error}"));
+        drop(replacement);
+    }
+
+    #[test]
+    fn snapshot_qualification_reports_writer_shutdown_without_waiting_for_a_due_snapshot() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let store = SqliteRoomStore::open(directory.path().join("qualification.sqlite"))
+            .unwrap_or_else(|error| panic!("open store: {error}"));
+        let pending = store
+            .arm_snapshot_qualification()
+            .unwrap_or_else(|error| panic!("arm probe: {error}"));
+        drop(store);
+        assert_eq!(
+            pending.finish_with_timeout(Duration::from_millis(50)),
+            Err(SqliteSnapshotQualificationErrorV1::WriterUnavailable)
         );
     }
 }
