@@ -30,6 +30,7 @@ temp_parent="${WORLDSTREAM_IMO220_TEMP_ROOT:-/tmp}"
 tiers=()
 history_fixture_mode="cargo-release"
 history_fixture_sha256=""
+history_fixture_sha256_subject="history-fixture-binary"
 warm_test_mode="cargo-release"
 warm_test_sha256=""
 
@@ -161,6 +162,9 @@ if [[ -n "$provided_source_database" || -n "$provided_fixture_report" ]]; then
     printf '%s\n' 'IMO-220 existing fixture report must be a regular non-symlink file' >&2
     exit 2
   }
+  history_fixture_mode="retained-source"
+  history_fixture_sha256="$(file_sha256 "$provided_fixture_report")"
+  history_fixture_sha256_subject="retained-fixture-report"
 elif [[ "${#tiers[@]}" -eq 0 ]]; then
   tiers=("${DEFAULT_TIERS[@]}")
 fi
@@ -243,12 +247,12 @@ for tier in "${tiers[@]}"; do
   }
 done
 
-"$python_bin" - "$evidence_file" "$temp_root" "$samples" "$history_fixture_mode" "$history_fixture_sha256" "$warm_test_mode" "$warm_test_sha256" "${tiers[@]}" <<'PY'
+"$python_bin" - "$evidence_file" "$temp_root" "$samples" "$history_fixture_mode" "$history_fixture_sha256" "$history_fixture_sha256_subject" "$warm_test_mode" "$warm_test_sha256" "${tiers[@]}" <<'PY'
 import json
 import os
 import sys
 
-output, root, samples, fixture_mode, fixture_sha256, warm_mode, warm_sha256, *tier_strings = sys.argv[1:]
+output, root, samples, fixture_mode, fixture_sha256, fixture_sha256_subject, warm_mode, warm_sha256, *tier_strings = sys.argv[1:]
 tiers = [int(value) for value in tier_strings]
 rows = []
 for tier in tiers:
@@ -388,7 +392,11 @@ payload = {
         "checkpoint_contract": "v2 witness hash and selected snapshot head verified against durable V2 operational roots",
     },
     "execution": {
-        "history_fixture": {"mode": fixture_mode, "sha256": fixture_sha256 or None},
+        "history_fixture": {
+            "mode": fixture_mode,
+            "sha256": fixture_sha256 or None,
+            "sha256_subject": fixture_sha256_subject,
+        },
         "warm_test": {"mode": warm_mode, "sha256": warm_sha256 or None},
     },
     "tiers": rows,
