@@ -56,6 +56,12 @@ PY
   --samples 1000 \
   --tier 1000000
 mv "${evidence}.tmp" "$evidence"
+for leaves in 1000 10000 100000 1000000; do
+  /usr/local/bin/operational_mmr_qualification \
+    --leaves "$leaves" \
+    --samples 1000 \
+    --output "/data/operational-mmr-${leaves}.json"
+done
 printf 'pass\n' > "$status_file"
 trap - ERR
 exec sleep infinity
