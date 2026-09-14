@@ -1,0 +1,72 @@
+[
+  {
+    "id": "8d96934c322168",
+    "state": "started",
+    "region": "iad",
+    "image_digest": "sha256:2ad5c01aaf510e308ffd8cfa84958db99a5f1724afc912d097b5a3e461edbf93",
+    "oci_revision": "ece028e1c9ad81ac43b8c05289a93d115a957444",
+    "deployment_version": "ece028e1c9ad81ac43b8c05289a93d115a957444",
+    "guest": {
+      "cpu_kind": "shared",
+      "cpus": 1,
+      "memory_mb": 1024
+    },
+    "volume": [
+      {
+        "name": "worldstream_data",
+        "path": "/var/lib/worldstream",
+        "size_gb": 1
+      }
+    ],
+    "checks": [
+      {
+        "name": "servicecheck-00-http-8080",
+        "status": "passing",
+        "output": "{\"status\":\"ready\",\"version\":\"hosted_gateway_readiness.v1\"}",
+        "updated_at": "2026-09-14T05:17:25.878Z"
+      }
+    ],
+    "events": [
+      {
+        "type": "start",
+        "status": "started",
+        "request": {},
+        "source": "flyd",
+        "timestamp": 1789363037208
+      },
+      {
+        "type": "restart",
+        "status": "starting",
+        "source": "flyd",
+        "timestamp": 1789363035927
+      },
+      {
+        "type": "exit",
+        "status": "stopped",
+        "request": {
+          "exit_event": {
+            "guest_signal": -1,
+            "requested_stop": true,
+            "signal": -1,
+            "exited_at": "2026-09-14T05:17:15.54Z"
+          }
+        },
+        "source": "flyd",
+        "timestamp": 1789363035740
+      },
+      {
+        "type": "restart",
+        "status": "stopping",
+        "source": "user",
+        "timestamp": 1789363032169
+      },
+      {
+        "type": "start",
+        "status": "started",
+        "request": {},
+        "source": "flyd",
+        "timestamp": 1789363002533
+      }
+    ]
+  }
+]
