@@ -118,6 +118,8 @@ pub enum PostgresTransferError {
 
 const TARGET_PREFLIGHT_ADVISORY_KEY: i64 = 6_291_328_795_568_100_166;
 const STREAM_RECORD_STAGING_COPY_SQL: &str = "COPY worldstream_transfer_stream_records_v2(stream_header_digest, ordinal, class_tag, kind_tag, identity, record_bytes, record_digest) FROM STDIN BINARY";
+const STREAM_NATIVE_CONSEQUENCE_PAGE_COPY_SQL: &str = "COPY worldstream_transfer_native_consequence_page(room_id, member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash) FROM STDIN BINARY";
+const STREAM_NATIVE_RECEIPT_PAGE_COPY_SQL: &str = "COPY worldstream_transfer_native_receipt_page(room_id, operation_kind, identity_bytes, canonical_request_hash, basis_complete_head_bytes, semantic_input_bytes, semantic_time_bytes, resolution_kind, transition_seq, receipt_bytes) FROM STDIN BINARY";
 const AUTHORITY_STATE_COUNT_SQL: &str =
     "SELECT count(*)::bigint FROM worldstream_authority_state WHERE authority_id = true";
 
@@ -1507,6 +1509,7 @@ impl TransferStreamAuthorityDestinationV2 for PostgresStreamDestinationV2<'_> {
 }
 
 const STREAM_STAGING_PAGE_ROWS: i64 = 256;
+const STREAM_STAGING_PAGE_BYTES: i64 = 4 * 1024 * 1024;
 
 fn stream_record_page(
     transaction: &mut Transaction<'_>,
@@ -1516,8 +1519,21 @@ fn stream_record_page(
     let stream_key = stream_digest.as_bytes();
     transaction
         .query(
-            "SELECT ordinal, class_tag, kind_tag, identity, record_bytes, record_digest FROM worldstream_transfer_stream_records_v2 WHERE stream_header_digest = $1 AND ordinal > $2 ORDER BY ordinal LIMIT $3",
-            &[&stream_key.as_slice(), &after_ordinal, &STREAM_STAGING_PAGE_ROWS],
+            "WITH candidates AS (\
+                SELECT ordinal, class_tag, kind_tag, identity, record_bytes, record_digest, \
+                       sum(octet_length(record_bytes)) OVER (ORDER BY ordinal) AS cumulative_bytes \
+                FROM (SELECT ordinal, class_tag, kind_tag, identity, record_bytes, record_digest \
+                      FROM worldstream_transfer_stream_records_v2 \
+                      WHERE stream_header_digest = $1 AND ordinal > $2 \
+                      ORDER BY ordinal LIMIT $3) bounded_rows\
+             ) SELECT ordinal, class_tag, kind_tag, identity, record_bytes, record_digest \
+             FROM candidates WHERE cumulative_bytes <= $4 ORDER BY ordinal",
+            &[
+                &stream_key.as_slice(),
+                &after_ordinal,
+                &STREAM_STAGING_PAGE_ROWS,
+                &STREAM_STAGING_PAGE_BYTES,
+            ],
         )
         .map_err(PostgresTransferError::Sql)?
         .into_iter()
@@ -1561,12 +1577,21 @@ fn stream_records_of_kind_page(
     let stream_key = stream_digest.as_bytes();
     transaction
         .query(
-            "SELECT ordinal, identity, record_bytes, record_digest FROM worldstream_transfer_stream_records_v2 WHERE stream_header_digest = $1 AND class_tag = 1 AND kind_tag = $2 AND ordinal > $3 ORDER BY ordinal LIMIT $4",
+            "WITH candidates AS (\
+                SELECT ordinal, identity, record_bytes, record_digest, \
+                       sum(octet_length(record_bytes)) OVER (ORDER BY ordinal) AS cumulative_bytes \
+                FROM (SELECT ordinal, identity, record_bytes, record_digest \
+                      FROM worldstream_transfer_stream_records_v2 \
+                      WHERE stream_header_digest = $1 AND class_tag = 1 AND kind_tag = $2 AND ordinal > $3 \
+                      ORDER BY ordinal LIMIT $4) bounded_rows\
+             ) SELECT ordinal, identity, record_bytes, record_digest \
+             FROM candidates WHERE cumulative_bytes <= $5 ORDER BY ordinal",
             &[
                 &stream_key.as_slice(),
                 &i16::from(kind.wire_tag()),
                 &after_ordinal,
                 &STREAM_STAGING_PAGE_ROWS,
+                &STREAM_STAGING_PAGE_BYTES,
             ],
         )
         .map_err(PostgresTransferError::Sql)?
@@ -2088,11 +2113,346 @@ fn publish_stream_room_integrity(
     Ok(())
 }
 
+#[derive(Debug)]
+struct StreamNativeConsequencePageRow {
+    room_id: String,
+    member_id: String,
+    cause_room_seq: i64,
+    consequence_kind: String,
+    payload_bytes: Option<Vec<u8>>,
+    projection_hash: Option<Vec<u8>>,
+}
+
+#[derive(Debug)]
+struct StreamNativeReceiptPageRow {
+    room_id: String,
+    operation_kind: String,
+    identity_bytes: Vec<u8>,
+    canonical_request_hash: Vec<u8>,
+    basis_complete_head_bytes: Option<Vec<u8>>,
+    semantic_input_bytes: Vec<u8>,
+    semantic_time_bytes: Vec<u8>,
+    resolution_kind: String,
+    transition_seq: Option<i64>,
+    receipt_bytes: Vec<u8>,
+}
+
+fn stream_native_page_rows(
+    transaction: &mut Transaction<'_>,
+    stream_digest: DigestV1,
+    after: i64,
+) -> Result<(i64, Vec<NativeRow>), PostgresTransferError> {
+    let page = stream_records_of_kind_page(
+        transaction,
+        stream_digest,
+        CanonicalRecordKindV1::NativeOperationalRow,
+        after,
+    )?;
+    let next = page
+        .last()
+        .map(|record| {
+            i64::try_from(record.ordinal())
+                .map_err(|_| PostgresTransferError::InvalidProviderValue("stream staged ordinal"))
+        })
+        .transpose()?
+        .unwrap_or(after);
+    let rows = page
+        .iter()
+        .map(|record| decode_native_operational_row(record.bytes()))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((next, rows))
+}
+
+fn native_stream_consequence(
+    row: &NativeRow,
+) -> Result<StreamNativeConsequencePageRow, PostgresTransferError> {
+    let projection_hash = match row.values.get(5) {
+        Some(NativeValue::Text(value)) => Some(native_blake3(value)?),
+        Some(NativeValue::Null) => None,
+        _ => return Err(PostgresTransferError::Canonical("native consequence hash")),
+    };
+    Ok(StreamNativeConsequencePageRow {
+        room_id: native_text(row, 0)?,
+        member_id: native_text(row, 1)?,
+        cause_room_seq: native_integer(row, 2)?,
+        consequence_kind: native_text(row, 3)?,
+        payload_bytes: native_optional_blob(row, 4)?,
+        projection_hash,
+    })
+}
+
+fn native_stream_receipt(
+    row: &NativeRow,
+) -> Result<StreamNativeReceiptPageRow, PostgresTransferError> {
+    // These two retained fields are SQLite-only operational evidence. Decode
+    // and validate them even though PostgreSQL does not persist copies, so a
+    // malformed native row cannot be normalized away during transfer.
+    let _codec_id = native_text(row, 3)?;
+    let _committed_at = native_text(row, 11)?;
+    let transition_seq = match row.values.get(9) {
+        Some(NativeValue::Integer(value)) => Some(*value),
+        Some(NativeValue::Null) => None,
+        _ => {
+            return Err(PostgresTransferError::Canonical(
+                "native receipt transition",
+            ))
+        }
+    };
+    Ok(StreamNativeReceiptPageRow {
+        room_id: native_text(row, 0)?,
+        operation_kind: native_text(row, 1)?,
+        identity_bytes: native_blob(row, 2)?,
+        canonical_request_hash: native_blob(row, 4)?,
+        basis_complete_head_bytes: native_optional_blob(row, 5)?,
+        semantic_input_bytes: native_blob(row, 6)?,
+        semantic_time_bytes: native_blob(row, 7)?,
+        resolution_kind: native_text(row, 8)?,
+        transition_seq,
+        receipt_bytes: native_blob(row, 10)?,
+    })
+}
+
+fn prepare_stream_native_consequence_page(
+    transaction: &mut Transaction<'_>,
+) -> Result<(), PostgresTransferError> {
+    transaction
+        .batch_execute(
+            "CREATE TEMP TABLE IF NOT EXISTS worldstream_transfer_native_consequence_page (\
+                room_id text NOT NULL, member_id text NOT NULL, cause_room_seq bigint NOT NULL, \
+                consequence_kind text NOT NULL, payload_bytes bytea, projection_hash bytea\
+             ) ON COMMIT DROP; TRUNCATE worldstream_transfer_native_consequence_page",
+        )
+        .map_err(PostgresTransferError::Sql)
+}
+
+fn prepare_stream_native_receipt_page(
+    transaction: &mut Transaction<'_>,
+) -> Result<(), PostgresTransferError> {
+    transaction
+        .batch_execute(
+            "CREATE TEMP TABLE IF NOT EXISTS worldstream_transfer_native_receipt_page (\
+                room_id text NOT NULL, operation_kind text NOT NULL, identity_bytes bytea NOT NULL, \
+                canonical_request_hash bytea NOT NULL, basis_complete_head_bytes bytea, \
+                semantic_input_bytes bytea NOT NULL, semantic_time_bytes bytea NOT NULL, \
+                resolution_kind text NOT NULL, transition_seq bigint, receipt_bytes bytea NOT NULL\
+             ) ON COMMIT DROP; TRUNCATE worldstream_transfer_native_receipt_page",
+        )
+        .map_err(PostgresTransferError::Sql)
+}
+
+fn copy_stream_native_consequence_page(
+    transaction: &mut Transaction<'_>,
+    rows: &[StreamNativeConsequencePageRow],
+) -> Result<(), PostgresTransferError> {
+    let copy = transaction
+        .copy_in(STREAM_NATIVE_CONSEQUENCE_PAGE_COPY_SQL)
+        .map_err(PostgresTransferError::Sql)?;
+    let mut writer = BinaryCopyInWriter::new(
+        copy,
+        &[
+            Type::TEXT,
+            Type::TEXT,
+            Type::INT8,
+            Type::TEXT,
+            Type::BYTEA,
+            Type::BYTEA,
+        ],
+    );
+    for row in rows {
+        writer
+            .write(&[
+                &row.room_id,
+                &row.member_id,
+                &row.cause_room_seq,
+                &row.consequence_kind,
+                &row.payload_bytes,
+                &row.projection_hash,
+            ])
+            .map_err(PostgresTransferError::Sql)?;
+    }
+    if writer.finish().map_err(PostgresTransferError::Sql)?
+        != u64::try_from(rows.len()).map_err(|_| {
+            PostgresTransferError::InvalidProviderValue("native consequence page rows")
+        })?
+    {
+        return Err(PostgresTransferError::Canonical(
+            "native consequence COPY row count",
+        ));
+    }
+    Ok(())
+}
+
+fn copy_stream_native_receipt_page(
+    transaction: &mut Transaction<'_>,
+    rows: &[StreamNativeReceiptPageRow],
+) -> Result<(), PostgresTransferError> {
+    let copy = transaction
+        .copy_in(STREAM_NATIVE_RECEIPT_PAGE_COPY_SQL)
+        .map_err(PostgresTransferError::Sql)?;
+    let mut writer = BinaryCopyInWriter::new(
+        copy,
+        &[
+            Type::TEXT,
+            Type::TEXT,
+            Type::BYTEA,
+            Type::BYTEA,
+            Type::BYTEA,
+            Type::BYTEA,
+            Type::BYTEA,
+            Type::TEXT,
+            Type::INT8,
+            Type::BYTEA,
+        ],
+    );
+    for row in rows {
+        writer
+            .write(&[
+                &row.room_id,
+                &row.operation_kind,
+                &row.identity_bytes,
+                &row.canonical_request_hash,
+                &row.basis_complete_head_bytes,
+                &row.semantic_input_bytes,
+                &row.semantic_time_bytes,
+                &row.resolution_kind,
+                &row.transition_seq,
+                &row.receipt_bytes,
+            ])
+            .map_err(PostgresTransferError::Sql)?;
+    }
+    if writer.finish().map_err(PostgresTransferError::Sql)?
+        != u64::try_from(rows.len())
+            .map_err(|_| PostgresTransferError::InvalidProviderValue("native receipt page rows"))?
+    {
+        return Err(PostgresTransferError::Canonical(
+            "native receipt COPY row count",
+        ));
+    }
+    Ok(())
+}
+
+fn publish_stream_native_consequence_page(
+    transaction: &mut Transaction<'_>,
+) -> Result<(), PostgresTransferError> {
+    transaction.execute(
+        "INSERT INTO worldstream_observation_consequences(room_id, member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash) \
+         SELECT room_id, member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash \
+         FROM worldstream_transfer_native_consequence_page ORDER BY room_id, member_id, cause_room_seq \
+         ON CONFLICT (room_id, member_id, cause_room_seq) DO NOTHING",
+        &[],
+    ).map_err(PostgresTransferError::Sql)?;
+    let mismatch = transaction.query_one(
+        "SELECT EXISTS (SELECT 1 FROM worldstream_transfer_native_consequence_page s \
+         LEFT JOIN worldstream_observation_consequences d \
+           ON d.room_id = s.room_id AND d.member_id = s.member_id AND d.cause_room_seq = s.cause_room_seq \
+         WHERE d.room_id IS NULL OR d.consequence_kind IS DISTINCT FROM s.consequence_kind \
+           OR d.payload_bytes IS DISTINCT FROM s.payload_bytes OR d.projection_hash IS DISTINCT FROM s.projection_hash)",
+        &[],
+    ).map_err(PostgresTransferError::Sql)?.try_get::<_, bool>(0).map_err(PostgresTransferError::Sql)?;
+    if mismatch {
+        return Err(PostgresTransferError::Canonical(
+            "observation consequence mismatch",
+        ));
+    }
+    Ok(())
+}
+
+fn publish_stream_native_receipt_page(
+    transaction: &mut Transaction<'_>,
+) -> Result<(), PostgresTransferError> {
+    transaction.execute(
+        "INSERT INTO worldstream_semantic_receipts(identity_bytes, operation_kind, canonical_request_hash, basis_complete_head_bytes, semantic_input_bytes, semantic_time_bytes, resolution_kind, transition_seq, receipt_bytes, room_id) \
+         SELECT identity_bytes, operation_kind, canonical_request_hash, basis_complete_head_bytes, semantic_input_bytes, semantic_time_bytes, resolution_kind, transition_seq, receipt_bytes, room_id \
+         FROM worldstream_transfer_native_receipt_page ORDER BY identity_bytes ON CONFLICT (identity_bytes) DO NOTHING",
+        &[],
+    ).map_err(PostgresTransferError::Sql)?;
+    transaction.execute(
+        "INSERT INTO worldstream_operation_guards(identity_bytes, request_hash, room_id, receipt_bytes) \
+         SELECT identity_bytes, canonical_request_hash, room_id, receipt_bytes \
+         FROM worldstream_transfer_native_receipt_page ORDER BY identity_bytes ON CONFLICT (identity_bytes) DO NOTHING",
+        &[],
+    ).map_err(PostgresTransferError::Sql)?;
+    let mismatch = transaction.query_one(
+        "SELECT EXISTS (SELECT 1 FROM worldstream_transfer_native_receipt_page s \
+         LEFT JOIN worldstream_semantic_receipts d ON d.identity_bytes = s.identity_bytes \
+         LEFT JOIN worldstream_operation_guards g ON g.identity_bytes = s.identity_bytes \
+         WHERE d.identity_bytes IS NULL OR g.identity_bytes IS NULL \
+           OR d.operation_kind IS DISTINCT FROM s.operation_kind \
+           OR d.canonical_request_hash IS DISTINCT FROM s.canonical_request_hash \
+           OR d.basis_complete_head_bytes IS DISTINCT FROM s.basis_complete_head_bytes \
+           OR d.semantic_input_bytes IS DISTINCT FROM s.semantic_input_bytes \
+           OR d.semantic_time_bytes IS DISTINCT FROM s.semantic_time_bytes \
+           OR d.resolution_kind IS DISTINCT FROM s.resolution_kind \
+           OR d.transition_seq IS DISTINCT FROM s.transition_seq \
+           OR d.receipt_bytes IS DISTINCT FROM s.receipt_bytes OR d.room_id IS DISTINCT FROM s.room_id \
+           OR g.request_hash IS DISTINCT FROM s.canonical_request_hash \
+           OR g.room_id IS DISTINCT FROM s.room_id OR g.receipt_bytes IS DISTINCT FROM s.receipt_bytes)",
+        &[],
+    ).map_err(PostgresTransferError::Sql)?.try_get::<_, bool>(0).map_err(PostgresTransferError::Sql)?;
+    if mismatch {
+        return Err(PostgresTransferError::Canonical(
+            "semantic receipt operation guard mismatch",
+        ));
+    }
+    Ok(())
+}
+
+fn publish_stream_native_table_batched(
+    transaction: &mut Transaction<'_>,
+    stream_digest: DigestV1,
+    table: &str,
+) -> Result<bool, PostgresTransferError> {
+    match table {
+        "observation_consequences" => prepare_stream_native_consequence_page(transaction)?,
+        "semantic_receipts" => prepare_stream_native_receipt_page(transaction)?,
+        _ => return Ok(false),
+    }
+    let mut after = -1_i64;
+    loop {
+        let (next, rows) = stream_native_page_rows(transaction, stream_digest, after)?;
+        if rows.is_empty() {
+            break;
+        }
+        after = next;
+        match table {
+            "observation_consequences" => {
+                let rows = rows
+                    .iter()
+                    .filter(|row| row.table == table)
+                    .map(native_stream_consequence)
+                    .collect::<Result<Vec<_>, _>>()?;
+                if !rows.is_empty() {
+                    prepare_stream_native_consequence_page(transaction)?;
+                    copy_stream_native_consequence_page(transaction, &rows)?;
+                    publish_stream_native_consequence_page(transaction)?;
+                }
+            }
+            "semantic_receipts" => {
+                let rows = rows
+                    .iter()
+                    .filter(|row| row.table == table)
+                    .map(native_stream_receipt)
+                    .collect::<Result<Vec<_>, _>>()?;
+                if !rows.is_empty() {
+                    prepare_stream_native_receipt_page(transaction)?;
+                    copy_stream_native_receipt_page(transaction, &rows)?;
+                    publish_stream_native_receipt_page(transaction)?;
+                }
+            }
+            _ => unreachable!("handled above"),
+        }
+    }
+    Ok(true)
+}
+
 fn publish_stream_native_table(
     transaction: &mut Transaction<'_>,
     stream_digest: DigestV1,
     table: &str,
 ) -> Result<(), PostgresTransferError> {
+    if publish_stream_native_table_batched(transaction, stream_digest, table)? {
+        return Ok(());
+    }
     let mut after = -1_i64;
     loop {
         let page = stream_records_of_kind_page(
@@ -6645,6 +7005,22 @@ mod tests {
             "worldstream_transfer_stream_records_v2(stream_header_digest, ordinal, class_tag, kind_tag, identity, record_bytes, record_digest)"
         ));
         assert!(STREAM_RECORD_STAGING_COPY_SQL.ends_with("FROM STDIN BINARY"));
+    }
+
+    #[test]
+    fn stream_native_high_cardinality_publication_uses_typed_bounded_copy_pages() {
+        assert_eq!(STREAM_STAGING_PAGE_ROWS, 256);
+        assert_eq!(STREAM_STAGING_PAGE_BYTES, 4 * 1024 * 1024);
+        for copy_sql in [
+            STREAM_NATIVE_CONSEQUENCE_PAGE_COPY_SQL,
+            STREAM_NATIVE_RECEIPT_PAGE_COPY_SQL,
+        ] {
+            assert!(copy_sql.starts_with("COPY worldstream_transfer_native_"));
+            assert!(copy_sql.ends_with("FROM STDIN BINARY"));
+        }
+        assert!(STREAM_NATIVE_CONSEQUENCE_PAGE_COPY_SQL.contains("projection_hash"));
+        assert!(STREAM_NATIVE_RECEIPT_PAGE_COPY_SQL.contains("identity_bytes"));
+        assert!(STREAM_NATIVE_RECEIPT_PAGE_COPY_SQL.contains("receipt_bytes"));
     }
 
     #[test]
