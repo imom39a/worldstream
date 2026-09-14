@@ -134,6 +134,8 @@ LOCK TABLE
     worldstream_timers,
     worldstream_room_current_timers_v2,
     worldstream_room_operational_history_roots_v2,
+    worldstream_room_operational_mmr_receipts_v1,
+    worldstream_room_operational_mmr_nodes_v1,
     worldstream_transitions,
     worldstream_frames,
     worldstream_observation_consequences,
@@ -181,6 +183,8 @@ SELECT domain, row_count FROM (
     UNION ALL SELECT 'worldstream_timers', count(*)::bigint FROM worldstream_timers
     UNION ALL SELECT 'worldstream_room_current_timers_v2', count(*)::bigint FROM worldstream_room_current_timers_v2
     UNION ALL SELECT 'worldstream_room_operational_history_roots_v2', count(*)::bigint FROM worldstream_room_operational_history_roots_v2
+    UNION ALL SELECT 'worldstream_room_operational_mmr_receipts_v1', count(*)::bigint FROM worldstream_room_operational_mmr_receipts_v1
+    UNION ALL SELECT 'worldstream_room_operational_mmr_nodes_v1', count(*)::bigint FROM worldstream_room_operational_mmr_nodes_v1
     UNION ALL SELECT 'worldstream_transitions', count(*)::bigint FROM worldstream_transitions
     UNION ALL SELECT 'worldstream_frames', count(*)::bigint FROM worldstream_frames
     UNION ALL SELECT 'worldstream_observation_consequences', count(*)::bigint FROM worldstream_observation_consequences
@@ -234,6 +238,8 @@ TRUNCATE TABLE
     worldstream_timers,
     worldstream_room_current_timers_v2,
     worldstream_room_operational_history_roots_v2,
+    worldstream_room_operational_mmr_receipts_v1,
+    worldstream_room_operational_mmr_nodes_v1,
     worldstream_transitions,
     worldstream_frames,
     worldstream_observation_consequences,
@@ -6602,7 +6608,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let fingerprint = postgres_backend_fingerprint()?;
         assert_eq!(fingerprint.profile(), BundleProfileV1::PostgresPrimary17);
-        assert_eq!(fingerprint.schema().migrations().len(), 21);
+        assert_eq!(fingerprint.schema().migrations().len(), 22);
         assert_eq!(fingerprint.schema().migrations()[5].version(), 6);
         assert_eq!(fingerprint.schema().migrations()[10].version(), 11);
         assert_eq!(fingerprint.schema().migrations()[11].version(), 12);
@@ -6613,6 +6619,7 @@ mod tests {
         assert_eq!(fingerprint.schema().migrations()[18].version(), 19);
         assert_eq!(fingerprint.schema().migrations()[19].version(), 20);
         assert_eq!(fingerprint.schema().migrations()[20].version(), 21);
+        assert_eq!(fingerprint.schema().migrations()[21].version(), 22);
         Ok(())
     }
 
@@ -6669,6 +6676,8 @@ mod tests {
             "worldstream_timers",
             "worldstream_room_current_timers_v2",
             "worldstream_room_operational_history_roots_v2",
+            "worldstream_room_operational_mmr_receipts_v1",
+            "worldstream_room_operational_mmr_nodes_v1",
             "worldstream_transitions",
             "worldstream_frames",
             "worldstream_observation_consequences",

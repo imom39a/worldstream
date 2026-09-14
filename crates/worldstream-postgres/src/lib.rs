@@ -39,10 +39,11 @@ pub use migrations::{
     MIGRATION_0010_SQL, MIGRATION_0011_SQL, MIGRATION_0012_SQL, MIGRATION_0013_SQL,
     MIGRATION_0014_SQL, MIGRATION_0015_SQL, MIGRATION_0016_SQL, MIGRATION_0017_SQL,
     MIGRATION_0018_SQL, MIGRATION_0019_SQL, MIGRATION_0020_SQL, MIGRATION_0021_SQL,
-    MigrationDescriptor,
+    MIGRATION_0022_SQL, MigrationDescriptor,
     MigrationFailpoint, MigrationRecord, MigrationVerification, MigrationVerificationError,
     OBSERVATION_RESET_GENERATION_MIGRATION_ID, OBSERVATION_RETENTION_MIGRATION_ID,
-    OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID, SCHEMA_CONTRACT_ID, SCHEMA_FINGERPRINT_MATERIAL,
+    OPERATIONAL_HISTORY_MMR_MIGRATION_ID, OPERATIONAL_HISTORY_ROOTS_MIGRATION_ID,
+    SCHEMA_CONTRACT_ID, SCHEMA_FINGERPRINT_MATERIAL,
     SNAPSHOT_CADENCE_MIGRATION_ID, STREAM_TRANSFER_V2_MIGRATION_ID,
     TRANSFER_PUBLICATION_MIGRATION_ID, TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID,
     TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID, migration_history, schema_contract_fingerprint,
@@ -3210,6 +3211,8 @@ const SCHEMA_TABLE_ORDER: &[&str] = &[
     "worldstream_timers",
     "worldstream_room_current_timers_v2",
     "worldstream_room_operational_history_roots_v2",
+    "worldstream_room_operational_mmr_receipts_v1",
+    "worldstream_room_operational_mmr_nodes_v1",
     "worldstream_transitions",
     "worldstream_frames",
     "worldstream_observation_consequences",
@@ -3287,7 +3290,7 @@ const GLOBAL_RESOURCE_IDENTITY_INDEXES: [(&str, &str); 2] = [
     ),
 ];
 
-const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 36] = [
+const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 38] = [
     (
         "worldstream_transfer_fence_operation_guards",
         "worldstream_operation_guards",
@@ -3347,6 +3350,14 @@ const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 36] = [
     (
         "worldstream_transfer_fence_operational_history_roots_v2",
         "worldstream_room_operational_history_roots_v2",
+    ),
+    (
+        "worldstream_transfer_fence_operational_mmr_receipts_v1",
+        "worldstream_room_operational_mmr_receipts_v1",
+    ),
+    (
+        "worldstream_transfer_fence_operational_mmr_nodes_v1",
+        "worldstream_room_operational_mmr_nodes_v1",
     ),
     (
         "worldstream_transfer_fence_snapshot_schedules",
@@ -11745,7 +11756,7 @@ mod native_hydration_tests {
     #[test]
     fn transfer_safety_catalog_contract_matches_the_reviewed_migration() {
         let transfer_fence_migrations = format!(
-            "{MIGRATION_0011_SQL}{MIGRATION_0012_SQL}{MIGRATION_0015_SQL}{MIGRATION_0018_SQL}{MIGRATION_0019_SQL}"
+            "{MIGRATION_0011_SQL}{MIGRATION_0012_SQL}{MIGRATION_0015_SQL}{MIGRATION_0018_SQL}{MIGRATION_0019_SQL}{MIGRATION_0020_SQL}{MIGRATION_0021_SQL}{MIGRATION_0022_SQL}"
         );
         for (index, table) in GLOBAL_RESOURCE_IDENTITY_INDEXES {
             assert!(
