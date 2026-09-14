@@ -656,7 +656,7 @@ fn bounded_storage_replay_preflights_then_replays_transition_pages() {
     let registry = builtin_counter_registry()
         .unwrap_or_else(|error| unreachable!("fixture Counter registry: {error}"));
     let mut executable = preflight
-        .begin_executable(&registry)
+        .begin_executable(trace.head(), &registry)
         .unwrap_or_else(|error| unreachable!("storage executable begin: {error:?}"));
     for page in transition_bytes.chunks(1) {
         executable

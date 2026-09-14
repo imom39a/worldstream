@@ -5564,7 +5564,7 @@ impl PostgresRoomStore {
             });
         }
 
-        let mut executable = preflight.begin_executable(registry).map_err(|_| {
+        let mut executable = preflight.begin_executable(&head, registry).map_err(|_| {
             PostgresRoomVerificationError::Corrupt {
                 what: "retained Pack replay",
             }

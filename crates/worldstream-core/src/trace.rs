@@ -2291,8 +2291,16 @@ impl StorageHistoryPreflightV1 {
     /// executor state and folds subsequent pages independently.
     pub fn begin_executable(
         self,
+        expected_head: &CompleteHeadV1,
         registry: &PackRegistryV1,
     ) -> Result<StorageExecutableReplayV1, ReplayFailureV1> {
+        if &self.preflight.head != expected_head {
+            return Err(ReplayFailureV1::with_head(
+                ReplayFailureClassV1::LineageHash,
+                "structural preflight does not reach the captured Head".to_owned(),
+                self.preflight.head,
+            ));
+        }
         let request = pack_genesis_request_from_record(&self.genesis);
         let verified = registry
             .prepare_genesis_for_retained_room(&request)
