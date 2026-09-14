@@ -33968,6 +33968,55 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("count Counter v4 Activations: {error}"));
         assert_eq!(counts, (2, 2, 2));
+        let decisions: Vec<(i64, String, Option<String>, Vec<u8>)> = connection
+            .prepare(
+                "SELECT cause_room_seq, decision_id, target_member_id, decision_bytes \
+                 FROM activation_decisions WHERE room_id = ?1 \
+                 ORDER BY cause_room_seq, decision_id",
+            )
+            .unwrap_or_else(|error| panic!("prepare Counter v4 decisions: {error}"))
+            .query_map([ROOM], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap_or_else(|error| panic!("read Counter v4 decisions: {error}"))
+            .collect::<Result<_, _>>()
+            .unwrap_or_else(|error| panic!("collect Counter v4 decisions: {error}"));
+        let registry = builtin_counter_registry()
+            .unwrap_or_else(|error| panic!("Counter v4 checkpoint registry: {error}"));
+        let checkpoint = store
+            .recover_room(&registry, &parsed(ROOM))
+            .unwrap_or_else(|error| panic!("Counter v4 checkpoint recovery: {error:?}"))
+            .unwrap_or_else(|| panic!("Counter v4 checkpoint Room remains present"));
+        connection
+            .execute(
+                "UPDATE room_snapshot_operational_witnesses_v2 \
+                 SET witness_hash = ?1 WHERE room_id = ?2",
+                params![[0_u8; 32].as_slice(), ROOM],
+            )
+            .unwrap_or_else(|error| panic!("force Counter v4 full replay: {error}"));
+        let full = store
+            .recover_room(&registry, &parsed(ROOM))
+            .unwrap_or_else(|error| panic!("Counter v4 full recovery: {error:?}"))
+            .unwrap_or_else(|| panic!("Counter v4 full Room remains present"));
+        assert_eq!(full.head(), checkpoint.head());
+        assert_eq!(
+            full.core_state().canonical_bytes().unwrap_or_else(|error| panic!("Counter v4 full Core: {error}")),
+            checkpoint.core_state().canonical_bytes().unwrap_or_else(|error| panic!("Counter v4 checkpoint Core: {error}")),
+        );
+        let after: Vec<(i64, String, Option<String>, Vec<u8>)> = connection
+            .prepare(
+                "SELECT cause_room_seq, decision_id, target_member_id, decision_bytes \
+                 FROM activation_decisions WHERE room_id = ?1 \
+                 ORDER BY cause_room_seq, decision_id",
+            )
+            .unwrap_or_else(|error| panic!("prepare Counter v4 full decisions: {error}"))
+            .query_map([ROOM], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap_or_else(|error| panic!("read Counter v4 full decisions: {error}"))
+            .collect::<Result<_, _>>()
+            .unwrap_or_else(|error| panic!("collect Counter v4 full decisions: {error}"));
+        assert_eq!(after, decisions);
         drop(connection);
         drop(store);
 
