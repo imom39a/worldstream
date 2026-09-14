@@ -5763,7 +5763,7 @@ mod tests {
                      room_id, transition_id, room_seq, transition_hash, previous_lineage_hash,
                      core_schema_version, pack_digest, core_state_hash, activity_state_hash,
                      authoritative_state_hash, transition_bytes
-                 ) VALUES (?1, ?2, 4, ?3, ?3, ?4, ?5, ?3, ?3, ?3, x'00')",
+                 ) VALUES (?1, ?2, 999, ?3, ?3, ?4, ?5, ?3, ?3, ?3, x'00')",
                 rusqlite::params![
                     room_id,
                     "01ARZ3NDEKTSV4RRFFQ69G5FG7",
@@ -5805,19 +5805,67 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("insert warm Activation: {error}"));
         drop(connection);
-        for _ in 0..3 {
+        // Exercise the actual warm preparation path on every iteration.  A
+        // retry with the same claim identity is intentionally served by the
+        // durable receipt lookup before the executor is borrowed, so each
+        // iteration claims a fresh identity and releases its lease before the
+        // next claim.  This mirrors a Runner repeatedly starting bounded
+        // Invocations while retaining one current executor.
+        let mut previous_claim: Option<(String, u64)> = None;
+        for iteration in 0..3 {
+            if let Some((claim_id, lease_generation)) = previous_claim.take() {
+                let released = backend
+                    .activation_release(
+                        &runner_session,
+                        ActivationLeaseOperation {
+                            activation_id: activation_id.clone(),
+                            runner_id: runner_capability.runner_id.clone(),
+                            claim_id,
+                            operation_id: format!("warm-release-{iteration}"),
+                            lease_generation,
+                            requested_lease_ms: None,
+                            disposition: None,
+                        },
+                    )
+                    .unwrap_or_else(|error| panic!("warm Activation release: {error:?}"));
+                assert_eq!(released.code, ActivationResultCode::Released);
+            }
+            let claim_id = format!("warm-claim-{iteration}");
             let reply = backend
                 .activation_claim(
                     &runner_session,
                     ActivationClaim {
                         activation_id: activation_id.clone(),
                         runner_id: runner_capability.runner_id.clone(),
-                        claim_id: "warm-claim".to_owned(),
+                        claim_id: claim_id.clone(),
                         requested_lease_ms: 30_000,
                     },
                 )
                 .unwrap_or_else(|error| panic!("warm Activation claim: {error:?}"));
             assert_eq!(reply.code, ActivationResultCode::Granted);
+            previous_claim = Some((
+                claim_id,
+                reply
+                    .lease_generation
+                    .unwrap_or_else(|| panic!("warm claim omitted lease generation")),
+            ));
+        }
+        if let Some((claim_id, lease_generation)) = previous_claim {
+            let released = backend
+                .activation_release(
+                    &runner_session,
+                    ActivationLeaseOperation {
+                        activation_id: activation_id.clone(),
+                        runner_id: runner_capability.runner_id.clone(),
+                        claim_id,
+                        operation_id: "warm-release-final".to_owned(),
+                        lease_generation,
+                        requested_lease_ms: None,
+                        disposition: None,
+                    },
+                )
+                .unwrap_or_else(|error| panic!("warm final Activation release: {error:?}"));
+            assert_eq!(released.code, ActivationResultCode::Released);
         }
         if let Some(scales) = std::env::var_os("WORLDSTREAM_WARM_CLAIM_SCALES") {
             let scales = scales
@@ -5840,9 +5888,31 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap_or_else(|error| panic!("count history rows: {error}"));
+            const MAX_LATENCY_SAMPLES: usize = 4096;
+            let mut previous_claim: Option<(String, u64)> = None;
             for scale in scales {
-                let mut samples = Vec::with_capacity(scale);
-                for _ in 0..scale {
+                let mut samples = Vec::with_capacity(MAX_LATENCY_SAMPLES.min(scale));
+                for iteration in 0..scale {
+                    if let Some((claim_id, lease_generation)) = previous_claim.take() {
+                        let released = backend
+                            .activation_release(
+                                &runner_session,
+                                ActivationLeaseOperation {
+                                    activation_id: activation_id.clone(),
+                                    runner_id: runner_capability.runner_id.clone(),
+                                    claim_id,
+                                    operation_id: format!("warm-scale-release-{scale}-{iteration}"),
+                                    lease_generation,
+                                    requested_lease_ms: None,
+                                    disposition: None,
+                                },
+                            )
+                            .unwrap_or_else(|error| {
+                                panic!("scaled warm Activation release: {error:?}")
+                            });
+                        assert_eq!(released.code, ActivationResultCode::Released);
+                    }
+                    let claim_id = format!("warm-scale-claim-{scale}-{iteration}");
                     let started = Instant::now();
                     let reply = backend
                         .activation_claim(
@@ -5850,17 +5920,50 @@ mod tests {
                             ActivationClaim {
                                 activation_id: activation_id.clone(),
                                 runner_id: runner_capability.runner_id.clone(),
-                                claim_id: "warm-claim".to_owned(),
+                                claim_id: claim_id.clone(),
                                 requested_lease_ms: 30_000,
                             },
                         )
                         .unwrap_or_else(|error| panic!("scaled warm Activation claim: {error:?}"));
                     assert_eq!(reply.code, ActivationResultCode::Granted);
-                    samples.push(started.elapsed());
+                    previous_claim = Some((
+                        claim_id,
+                        reply
+                            .lease_generation
+                            .unwrap_or_else(|| panic!("scaled claim omitted lease generation")),
+                    ));
+                    let elapsed = started.elapsed();
+                    if samples.len() < MAX_LATENCY_SAMPLES {
+                        samples.push(elapsed);
+                    } else {
+                        // Deterministic bounded reservoir: no claim Context,
+                        // receipt, or 100k-duration allocation is retained.
+                        samples[iteration % MAX_LATENCY_SAMPLES] = elapsed;
+                    }
+                }
+                if let Some((claim_id, lease_generation)) = previous_claim.take() {
+                    let released = backend
+                        .activation_release(
+                            &runner_session,
+                            ActivationLeaseOperation {
+                                activation_id: activation_id.clone(),
+                                runner_id: runner_capability.runner_id.clone(),
+                                claim_id,
+                                operation_id: format!("warm-scale-final-release-{scale}"),
+                                lease_generation,
+                                requested_lease_ms: None,
+                                disposition: None,
+                            },
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("scaled final warm Activation release: {error:?}")
+                        });
+                    assert_eq!(released.code, ActivationResultCode::Released);
                 }
                 samples.sort_unstable();
                 let percentile = |numerator: usize| {
-                    samples[((scale.saturating_sub(1) * numerator) / 100).min(scale - 1)]
+                    samples[((samples.len().saturating_sub(1) * numerator) / 100)
+                        .min(samples.len() - 1)]
                 };
                 eprintln!(
                     "warm_activation_claims scale={scale} history_rows={before_history_rows} p50_us={} p95_us={} p99_us={}",
@@ -5879,6 +5982,76 @@ mod tests {
                 .unwrap_or_else(|error| panic!("recount history rows: {error}"));
             assert_eq!(after_history_rows, before_history_rows);
         }
+
+        // A normal Action advances the same cached executor.  The forged
+        // unreadable row is deliberately beyond the current Head, so this
+        // proves that an intervening canonical update does not make the next
+        // Activation claim fall back to Genesis recovery.
+        let action_before_callbacks = backend
+            .trace_cache
+            .with_room(
+                &room_id.parse().unwrap_or_else(|_| panic!("Room ID")),
+                |slot| {
+                    slot.as_ref()
+                        .map(|cached| cached.trace().activity_callback_count())
+                        .unwrap_or_else(|| panic!("warm trace was evicted before Action"))
+                },
+            )
+            .unwrap_or_else(|_| panic!("inspect warm trace before Action"));
+        backend
+            .action(
+                &action_member,
+                ActionSubmit {
+                    room_id: room_id.clone(),
+                    member_id: created.member_ids[1].clone(),
+                    action_id: "01ARZ3NDEKTSV4RRFFQ69G5FH0".to_owned(),
+                    based_on_room_seq: 3,
+                    action_type: "increment".to_owned(),
+                    payload: json!({}),
+                },
+            )
+            .unwrap_or_else(|error| panic!("intervening warm Action: {error:?}"));
+        let action_after_callbacks = backend
+            .trace_cache
+            .with_room(
+                &room_id.parse().unwrap_or_else(|_| panic!("Room ID")),
+                |slot| {
+                    slot.as_ref()
+                        .map(|cached| cached.trace().activity_callback_count())
+                        .unwrap_or_else(|| panic!("warm trace was evicted after Action"))
+                },
+            )
+            .unwrap_or_else(|_| panic!("inspect warm trace after Action"));
+        assert!(action_after_callbacks > action_before_callbacks);
+        let after_action_claim = backend
+            .activation_claim(
+                &runner_session,
+                ActivationClaim {
+                    activation_id: activation_id.clone(),
+                    runner_id: runner_capability.runner_id.clone(),
+                    claim_id: "warm-after-action-claim".to_owned(),
+                    requested_lease_ms: 30_000,
+                },
+            )
+            .unwrap_or_else(|error| panic!("warm Activation claim after Action: {error:?}"));
+        assert_eq!(after_action_claim.code, ActivationResultCode::Granted);
+        let released = backend
+            .activation_release(
+                &runner_session,
+                ActivationLeaseOperation {
+                    activation_id,
+                    runner_id: runner_capability.runner_id,
+                    claim_id: "warm-after-action-claim".to_owned(),
+                    operation_id: "warm-after-action-release".to_owned(),
+                    lease_generation: after_action_claim
+                        .lease_generation
+                        .unwrap_or_else(|| panic!("warm Action claim omitted lease generation")),
+                    requested_lease_ms: None,
+                    disposition: None,
+                },
+            )
+            .unwrap_or_else(|error| panic!("warm Activation release after Action: {error:?}"));
+        assert_eq!(released.code, ActivationResultCode::Released);
         let after_callbacks = backend
             .trace_cache
             .with_room(
