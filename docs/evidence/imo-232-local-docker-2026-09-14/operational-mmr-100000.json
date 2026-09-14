@@ -1,0 +1,19 @@
+{
+  "schema": "worldstream/operational-mmr-qualification/v1",
+  "domain": "frames",
+  "leaf_count": 100000,
+  "persisted_node_count": 199994,
+  "peak_count": 6,
+  "logical_node_bytes": 8199754,
+  "samples": 1000,
+  "proof_nodes_max": 21,
+  "proof_nodes_p95": 21,
+  "proof_vector_allocations_upper_bound": 2,
+  "verify_micros_p50": 7,
+  "verify_micros_p95": 7,
+  "verify_micros_p99": 7,
+  "build_millis": 277,
+  "root_hash": "blake3:11ba5145d0c968321d45b73f1a2804235b2802f1dda25945347fc911b992658f",
+  "exact_verification_passed": true,
+  "tamper_rejected": true
+}

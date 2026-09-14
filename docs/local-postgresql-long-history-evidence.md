@@ -9,6 +9,35 @@ generated report sets `release_evidence=false`: these results support
 local engineering decisions and Linear closure audits, but they do not claim a
 Fly.io or other hosted-provider qualification.
 
+## Current finite closure result
+
+The 2026-09-14 rerun supersedes the open PostgreSQL and compact-witness gaps
+described later in this historical note. The final aggregate report is
+[`docs/evidence/warm-activation/imo-220-postgres-live-local.json`](evidence/warm-activation/imo-220-postgres-live-local.json),
+SHA-256 `deb622e4e3b8cc3021cc23119e1a581d238676b2c389a7674d095c9b3f8d8024`.
+It passed pinned PostgreSQL 17.11, direct runtime, PgBouncer transaction
+pooling, seven shared conformance scenarios on both paths, snapshot cadence,
+V3 recovery at 1k/10k/100k, and a 100k public transfer. The V3 witnesses were
+2,450, 2,346, and 2,471 bytes respectively; every recovery read one boundary
+Transition and delivered zero prefix or tail Transitions to Core.
+
+The transfer-specific 100k report is
+[`docs/evidence/long-history/postgres-100000-transfer-recovery-local.json`](evidence/long-history/postgres-100000-transfer-recovery-local.json),
+SHA-256 `5f7373260e96e5cd89837982fa843b1fba2e2eac2e656e5b445d1a54700d0a64`.
+It verified 100,000 canonical Transitions, three frozen V2 roots, three MMR
+receipts, 199,994 immutable MMR nodes, and exact current operational state
+after SQLite-to-PostgreSQL transfer. The source and transfer code are at
+`b8d6044ac6faa5f647f4eac7dbd214a9ed453584`.
+
+The SQLite current-source 100k report is
+[`docs/evidence/long-history/sqlite-100000-bounded-executor.json`](evidence/long-history/sqlite-100000-bounded-executor.json),
+SHA-256 `940c3cd19c930ae5a251fd35c321af5e41f7729ac1087814f430cec31d6b8670`.
+Its installed executor retained zero historical Transitions, its checkpoint
+witness was 2,471 bytes, and the process RSS sample was 13,320,192 bytes.
+
+The only deliberately excluded qualification is the 72-hour wall-clock soak,
+which remains assigned to IMO-235.
+
 ## Bounded-recovery follow-up
 
 The later bounded-recovery implementation adds cut-consistent operational
@@ -237,11 +266,13 @@ bytes for every snapshot write in a transient observer and exports only a
 bounded first/middle/last sample, instead of attributing the whole database
 delta to the cache. At 1,000 transitions it observed five writes at sequences
 0, 250, 500, 750, and 1,000, with serialized byte totals 886, 888, 888, 888,
-and 889 respectively; three rows were retained. SQLite does not expose a
-portable writer CPU counter or a per-snapshot WAL delta without forcing a
-checkpoint, so both fields are emitted as unavailable with that reason. The
-existing 10,000 and 100,001 cadence runs remain valid for count, retention,
-and lag; they are not retroactively given per-snapshot CPU/WAL claims.
+and 889 respectively; three rows were retained. A final local Linux run from
+`a187c53c` fenced one postcommit cache transaction with a quiescent WAL and
+disabled autocheckpointing. It measured 737,500 ns of writer-thread CPU, 886
+logical payload bytes, and exactly 32,992 WAL bytes separately from the
+canonical commit. The existing 10,000 and 100,001 cadence runs remain valid
+for count, retention, and lag; they are not retroactively given per-snapshot
+CPU/WAL claims. See `docs/evidence/snapshot-cadence/README.md`.
 
 The bounded 10,000-transition rerun also showed an independent recovery limit:
 cadence writes occurred at sequences 9,500, 9,750, and 10,000, but the bounded
@@ -281,17 +312,13 @@ source remained pending. A one-byte corruption at the stream midpoint was
 rejected after its durable checkpoint; it hydrated zero Rooms and zero
 Transitions and never published authority.
 
-The live PostgreSQL 17 cadence audit is implemented in the conformance test and
-emits exact serialized snapshot bytes plus event-to-event WAL LSN deltas. The
-local live harness generated the 10,000-transition workload, but its enclosing
-adapter and full-gate run failed before an accepted cadence marker was
-recorded. A focused direct test was then run against a fresh pinned PostgreSQL
-17.11 container; migration stopped at the reviewed schema-catalog fingerprint
-check because concurrent IMO-234 migration work has not yet updated the
-contract fingerprint. PostgreSQL per-snapshot CPU remains explicitly unavailable because
-the standard catalogs do not provide a portable callback-level counter; WAL
-event deltas include intervening canonical writes and are therefore reported
-with that limitation.
+The final live PostgreSQL 17.11 cadence audit passed on both the direct and
+PgBouncer paths and records 1k/10k events, three-row retention, and exact
+serialized snapshot bytes. PostgreSQL per-snapshot CPU remains explicitly
+unavailable because the standard catalogs do not provide a portable
+callback-level counter; WAL event deltas include intervening canonical writes
+and are therefore reported as non-exact. This is a documented provider
+instrumentation boundary, not an inferred zero cost.
 
 The SQLite source suite contains the matrix rows for cadence count/time
 (`snapshot_cadence_uses_transition_count_and_persisted_active_time`), restart
@@ -299,9 +326,9 @@ and snapshot fallback (`drop_reopen_resolves_exact_receipts_and_replays_durable_
 (`snapshot_failure_after_commit_does_not_change_canonical_result_or_recovery`),
 duplicate/concurrent admission (`real_contention_serializes_duplicates_head_candidates_and_inflight_resolve`),
 and complete snapshot removal (`recovery_rebuilds_materializations_after_every_paired_snapshot_is_removed`).
-Those tests could not be rerun in this worktree while IMO-234's new migration
-was between implementation and its expected inventory update; the test target
-failed to compile on the 20-versus-19 migration array mismatch.
+The final local Linux suite ran these regressions with the snapshot probe and
+current migrations: 157 passed, zero failed, and one subprocess-only probe was
+ignored. The qualification example test also passed.
 
 The earlier 1.54 GB import sample was material: it exposed retained canonical
 Transition vectors and row-wise native publication despite bounded source
@@ -311,26 +338,27 @@ incremental canonical replay were installed.
 
 ## Ticket disposition
 
-The local evidence closes no additional issue whose full acceptance criteria
-were still open. It validates substantial parts of each item and narrows the
-remaining work:
+The 2026-09-14 finite closure reruns complete the rows below. IMO-235 remains
+open because it alone owns the 72-hour elapsed schedule.
 
 | Issue | Local evidence | Disposition and remaining check |
 | --- | --- | --- |
-| IMO-220 | Production warm-claim path preserves four history rows and reducer counters; 1,000 claims measured p50 9,602 us, p95 11,159 us, p99 15,439 us. | Keep open. Run the 10k/100k warm-claim scales, PostgreSQL parity, and the requested contention matrix. |
+| IMO-220 | Production SQLite warm claims passed at 1k/10k/100k with 1,000 read and claim samples per tier after recovery was forbidden and an in-head historical row was corrupted. The final PostgreSQL 17.11 lane passed 1,000 direct and 1,000 pooled samples with unchanged reducer and canonical-row counts. | Close from implementation, scale, safety, and provider evidence. |
 | IMO-222 | SQLite and PostgreSQL persist and verify cut-consistent operational witnesses; both adapters completed receipt-confirmed 1k/10k/100k checkpoint recoveries with zero prefix delivery and zero reducer callbacks; PostgreSQL 17.11/PgBouncer passed corrupt-snapshot and canonical-witness fallbacks, missing-materialization rebuild, malformed-Head quarantine, and the stale-Head failure fence. | Close from local implementation evidence. Hosted-provider qualification is tracked separately and the 16 MiB operational-witness limit remains explicit future work. |
-| IMO-223 | Production SQLite cadence count/retention was measured at 1k, 10k, and 100,001 with three retained rows; the 1k run now reports exact serialized-byte samples with bounded memory and explicit CPU/WAL attribution limits. A PostgreSQL 17 audit path is implemented, but the live run did not produce an accepted marker because the enclosing adapter/full-gate run failed. | Keep open. Complete the restart/write-failure/duplicate/concurrent-Head matrix and obtain accepted PostgreSQL scale-parity evidence. |
+| IMO-223 | Production SQLite cadence passed the count/time, restart, failure, duplicate, concurrent-Head, lagging-recovery, and canonical-equivalence matrix. A source-bound local Linux probe separately measured SQLite snapshot CPU, logical bytes, and exact WAL. The pinned PostgreSQL 17.11 direct/PgBouncer lane passed its 1k/10k cadence audit with three retained rows and explicit provider attribution limits. | Close from implementation, failure-matrix, scale, isolated-cost, and provider evidence. |
 | IMO-225 | The 2026-09-14 current-source closure passed 100,001 Transitions and 785,670,211 exact record bytes through 335 bounded chunks. It verifies page-bounded native staging and equality, incremental canonical replay, resume, source retirement, final target authority, disk-full and corruption rejection, and the focused malformed/interrupted/missing/duplicate/ambiguous-finalization matrix. Its transfer-process RSS peak was 251,133,952 bytes, a 248,283,136-byte phase delta. | Close from committed local evidence. The report remains explicitly non-release evidence and does not replace hosted-provider qualification tracked elsewhere. |
-| IMO-226 | Observation-frame retention passed live PostgreSQL age/count/bytes, busy-Room cursor, and bounded deletion checks. | Keep open. Measure actual Activation backlog behavior during sustained arrivals, outages, and bursts, including pending age, supersession, execution, oldest-useful latency, and Timer behavior. |
+| IMO-226 | The bounded backlog policy, exact supersession audit trail, timer obligations, SQLite/PostgreSQL parity, and the sustained-arrival/outage/burst qualification are complete in that ticket's retained evidence. | Already closed; its completed blocker satisfies the corresponding IMO-232 finite reliability row. |
 | IMO-227 | A deterministic 99-scenario no-model matrix now uses production admission and reports stale rate, useful latency, starvation, attempts, successful actions, and model-equivalent waste. The stated low-rate/short-delay envelope passed. | Keep open. Measure scheduler fairness/backoff and record the post-IMO-217 fixed-baseline comparison; high-rate/long-delay scenarios currently show complete starvation. |
 | IMO-230 | External input first execution and restart recovery passed live PostgreSQL, and package-level tests pass. | Keep open. Exercise a real Pack with concurrent Actions and Timers, SQLite/PostgreSQL parity, and overload behavior. |
-| IMO-232 | 1k, 10k, and 100k local component evidence is available. | Keep open. The requested 72-hour soak and one-million-transition/model comparison were deliberately not run in this local session. |
+| IMO-232 | Production SQLite and warm Gateway paths passed through 1m in a locally run Linux container with 4 CPUs and an 8-GiB limit; PostgreSQL, transfer, reliability, MMR, and Luna context-comparison artifacts cover every other finite row. | Close the finite qualification. The 72-hour wall-clock experiment remains exclusively in IMO-235. |
 | IMO-233 | Packaged preflight, OCI, native-package, runbook, and daemon checks pass locally. | Keep open for the manual Fly.io fresh boot/restart and hosted-provider evidence. |
-| IMO-234 | ADR 0031 and the bounded-recovery scale runs isolate an O(retained operational rows) witness scan and a 16 MiB cache cutoff. | Keep open. Design and qualify compact or partitioned operational proofs independently of canonical Transition history. |
+| IMO-234 | ADR 0037 and V3 checkpoints replace the linear witness with three frozen roots and logarithmic MMR receipts. SQLite and PostgreSQL 1k/10k/100k recoveries use 2.3-2.5 KiB witnesses, one boundary read, and no prefix delivery; MMR proofs scale through 1m with at most 25 nodes. | Close from design, implementation, tamper/fencing, replay-equivalence, scale, and provider evidence. |
+| IMO-236 | SQLite and PostgreSQL serving reads verify domain/index/cause-bound MMR proofs against the admitted V3 receipt. Tamper tests, retention, full verification, backup, and public transfer pass; the final 100k transfer preserves three roots, three receipts, and 199,994 nodes. | Close from ADR 0037, adapter tests, 1k/10k/100k/1m proof measurements, and transfer evidence. |
 
 IMO-221, IMO-224, IMO-228, IMO-229, and IMO-231 were already closed with their
-separate implementation and test evidence. The 72-hour soak and Fly.io checks
-are intentionally left for manual in-the-wild testing.
+separate implementation and test evidence. The 72-hour soak remains for manual
+in-the-wild testing in IMO-235. IMO-233's hosted fresh-boot check is a distinct
+release-publication concern rather than part of this finite long-history run.
 
 ## Reproduction entry points
 

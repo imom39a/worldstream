@@ -1,0 +1,23 @@
+{
+  "artifact_sha256": [
+    "d316f2e3ca20eb44b7cd6b4e7fbb31fca367f83f88ef867dedede273b64c6a20  /out/history_qualification_fixture",
+    "8cd3171c09b92c77e322d7d23960d4b9a96184fd5921959559bcb2bf31a6702d  /out/operational_mmr_qualification",
+    "1496b9909c2c1982d74d6c4e4144f032f43359f6ea5fb6ad578179ed3de4e8f1  /out/worldstream-server-tests"
+  ],
+  "platform": {
+    "cpu_count": 10,
+    "kernel": "6.12.76-linuxkit",
+    "machine": "aarch64",
+    "memory_total": "8126672 kB",
+    "system": "Linux"
+  },
+  "release_evidence": false,
+  "schema": "worldstream/imo-232-linux-runtime/v1",
+  "source_revision": "eab6d8c18187f7bc7fb8f145ab7fcaca369a71c8",
+  "started_at": "2026-09-14T15:16:32Z",
+  "volume": {
+    "available_bytes_at_start": 133069094912,
+    "block_size": 4096,
+    "total_bytes": 211046862848
+  }
+}

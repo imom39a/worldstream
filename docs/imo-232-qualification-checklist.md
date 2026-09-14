@@ -1,87 +1,62 @@
-# IMO-232 qualification checklist
+# IMO-232 finite qualification checklist
 
-This is the current audit of Linear IMO-232, “Qualify 100k-plus Room histories
-with replaceable Runners and a 72-hour soak.” The issue and its comments were
-reviewed on 2026-09-14. The comments record evidence from commits
-`a2a02777`, `680c38d9`, `576e2b86`, and `fc3b23b8`; the current bounded snapshot
-instrumentation is in `ea5d10a3` and the follow-up documentation commits after
-it. Local reports are engineering evidence and keep `release_evidence=false`.
+This is the closure audit for every finite acceptance criterion in Linear
+IMO-232. The 72-hour elapsed soak was split into IMO-235 and was deliberately
+not run. Generated engineering reports retain `release_evidence=false`; this
+document does not claim release readiness or model correctness at scale.
 
-The status terms below mean:
+## Result
 
-- **Satisfied**: evidence exists for the complete criterion at the stated
-  scope.
-- **Runnable**: the implementation or command exists, but the required run or
-  a stable dependency is still missing.
-- **Partial**: some rows are evidenced, but the criterion still has a material
-  uncovered dimension.
-- **Open work**: code, harness, or a required production run is still needed.
+| # | Acceptance criterion | Result | Evidence |
+| ---: | --- | --- | --- |
+| 1 | Reproducible artifact, source, backend, and Linux reference resources; PostgreSQL measured separately | **Satisfied** | The [local Docker evidence directory](evidence/imo-232-local-docker-2026-09-14) binds the one-million run to source revision, three binary hashes, image content ID, Linux runtime manifest, 4 CPU limit, 8 GiB memory limit, and a disposable Docker-managed volume on the local SSD host. The [PostgreSQL report](evidence/warm-activation/imo-220-postgres-live-local.json) separately binds PostgreSQL 17.11 and PgBouncer image digests. |
+| 2 | Read/claim/Action latency, useful work, stale rejection, recovery work, memory, storage growth, and pending work | **Satisfied at finite engineering scope** | SQLite reports retain read, claim/release, accepted Action and stale Action p50/p95/p99, accepted/rejected counts, oldest pending Activation, reducer calls, bounded RSS samples, context bytes, database/WAL bytes, and snapshot bytes. The one-million local Docker report uses 1,000 read and claim samples. The [isolated snapshot report](evidence/snapshot-cadence/README.md) measures one SQLite cache transaction at 737,500 ns of writer CPU, 886 logical bytes, and exactly 32,992 WAL bytes. PostgreSQL records 1,000 direct and pooled read/claim samples and keeps its unavailable exact per-snapshot server CPU and WAL fields explicit. Recovery reports expose exact row/callback counts. MMR reports expose proof-vector allocation bounds. |
+| 3 | Warm operations avoid the history prefix; checkpoint recovery honestly meets the five-second reference target | **Satisfied** | SQLite warm operations continue after an in-head historical corruption while recovery is forbidden, and reducer counts remain unchanged for reads and claims. Healthy cold Gateway cache installation now uses guarded V3 recovery plus one bounded serving-fence transaction and performs zero full-history inspections. Current-source SQLite 100k and local Docker 1m executors retain zero historical Transitions. The local Docker 1m and PostgreSQL 1k/10k/100k recovery measurements are recorded in their reports. Each recovery reads one boundary Transition and delivers no prefix or tail Transitions. |
+| 4 | Complete the 72-hour soak | **Moved to IMO-235** | The wall-clock termination, offline, slow-consumer, credential-renewal, and Timer-catch-up schedule remains open in the human-run [IMO-235](https://linear.app/imom39a/issue/IMO-235/run-the-72-hour-long-history-runner-soak). No shorter run is presented as equivalent. |
+| 5 | Lost replies, acknowledgement durability, authorization, obligations, and resource bounds | **Satisfied for finite failure cases** | [Criterion-five evidence](evidence/imo-232-criterion-5-local.json), SHA-256 `3c5bc4bd5f4bdba6c919b7f0754588bbff1ea0d684861488bde763ff236cb2b5`, passes 16 current-source release regressions. They cover original Action/Activation/Runner identities, durable acknowledgement/revocation, restart reconciliation, Timer catch-up, access isolation, bounded queues, slow consumers, and a 10,000-arrival attention burst. Its sole skipped dimension is the IMO-235 elapsed soak. |
+| 6 | Restore/transfer above 100k records and 64 MiB preserves exact state | **Satisfied** | [IMO-225 transfer evidence](evidence/imo-225-stream-closure-2026-09-14.json), SHA-256 `2dd07b1734cb37a713d943bec64833973e5e4a79baab243d36aeda77d2c14cc3`, passes 300,020 records and 785,670,211 exact bytes through 335 bounded chunks. It covers resume, corruption, disk-full, authority finalization, and exact canonical/operational equality. The final root-transfer fix additionally preserves three frozen roots, three MMR receipts, and 199,994 nodes at 100k. |
+| 7 | Compare three Runner context strategies under the same model and budget | **Satisfied at bounded evaluation scope** | [Luna evaluation](evidence/runner-context-evaluation), SHA-256 `afcf043c12e45a86957bb61172b9afff412c71f409474e812d2bf0e3c07c6be5`, uses three isolated `gpt-5.6-luna` calls and a 24,576-byte ceiling. Recent history produced 2/4 useful Actions; summary plus authorized retrieval and current Projection plus explicit work each produced 4/4, with missed work and errors reported separately. |
+| 8 | Keep failures and unavailable evidence visible | **Satisfied** | The local Docker, PostgreSQL, MMR, reliability, transfer, and model reports retain their evidence class and unavailable fields. They never claim `release_ready`, never convert deterministic turns into model-quality evidence, and keep the 72-hour omission visible. |
 
-## Acceptance checklist
+## Finite scale evidence
 
-| # | Linear acceptance criterion | Status | Evidence and exact remaining work |
-|---:|---|---|---|
-| 1 | Reproducible artifact, commit, Pack, backend, and Linux reference resources; PostgreSQL measured separately | **Partial** | [`docs/local-postgresql-long-history-evidence.md`](local-postgresql-long-history-evidence.md) records pinned PostgreSQL 17.11/PgBouncer identities and the Fly 4-vCPU/8-GiB SQLite run from the issue comments. The reports identify production SQLite/PostgreSQL paths, but the final current commit, exact Pack digest, Linux image, and all hardware/filesystem facts are not bound into one final manifest. Re-run the final lanes after IMO-234 stabilizes and publish that manifest. |
-| 2 | Read/claim/Action p50/p95/p99, useful-contribution latency, stale rejection, recovery rows/reducer calls, RSS/allocations, bytes per Transition, DB/WAL/temp growth, oldest pending work | **Partial** | Deterministic [`scripts/room-history-qualification.py`](../scripts/room-history-qualification.py) reports bounded counters and modeled latency; the issue comments record SQLite recovery/RSS/DB/WAL at 1k/10k/100k, and IMO-220 records 1k warm-claim percentiles. Real p50/p95/p99 for all read/claim/Action paths, allocation data, bytes per Transition, temp growth, and oldest pending work at every required scale still need a production Runner harness. |
-| 3 | Warm operations avoid history-prefix scans; checkpoint recovery reports actual prefix/tail work and honestly meets the <=5-second target | **Partial** | [`docs/evidence/bounded-recovery`](evidence/bounded-recovery) proves exact checkpoint recovery at SQLite and PostgreSQL 1k/10k/100k cuts with zero prefix delivery and measured recovery under five seconds. IMO-220’s 1k warm-claim evidence exists. Warm claim/Action scale parity at 10k/100k and a final current-commit measurement remain open. The current SQLite 10k rerun records cadence writes but reports `no_eligible_checkpoint` when the bounded operational-witness limit is exceeded; that dependency belongs to IMO-234. |
-| 4 | Complete the 72-hour soak with termination, Runner replacement, offline periods, slow consumers, credential renewal, and timer catch-up | **Moved to IMO-235; intentionally deferred** | No 72-hour wall-clock run was performed. The harness correctly leaves `seventy_two_hour_soak` skipped and cannot promote a short diagnostic run. Linear IMO-235 now owns the exact artifact/image/backend identity, start/end timestamps, termination schedule, offline intervals, slow-consumer profile, credential-renewal proof, timer-catch-up proof, memory/queue/WAL/temp time series, and final report. |
-| 5 | Lost replies resolve original identities; acknowledged work is durable; privacy, obligations, and bounds hold | **Partial** | The finite local runner, [`scripts/imo-232-criterion-5-evidence.py`](../scripts/imo-232-criterion-5-evidence.py), runs sixteen current-source release regressions and records their commands, durations, and output digests in [`docs/evidence/imo-232-criterion-5-local.json`](evidence/imo-232-criterion-5-local.json). It covers lost Action, Activation, and Runner reply reconciliation; acknowledgement durability; durable Runner revocation; restart takeover with leased-work reconciliation; restartable seat assignment; Timer-obligation catch-up before reactivation; assignment isolation; unauthenticated HTTP history-replay denial; authorized historical-Membership replay gating; host-authorized bounded Runner presence; bounded credential-registry restart; slow-consumer closure; bounded internal telemetry queues; and a 10,000-arrival bounded-attention burst preserving Timer/deadline obligations. The only skipped dimension is the elapsed 72-hour schedule owned by IMO-235; it remains distinct from this finite lane. |
-| 6 | Restore/transfer above 100k total records and 64 MiB preserves exact canonical and operational state | **Partial** | The transfer evidence records 100,001 canonical transitions, 300,020 total stream records, exact digests, resumability, corruption/disk-full rejection, PostgreSQL hydration, source retirement, and final authority. The transfer report also exposes a 1.54-GiB peak RSS and the IMO-225 malformed-stream/resource work remains open. Repeat the dedicated portability contract at the final current commit and resolve its resource and malformed-stream rows before treating this bullet as complete. |
-| 7 | Compare recent-history, summary+retrieval, and current-Projection+explicit-work Runner contexts with identical model/budget conditions | **Satisfied at bounded evaluation scope** | [`docs/evidence/runner-context-evaluation`](evidence/runner-context-evaluation) records three isolated `gpt-5.6-luna` invocations with the same rule brief, output schema, four held-out Pack-compatible cases, and a 24,576-byte prompt ceiling. Recent history produced 2/4 useful Actions and missed two obligations; summary plus authorized retrieval and current Projection plus explicit work each produced 4/4, with zero obsolete claims, unsupported completions, or evidence errors. The artifact remains `release_evidence=false` and keeps policy quality separate from runtime integrity. |
-| 8 | Keep failures and unavailable evidence visible; never claim release readiness or 100,000 correct model decisions from deterministic evidence | **Satisfied at harness scope** | The qualification harness is fail-closed: modeled values carry `source: deterministic_model`, unavailable providers are skipped/failed, the 72-hour row remains visible, and `release_evidence=false` is preserved in local reports. This does not close the other bullets; it verifies that incomplete evidence is represented honestly. |
+| Provider/path | Scale | Result |
+| --- | ---: | --- |
+| Production SQLite/Core fixture | 1k, 10k, 100k native; 1m local Docker | Passed |
+| SQLite isolated snapshot cost | 1k local Linux; one fenced cache transaction | Passed |
+| SQLite warm Gateway | 1k, 10k, 100k native; 1m local Docker; 1,000 reads and claims per tier | Passed |
+| PostgreSQL 17.11 direct and PgBouncer | 1,000 read and claim samples per profile | Passed |
+| PostgreSQL V3 recovery | 1k, 10k, 100k | Passed |
+| Operational MMR | 1k, 10k, 100k, 1m; 1,000 proofs per tier | Passed |
+| SQLite-to-PostgreSQL portability | 100,000 Transitions | Passed |
+| Streaming portability | 100,001 Transitions; 300,020 records; 785,670,211 bytes | Passed |
+| Runner failure/reliability matrix | 16 finite cases | Passed |
+| Model context comparison | 3 strategies x 4 cases | Passed |
 
-## What can run now
+## Source split
 
-The deterministic matrix is runnable without a provider:
+The Linux one-million image and fixture were built and run locally from
+`eab6d8c18187f7bc7fb8f145ab7fcaca369a71c8`. Commit
+`a241bad5204162d2d2d5fc08cb61c64426b4bc70` added executable provenance, while
+`40357cc351a91066a71a0dbd76be28560cf4de03` and `eab6d8c1` bounded the healthy
+cold Gateway cache installation and its exact transaction/race fences. The
+`b8d6044ac6faa5f647f4eac7dbd214a9ed453584` transfer delta is covered by the
+final local 100k transfer report and backup/transfer suites. The isolated
+snapshot-cost fixture and full 157-test SQLite Linux suite were built locally
+from `a187c53c97d86bde963821d61a8a5a752eb3670d`; their temporary containers,
+volume, and images were deleted after evidence capture.
 
-```sh
-uv run --python 3.14.7 --no-project python \
-  scripts/room-history-qualification.py --compact \
-  --output /tmp/imo-232-deterministic.json
-```
-
-Production SQLite 1k and 10k fixture commands are runnable and report cadence,
-storage, and recovery separately. The current 10k output is useful cadence
-evidence even when checkpoint qualification is false. The SQLite unit failure
-matrix is currently blocked by IMO-234’s in-progress migration contract update
-(the source has 20 migrations while a test expectation still lists 19).
-
-The finite criterion-five local evidence lane runs no daemon, PostgreSQL,
-provider, scale fixture, or soak:
-
-```sh
-/usr/bin/python3 scripts/imo-232-criterion-5-evidence.py \
-  --output /tmp/imo-232-criterion-5.json
-```
-
-Its `qualification_status` remains `partial` even when every selected test
-passes. The report carries `release_evidence=false` and names each unavailable
-dimension rather than substituting this short lane for IMO-235.
-
-The standalone PostgreSQL cadence test is compiled and ready:
+## Reproduction entry points
 
 ```sh
-WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN="$ADMIN_DSN" \
-WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN="$RUNTIME_DSN" \
-cargo test --locked -p worldstream-postgres --features conformance-tracer \
-  --test postgres_commit live_postgres_snapshot_cadence_direct -- --nocapture
+scripts/postgres-live-evidence.sh
+scripts/imo-220-warm-claim-qualification.sh
+scripts/imo-220-warm-safety-matrix.sh
+scripts/imo-225-stream-closure.sh
+scripts/imo-232-criterion-5-evidence.py
+scripts/runner-context-evaluation.py
+cargo run --locked --release -p worldstream-core \
+  --example operational_mmr_qualification
 ```
 
-It must use a fresh pinned `postgres:17.11-alpine` provider. A first attempt
-against such a container was stopped by the schema-catalog fingerprint gate
-while IMO-234 migration work was between implementation and contract update;
-the run did not produce PostgreSQL cadence evidence.
-
-## Separate soak issue
-
-Linear IMO-235, **“Run the 72-hour long-history Runner soak,”** owns criterion
-4 and is related to IMO-232. It requires the immutable workload and identity
-manifest, periodic process termination and replacement, long offline intervals,
-slow consumers, credential renewal, timer catch-up, queue/memory/WAL/temp
-measurements, and a final report that proves no acknowledged work or open
-obligation disappeared. Its completion cannot be inferred from the short SQLite
-diagnostic soak.
-
-IMO-232 can then close once criteria 1–3 and 5–8 have final-current-commit
-evidence. If criteria 2 or 6 remain incomplete, keep IMO-232 open; splitting the
-duration experiment does not waive those independent acceptance rows.
+IMO-235 remains the only open item in this qualification frontier.

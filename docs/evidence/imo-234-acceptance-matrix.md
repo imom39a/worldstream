@@ -1,22 +1,32 @@
 # IMO-234 acceptance matrix
 
-This is a verification ledger, not a release claim. A row is complete only
-when the named command has passed against the stated provider.
+This ledger records the completed finite engineering qualification. It is not a
+release claim; local generated reports retain `release_evidence=false`.
 
-| Acceptance row | Evidence | Status |
+| Acceptance criterion | Evidence | Result |
 | --- | --- | --- |
-| V2 checkpoint boundary witness, tail replay, and final state | `history_qualification_fixture --transition-count 10 --stream-metadata` reports `checkpoint_v2`, hash/head/operational exactness, and a 10-record tail | SQLite passed |
-| SQLite V2 tamper fallback | `cargo test -p worldstream-sqlite checkpoint -- --nocapture` | SQLite passed |
-| Recovery replacement and concurrent commit/timer fence | `recovery_install_rereads_exact_head_and_integrity_generation_before_yielding_trace` and `runtime_state_retries_after_a_concurrent_timer_commit` | SQLite passed |
-| PostgreSQL V2 direct recovery scale | `docs/evidence/bounded-recovery/postgres-17-pgbouncer.json`: fresh PostgreSQL 17.11 direct-admin and PgBouncer profiles, 1k/10k/100k checkpoint recovery, exact state/core/activity/Head and root-backed operational counts | Passed |
-| PostgreSQL cadence direct and PgBouncer | `scripts/postgres-live-evidence.sh` after `964f610e` | Pending clean rerun |
-| 100k transfer-backed PostgreSQL recovery | `docs/evidence/bounded-recovery/postgres-17-pgbouncer.json`: 100k history, one boundary transition read, zero prefix records delivered, 13,639,786-byte witness, exact final state | Passed |
-| Independently scaled Frames, consequences, and activation-decision roots beyond 16 MiB | `cargo test -p worldstream-core each_root_domain_advances_beyond_sixteen_mebibytes_without_retaining_history -- --nocapture` | SQLite/Core passed |
-| Timer-ledger and membership source bytes beyond 16 MiB with bounded serving caches | `cargo test -p worldstream-sqlite v2_checkpoint_capture_declines_timer_and_member_serving_cache_overflow -- --nocapture` inserts 17 MiB in each retained source while V2 captures only bounded current timers and member heads; the same test rejects 1,025 current timer or member rows | SQLite passed |
-| Per-domain V2 proof-receipt tamper, omission, stale count/hash, malformed, reordered, duplicate, and extra encoding | `each_v2_operational_root_tamper_falls_back_without_quarantine`, `v2_proof_receipt_omission_and_stale_count_fall_back_for_each_domain`, and `v2_witness_malformed_encoding_and_duplicate_receipts_fail_closed` | SQLite passed; retained forensic-row corruption is checked by forced complete replay |
-| Full-replay equivalence of timers, delivery, decisions, and receipts | `cargo test -p worldstream-sqlite checkpoint_and_forced_full_replay_preserve_timer_delivery_and_receipt_materializations -- --nocapture` compares exact persisted tuples after a forced V2 fallback; `counter_v4_human_ack_commits_two_targeted_activation_decisions_and_recovers_lineage` proves a nonempty decision set | SQLite passed |
+| Published proof design | [ADR 0037](../adr/0037-successor-anchored-operational-receipts.md) defines V3 witness binding, MMR leaf and node encodings, atomic updates, trust anchor, compatibility, retention, transfer, and fail-closed behavior. | Passed |
+| Capture and recovery bounds are independent of retained history | V3 reports use three fixed-size receipts plus logarithmic peaks. SQLite 100k uses a 2,471-byte witness and one boundary read. PostgreSQL 1k/10k/100k uses 2,450/2,346/2,471-byte witnesses, one boundary read, zero prefix/tail delivery, and zero reducer callbacks. The 1m MMR proof needs at most 25 nodes. | Passed |
+| Independently scale operational domains past the V2 limit | `each_root_domain_advances_beyond_sixteen_mebibytes_without_retaining_history` advances each rooted domain beyond 16 MiB. `v2_checkpoint_capture_declines_timer_and_member_serving_cache_overflow` separates unbounded retained Timer/Membership source bytes from their capped current serving sets. Local MMR reports cover 1k/10k/100k/1m leaves. | Passed |
+| Tamper, omission, ordering, duplication, domain, cause, and stale-proof behavior | Core MMR tests reject altered leaves, paths, domains, indexes, roots, malformed coordinates, and stale receipts. SQLite and PostgreSQL reject coordinated payload-plus-hash substitution. The V2 fallback matrix still covers receipt omission, stale counts/hashes, malformed, duplicate, extra, and reordered encodings for legacy histories. | Passed |
+| Exact Head and integrity fencing | `recovery_install_rereads_exact_head_and_integrity_generation_before_yielding_trace`, `runtime_state_retries_after_a_concurrent_timer_commit`, and the live PostgreSQL exact-fence lane cover concurrent commit, Timer update, recovery install, and checkpoint replacement. | Passed |
+| Full-replay equivalence | `checkpoint_and_forced_full_replay_preserve_timer_delivery_and_receipt_materializations` compares exact durable Timer, delivery, decision, and receipt tuples. V3 qualification compares Head, Core, activity, Timer, Frame, consequence, Membership, and Activation-decision state. | Passed |
+| Equivalent SQLite and PostgreSQL evidence | [SQLite 100k](long-history/sqlite-100000-bounded-executor.json) and [PostgreSQL 17/PgBouncer](bounded-recovery/postgres-17-pgbouncer.json) both complete checkpoint recovery with exact current state and no prefix delivery. | Passed |
+| Backup and transfer completeness needed by the proof contract | Backup, SQLite native stream, transfer preflight, and PostgreSQL publication now carry the frozen V2 roots before their count-matched MMR receipts. The final 100k transfer preserves 3 roots, 3 receipts, and 199,994 nodes. | Passed |
 
-The outstanding rows deliberately remain open. The serving cache contract is
-intentionally different from the retained forensic ledger: timers and
-members are capped at 1,024 current entries, while historical timer and
-membership source bytes can exceed 16 MiB without entering the V2 witness.
+## Scale artifacts
+
+| Artifact | SHA-256 | Key bound |
+| --- | --- | --- |
+| `long-history/sqlite-100000-bounded-executor.json` | `940c3cd19c930ae5a251fd35c321af5e41f7729ac1087814f430cec31d6b8670` | 100k prefix skipped; 2,471-byte witness; zero retained cached history |
+| `long-history/postgres-100000-transfer-recovery-local.json` | `5f7373260e96e5cd89837982fa843b1fba2e2eac2e656e5b445d1a54700d0a64` | 100k SQLite-to-PostgreSQL transfer followed by 42 ms V3 recovery |
+| `bounded-recovery/postgres-17-pgbouncer.json` | `deb622e4e3b8cc3021cc23119e1a581d238676b2c389a7674d095c9b3f8d8024` | Direct and pooled provider qualification, 1k/10k/100k |
+| `operational-mmr/local-1000000.json` | `e9505e12f86a5366d600bd6ac1fede2349260dfaf5329ae051a530f476163749` | 1,999,993 immutable nodes; at most 25 proof nodes |
+
+The completed implementation and qualification harness are at
+`eab6d8c18187f7bc7fb8f145ab7fcaca369a71c8`. Commits `40357cc3` and `eab6d8c1`
+also keep healthy SQLite Gateway cache installation on guarded V3 recovery plus
+one bounded serving-fence transaction. Full replay remains available for
+legacy histories, authoritative repair, and forensic verification; it is not
+part of an ordinary eligible V3 checkpoint recovery or healthy Gateway cache
+installation.

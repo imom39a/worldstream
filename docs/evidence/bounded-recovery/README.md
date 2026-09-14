@@ -1,68 +1,66 @@
-# Local bounded-recovery evidence
+# Bounded-recovery evidence
 
-These redacted reports were produced on 2026-09-13 through the production
-Core/SQLite and Core/PostgreSQL storage paths. They are local engineering
-evidence and do not claim hosted-provider or release qualification.
+These reports exercise the production Core, SQLite, and PostgreSQL recovery
+paths. They are engineering evidence and do not claim release qualification.
 
-The SQLite fixture is reproducible with:
+## Current V3 evidence
 
-```text
+V3 checkpoints store three frozen operational roots plus their MMR receipts.
+Recovery authenticates only the logarithmic proof nodes needed for the current
+operational rows. It does not reconstruct an inventory of every historical
+Frame, consequence, or Activation decision.
+
+The current 100k SQLite evidence is retained at
+[`../long-history/sqlite-100000-bounded-executor.json`](../long-history/sqlite-100000-bounded-executor.json).
+It reports a 2,471-byte checkpoint witness, at most six MMR peaks per domain,
+one boundary Transition read, zero prefix or tail Transitions delivered to
+Core, zero retained historical Transitions in the installed executor, and a
+13,320,192-byte RSS sample.
+
+The final PostgreSQL/PgBouncer report is `postgres-17-pgbouncer.json`, SHA-256
+`deb622e4e3b8cc3021cc23119e1a581d238676b2c389a7674d095c9b3f8d8024`.
+It records an overall pass with no errors against pinned PostgreSQL 17.11 and
+the pinned PgBouncer image.
+
+| PostgreSQL history | Recovery | V3 witness | RSS after setup | Prefix delivered | Adapter Transition reads | Reducer callbacks |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 127 ms | 2,450 bytes | 22,085,632 bytes | 0 | 1 | 0 |
+| 10,000 | 124 ms | 2,346 bytes | 23,216,128 bytes | 0 | 1 | 0 |
+| 100,000 | 42 ms | 2,471 bytes | 1,418,903,552 bytes | 0 | 1 | 0 |
+
+The 100k setup first used the public V2 whole-deployment transfer and one
+authoritative full replay to capture a V3 checkpoint. Its RSS sample therefore
+includes that one-time full replay. The subsequent measured recovery was the
+ordinary V3 path and skipped all 100,000 prefix Transitions.
+
+Every tier exactly matched Head, Core state, activity state, Timer ledger,
+Frame heads, retained Frames, consequences, Membership generations, and
+Activation decisions. The bounded path did not read semantic receipts. The
+provider lane also passed tamper fallback, missing-materialization rebuild,
+malformed-Head quarantine, exact install fencing, and the current PostgreSQL
+snapshot cadence contract.
+
+## Legacy V2 comparison artifacts
+
+The retained `sqlite-1000.json`, `sqlite-10000.json`, and
+`sqlite-100000.json` reports document the earlier V2 design. Their witnesses
+grew with retained consequences: 135,280 bytes at 1k, 1,354,783 bytes at 10k,
+and 13,639,786 bytes at 100k. These reports remain useful regression evidence,
+but V3 replaces the linear witness with compact authenticated MMR receipts.
+
+## Reproduction
+
+```sh
 cargo run --locked --quiet --release -p worldstream-sqlite \
   --example history_qualification_fixture -- \
   --database "$DB" --transition-count "$COUNT" \
   --output "$REPORT" --stream-metadata
+
+WORLDSTREAM_PG_LIVE_DEBUG_DIR=/tmp/worldstream-pg-evidence \
+WORLDSTREAM_POSTGRES_WARM_CLAIM_SAMPLES=1000 \
+scripts/postgres-live-evidence.sh \
+  --evidence docs/evidence/warm-activation/imo-220-postgres-live-local.json
 ```
 
-| Report | SHA-256 | Recovery | RSS | Consequences | Witness |
-| --- | --- | ---: | ---: | ---: | ---: |
-| `sqlite-1000.json` | `c9bf6e04c02dd7a74281bdba0bd9f6cd6c20a7c93e4d4575d69f01260d5f6586` | 8 ms | 23,314,432 | 1,000 | 135,280 bytes |
-| `sqlite-10000.json` | `bf5a78e3b3a94750eb7b245daa13f8bb6b6cd9a923ac894ae8b27857986abdd2` | 79 ms | 127,107,072 | 10,000 | 1,354,783 bytes |
-| `sqlite-100000.json` | `fc52a931cb20489751456fb53c56d3098f0ac877df3b36dba03d77c250e3524d` | 843 ms | 775,733,248 | 100,000 | 13,639,786 bytes |
-
-Every SQLite tier used the completed `checkpoint` execution path. The
-receipt-backed accounting records one checkpoint-boundary Transition row read
-by the adapter, zero prefix range reads, zero prefix records delivered to Core,
-zero tail records, one total adapter Transition read, and zero reducer
-callbacks. Each report also contains exact row-for-row comparisons for Timers,
-frame Heads, retained Frames, observation consequences, Membership generations,
-and Activation decisions. A report cannot set `pass=true` unless all those
-checks succeed.
-
-`postgres-17-pgbouncer.json` has SHA-256
-`f2c67a90208b785a2013de815ff468f851ca297bd6affe87babcac4ab6cd168f`.
-It is the output of `scripts/postgres-live-evidence.sh` and records an overall
-pass with no errors against PostgreSQL 17.11. The report covers direct runtime,
-transaction-pooled PgBouncer, the production gateway, shared conformance,
-checkpoint/tamper recovery, transfer, and cleanup.
-
-| PostgreSQL transitions | Recovery | RSS | Prefix delivered | Adapter Transition reads | Reducer callbacks |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 1,000 | 192 ms | 26,787,840 | 0 | 1 | 0 |
-| 10,000 | 887 ms | 59,097,088 | 0 | 1 | 0 |
-| 100,000 | 1,185 ms | 1,419,444,224 | 0 | 1 | 0 |
-
-The 1k and 10k PostgreSQL tiers were committed directly through the production
-adapter. The 100k tier used a fresh public v2 SQLite-to-PostgreSQL transfer,
-then one explicit full verified replay to create the disposable checkpoint.
-The measured recovery after that setup was an ordinary receipt-gated
-checkpoint recovery. All three PostgreSQL tiers report exact Head, state, and
-operational witnesses and prove that semantic receipts were not read by
-bounded recovery.
-
-The live lane also proved that authoritative full recovery recreates an absent
-current materialization inside the exact healthy Head and integrity-generation
-fence. Existing mismatched materializations remain corruption. Malformed Head
-bytes quarantine through the exact raw-byte fence in ordinary recovery, and a
-separate fresh-container regression proves the same behavior for the explicit
-checkpoint-rebuild maintenance API. The same focused lane corrupts the newest
-disposable snapshot and proves full authoritative fallback while the Room
-remains healthy at its original integrity generation.
-
-The scale report was generated immediately before that final cache-isolation
-follow-up. The follow-up removes disposable snapshot validation and its
-comparison vector only from the one-time authoritative full-recovery setup; it
-does not change the measured checkpoint recovery path or its read/callback
-accounting. The final behavior is covered by the focused fresh-container test
-above, so the recorded 100k RSS is a conservative pre-optimization value.
-
-The reports contain no credentials or private payloads.
+The PostgreSQL script removes its disposable containers and records
+`secrets_emitted=false` on success.
