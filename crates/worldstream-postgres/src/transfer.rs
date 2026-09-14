@@ -118,7 +118,7 @@ pub enum PostgresTransferError {
 
 const TARGET_PREFLIGHT_ADVISORY_KEY: i64 = 6_291_328_795_568_100_166;
 const STREAM_RECORD_STAGING_COPY_SQL: &str = "COPY worldstream_transfer_stream_records_v2(stream_header_digest, ordinal, class_tag, kind_tag, identity, record_bytes, record_digest) FROM STDIN BINARY";
-const STREAM_NATIVE_CONSEQUENCE_PAGE_COPY_SQL: &str = "COPY worldstream_transfer_native_consequence_page(room_id, member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash) FROM STDIN BINARY";
+const STREAM_NATIVE_CONSEQUENCE_PAGE_COPY_SQL: &str = "COPY worldstream_transfer_native_consequence_page(room_id, member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash, mmr_leaf_index) FROM STDIN BINARY";
 const STREAM_NATIVE_RECEIPT_PAGE_COPY_SQL: &str = "COPY worldstream_transfer_native_receipt_page(room_id, operation_kind, identity_bytes, canonical_request_hash, basis_complete_head_bytes, semantic_input_bytes, semantic_time_bytes, resolution_kind, transition_seq, receipt_bytes) FROM STDIN BINARY";
 const AUTHORITY_STATE_COUNT_SQL: &str =
     "SELECT count(*)::bigint FROM worldstream_authority_state WHERE authority_id = true";
@@ -2141,6 +2141,7 @@ struct StreamNativeConsequencePageRow {
     consequence_kind: String,
     payload_bytes: Option<Vec<u8>>,
     projection_hash: Option<Vec<u8>>,
+    mmr_leaf_index: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -2191,6 +2192,7 @@ fn native_stream_consequence(
         Some(NativeValue::Null) => None,
         _ => return Err(PostgresTransferError::Canonical("native consequence hash")),
     };
+    let mmr_leaf_index = native_optional_integer(row, 6)?;
     Ok(StreamNativeConsequencePageRow {
         room_id: native_text(row, 0)?,
         member_id: native_text(row, 1)?,
@@ -2198,6 +2200,7 @@ fn native_stream_consequence(
         consequence_kind: native_text(row, 3)?,
         payload_bytes: native_optional_blob(row, 4)?,
         projection_hash,
+        mmr_leaf_index,
     })
 }
 
@@ -2239,7 +2242,7 @@ fn prepare_stream_native_consequence_page(
         .batch_execute(
             "CREATE TEMP TABLE IF NOT EXISTS worldstream_transfer_native_consequence_page (\
                 room_id text NOT NULL, member_id text NOT NULL, cause_room_seq bigint NOT NULL, \
-                consequence_kind text NOT NULL, payload_bytes bytea, projection_hash bytea\
+                consequence_kind text NOT NULL, payload_bytes bytea, projection_hash bytea, mmr_leaf_index bigint\
              ) ON COMMIT DROP; TRUNCATE worldstream_transfer_native_consequence_page",
         )
         .map_err(PostgresTransferError::Sql)
@@ -2276,6 +2279,7 @@ fn copy_stream_native_consequence_page(
             Type::TEXT,
             Type::BYTEA,
             Type::BYTEA,
+            Type::INT8,
         ],
     );
     for row in rows {
@@ -2287,6 +2291,7 @@ fn copy_stream_native_consequence_page(
                 &row.consequence_kind,
                 &row.payload_bytes,
                 &row.projection_hash,
+                &row.mmr_leaf_index,
             ])
             .map_err(PostgresTransferError::Sql)?;
     }
@@ -2355,8 +2360,8 @@ fn publish_stream_native_consequence_page(
     transaction: &mut Transaction<'_>,
 ) -> Result<(), PostgresTransferError> {
     transaction.execute(
-        "INSERT INTO worldstream_observation_consequences(room_id, member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash) \
-         SELECT room_id, member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash \
+        "INSERT INTO worldstream_observation_consequences(room_id, member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash, mmr_leaf_index) \
+         SELECT room_id, member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash, mmr_leaf_index \
          FROM worldstream_transfer_native_consequence_page ORDER BY room_id, member_id, cause_room_seq \
          ON CONFLICT (room_id, member_id, cause_room_seq) DO NOTHING",
         &[],
@@ -2366,7 +2371,8 @@ fn publish_stream_native_consequence_page(
          LEFT JOIN worldstream_observation_consequences d \
            ON d.room_id = s.room_id AND d.member_id = s.member_id AND d.cause_room_seq = s.cause_room_seq \
          WHERE d.room_id IS NULL OR d.consequence_kind IS DISTINCT FROM s.consequence_kind \
-           OR d.payload_bytes IS DISTINCT FROM s.payload_bytes OR d.projection_hash IS DISTINCT FROM s.projection_hash)",
+           OR d.payload_bytes IS DISTINCT FROM s.payload_bytes OR d.projection_hash IS DISTINCT FROM s.projection_hash \
+           OR d.mmr_leaf_index IS DISTINCT FROM s.mmr_leaf_index)",
         &[],
     ).map_err(PostgresTransferError::Sql)?.try_get::<_, bool>(0).map_err(PostgresTransferError::Sql)?;
     if mismatch {
@@ -2506,6 +2512,12 @@ fn publish_stream_native_table(
                 "authority_change_receipts" => publish_authority_change_receipt(transaction, &row)?,
                 "authority_audit" => publish_authority_audit(transaction, &row)?,
                 "room_integrity" => publish_stream_room_integrity(transaction, &row)?,
+                "room_operational_mmr_receipts_v1" => {
+                    publish_operational_mmr_receipt(transaction, &row)?;
+                }
+                "room_operational_mmr_nodes_v1" => {
+                    publish_operational_mmr_node(transaction, &row)?;
+                }
                 "room_members" => publish_room_member(transaction, &row)?,
                 "timers" => publish_timer(transaction, &row)?,
                 "observation_frames" => publish_observation_frame(transaction, &row)?,
@@ -2568,6 +2580,110 @@ fn hydrate_stream_staging(
     for table in PUBLICATION_ORDER {
         publish_stream_native_table(transaction, stream_digest, table)?;
     }
+    verify_stream_mmr_inventory(transaction)?;
+    Ok(())
+}
+
+fn verify_stream_mmr_inventory(
+    transaction: &mut Transaction<'_>,
+) -> Result<(), PostgresTransferError> {
+    let orphan = transaction
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM worldstream_room_operational_mmr_nodes_v1 n LEFT JOIN worldstream_room_operational_mmr_receipts_v1 r ON r.room_id = n.room_id AND r.domain = n.domain WHERE r.room_id IS NULL OR n.height < 0 OR n.height >= 64 OR n.start_index < 0)",
+            &[],
+        )
+        .map_err(PostgresTransferError::Sql)?
+        .try_get::<_, bool>(0)
+        .map_err(PostgresTransferError::Sql)?;
+    if orphan {
+        return Err(PostgresTransferError::Canonical(
+            "stream operational MMR node inventory",
+        ));
+    }
+    let orphan_leaf = transaction
+        .query_one(
+            "SELECT EXISTS (
+                SELECT 1 FROM worldstream_frames f
+                WHERE f.mmr_leaf_index IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM worldstream_room_operational_mmr_receipts_v1 r WHERE r.room_id = f.room_id AND r.domain = 'frames')
+                UNION ALL
+                SELECT 1 FROM worldstream_observation_consequences c
+                WHERE c.mmr_leaf_index IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM worldstream_room_operational_mmr_receipts_v1 r WHERE r.room_id = c.room_id AND r.domain = 'consequences')
+                UNION ALL
+                SELECT 1 FROM worldstream_activation_decisions d
+                WHERE d.mmr_leaf_index IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM worldstream_room_operational_mmr_receipts_v1 r WHERE r.room_id = d.room_id AND r.domain = 'activation_decisions')
+            )",
+            &[],
+        )
+        .map_err(PostgresTransferError::Sql)?
+        .try_get::<_, bool>(0)
+        .map_err(PostgresTransferError::Sql)?;
+    if orphan_leaf {
+        return Err(PostgresTransferError::Canonical(
+            "stream operational MMR leaf inventory",
+        ));
+    }
+    for row in transaction
+        .query(
+            "SELECT room_id, domain, leaf_count FROM worldstream_room_operational_mmr_receipts_v1 ORDER BY room_id, domain",
+            &[],
+        )
+        .map_err(PostgresTransferError::Sql)?
+    {
+        let room_id: String = row.try_get(0).map_err(PostgresTransferError::Sql)?;
+        let domain: String = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+        let leaf_count: i64 = row.try_get(2).map_err(PostgresTransferError::Sql)?;
+        if leaf_count < 0 {
+            return Err(PostgresTransferError::Canonical("stream MMR leaf count"));
+        }
+        let (table, node_count) = match domain.as_str() {
+            "frames" => ("worldstream_frames", "mmr_leaf_index"),
+            "consequences" => ("worldstream_observation_consequences", "mmr_leaf_index"),
+            "activation_decisions" => ("worldstream_activation_decisions", "mmr_leaf_index"),
+            _ => return Err(PostgresTransferError::Canonical("stream MMR domain")),
+        };
+        let counts = transaction
+            .query_one(
+                &format!(
+                    "SELECT count(*)::bigint, count({node_count})::bigint, min({node_count}), max({node_count}), count(DISTINCT {node_count})::bigint FROM {table} WHERE room_id = $1"
+                ),
+                &[&room_id],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        let rows: i64 = counts.try_get(0).map_err(PostgresTransferError::Sql)?;
+        let indexed: i64 = counts.try_get(1).map_err(PostgresTransferError::Sql)?;
+        let min: Option<i64> = counts.try_get(2).map_err(PostgresTransferError::Sql)?;
+        let max: Option<i64> = counts.try_get(3).map_err(PostgresTransferError::Sql)?;
+        let distinct: i64 = counts.try_get(4).map_err(PostgresTransferError::Sql)?;
+        if rows != leaf_count
+            || indexed != leaf_count
+            || (leaf_count > 0
+                && (min != Some(0) || max != Some(leaf_count - 1) || distinct != leaf_count))
+        {
+            return Err(PostgresTransferError::Canonical(
+                "stream operational MMR leaf inventory",
+            ));
+        }
+        let nodes: i64 = transaction
+            .query_one(
+                "SELECT count(*)::bigint FROM worldstream_room_operational_mmr_nodes_v1 WHERE room_id = $1 AND domain = $2",
+                &[&room_id, &domain],
+            )
+            .map_err(PostgresTransferError::Sql)?
+            .try_get(0)
+            .map_err(PostgresTransferError::Sql)?;
+        let expected_nodes = leaf_count
+            .checked_mul(2)
+            .and_then(|value| value.checked_sub(i64::from(leaf_count.count_ones())))
+            .ok_or(PostgresTransferError::InvalidProviderValue("MMR node count"))?;
+        if nodes != expected_nodes {
+            return Err(PostgresTransferError::Canonical(
+                "stream operational MMR node inventory",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -2588,6 +2704,12 @@ fn native_stream_relation_count_sql(relation: &str) -> Option<&'static str> {
         }
         "authority_audit" => Some("SELECT count(*) FROM worldstream_authority_audit"),
         "room_integrity" => Some("SELECT count(*) FROM worldstream_room_roots"),
+        "room_operational_mmr_receipts_v1" => {
+            Some("SELECT count(*) FROM worldstream_room_operational_mmr_receipts_v1")
+        }
+        "room_operational_mmr_nodes_v1" => {
+            Some("SELECT count(*) FROM worldstream_room_operational_mmr_nodes_v1")
+        }
         "room_members" => Some("SELECT count(*) FROM worldstream_members"),
         "timers" => Some("SELECT count(*) FROM worldstream_timers"),
         "observation_frames" => Some("SELECT count(*) FROM worldstream_frames"),
@@ -4013,6 +4135,12 @@ impl<'a> PostgresTransferDestination<'a> {
                     }
                     "authority_audit" => publish_authority_audit(transaction, row)?,
                     "room_integrity" => publish_room_integrity(transaction, row, created_roots)?,
+                    "room_operational_mmr_receipts_v1" => {
+                        publish_operational_mmr_receipt(transaction, row)?;
+                    }
+                    "room_operational_mmr_nodes_v1" => {
+                        publish_operational_mmr_node(transaction, row)?;
+                    }
                     "room_members" => publish_room_member(transaction, row)?,
                     "timers" => publish_timer(transaction, row)?,
                     "observation_frames" => publish_observation_frame(transaction, row)?,
@@ -4058,7 +4186,8 @@ impl<'a> PostgresTransferDestination<'a> {
             transaction,
             &BTreeSet::new(),
             NativePublicationMode::VerifyOnly,
-        )
+        )?;
+        verify_stream_mmr_inventory(transaction)
     }
 }
 
@@ -4098,6 +4227,14 @@ fn verify_native_row_cardinalities(
         (
             "authority_audit",
             "SELECT count(*) FROM worldstream_authority_audit",
+        ),
+        (
+            "room_operational_mmr_receipts_v1",
+            "SELECT count(*) FROM worldstream_room_operational_mmr_receipts_v1",
+        ),
+        (
+            "room_operational_mmr_nodes_v1",
+            "SELECT count(*) FROM worldstream_room_operational_mmr_nodes_v1",
         ),
         (
             "room_integrity",
@@ -4179,6 +4316,8 @@ const PUBLICATION_ORDER: &[&str] = &[
     "authority_change_receipts",
     "authority_audit",
     "room_integrity",
+    "room_operational_mmr_receipts_v1",
+    "room_operational_mmr_nodes_v1",
     "room_members",
     "timers",
     "observation_frames",
@@ -4484,7 +4623,11 @@ fn decode_native_operational_row(bytes: &[u8]) -> Result<NativeRow, PostgresTran
         PostgresTransferError::Canonical("unknown operational table"),
     )?;
     let count = reader.u32()? as usize;
-    if count != expected {
+    let legacy = matches!(
+        table.as_str(),
+        "observation_frames" | "observation_consequences" | "activation_decisions"
+    ) && count + 1 == expected;
+    if count != expected && !legacy {
         return Err(PostgresTransferError::Canonical(
             "native operational row shape",
         ));
@@ -4503,6 +4646,10 @@ fn decode_native_operational_row(bytes: &[u8]) -> Result<NativeRow, PostgresTran
         return Err(PostgresTransferError::Canonical(
             "native row trailing bytes",
         ));
+    }
+    let mut values = values;
+    if legacy {
+        values.push(NativeValue::Null);
     }
     Ok(NativeRow { table, values })
 }
@@ -4531,6 +4678,19 @@ fn native_integer(row: &NativeRow, index: usize) -> Result<i64, PostgresTransfer
     match row.values.get(index) {
         Some(NativeValue::Integer(value)) => Ok(*value),
         _ => Err(PostgresTransferError::Canonical("native row integer value")),
+    }
+}
+
+fn native_optional_integer(
+    row: &NativeRow,
+    index: usize,
+) -> Result<Option<i64>, PostgresTransferError> {
+    match row.values.get(index) {
+        Some(NativeValue::Integer(value)) => Ok(Some(*value)),
+        Some(NativeValue::Null) => Ok(None),
+        _ => Err(PostgresTransferError::Canonical(
+            "native row optional integer value",
+        )),
     }
 }
 
@@ -4676,6 +4836,30 @@ fn ensure_native_operational_row_present(
                 .query_opt(
                     "SELECT 1 FROM worldstream_room_roots WHERE room_id = $1",
                     &[&room_id],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .is_some()
+        }
+        "room_operational_mmr_receipts_v1" => {
+            let room_id = native_text(row, 0)?;
+            let domain = native_text(row, 1)?;
+            transaction
+                .query_opt(
+                    "SELECT 1 FROM worldstream_room_operational_mmr_receipts_v1 WHERE room_id = $1 AND domain = $2",
+                    &[&room_id, &domain],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .is_some()
+        }
+        "room_operational_mmr_nodes_v1" => {
+            let room_id = native_text(row, 0)?;
+            let domain = native_text(row, 1)?;
+            let height = native_integer(row, 2)?;
+            let start_index = native_integer(row, 3)?;
+            transaction
+                .query_opt(
+                    "SELECT 1 FROM worldstream_room_operational_mmr_nodes_v1 WHERE room_id = $1 AND domain = $2 AND height = $3 AND start_index = $4",
+                    &[&room_id, &domain, &i16::try_from(height).map_err(|_| PostgresTransferError::InvalidProviderValue("MMR node height"))?, &start_index],
                 )
                 .map_err(PostgresTransferError::Sql)?
                 .is_some()
@@ -5358,6 +5542,112 @@ fn publish_timer(
     Ok(())
 }
 
+fn publish_operational_mmr_receipt(
+    transaction: &mut Transaction<'_>,
+    row: &NativeRow,
+) -> Result<(), PostgresTransferError> {
+    let room_id = native_text(row, 0)?;
+    let domain = native_text(row, 1)?;
+    let leaf_count = native_integer(row, 2)?;
+    let root_hash = native_blob(row, 3)?;
+    if !matches!(
+        domain.as_str(),
+        "frames" | "consequences" | "activation_decisions"
+    ) || leaf_count < 0
+        || root_hash.len() != 32
+    {
+        return Err(PostgresTransferError::Canonical("operational MMR receipt"));
+    }
+    transaction
+        .execute(
+            "INSERT INTO worldstream_room_operational_mmr_receipts_v1(room_id, domain, leaf_count, root_hash) VALUES ($1, $2, $3, $4) ON CONFLICT (room_id, domain) DO NOTHING",
+            &[&room_id, &domain, &leaf_count, &root_hash],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    let stored = transaction
+        .query_one(
+            "SELECT leaf_count, root_hash FROM worldstream_room_operational_mmr_receipts_v1 WHERE room_id = $1 AND domain = $2",
+            &[&room_id, &domain],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    if stored
+        .try_get::<_, i64>(0)
+        .map_err(PostgresTransferError::Sql)?
+        != leaf_count
+        || stored
+            .try_get::<_, Vec<u8>>(1)
+            .map_err(PostgresTransferError::Sql)?
+            != root_hash
+    {
+        return Err(PostgresTransferError::Canonical(
+            "operational MMR receipt mismatch",
+        ));
+    }
+    let frozen = transaction
+        .query_opt(
+            "SELECT entry_count FROM worldstream_room_operational_history_roots_v2 WHERE room_id = $1 AND domain = $2",
+            &[&room_id, &domain],
+        )
+        .map_err(PostgresTransferError::Sql)?
+        .ok_or(PostgresTransferError::Canonical(
+            "operational MMR receipt has no frozen V2 root",
+        ))?;
+    if frozen
+        .try_get::<_, i64>(0)
+        .map_err(PostgresTransferError::Sql)?
+        != leaf_count
+    {
+        return Err(PostgresTransferError::Canonical(
+            "operational MMR receipt leaf count differs from frozen V2 root",
+        ));
+    }
+    Ok(())
+}
+
+fn publish_operational_mmr_node(
+    transaction: &mut Transaction<'_>,
+    row: &NativeRow,
+) -> Result<(), PostgresTransferError> {
+    let room_id = native_text(row, 0)?;
+    let domain = native_text(row, 1)?;
+    let height = native_integer(row, 2)?;
+    let start_index = native_integer(row, 3)?;
+    let node_hash = native_blob(row, 4)?;
+    if !matches!(
+        domain.as_str(),
+        "frames" | "consequences" | "activation_decisions"
+    ) || !(0..64).contains(&height)
+        || start_index < 0
+        || node_hash.len() != 32
+    {
+        return Err(PostgresTransferError::Canonical("operational MMR node"));
+    }
+    let height = i16::try_from(height)
+        .map_err(|_| PostgresTransferError::InvalidProviderValue("MMR node height"))?;
+    transaction
+        .execute(
+            "INSERT INTO worldstream_room_operational_mmr_nodes_v1(room_id, domain, height, start_index, node_hash) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (room_id, domain, height, start_index) DO NOTHING",
+            &[&room_id, &domain, &height, &start_index, &node_hash],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    let stored = transaction
+        .query_one(
+            "SELECT node_hash FROM worldstream_room_operational_mmr_nodes_v1 WHERE room_id = $1 AND domain = $2 AND height = $3 AND start_index = $4",
+            &[&room_id, &domain, &height, &start_index],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    if stored
+        .try_get::<_, Vec<u8>>(0)
+        .map_err(PostgresTransferError::Sql)?
+        != node_hash
+    {
+        return Err(PostgresTransferError::Canonical(
+            "operational MMR node mismatch",
+        ));
+    }
+    Ok(())
+}
+
 fn publish_observation_frame(
     transaction: &mut Transaction<'_>,
     row: &NativeRow,
@@ -5369,15 +5659,16 @@ fn publish_observation_frame(
     let payload_hash = native_blake3(&native_text(row, 4)?)?;
     let payload = native_blob(row, 5)?;
     let retained_at = native_text(row, 6)?;
+    let mmr_leaf_index = native_optional_integer(row, 7)?;
     transaction
         .execute(
-            "INSERT INTO worldstream_frames(room_id, member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash, retained_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (room_id, member_id, frame_seq) DO NOTHING",
-            &[&room_id, &member_id, &frame_seq, &cause_room_seq, &payload, &payload_hash, &retained_at],
+            "INSERT INTO worldstream_frames(room_id, member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash, retained_at, mmr_leaf_index) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (room_id, member_id, frame_seq) DO NOTHING",
+            &[&room_id, &member_id, &frame_seq, &cause_room_seq, &payload, &payload_hash, &retained_at, &mmr_leaf_index],
         )
         .map_err(PostgresTransferError::Sql)?;
     let stored = transaction
         .query_one(
-            "SELECT cause_room_seq, payload_bytes, payload_hash, retained_at FROM worldstream_frames WHERE room_id = $1 AND member_id = $2 AND frame_seq = $3",
+            "SELECT cause_room_seq, payload_bytes, payload_hash, retained_at, mmr_leaf_index FROM worldstream_frames WHERE room_id = $1 AND member_id = $2 AND frame_seq = $3",
             &[&room_id, &member_id, &frame_seq],
         )
         .map_err(PostgresTransferError::Sql)?;
@@ -5402,6 +5693,10 @@ fn publish_observation_frame(
         .try_get::<_, String>(3)
         .map_err(PostgresTransferError::Sql)?
         != retained_at
+        || stored
+            .try_get::<_, Option<i64>>(4)
+            .map_err(PostgresTransferError::Sql)?
+            != mmr_leaf_index
     {
         return Err(PostgresTransferError::Canonical(
             "observation retention time mismatch",
@@ -5424,15 +5719,16 @@ fn publish_observation_consequence(
         Some(NativeValue::Null) => None,
         _ => return Err(PostgresTransferError::Canonical("native consequence hash")),
     };
+    let mmr_leaf_index = native_optional_integer(row, 6)?;
     transaction
         .execute(
-            "INSERT INTO worldstream_observation_consequences(room_id, member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (room_id, member_id, cause_room_seq) DO NOTHING",
-            &[&room_id, &member_id, &cause_room_seq, &consequence_kind, &payload, &projection_hash],
+            "INSERT INTO worldstream_observation_consequences(room_id, member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash, mmr_leaf_index) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (room_id, member_id, cause_room_seq) DO NOTHING",
+            &[&room_id, &member_id, &cause_room_seq, &consequence_kind, &payload, &projection_hash, &mmr_leaf_index],
         )
         .map_err(PostgresTransferError::Sql)?;
     let stored = transaction
         .query_one(
-            "SELECT consequence_kind, payload_bytes, projection_hash FROM worldstream_observation_consequences WHERE room_id = $1 AND member_id = $2 AND cause_room_seq = $3",
+            "SELECT consequence_kind, payload_bytes, projection_hash, mmr_leaf_index FROM worldstream_observation_consequences WHERE room_id = $1 AND member_id = $2 AND cause_room_seq = $3",
             &[&room_id, &member_id, &cause_room_seq],
         )
         .map_err(PostgresTransferError::Sql)?;
@@ -5448,6 +5744,10 @@ fn publish_observation_consequence(
             .try_get::<_, Option<Vec<u8>>>(2)
             .map_err(PostgresTransferError::Sql)?
             != projection_hash
+        || stored
+            .try_get::<_, Option<i64>>(3)
+            .map_err(PostgresTransferError::Sql)?
+            != mmr_leaf_index
     {
         return Err(PostgresTransferError::Canonical(
             "observation consequence mismatch",
@@ -5465,15 +5765,16 @@ fn publish_activation_decision(
     let decision_id = native_text(row, 2)?;
     let target_member_id = native_optional_text(row, 3)?;
     let decision = native_blob(row, 4)?;
+    let mmr_leaf_index = native_optional_integer(row, 5)?;
     transaction
         .execute(
-            "INSERT INTO worldstream_activation_decisions(room_id, cause_room_seq, decision_id, target_member_id, decision_bytes) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (room_id, cause_room_seq, decision_id) DO NOTHING",
-            &[&room_id, &cause_room_seq, &decision_id, &target_member_id, &decision],
+            "INSERT INTO worldstream_activation_decisions(room_id, cause_room_seq, decision_id, target_member_id, decision_bytes, mmr_leaf_index) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (room_id, cause_room_seq, decision_id) DO NOTHING",
+            &[&room_id, &cause_room_seq, &decision_id, &target_member_id, &decision, &mmr_leaf_index],
         )
         .map_err(PostgresTransferError::Sql)?;
     let stored = transaction
         .query_one(
-            "SELECT target_member_id, decision_bytes FROM worldstream_activation_decisions WHERE room_id = $1 AND cause_room_seq = $2 AND decision_id = $3",
+            "SELECT target_member_id, decision_bytes, mmr_leaf_index FROM worldstream_activation_decisions WHERE room_id = $1 AND cause_room_seq = $2 AND decision_id = $3",
             &[&room_id, &cause_room_seq, &decision_id],
         )
         .map_err(PostgresTransferError::Sql)?;
@@ -5485,6 +5786,10 @@ fn publish_activation_decision(
             .try_get::<_, Vec<u8>>(1)
             .map_err(PostgresTransferError::Sql)?
             != decision
+        || stored
+            .try_get::<_, Option<i64>>(2)
+            .map_err(PostgresTransferError::Sql)?
+            != mmr_leaf_index
     {
         return Err(PostgresTransferError::Canonical(
             "activation decision mismatch",
@@ -6803,7 +7108,7 @@ mod tests {
         }
         assert_eq!(
             native_sqlite_operational_row_width_v2("observation_frames"),
-            Some(7)
+            Some(8)
         );
         assert_eq!(
             native_sqlite_operational_row_width_v2("room_members"),

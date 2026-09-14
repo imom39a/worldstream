@@ -14,6 +14,7 @@ use thiserror::Error;
 use worldstream_backup::native_sqlite::{
     NativeSqliteOperationalRowsV1, NativeSqliteRowV1, NativeSqliteValueV1,
 };
+use worldstream_core::OperationalMmrV1;
 use worldstream_pack_bundle::RetainedPackBundleArtifactV1;
 
 use crate::{
@@ -38,11 +39,13 @@ const TABLES: &[(&str, usize)] = &[
     ("runner_capability_memberships", 3),
     ("authority_change_receipts", 9),
     ("authority_audit", 12),
-    ("activation_decisions", 5),
+    ("room_operational_mmr_receipts_v1", 4),
+    ("room_operational_mmr_nodes_v1", 5),
+    ("activation_decisions", 6),
     ("activation_intents", 24),
     ("activation_operation_receipts", 9),
-    ("observation_consequences", 6),
-    ("observation_frames", 7),
+    ("observation_consequences", 7),
+    ("observation_frames", 8),
     ("room_integrity", 3),
     ("room_members", 14),
     ("semantic_receipts", 12),
@@ -72,6 +75,8 @@ pub const NATIVE_SQLITE_OPERATIONAL_TABLES_V2: &[&str] = &[
     "runner_capability_memberships",
     "authority_change_receipts",
     "authority_audit",
+    "room_operational_mmr_receipts_v1",
+    "room_operational_mmr_nodes_v1",
     "activation_decisions",
     "activation_intents",
     "activation_operation_receipts",
@@ -99,7 +104,7 @@ pub fn encode_native_sqlite_stream_row_v2(
             relation: "unknown operational table",
         });
     };
-    let mut values = row.values.clone();
+    let mut values = normalize_legacy_values(&row.table, &row.values)?;
     if *table == "activation_intents" && values.len() == 19 {
         values.extend([
             NativeSqliteValueV1::Text(String::new()),
@@ -119,6 +124,30 @@ pub fn encode_native_sqlite_stream_row_v2(
     let identity = row_identity(table, &values)?;
     let bytes = encode_row(table, &values)?;
     Ok((identity, bytes))
+}
+
+fn normalize_legacy_values(
+    table: &str,
+    values: &[NativeSqliteValueV1],
+) -> Result<Vec<NativeSqliteValueV1>, NativeSqliteTransferError> {
+    let mut normalized = values.to_vec();
+    let expected = TABLES
+        .iter()
+        .find(|(candidate, _)| *candidate == table)
+        .map(|(_, width)| *width)
+        .ok_or(NativeSqliteTransferError::MissingRelation {
+            relation: "unknown operational table",
+        })?;
+    let legacy_width = match table {
+        "observation_frames" => Some(7),
+        "observation_consequences" => Some(6),
+        "activation_decisions" => Some(5),
+        _ => None,
+    };
+    if legacy_width == Some(normalized.len()) && expected == normalized.len() + 1 {
+        normalized.push(NativeSqliteValueV1::Null);
+    }
+    Ok(normalized)
 }
 
 /// The immutable inputs needed to build an operational-row transfer bundle.
@@ -568,6 +597,7 @@ impl NativeSqliteTransferAdapterV1 {
             }
         }
         validate_relations(&prepared, &room_policies)?;
+        validate_mmr_inventory(&prepared)?;
         let table_counts = TABLES
             .iter()
             .map(|(table, _)| {
@@ -949,16 +979,31 @@ fn prepare_rows(
 ) -> Result<Vec<PreparedRow>, NativeSqliteTransferError> {
     for (table, _) in TABLES {
         if !rows.tables.contains_key(*table) {
+            if matches!(
+                *table,
+                "room_operational_mmr_receipts_v1" | "room_operational_mmr_nodes_v1"
+            ) {
+                continue;
+            }
             return Err(NativeSqliteTransferError::MissingRelation { relation: table });
         }
     }
     let mut prepared = Vec::new();
     let mut seen = BTreeMap::<String, (DigestV1, Vec<u8>, &'static str)>::new();
     for (table, expected) in TABLES {
-        let values = rows
-            .tables
-            .get(*table)
-            .ok_or(NativeSqliteTransferError::MissingRelation { relation: table })?;
+        let values: &[NativeSqliteRowV1] = match rows.tables.get(*table) {
+            Some(values) => values,
+            None if matches!(
+                *table,
+                "room_operational_mmr_receipts_v1" | "room_operational_mmr_nodes_v1"
+            ) =>
+            {
+                &[]
+            }
+            None => {
+                return Err(NativeSqliteTransferError::MissingRelation { relation: table });
+            }
+        };
         if values.len() > 100_000 {
             return Err(NativeSqliteTransferError::InvalidRow {
                 table,
@@ -972,7 +1017,7 @@ fn prepare_rows(
             // A v1 source predating migration 0016 has the original 19-column
             // Activation shape. Normalize its compatibility defaults before
             // hashing so it remains importable into the current schema.
-            let mut normalized_values = row.values.clone();
+            let mut normalized_values = normalize_legacy_values(table, &row.values)?;
             if *table == "activation_intents" && normalized_values.len() == 19 {
                 normalized_values.extend([
                     NativeSqliteValueV1::Text(String::new()),
@@ -1319,6 +1364,27 @@ fn validate_relations(
                 let _ = optional_text(&row.values, 10, row.table)?;
             }
             "room_integrity" => {}
+            "room_operational_mmr_receipts_v1" => {
+                if !matches!(
+                    text(&row.values, 1, row.table)?,
+                    "frames" | "consequences" | "activation_decisions"
+                ) || integer(&row.values, 2, row.table)? < 0
+                    || blob(&row.values, 3, row.table)?.len() != 32
+                {
+                    return invalid(row.table, "MMR receipt");
+                }
+            }
+            "room_operational_mmr_nodes_v1" => {
+                if !matches!(
+                    text(&row.values, 1, row.table)?,
+                    "frames" | "consequences" | "activation_decisions"
+                ) || !(0..64).contains(&integer(&row.values, 2, row.table)?)
+                    || integer(&row.values, 3, row.table)? < 0
+                    || blob(&row.values, 4, row.table)?.len() != 32
+                {
+                    return invalid(row.table, "MMR node");
+                }
+            }
             "room_members" => {
                 let frame_head = integer(&row.values, 8, row.table)?;
                 let membership_generation = integer(&row.values, 9, row.table)?;
@@ -1372,6 +1438,9 @@ fn validate_relations(
                 if text(&row.values, 6, row.table)?.is_empty() {
                     return invalid(row.table, "frame retained timestamp");
                 }
+                if optional_integer(&row.values, 7, row.table)?.is_some_and(|index| index < 0) {
+                    return invalid(row.table, "frame MMR leaf index");
+                }
                 if !isolated {
                     let hash = parse_digest(text(&row.values, 4, row.table)?)?;
                     let payload = blob(&row.values, 5, row.table)?;
@@ -1388,6 +1457,9 @@ fn validate_relations(
                 if integer(&row.values, 2, row.table)? <= 0 {
                     return invalid(row.table, "consequence causal sequence");
                 }
+                if optional_integer(&row.values, 6, row.table)?.is_some_and(|index| index < 0) {
+                    return invalid(row.table, "consequence MMR leaf index");
+                }
             }
             "activation_decisions" => {
                 if integer(&row.values, 1, row.table)? <= 0
@@ -1399,6 +1471,9 @@ fn validate_relations(
                     && !members.contains(&(required_room_id(row)?.to_owned(), target.to_owned()))
                 {
                     return relation(row.table, "decision target Membership");
+                }
+                if optional_integer(&row.values, 5, row.table)?.is_some_and(|index| index < 0) {
+                    return invalid(row.table, "decision MMR leaf index");
                 }
             }
             "activation_intents" => {
@@ -1542,6 +1617,245 @@ fn validate_relations(
     Ok(())
 }
 
+/// Verifies that the optional MMR sidecar is a complete, exact inventory for
+/// every Room/domain. Legacy rows carry NULL leaf indexes and are accepted only
+/// when the corresponding receipt and node inventory are entirely absent.
+fn validate_mmr_inventory(rows: &[PreparedRow]) -> Result<(), NativeSqliteTransferError> {
+    const DOMAINS: &[(&str, &str, usize)] = &[
+        ("frames", "observation_frames", 7),
+        ("consequences", "observation_consequences", 6),
+        ("activation_decisions", "activation_decisions", 5),
+    ];
+    let mut rooms = BTreeSet::new();
+    for row in rows {
+        if matches!(
+            row.table,
+            "observation_frames"
+                | "observation_consequences"
+                | "activation_decisions"
+                | "room_operational_mmr_receipts_v1"
+                | "room_operational_mmr_nodes_v1"
+        ) {
+            rooms.insert(required_room_id(row)?.to_owned());
+        }
+    }
+    for room in rooms {
+        for (domain, table, leaf_index) in DOMAINS {
+            let receipt = rows
+                .iter()
+                .filter(|row| {
+                    row.table == "room_operational_mmr_receipts_v1"
+                        && row.room_id.as_deref() == Some(room.as_str())
+                        && row.values.get(1)
+                            == Some(&NativeSqliteValueV1::Text((*domain).to_owned()))
+                })
+                .collect::<Vec<_>>();
+            let nodes = rows
+                .iter()
+                .filter(|row| {
+                    row.table == "room_operational_mmr_nodes_v1"
+                        && row.room_id.as_deref() == Some(room.as_str())
+                        && row.values.get(1)
+                            == Some(&NativeSqliteValueV1::Text((*domain).to_owned()))
+                })
+                .collect::<Vec<_>>();
+            let domain_rows = rows
+                .iter()
+                .filter(|row| row.table == *table && row.room_id.as_deref() == Some(room.as_str()))
+                .collect::<Vec<_>>();
+            if receipt.is_empty() {
+                if !nodes.is_empty()
+                    || domain_rows.iter().any(|row| {
+                        optional_integer(&row.values, *leaf_index, row.table)
+                            .ok()
+                            .flatten()
+                            .is_some()
+                    })
+                {
+                    return relation(table, "partial operational MMR inventory");
+                }
+                continue;
+            }
+            if receipt.len() != 1 {
+                return relation("room_operational_mmr_receipts_v1", "duplicate MMR receipt");
+            }
+            let receipt = receipt[0];
+            let leaf_count = integer(&receipt.values, 2, receipt.table)?;
+            let root = blob(&receipt.values, 3, receipt.table)?;
+            if leaf_count < 0 || root.len() != 32 {
+                return invalid(receipt.table, "MMR receipt");
+            }
+            let leaf_count =
+                u64::try_from(leaf_count).map_err(|_| NativeSqliteTransferError::InvalidRow {
+                    table: receipt.table,
+                    what: "MMR leaf count",
+                })?;
+            if domain_rows.len() != usize::try_from(leaf_count).unwrap_or(usize::MAX) {
+                return relation(table, "MMR leaf count and row count");
+            }
+            let mut ordered = domain_rows
+                .into_iter()
+                .map(|row| {
+                    let index = optional_integer(&row.values, *leaf_index, row.table)?.ok_or(
+                        NativeSqliteTransferError::InvalidRelation {
+                            table: row.table,
+                            what: "MMR leaf index missing",
+                        },
+                    )?;
+                    let index = u64::try_from(index).map_err(|_| {
+                        NativeSqliteTransferError::InvalidRow {
+                            table: row.table,
+                            what: "MMR leaf index",
+                        }
+                    })?;
+                    Ok((index, row))
+                })
+                .collect::<Result<Vec<_>, NativeSqliteTransferError>>()?;
+            ordered.sort_by_key(|(index, _)| *index);
+            let mut accumulator = OperationalMmrV1::new(*domain).map_err(|_| {
+                NativeSqliteTransferError::InvalidRelation {
+                    table,
+                    what: "MMR domain",
+                }
+            })?;
+            let mut expected_nodes = BTreeMap::new();
+            for (expected_index, (index, row)) in ordered.into_iter().enumerate() {
+                if index != u64::try_from(expected_index).unwrap_or(u64::MAX) {
+                    return relation(table, "MMR leaf indexes are not contiguous");
+                }
+                let entry = mmr_entry(*domain, row)?;
+                let appended = accumulator.append(&entry).map_err(|_| {
+                    NativeSqliteTransferError::InvalidRelation {
+                        table,
+                        what: "MMR leaf",
+                    }
+                })?;
+                for node in appended.nodes() {
+                    if expected_nodes
+                        .insert(
+                            (node.height(), node.start_index()),
+                            node.digest().as_bytes().to_vec(),
+                        )
+                        .is_some()
+                    {
+                        return relation("room_operational_mmr_nodes_v1", "duplicate MMR node");
+                    }
+                }
+            }
+            if accumulator.root().as_bytes() != root {
+                return relation("room_operational_mmr_receipts_v1", "MMR root mismatch");
+            }
+            if accumulator.leaf_count() != leaf_count {
+                return relation(
+                    "room_operational_mmr_receipts_v1",
+                    "MMR leaf count mismatch",
+                );
+            }
+            let mut actual_nodes = BTreeMap::new();
+            for node in nodes {
+                let height = integer(&node.values, 2, node.table)?;
+                let start = integer(&node.values, 3, node.table)?;
+                let digest = blob(&node.values, 4, node.table)?;
+                if !(0..64).contains(&height) || start < 0 || digest.len() != 32 {
+                    return invalid(node.table, "MMR node");
+                }
+                if actual_nodes
+                    .insert(
+                        (
+                            u8::try_from(height).unwrap_or(u8::MAX),
+                            u64::try_from(start).unwrap_or(u64::MAX),
+                        ),
+                        digest.to_vec(),
+                    )
+                    .is_some()
+                {
+                    return relation(node.table, "duplicate MMR node");
+                }
+            }
+            if actual_nodes != expected_nodes {
+                return relation(
+                    "room_operational_mmr_nodes_v1",
+                    "MMR node inventory mismatch",
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn mmr_entry(domain: &str, row: &PreparedRow) -> Result<Vec<u8>, NativeSqliteTransferError> {
+    let mut entry = Vec::new();
+    let mut part = |value: &[u8]| -> Result<(), NativeSqliteTransferError> {
+        entry.extend_from_slice(
+            &u64::try_from(value.len())
+                .map_err(|_| NativeSqliteTransferError::InvalidRow {
+                    table: row.table,
+                    what: "MMR entry part",
+                })?
+                .to_be_bytes(),
+        );
+        entry.extend_from_slice(value);
+        Ok(())
+    };
+    match domain {
+        "frames" => {
+            part(text(&row.values, 1, row.table)?.as_bytes())?;
+            part(
+                &u64::try_from(integer(&row.values, 2, row.table)?)
+                    .map_err(|_| NativeSqliteTransferError::InvalidRow {
+                        table: row.table,
+                        what: "frame sequence",
+                    })?
+                    .to_be_bytes(),
+            )?;
+            part(
+                &u64::try_from(integer(&row.values, 3, row.table)?)
+                    .map_err(|_| NativeSqliteTransferError::InvalidRow {
+                        table: row.table,
+                        what: "frame cause",
+                    })?
+                    .to_be_bytes(),
+            )?;
+            let digest = parse_digest(text(&row.values, 4, row.table)?)?;
+            part(&digest.as_bytes())?;
+        }
+        "consequences" => {
+            part(text(&row.values, 1, row.table)?.as_bytes())?;
+            part(
+                &u64::try_from(integer(&row.values, 2, row.table)?)
+                    .map_err(|_| NativeSqliteTransferError::InvalidRow {
+                        table: row.table,
+                        what: "consequence cause",
+                    })?
+                    .to_be_bytes(),
+            )?;
+            part(text(&row.values, 3, row.table)?.as_bytes())?;
+            if let Some(hash) = optional_blob(&row.values, 5, row.table)? {
+                part(hash)?;
+            }
+        }
+        "activation_decisions" => {
+            part(
+                &u64::try_from(integer(&row.values, 1, row.table)?)
+                    .map_err(|_| NativeSqliteTransferError::InvalidRow {
+                        table: row.table,
+                        what: "decision cause",
+                    })?
+                    .to_be_bytes(),
+            )?;
+            part(text(&row.values, 2, row.table)?.as_bytes())?;
+            part(
+                optional_text(&row.values, 3, row.table)?
+                    .unwrap_or_default()
+                    .as_bytes(),
+            )?;
+            part(blob(&row.values, 4, row.table)?)?;
+        }
+        _ => return relation(row.table, "unknown MMR domain"),
+    }
+    Ok(entry)
+}
+
 fn validate_activation_context(row: &PreparedRow) -> Result<(), NativeSqliteTransferError> {
     let state = text(&row.values, 10, row.table)?;
     if !matches!(
@@ -1642,6 +1956,18 @@ fn row_identity(
             format!("authority/change/{}", text(values, 0, table)?)
         }
         "authority_audit" => format!("authority/audit/{}", integer(values, 0, table)?),
+        "room_operational_mmr_receipts_v1" => format!(
+            "room/{}/operational-mmr-receipt/{}",
+            text(values, 0, table)?,
+            text(values, 1, table)?
+        ),
+        "room_operational_mmr_nodes_v1" => format!(
+            "room/{}/operational-mmr-node/{}/{}/{}",
+            text(values, 0, table)?,
+            text(values, 1, table)?,
+            integer(values, 2, table)?,
+            integer(values, 3, table)?
+        ),
         "room_integrity" => format!("room/{}", text(values, 0, table)?),
         "room_members" => format!(
             "room/{}/member/{}",
@@ -1718,6 +2044,8 @@ fn room_id(
         | "activation_decisions"
         | "activation_operation_receipts"
         | "semantic_receipts"
+        | "room_operational_mmr_receipts_v1"
+        | "room_operational_mmr_nodes_v1"
         | "integrity_incidents" => Some(0),
         "retired_authority_fences_v1"
         | "principals"
@@ -1795,7 +2123,11 @@ fn decode_row(bytes: &[u8]) -> Result<NativeSqliteRowV1, NativeSqliteTransferErr
             relation: "unknown operational table",
         })?;
     let count = reader.u32()? as usize;
-    if count != expected {
+    let legacy = matches!(
+        table.as_str(),
+        "observation_frames" | "observation_consequences" | "activation_decisions"
+    ) && count + 1 == expected;
+    if count != expected && !legacy {
         return Err(NativeSqliteTransferError::InvalidRowShape {
             table: table_for_error(&table),
             expected,
@@ -1820,6 +2152,10 @@ fn decode_row(bytes: &[u8]) -> Result<NativeSqliteRowV1, NativeSqliteTransferErr
         return Err(NativeSqliteTransferError::ManifestMismatch {
             what: "row trailing bytes",
         });
+    }
+    let mut values = values;
+    if legacy {
+        values.push(NativeSqliteValueV1::Null);
     }
     Ok(NativeSqliteRowV1 { table, values })
 }

@@ -1057,6 +1057,14 @@ const OPERATIONAL_QUERIES: &[(&str, &str)] = &[
         "SELECT * FROM authority_audit ORDER BY audit_seq",
     ),
     (
+        "room_operational_mmr_receipts_v1",
+        "SELECT * FROM room_operational_mmr_receipts_v1 ORDER BY room_id, domain",
+    ),
+    (
+        "room_operational_mmr_nodes_v1",
+        "SELECT * FROM room_operational_mmr_nodes_v1 ORDER BY room_id, domain, height, start_index",
+    ),
+    (
         "room_integrity",
         "SELECT * FROM room_integrity ORDER BY room_id",
     ),
@@ -1100,6 +1108,11 @@ const OPERATIONAL_QUERIES: &[(&str, &str)] = &[
         "integrity_incidents",
         "SELECT * FROM integrity_incidents ORDER BY room_id, incident_seq",
     ),
+];
+
+const OPTIONAL_OPERATIONAL_TABLES: &[&str] = &[
+    "room_operational_mmr_receipts_v1",
+    "room_operational_mmr_nodes_v1",
 ];
 
 /// Extracts all modeled operational tables with a per-query row and byte bound.
@@ -1177,10 +1190,14 @@ fn extract_operational_rows_at_coordinate(
     .collect::<BTreeSet<_>>();
     let mut tables = BTreeMap::new();
     for (table, sql) in OPERATIONAL_QUERIES {
-        if !actual_tables.contains(*table) {
+        if !actual_tables.contains(*table) && !OPTIONAL_OPERATIONAL_TABLES.contains(table) {
             return Err(NativeSqliteError::InvalidRow {
                 what: "operational table missing",
             });
+        }
+        if !actual_tables.contains(*table) {
+            tables.insert((*table).to_owned(), Vec::new());
+            continue;
         }
         let values = native_rows(
             file,
@@ -1857,6 +1874,10 @@ ORDER BY name",
     operational_hasher.update(b"worldstream/sqlite-stream-operational/v2");
     let mut operational_relation_counts = BTreeMap::new();
     for (table, _) in OPERATIONAL_QUERIES {
+        if !actual_set.contains(*table) {
+            operational_relation_counts.insert((*table).to_owned(), 0);
+            continue;
+        }
         let quoted = table.replace('"', r#""""#);
         let mut statement = connection
             .prepare(&format!("SELECT * FROM \"{quoted}\" ORDER BY rowid"))
@@ -2630,10 +2651,9 @@ fn verify_file_at_coordinate(
         );
     }
 
-    let operational = if OPERATIONAL_QUERIES
-        .iter()
-        .all(|(table, _)| actual_tables.contains(*table))
-    {
+    let operational = if OPERATIONAL_QUERIES.iter().all(|(table, _)| {
+        actual_tables.contains(*table) || OPTIONAL_OPERATIONAL_TABLES.contains(table)
+    }) {
         if let Ok(rows) =
             extract_operational_rows_at_coordinate(validation_path, file, path, limits)
         {
@@ -2872,7 +2892,7 @@ fn verify_operational_rows(
     if let Some(rows) = evidence.tables.get("observation_frames") {
         counts.frame_count = rows.len();
         for row in rows {
-            let valid = row.values.len() == 7
+            let valid = matches!(row.values.len(), 7 | 8)
                 && text_value(&row.values, 0).is_some_and(|room_id| {
                     let member_id = text_value(&row.values, 1);
                     let frame_seq = integer_value(&row.values, 2);
@@ -2908,6 +2928,9 @@ fn verify_operational_rows(
                                     u64::try_from(value).is_ok_and(|value| value <= *head)
                                 })
                         })
+                        && (row.values.len() == 7
+                            || integer_value_or_null(&row.values, 7)
+                                .is_some_and(|value| value.is_none_or(|value| value >= 0)))
                 });
             if !valid {
                 diagnostic(diagnostics, "frame_row_mismatch", true, "frame");
@@ -2918,7 +2941,7 @@ fn verify_operational_rows(
     if let Some(rows) = evidence.tables.get("observation_consequences") {
         counts.observation_consequence_count = rows.len();
         for row in rows {
-            let valid = row.values.len() == 6
+            let valid = matches!(row.values.len(), 6 | 7)
                 && text_value(&row.values, 0).is_some_and(|room_id| {
                     let consequence_kind = text_value(&row.values, 3);
                     let payload = blob_value_or_null(&row.values, 4);
@@ -2932,6 +2955,9 @@ fn verify_operational_rows(
                         && is_text_or_null(&row.values, 5)
                         && ((consequence_kind == Some("reset_required"))
                             == (payload.is_some() && projection_hash.is_some()))
+                        && (row.values.len() == 6
+                            || integer_value_or_null(&row.values, 6)
+                                .is_some_and(|value| value.is_none_or(|value| value >= 0)))
                 });
             if !valid {
                 diagnostic(
@@ -2948,7 +2974,7 @@ fn verify_operational_rows(
     if let Some(rows) = evidence.tables.get("activation_decisions") {
         counts.activation_decision_count = rows.len();
         for row in rows {
-            let valid = row.values.len() == 5
+            let valid = matches!(row.values.len(), 5 | 6)
                 && text_value(&row.values, 0).is_some_and(|room_id| {
                     let decision_id = text_value(&row.values, 2);
                     let target_member_id = text_value_or_null(&row.values, 3);
@@ -2967,6 +2993,9 @@ fn verify_operational_rows(
                             member_ids.contains(&(room_id.to_owned(), value.to_owned()))
                         })
                         && blob_value(&row.values, 4).is_some()
+                        && (row.values.len() == 5
+                            || integer_value_or_null(&row.values, 5)
+                                .is_some_and(|value| value.is_none_or(|value| value >= 0)))
                 });
             if !valid {
                 diagnostic(
@@ -2978,6 +3007,8 @@ fn verify_operational_rows(
             }
         }
     }
+
+    verify_mmr_sidecar(evidence, rooms, diagnostics);
 
     let mut activation_ids = BTreeSet::new();
     if let Some(rows) = evidence.tables.get("activation_intents") {
@@ -3144,6 +3175,99 @@ fn verify_operational_rows(
     }
 
     counts
+}
+
+fn verify_mmr_sidecar(
+    evidence: &NativeSqliteOperationalRowsV1,
+    rooms: &BTreeMap<String, RoomRow>,
+    diagnostics: &mut Vec<NativeSqliteDiagnosticV1>,
+) {
+    let receipts = table_rows(evidence, "room_operational_mmr_receipts_v1");
+    let nodes = table_rows(evidence, "room_operational_mmr_nodes_v1");
+    let domains = [
+        ("frames", "observation_frames", 7),
+        ("consequences", "observation_consequences", 6),
+        ("activation_decisions", "activation_decisions", 5),
+    ];
+    let mut receipt_keys = BTreeSet::new();
+    for row in receipts {
+        let valid = row.values.len() == 4
+            && text_value(&row.values, 0).is_some_and(|room| rooms.contains_key(room))
+            && text_value(&row.values, 1)
+                .is_some_and(|domain| domains.iter().any(|(expected, _, _)| expected == &domain))
+            && integer_value(&row.values, 2).is_some_and(|count| count >= 0)
+            && blob_value(&row.values, 3).is_some_and(|hash| hash.len() == 32)
+            && receipt_keys.insert((
+                text_value(&row.values, 0).unwrap_or_default().to_owned(),
+                text_value(&row.values, 1).unwrap_or_default().to_owned(),
+            ));
+        if !valid {
+            diagnostic(
+                diagnostics,
+                "operational_mmr_receipt_mismatch",
+                true,
+                "MMR receipt",
+            );
+        }
+    }
+    for row in nodes {
+        let key = (
+            text_value(&row.values, 0).unwrap_or_default().to_owned(),
+            text_value(&row.values, 1).unwrap_or_default().to_owned(),
+        );
+        let valid = row.values.len() == 5
+            && receipt_keys.contains(&key)
+            && integer_value(&row.values, 2).is_some_and(|height| (0..64).contains(&height))
+            && integer_value(&row.values, 3).is_some_and(|start| start >= 0)
+            && blob_value(&row.values, 4).is_some_and(|hash| hash.len() == 32);
+        if !valid {
+            diagnostic(
+                diagnostics,
+                "operational_mmr_node_mismatch",
+                true,
+                "MMR node",
+            );
+        }
+    }
+    for room in rooms.keys() {
+        for (domain, table, index) in domains {
+            let receipt = receipts.iter().find(|row| {
+                text_value(&row.values, 0) == Some(room.as_str())
+                    && text_value(&row.values, 1) == Some(domain)
+            });
+            let rows = table_rows(evidence, table)
+                .iter()
+                .filter(|row| text_value(&row.values, 0) == Some(room.as_str()))
+                .collect::<Vec<_>>();
+            let Some(receipt) = receipt else {
+                if rows.iter().any(|row| {
+                    integer_value_or_null(&row.values, index).is_some_and(|value| value.is_some())
+                }) {
+                    diagnostic(diagnostics, "operational_mmr_inventory_partial", true, room);
+                }
+                continue;
+            };
+            let Some(count) =
+                integer_value(&receipt.values, 2).and_then(|value| usize::try_from(value).ok())
+            else {
+                continue;
+            };
+            let mut indexes = rows
+                .iter()
+                .filter_map(|row| integer_value_or_null(&row.values, index).flatten())
+                .collect::<Vec<_>>();
+            indexes.sort_unstable();
+            let expected = (0..count).map(|value| value as i64).collect::<Vec<_>>();
+            if rows.len() != count || indexes != expected {
+                diagnostic(
+                    diagnostics,
+                    "operational_mmr_leaf_inventory_mismatch",
+                    true,
+                    room,
+                );
+            }
+        }
+    }
 }
 
 fn table_rows<'a>(

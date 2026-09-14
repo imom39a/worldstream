@@ -6,6 +6,7 @@
 //! then a fresh keyset cursor emits one record at a time for the writer.
 
 use std::{
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
 };
@@ -55,6 +56,8 @@ const NATIVE_STREAM_TABLES: &[&str] = &[
     "authority_change_receipts",
     "authority_audit",
     "room_integrity",
+    "room_operational_mmr_receipts_v1",
+    "room_operational_mmr_nodes_v1",
     "room_members",
     "timers",
     "observation_frames",
@@ -278,6 +281,7 @@ struct RecordCursorV2 {
     deployment_identity: DeploymentIdentityV1,
     lineage: String,
     epoch: u64,
+    native_tables: BTreeSet<String>,
     cursor: SqliteTransferStreamCursorV2,
 }
 
@@ -308,11 +312,19 @@ impl RecordCursorV2 {
             .ok_or(SqliteTransferStreamErrorV2::Corrupt)?;
         let deployment_identity =
             read_deployment_identity(&connection).map_err(map_identity_error)?;
+        let native_tables = connection
+            .prepare("SELECT name FROM sqlite_schema WHERE type = 'table'")
+            .map_err(|_| SqliteTransferStreamErrorV2::Query)?
+            .query_map((), |row| row.get::<_, String>(0))
+            .map_err(|_| SqliteTransferStreamErrorV2::Query)?
+            .collect::<Result<BTreeSet<_>, _>>()
+            .map_err(|_| SqliteTransferStreamErrorV2::Query)?;
         Ok(Self {
             connection,
             deployment_identity,
             lineage,
             epoch,
+            native_tables,
             cursor,
         })
     }
@@ -649,6 +661,12 @@ impl RecordCursorV2 {
         let Some(table) = NATIVE_STREAM_TABLES.get(usize::from(index)) else {
             return Ok(None);
         };
+        // MMR relations were introduced after the v2 stream format. An older
+        // retained backup has no sidecar tables; represent that inventory as
+        // empty while preserving NULL leaf indexes on its legacy rows.
+        if !self.native_tables.contains(*table) {
+            return Ok(None);
+        }
         let quoted = table.replace('"', r#""""#);
         let query =
             format!("SELECT rowid, * FROM \"{quoted}\" WHERE rowid > ?1 ORDER BY rowid LIMIT 1");
