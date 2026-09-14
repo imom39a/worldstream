@@ -16,7 +16,9 @@ test("deployment binding requires a clean exact identity", () => {
   );
   for (const input of [
     { statusPorcelain: " M file" },
+    { dockerSourceRevision: undefined },
     { dockerSourceRevision: "c".repeat(40) },
+    { runtimeDeploymentVersion: undefined },
     { runtimeDeploymentVersion: "bad" },
     { sourceRevision: "A".repeat(40) },
   ]) {
