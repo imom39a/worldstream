@@ -340,10 +340,11 @@ fn qualify_bounded_recovery_scales(
         )
         .unwrap_or_else(|error| panic!("install snapshot audit trigger: {error}"));
 
+    let creation_key = format!("live-recovery-scale-{room_id}");
     let (genesis, request, creation_witness, identity) =
-        creation_fixture_for(room_id, MEMBER, PRINCIPAL, 0, "live-recovery-scale");
+        creation_fixture_for(room_id, MEMBER, PRINCIPAL, 0, &creation_key);
     let (trace_genesis, _, _, _) =
-        creation_fixture_for(room_id, MEMBER, PRINCIPAL, 0, "live-recovery-scale");
+        creation_fixture_for(room_id, MEMBER, PRINCIPAL, 0, &creation_key);
     runtime
         .seed_conformance_authority(&creation_witness, true)
         .unwrap_or_else(|error| panic!("scale creation authority seed: {error:?}"));
@@ -392,7 +393,7 @@ fn qualify_bounded_recovery_scales(
             AdministrationOperationIdentityV1 {
                 authenticated_principal: parsed(PRINCIPAL),
                 versioned_operation_kind: worldstream_core::CORE_OPERATION_KIND.to_owned(),
-                idempotency_key: format!("live-recovery-scale-{sequence}"),
+                idempotency_key: format!("live-recovery-scale-{room_id}-{sequence}"),
             },
             if suspend {
                 CoreProposedKindV1::Suspend
