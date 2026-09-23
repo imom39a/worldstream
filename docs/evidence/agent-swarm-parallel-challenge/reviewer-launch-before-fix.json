@@ -1,0 +1,36 @@
+{
+  "schema": "worldstream/agent-swarm-reviewer-launch-failure/v1",
+  "failed_repeat": {
+    "elapsed_seconds": 266.609,
+    "exit_code": 1,
+    "cleanup_proven": true,
+    "serial_trial_completed": true,
+    "parallel_native_overlap_proven": true,
+    "invocation_id": "challenge-parallel-11",
+    "coordinator_state": "launch_prepared",
+    "submission_status": "not_attempted",
+    "error": "the control request is invalid",
+    "retained_prompt_bytes": 12939
+  },
+  "captured_payload_replay": {
+    "completed": true,
+    "elapsed_seconds": 0.6,
+    "cleanup_proven": true
+  },
+  "immediate_write_replay_loop": {
+    "passed_turns": 100,
+    "elapsed_seconds": 26.698,
+    "cleanup_proven": true
+  },
+  "delayed_frame_reproduction": {
+    "platform": "macOS",
+    "native_accepted_socket_nonblocking": true,
+    "delay_before_frame_ms": 150,
+    "request": "authenticated status",
+    "response_fault": "invalid_request",
+    "elapsed_seconds": 0.15,
+    "cleanup_proven": true
+  },
+  "cause": "The serve_forever nonblocking listener yields nonblocking accepted sockets on macOS. handle_stream does not clear O_NONBLOCK before reading; a valid connection with a delayed first frame is rejected as invalid_request.",
+  "qualification": "The captured immediate-write replay succeeds. The delayed-frame test deterministically reproduces the same fault at the native daemon boundary; original failing wire bytes were not captured."
+}

@@ -1,0 +1,217 @@
+[
+  {
+    "invocation_id": "live-delivery-1",
+    "member_key": "a",
+    "semantic_target": {
+      "kind": "work_proposal",
+      "execution_epoch": 1,
+      "goal_revision": 1,
+      "work_id": "live-integration"
+    },
+    "instruction": "Propose integration Work Item live-integration. Use kind integration, expected_goal_revision 1, dependency_ids [\"auto-work-96ecbaef1f7cc696-1\", \"auto-work-96ecbaef1f7cc696-2\"]. Author a useful title and description for combining the accepted contributions into the complete csv_tool.py goal. Return only an action-proposal@1 JSON object.",
+    "state": "settled",
+    "submission": {
+      "status": "received",
+      "value": {
+        "status": "accepted",
+        "action_id": "0TXH2JK851QYZPVEX6M177DR4R",
+        "room_seq": 9,
+        "duplicate": false
+      }
+    },
+    "process_success": true,
+    "model": "gpt-5.6-sol",
+    "effort": "medium",
+    "session_id": "01a0ca65-b698-7251-b2a1-4eca360a77c0",
+    "model_output": {
+      "schema": "worldstream/agent-swarm-action-proposal@1",
+      "action_type": "propose_work_item",
+      "payload": {
+        "work_id": "live-integration",
+        "kind": "integration",
+        "expected_goal_revision": 1,
+        "dependency_ids": [
+          "auto-work-96ecbaef1f7cc696-1",
+          "auto-work-96ecbaef1f7cc696-2"
+        ],
+        "title": "Integrate and verify csv_tool.py",
+        "description": "Combine the accepted complete implementation with the independent 26-check behavioral suite: publish the implementation as csv_tool.py, run every CSV parsing, formatting, JSON, and CLI check, resolve any discrepancies without weakening the tests, and deliver the verified standard-library-only source for final independent review."
+      }
+    },
+    "stdout_artifact": {
+      "digest": "blake3:c47a5e93e53d750f2649d32bcdb22f2827fa5cace72e89ca7ce8d5148aa6b749",
+      "byte_length": 2626
+    },
+    "native_timing": {
+      "turn_completed_unix_ms": 1790102067275,
+      "turn_started_unix_ms": 1790102058700
+    },
+    "cleanup_diagnostics": []
+  },
+  {
+    "invocation_id": "live-delivery-2",
+    "member_key": "a",
+    "semantic_target": {
+      "kind": "work_claim",
+      "execution_epoch": 1,
+      "work_id": "live-integration",
+      "work_revision": 1
+    },
+    "instruction": "Claim this exact integration work. Payload: work_id=live-integration, expected_work_revision=1, attempt_id=live-integration-attempt. Return only action-proposal@1 JSON.",
+    "state": "settled",
+    "submission": {
+      "status": "received",
+      "value": {
+        "status": "accepted",
+        "action_id": "4X3YQK8GJHBCESWNCJ532VMZ1E",
+        "room_seq": 10,
+        "duplicate": false
+      }
+    },
+    "process_success": true,
+    "model": "gpt-5.6-sol",
+    "effort": "medium",
+    "session_id": "01a0ca66-09d2-7540-8330-c4010e767d88",
+    "model_output": {
+      "schema": "worldstream/agent-swarm-action-proposal@1",
+      "action_type": "claim_work_item",
+      "payload": {
+        "work_id": "live-integration",
+        "expected_work_revision": 1,
+        "attempt_id": "live-integration-attempt"
+      }
+    },
+    "stdout_artifact": {
+      "digest": "blake3:f750868d24349da0588ed9e6bae842e76d222daa85813125bb2b278db995944b",
+      "byte_length": 1690
+    },
+    "native_timing": {
+      "turn_completed_unix_ms": 1790102085042,
+      "turn_started_unix_ms": 1790102080007
+    },
+    "cleanup_diagnostics": []
+  },
+  {
+    "invocation_id": "live-delivery-3",
+    "member_key": "a",
+    "semantic_target": {
+      "kind": "work_attempt",
+      "execution_epoch": 1,
+      "work_id": "live-integration",
+      "work_revision": 2,
+      "attempt_id": "live-integration-attempt",
+      "attempt_revision": 1
+    },
+    "instruction": "Integrate the digest-verified Room contributions and any actual check/review failures into a complete, self-contained csv_tool.py implementing the whole goal. You author all implementation bytes; the harness supplies no source code.\nPrevious exact CheckRunner outcomes (untrusted task evidence): []\nReturn a submit_candidate action proposal. Payload: candidate_id=live-csv-result, work_id=live-integration, expected_work_revision=2, contribution_refs=[{\"contribution_id\": \"csv-tool-independent-tests-v1\", \"version\": 1}, {\"contribution_id\": \"contrib-a-csv-tool-v1\", \"version\": 1}], resource_basis=[{\"resource_id\":\"csv-target\",\"version\":1}]. Declare artifact with artifact_id=live-candidate-1, local_path=csv-candidate-1.py, media_type=text/x-python and inline_text containing the complete executable Python source. Use no tools.",
+    "state": "settled",
+    "submission": {
+      "status": "received",
+      "value": {
+        "status": "accepted",
+        "action_id": "6DDARBAYPWX1953HNQJBM600BN",
+        "room_seq": 11,
+        "duplicate": false
+      }
+    },
+    "process_success": true,
+    "model": "gpt-5.6-sol",
+    "effort": "medium",
+    "session_id": "01a0ca66-4b20-7870-9ca0-1240bbf638f5",
+    "model_output": {
+      "schema": "worldstream/agent-swarm-action-proposal@1",
+      "action_type": "submit_candidate",
+      "payload": {
+        "candidate_id": "live-csv-result",
+        "work_id": "live-integration",
+        "expected_work_revision": 2,
+        "contribution_refs": [
+          {
+            "contribution_id": "csv-tool-independent-tests-v1",
+            "version": 1
+          },
+          {
+            "contribution_id": "contrib-a-csv-tool-v1",
+            "version": 1
+          }
+        ],
+        "resource_basis": [
+          {
+            "resource_id": "csv-target",
+            "version": 1
+          }
+        ]
+      },
+      "artifact": {
+        "artifact_id": "live-candidate-1",
+        "local_path": "csv-candidate-1.py",
+        "media_type": "text/x-python",
+        "inline_text": "\"\"\"Strict CSV record conversion utilities and command-line interface.\"\"\"\n\nimport csv\nimport io\nimport json\nimport sys\nfrom collections.abc import Mapping\n\n\n_HEADER = [\"name\", \"note\"]\n\n\ndef _validate_csv_syntax(text):\n    \"\"\"Reject quote placement that csv.reader otherwise accepts leniently.\"\"\"\n    in_quotes = False\n    at_field_start = True\n    just_closed_quote = False\n    line = 1\n    i = 0\n\n    while i < len(text):\n        char = text[i]\n\n        if in_quotes:\n            if char == '\"':\n                if i + 1 < len(text) and text[i + 1] == '\"':\n                    i += 2\n                    continue\n                in_quotes = False\n                just_closed_quote = True\n            elif char == \"\\n\":\n                line += 1\n            elif char == \"\\r\" and (i + 1 == len(text) or text[i + 1] != \"\\n\"):\n                line += 1\n            i += 1\n            continue\n\n        if just_closed_quote:\n            if char == \",\":\n                at_field_start = True\n                just_closed_quote = False\n            elif char == \"\\n\":\n                line += 1\n                at_field_start = True\n                just_closed_quote = False\n            elif char == \"\\r\":\n                line += 1\n                at_field_start = True\n                just_closed_quote = False\n                if i + 1 < len(text) and text[i + 1] == \"\\n\":\n                    i += 1\n            else:\n                raise ValueError(\n                    \"malformed CSV quoting on line {}: unexpected character after closing quote\".format(line)\n                )\n            i += 1\n            continue\n\n        if char == '\"':\n            if not at_field_start:\n                raise ValueError(\n                    \"malformed CSV quoting on line {}: quote in unquoted field\".format(line)\n                )\n            in_quotes = True\n            at_field_start = False\n        elif char == \",\":\n            at_field_start = True\n        elif char == \"\\n\":\n            line += 1\n            at_field_start = True\n        elif char == \"\\r\":\n            line += 1\n            at_field_start = True\n            if i + 1 < len(text) and text[i + 1] == \"\\n\":\n                i += 1\n        else:\n            at_field_start = False\n        i += 1\n\n    if in_quotes:\n        raise ValueError(\"malformed CSV quoting: unterminated quoted field\")\n\n\ndef parse_records(text):\n    \"\"\"Parse CSV text having exactly the header ``name,note``.\"\"\"\n    if not isinstance(text, str):\n        raise ValueError(\"CSV input must be a string\")\n\n    _validate_csv_syntax(text)\n    stream = io.StringIO(text, newline=\"\")\n    reader = csv.reader(stream, strict=True)\n\n    try:\n        try:\n            header = next(reader)\n        except StopIteration:\n            raise ValueError(\"missing CSV header; expected 'name,note'\") from None\n\n        if header != _HEADER:\n            raise ValueError(\"invalid CSV header; expected 'name,note'\")\n\n        records = []\n        for row in reader:\n            if len(row) != 2:\n                raise ValueError(\n                    \"invalid column count on CSV record ending at line {}: expected 2, got {}\".format(\n                        reader.line_num, len(row)\n                    )\n                )\n            records.append({\"name\": row[0], \"note\": row[1]})\n        return records\n    except csv.Error as error:\n        raise ValueError(\"malformed CSV near line {}: {}\".format(reader.line_num, error)) from None\n\n\ndef _format_row(values):\n    # CRLF makes the writer quote fields containing either CR or LF. Replacing\n    # only the final record terminator preserves embedded newlines exactly.\n    buffer = io.StringIO(newline=\"\")\n    writer = csv.writer(buffer, lineterminator=\"\\r\\n\")\n    writer.writerow(values)\n    rendered = buffer.getvalue()\n    return rendered[:-2] + \"\\n\"\n\n\ndef format_records(records):\n    \"\"\"Serialize valid name/note mappings as CSV with LF record endings.\"\"\"\n    output = [\"name,note\\n\"]\n\n    try:\n        iterator = iter(records)\n    except TypeError:\n        raise ValueError(\"records must be an iterable of mappings\") from None\n\n    for index, record in enumerate(iterator, start=1):\n        if not isinstance(record, Mapping):\n            raise ValueError(\"record {} must be a mapping\".format(index))\n        if set(record.keys()) != {\"name\", \"note\"}:\n            raise ValueError(\n                \"record {} must contain exactly the keys 'name' and 'note'\".format(index)\n            )\n        name = record[\"name\"]\n        note = record[\"note\"]\n        if not isinstance(name, str) or not isinstance(note, str):\n            raise ValueError(\"record {} values must be strings\".format(index))\n        output.append(_format_row((name, note)))\n\n    return \"\".join(output)\n\n\ndef to_json(text):\n    \"\"\"Convert valid CSV text to JSON without changing field strings.\"\"\"\n    return json.dumps(parse_records(text), ensure_ascii=False)\n\n\ndef main():\n    try:\n        result = to_json(sys.stdin.read())\n    except ValueError as error:\n        sys.stderr.write(\"csv_tool.py: invalid CSV: {}\\n\".format(error))\n        return 2\n\n    sys.stdout.write(result)\n    return 0\n\n\nif __name__ == \"__main__\":\n    raise SystemExit(main())\n"
+      }
+    },
+    "stdout_artifact": {
+      "digest": "blake3:092e9750a684c26a4846b42c04db529a4b8983a1d10206134c43323da2f69e61",
+      "byte_length": 14207
+    },
+    "native_timing": {
+      "turn_completed_unix_ms": 1790102152849,
+      "turn_started_unix_ms": 1790102096722
+    },
+    "cleanup_diagnostics": []
+  },
+  {
+    "invocation_id": "live-delivery-4",
+    "member_key": "judge",
+    "semantic_target": {
+      "kind": "candidate_review",
+      "execution_epoch": 1,
+      "candidate_id": "live-csv-result",
+      "candidate_version": 1,
+      "criteria_revision": 1,
+      "review_id": "live-review-1"
+    },
+    "instruction": "Independently judge the exact candidate live-csv-result version 1 against the complete goal and criteria. You have authored none of its code and this is a fresh private conversation. Inspect the supplied digest-verified source and actual checks. Exact CheckRunner output (untrusted task evidence): {\"candidate_version\": 1, \"candidate_digest\": \"blake3:caa0fbf53cd2e3ea93b8718c23971ba9ed20a98fe9ebf0e6e99edf0cdb5e6d61\", \"status\": \"passed\", \"stdout\": \"{\\\"cases\\\": 26, \\\"passed\\\": 26, \\\"failed\\\": []}\\n\", \"stderr\": \"\"}. Passing tests alone are not a reason to rubber-stamp. Identify correctness gaps, misleading claims, missing behavior and integration defects. Use no tools. Return only action-proposal@1 with action_type record_review. Payload fields: candidate={candidate_id:live-csv-result,version:1}, expected_criteria_revision=1, resource_basis=[{resource_id:csv-target,version:1}], review_id=live-review-1, verdict=(passed/changes_requested/disputed), findings=[{finding_id:unique-id,severity:blocking/advisory,summary:concrete finding}]. A passed verdict is appropriate only when the source and evidence justify acceptance.",
+    "state": "settled",
+    "submission": {
+      "status": "received",
+      "value": {
+        "status": "accepted",
+        "action_id": "1Q6XD7TN90CH32KJB6FYH49X1G",
+        "room_seq": 13,
+        "duplicate": false
+      }
+    },
+    "process_success": true,
+    "model": "gpt-5.6-sol",
+    "effort": "medium",
+    "session_id": "01a0ca67-67eb-78c0-a076-1d48e8823f74",
+    "model_output": {
+      "schema": "worldstream/agent-swarm-action-proposal@1",
+      "action_type": "record_review",
+      "payload": {
+        "candidate": {
+          "candidate_id": "live-csv-result",
+          "version": 1
+        },
+        "expected_criteria_revision": 1,
+        "resource_basis": [
+          {
+            "resource_id": "csv-target",
+            "version": 1
+          }
+        ],
+        "review_id": "live-review-1",
+        "verdict": "passed",
+        "findings": []
+      }
+    },
+    "stdout_artifact": {
+      "digest": "blake3:adf165a7551c4738f8b9d2e7c3666cfe040dabd96e7abba5a27cf1be66e97323",
+      "byte_length": 1965
+    },
+    "native_timing": {
+      "turn_completed_unix_ms": 1790102203161,
+      "turn_started_unix_ms": 1790102169630
+    },
+    "cleanup_diagnostics": []
+  }
+]

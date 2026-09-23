@@ -1,0 +1,17 @@
+{
+  "disposition": "applied",
+  "operation_id": "live-writeback-1",
+  "revision_digest": "blake3:9abe530bfe908e931a76d920da72f84538b6193502de6ad17fedeaf0d62c8d6a",
+  "targets": [
+    {
+      "outcome": {
+        "observed": {
+          "byte_length": 5179,
+          "digest": "blake3:caa0fbf53cd2e3ea93b8718c23971ba9ed20a98fe9ebf0e6e99edf0cdb5e6d61"
+        },
+        "outcome": "applied"
+      },
+      "path": "csv_tool.py"
+    }
+  ]
+}

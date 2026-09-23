@@ -130,6 +130,10 @@ _Avoid_: Client Binding Store, Pack catalog, client marketplace, Host approval
 An external discovery service that indexes published Activity Distributions and Activity Client Releases without granting Host approval or executing them.
 _Avoid_: Client Binding Store, Artifact Registry, Studio catalog, marketplace authority
 
+**Agent Swarm**:
+An application in which a human gives a group of Agent Participants a coding or non-coding goal and observes and steers their shared work. WorldStream remains the authority for its Rooms; the application's name does not define a new canonical Room entity.
+_Avoid_: Room Runtime, Activity Pack, Runner when the application itself is meant
+
 **Hosted Activity Platform**:
 A separately branded application layer built on one operated WorldStream installation. It may own public discovery, Platform Accounts, authoritative platform-only pre-Genesis coordination, bounded launch orchestration, and derived result indexes and may broker Host-issued opaque client handoffs, but it is not the Room Runtime and owns no Room authority.
 _Avoid_: WorldStream hosted mode, Room Runtime, game-aware kernel, Client Catalog
@@ -425,6 +429,56 @@ _Avoid_: Authoritative room state, invocation context, persistent WorldStream me
 **Logical Agent Persistence**:
 Continuity of an Agent Participant's Principal, Membership, observations, and Room facts across Invocations.
 _Avoid_: Continuous computation, sleeping agent, persistent mind, restored hidden state
+
+## Swarm activities
+
+**Swarm**:
+One goal-directed activity and its participating group in Agent Swarm, represented by exactly one Room. Returning to an existing goal preserves that Room's identity; starting a separate goal creates another Swarm.
+_Avoid_: Runner pool, provider conversation, persistent team accepting unrelated goals
+
+**Swarm Goal**:
+The human-specified intended outcome of one Swarm, together with its accepted constraints.
+_Avoid_: Activation Intent, Invocation, Outcome when the intended result is meant
+
+**Swarm Roster**:
+The human-selected set of Agent Participants and their chosen providers, models, and supported reasoning-effort settings for one Swarm. Starting a replacement Invocation does not create a new roster member.
+_Avoid_: Active process count, provider subscription, automatic agent admission
+
+**Swarm Direction**:
+An authorized Human Participant's binding amendment to a Swarm's accepted goal or constraints, applying to the whole Swarm or specified Swarm Work Items and their affected dependencies. A work-targeted Direction follows that work when ownership changes.
+_Avoid_: Swarm Suggestion, model prompt, tool permission
+
+**Swarm Suggestion**:
+An authorized Human Participant's advisory contribution that agents may evaluate and decline without changing the accepted Swarm Goal or its constraints.
+_Avoid_: Swarm Direction, assignment, mandatory instruction
+
+**Swarm Work Item**:
+A unit of work proposed toward a Swarm Goal, with one accountable Agent Participant as its owner when claimed. Other Participants may assist or review without acquiring that ownership.
+_Avoid_: Activation Intent, Invocation, fixed workflow node
+
+**Swarm Contribution**:
+An attributed finding, draft, analysis, or change submitted toward a Swarm Goal or Swarm Work Item. Recording a contribution does not itself accept it into the final result.
+_Avoid_: Accepted result, raw transcript, Artifact when the contribution itself is meant
+
+**Swarm Progress Review**:
+A Swarm Work Item that assesses evidence of progress toward the current Swarm Goal and its accepted constraints, identifies blocked or misdirected work, and records findings and recommended corrections. The review does not itself amend the goal or expand authority.
+_Avoid_: Swarm Direction, agent heartbeat, proof of goal completion
+
+**Swarm Assessment**:
+A versioned, non-authoritative structured judgment over one exact authorized Swarm state cut, including its evaluator identity and uncertainty. It may support attention and review but cannot own work, amend the goal, clear findings, or accept a result.
+_Avoid_: Swarm Progress Review, verdict, Participant Action, accepted fact
+
+**Swarm Result**:
+An accepted version of a Swarm Goal's deliverables, identified with the relevant input and acceptance-criteria versions and supporting check and review evidence. Reopening the goal can produce a new Swarm Result without silently changing the earlier accepted version.
+_Avoid_: Swarm Contribution, process output, Room archive
+
+**Swarm Pause**:
+A reversible suspension of new Invocations for a Swarm that lets already-running Invocations finish. Pausing is complete when no Invocation remains active.
+_Avoid_: Room archive, frozen Semantic Time, interrupted Invocation
+
+**Swarm Stop**:
+Interruption of current Invocations and suspension of new Invocations for a Swarm, preserving its work for explicit resumption. It does not complete or abandon the Swarm Goal.
+_Avoid_: Rollback, Room archive, goal cancellation
 
 ## Companion activities
 

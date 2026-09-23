@@ -1,0 +1,471 @@
+{
+  "action_offers": [
+    {
+      "action_type": "record_late_contribution",
+      "offer_id": "16:0:blake3:a41d93b004aa9ed9222abe61951d2ad431950aa554ac42a94685168b39e54687",
+      "payload_schema_digest": "blake3:a41d93b004aa9ed9222abe61951d2ad431950aa554ac42a94685168b39e54687"
+    },
+    {
+      "action_type": "reopen_swarm",
+      "offer_id": "16:1:blake3:9a4974af424af76f94974b3b7397834abd376a7fe6af96e60d6767c5b4c2559b",
+      "payload_schema_digest": "blake3:9a4974af424af76f94974b3b7397834abd376a7fe6af96e60d6767c5b4c2559b"
+    }
+  ],
+  "activity": {
+    "acceptance_criteria": [
+      "The delivered csv_tool.py passes all 26 fixed CSV, JSON, and CLI behavioral checks and independent source review."
+    ],
+    "approved_working_area": {
+      "resource_paths": [],
+      "root": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-live-coding-yxknger7/work/live-coding"
+    },
+    "blockers": [],
+    "candidates": [
+      {
+        "artifact": {
+          "artifact_id": "live-candidate-1",
+          "digest": "blake3:caa0fbf53cd2e3ea93b8718c23971ba9ed20a98fe9ebf0e6e99edf0cdb5e6d61",
+          "local_path": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-live-coding-yxknger7/work/live-coding/.swarm-generated-caa0fbf53cd2e3ea93b8718c23971ba9ed20a98fe9ebf0e6e99edf0cdb5e6d61.txt",
+          "media_type": "text/x-python"
+        },
+        "author_member_id": "01M355YMVF7BBFCHS8G2G6WFK8",
+        "candidate_id": "live-csv-result",
+        "contribution_refs": [
+          {
+            "contribution_id": "csv-tool-independent-tests-v1",
+            "version": 1
+          },
+          {
+            "contribution_id": "contrib-a-csv-tool-v1",
+            "version": 1
+          }
+        ],
+        "criteria_revision": 1,
+        "direction_revision": 0,
+        "execution_epoch": 1,
+        "resource_basis": [
+          {
+            "resource_id": "csv-target",
+            "version": 1
+          }
+        ],
+        "version": 1,
+        "work_id": "live-integration",
+        "work_revision": 2
+      }
+    ],
+    "checks": [
+      {
+        "candidate": {
+          "candidate_id": "live-csv-result",
+          "version": 1
+        },
+        "check_id": "criterion-1",
+        "criteria_revision": 1,
+        "criterion": "The delivered csv_tool.py passes all 26 fixed CSV, JSON, and CLI behavioral checks and independent source review.",
+        "evidence_refs": [
+          {
+            "artifact": {
+              "artifact_id": "check-evidence:live-csv-result:1:criterion-1",
+              "digest": "blake3:1281aec4cc14a7132e1609e9254e0254418b8908f03936d30100a0d3481b86d9",
+              "local_path": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-live-coding-yxknger7/work/live-coding/evidence/check-1.json",
+              "media_type": "application/vnd.worldstream.agent-swarm-check-evidence+json;version=1"
+            },
+            "candidate": {
+              "candidate_id": "live-csv-result",
+              "version": 1
+            },
+            "candidate_artifact": {
+              "artifact_id": "live-candidate-1",
+              "digest": "blake3:caa0fbf53cd2e3ea93b8718c23971ba9ed20a98fe9ebf0e6e99edf0cdb5e6d61",
+              "local_path": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-live-coding-yxknger7/work/live-coding/.swarm-generated-caa0fbf53cd2e3ea93b8718c23971ba9ed20a98fe9ebf0e6e99edf0cdb5e6d61.txt",
+              "media_type": "text/x-python"
+            },
+            "check_id": "criterion-1",
+            "criteria_revision": 1,
+            "criterion": "The delivered csv_tool.py passes all 26 fixed CSV, JSON, and CLI behavioral checks and independent source review.",
+            "resource_basis": [
+              {
+                "resource_id": "csv-target",
+                "version": 1
+              }
+            ]
+          }
+        ],
+        "recorded_by_member_id": "01M355YMVFC737C7B02FW07VG7",
+        "resource_basis": [
+          {
+            "resource_id": "csv-target",
+            "version": 1
+          }
+        ],
+        "revision": 1,
+        "status": "passed"
+      }
+    ],
+    "constraints": [
+      "All reasoning and code must use the configured subscription-backed Codex model and effort; no substitute models or direct API execution.",
+      "Worker processes are read-only and have no tools. When submitting a contribution or candidate, put its deliverable in artifact.inline_text as a JSON string containing the complete source, design or tests. Proposals and claims have no artifact. The coordinator publishes those exact bytes as an attributed artifact.",
+      "Agents a, b and c may do planning, implementation or independent test authoring. Reserve judge for final independent review: do not assign judge implementation, contribution, claim or proposal work.",
+      "Parallel work must have non-overlapping responsibilities and clear interfaces. A task count limit is a ceiling, not a required count.",
+      "Stop ordinary planning with Wait when enough source/test contributions exist for integration. The delivery evaluation phase will then request integration and independent review in this same Room."
+    ],
+    "contributions": [
+      {
+        "artifact": {
+          "artifact_id": "csv-tool-independent-tests",
+          "digest": "blake3:a27474730e614d0db6f595b7a51a5f37c2c158dcdb7bc330dbc1a1887ee27027",
+          "local_path": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-live-coding-yxknger7/work/live-coding/.swarm-generated-a27474730e614d0db6f595b7a51a5f37c2c158dcdb7bc330dbc1a1887ee27027.txt",
+          "media_type": "text/x-python"
+        },
+        "attempt_id": "attempt-96ecbaef1f7cc696-auto-work-96ecbaef1f7cc696-2-7",
+        "author_member_id": "01M355YMVF9VBNDVEFAWP71DQF",
+        "contribution_id": "csv-tool-independent-tests-v1",
+        "direction_revision": 0,
+        "execution_epoch": 1,
+        "resource_basis": [
+          {
+            "resource_id": "csv-target",
+            "version": 1
+          }
+        ],
+        "source_refs": [
+          "goal_revision:1",
+          "work_item:auto-work-96ecbaef1f7cc696-2"
+        ],
+        "summary": "Independent standard-library unittest suite with 26 behavioral checks covering strict CSV parsing, serialization, JSON conversion, and successful/error CLI behavior.",
+        "version": 1,
+        "work_id": "auto-work-96ecbaef1f7cc696-2",
+        "work_revision": 2
+      },
+      {
+        "artifact": {
+          "artifact_id": "csv-tool-source-a-v1",
+          "digest": "blake3:c05a302f53dbdafdeb93fb8a1532f481f5168efa5fbbd307360e145751d58ee2",
+          "local_path": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-live-coding-yxknger7/work/live-coding/.swarm-generated-c05a302f53dbdafdeb93fb8a1532f481f5168efa5fbbd307360e145751d58ee2.txt",
+          "media_type": "text/x-python"
+        },
+        "attempt_id": "attempt-96ecbaef1f7cc696-auto-work-96ecbaef1f7cc696-1-4",
+        "author_member_id": "01M355YMVF7BBFCHS8G2G6WFK8",
+        "contribution_id": "contrib-a-csv-tool-v1",
+        "direction_revision": 0,
+        "execution_epoch": 1,
+        "resource_basis": [
+          {
+            "resource_id": "csv-target",
+            "version": 1
+          }
+        ],
+        "source_refs": [
+          "csv-target@1"
+        ],
+        "summary": "Complete standard-library-only csv_tool.py implementation with strict CSV syntax and header validation, width checks, lossless formatting including carriage returns, Unicode-preserving JSON conversion, and traceback-free CLI errors.",
+        "version": 1,
+        "work_id": "auto-work-96ecbaef1f7cc696-1",
+        "work_revision": 2
+      }
+    ],
+    "correction_failure_limit": 3,
+    "criteria_revision": 1,
+    "direction_revision": 0,
+    "directions": [],
+    "execution_epoch": 1,
+    "findings": [],
+    "goal": "Build a standard-library-only Python library and command-line tool, delivered as csv_tool.py. Provide parse_records(text): parse CSV whose exact required header is name,note into a list of dicts with those two string fields. Support quoted commas, doubled quotes, embedded newlines, CRLF, Unicode and empty fields. Reject missing/wrong headers, malformed quoting and wrong column counts with ValueError. Provide format_records(records): serialize the same records as CSV with header name,note and LF line terminators, preserving all strings and rejecting missing/extra keys or non-string values with ValueError. Provide to_json(text): parse CSV and return valid JSON preserving original field strings, quoting, newlines and Unicode values. Running python csv_tool.py reads stdin, emits only the JSON result to stdout, and exits 0; invalid CSV emits a useful stderr message with no traceback, leaves stdout empty, and exits 2. Choose a useful decomposition and parallelize independent implementation or test-authoring work. Deliver concise artifacts that an integration owner can combine. Do not create redundant work just to manufacture concurrency. This trial also requires at least two distinct agents to execute useful independent WorkAttempts concurrently, then produce accepted Contributions for integration. Serial authoring does not satisfy the trial. Plan the ownership and dependencies before starting long work: the coordinator cannot plan again until the entire selected batch finishes.",
+    "goal_revision": 1,
+    "handoffs": [],
+    "late_contributions": [],
+    "member_notice": "Review the exact goal, criteria, working area and selected roster before confirming setup.",
+    "outstanding_progress_reviews": [],
+    "phase": "completed",
+    "problems": [],
+    "progress_review_interval_seconds": 3600,
+    "resource_conflicts": [],
+    "resources": [
+      {
+        "digest": "sha256:39e4bbb46996afbbf1f8d6157b3ded76056b95091710ab914e3ff7a83b03d29b",
+        "local_path": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-live-coding-yxknger7/work/live-coding/csv_tool.py",
+        "recorded_by_member_id": "01M355YMVFC737C7B02FW07VG7",
+        "resource_id": "csv-target",
+        "version": 1
+      }
+    ],
+    "results": [
+      {
+        "accepted_by_member_id": "01M355YMVFC737C7B02FW07VG7",
+        "candidate": {
+          "candidate_id": "live-csv-result",
+          "version": 1
+        },
+        "check_refs": [
+          {
+            "id": "criterion-1",
+            "revision": 1
+          }
+        ],
+        "criteria_revision": 1,
+        "direction_revision": 0,
+        "execution_epoch": 1,
+        "resource_basis": [
+          {
+            "resource_id": "csv-target",
+            "version": 1
+          }
+        ],
+        "result_id": "live-csv-result",
+        "review_refs": [
+          {
+            "id": "live-review-1",
+            "revision": 1
+          }
+        ],
+        "version": 1
+      }
+    ],
+    "reviews": [
+      {
+        "candidate": {
+          "candidate_id": "live-csv-result",
+          "version": 1
+        },
+        "criteria_revision": 1,
+        "finding_ids": [],
+        "resource_basis": [
+          {
+            "resource_id": "csv-target",
+            "version": 1
+          }
+        ],
+        "review_id": "live-review-1",
+        "reviewer_member_id": "01M355YMVFVGKT2VTAS0WHQ1X8",
+        "revision": 1,
+        "verdict": "passed"
+      }
+    ],
+    "roster": [
+      {
+        "configuration_revision": 1,
+        "configuration_state": "resolution_unreported",
+        "label": "Agent A",
+        "member_key": "a",
+        "moving_alias_acknowledged": true,
+        "provider": "codex",
+        "requested_effort": "medium",
+        "requested_model": "gpt-5.6-sol"
+      },
+      {
+        "configuration_revision": 1,
+        "configuration_state": "resolution_unreported",
+        "label": "Agent B",
+        "member_key": "b",
+        "moving_alias_acknowledged": true,
+        "provider": "codex",
+        "requested_effort": "medium",
+        "requested_model": "gpt-5.6-sol"
+      },
+      {
+        "configuration_revision": 1,
+        "configuration_state": "resolution_unreported",
+        "label": "Agent C",
+        "member_key": "c",
+        "moving_alias_acknowledged": true,
+        "provider": "codex",
+        "requested_effort": "medium",
+        "requested_model": "gpt-5.6-sol"
+      },
+      {
+        "configuration_revision": 1,
+        "configuration_state": "resolution_unreported",
+        "label": "Reserved independent judge",
+        "member_key": "judge",
+        "moving_alias_acknowledged": true,
+        "provider": "codex",
+        "requested_effort": "medium",
+        "requested_model": "gpt-5.6-sol"
+      }
+    ],
+    "setup_revision": 2,
+    "suggestions": [],
+    "viewer": {
+      "role": "human_coordinator"
+    },
+    "work_attempts": [
+      {
+        "attempt_id": "attempt-96ecbaef1f7cc696-auto-work-96ecbaef1f7cc696-1-4",
+        "execution_epoch": 1,
+        "owner_member_id": "01M355YMVF7BBFCHS8G2G6WFK8",
+        "revision": 2,
+        "status": "completed",
+        "work_id": "auto-work-96ecbaef1f7cc696-1"
+      },
+      {
+        "attempt_id": "attempt-96ecbaef1f7cc696-auto-work-96ecbaef1f7cc696-2-7",
+        "execution_epoch": 1,
+        "owner_member_id": "01M355YMVF9VBNDVEFAWP71DQF",
+        "revision": 2,
+        "status": "completed",
+        "work_id": "auto-work-96ecbaef1f7cc696-2"
+      },
+      {
+        "attempt_id": "live-integration-attempt",
+        "execution_epoch": 1,
+        "owner_member_id": "01M355YMVF7BBFCHS8G2G6WFK8",
+        "revision": 2,
+        "status": "interruption_requested",
+        "work_id": "live-integration"
+      }
+    ],
+    "work_items": [
+      {
+        "active_attempt_id": "attempt-96ecbaef1f7cc696-auto-work-96ecbaef1f7cc696-1-4",
+        "blocker_ids": [],
+        "created_by_member_id": "01M355YMVF7BBFCHS8G2G6WFK8",
+        "dependency_ids": [],
+        "description": "Produce the complete standard-library-only csv_tool.py source implementing parse_records, format_records, to_json, and CLI behavior. Parsing must require the exact name,note header, preserve all string content including Unicode and embedded newlines, support valid RFC-style quoting and CRLF, and reject malformed quoting or incorrect row widths with ValueError. Formatting must emit LF-terminated CSV with the exact header and reject records with missing/extra keys or non-string values. The CLI must emit only JSON on success with exit 0, and on invalid input emit a useful traceback-free stderr message, empty stdout, and exit 2. Deliver the complete source in artifact.inline_text for integration and verification against all 26 checks.",
+        "direction_revision": 0,
+        "execution_epoch": 1,
+        "kind": "goal",
+        "owner_member_id": "01M355YMVF7BBFCHS8G2G6WFK8",
+        "revision": 3,
+        "status": "completed",
+        "supersedes_work_id": null,
+        "title": "Implement strict CSV library and CLI",
+        "work_id": "auto-work-96ecbaef1f7cc696-1"
+      },
+      {
+        "active_attempt_id": "attempt-96ecbaef1f7cc696-auto-work-96ecbaef1f7cc696-2-7",
+        "blocker_ids": [],
+        "created_by_member_id": "01M355YMVF9VBNDVEFAWP71DQF",
+        "dependency_ids": [],
+        "description": "Independently author a concise, standard-library-only Python test suite or explicit executable test cases without implementing csv_tool.py. Cover parse_records, format_records, to_json, and CLI behavior: exact and strict headers; missing or wrong headers; malformed quoting; incorrect row widths; quoted commas; doubled quotes; embedded newlines; CRLF input; Unicode; empty fields; preservation of field strings; missing or extra record keys; non-string values; exact name,note header and LF line terminators in formatted output; valid JSON conversion; successful CLI stdout and exit 0; and invalid-input behavior with useful traceback-free stderr, empty stdout, and exit 2. Acceptance requires independently authored tests that exercise every stated requirement, run using only the Python standard library, clearly distinguish expected successes from ValueError failures, and can be used by the integration owner to verify the final implementation.",
+        "direction_revision": 0,
+        "execution_epoch": 1,
+        "kind": "goal",
+        "owner_member_id": "01M355YMVF9VBNDVEFAWP71DQF",
+        "revision": 3,
+        "status": "completed",
+        "supersedes_work_id": null,
+        "title": "Design independent CSV behavioral test suite",
+        "work_id": "auto-work-96ecbaef1f7cc696-2"
+      },
+      {
+        "active_attempt_id": "live-integration-attempt",
+        "blocker_ids": [],
+        "created_by_member_id": "01M355YMVF7BBFCHS8G2G6WFK8",
+        "dependency_ids": [
+          "auto-work-96ecbaef1f7cc696-1",
+          "auto-work-96ecbaef1f7cc696-2"
+        ],
+        "description": "Combine the accepted complete implementation with the independent 26-check behavioral suite: publish the implementation as csv_tool.py, run every CSV parsing, formatting, JSON, and CLI check, resolve any discrepancies without weakening the tests, and deliver the verified standard-library-only source for final independent review.",
+        "direction_revision": 0,
+        "execution_epoch": 1,
+        "kind": "integration",
+        "owner_member_id": "01M355YMVF7BBFCHS8G2G6WFK8",
+        "revision": 3,
+        "status": "superseded",
+        "supersedes_work_id": null,
+        "title": "Integrate and verify csv_tool.py",
+        "work_id": "live-integration"
+      }
+    ],
+    "writebacks": [
+      {
+        "candidate": {
+          "candidate_id": "live-csv-result",
+          "version": 1
+        },
+        "evidence_refs": [],
+        "expected_version": 1,
+        "operation_id": "live-writeback-1",
+        "resource_id": "csv-target",
+        "resulting_version": null,
+        "revision": 1,
+        "status": "requested"
+      },
+      {
+        "candidate": {
+          "candidate_id": "live-csv-result",
+          "version": 1
+        },
+        "evidence_refs": [
+          "code-change:blake3:9abe530bfe908e931a76d920da72f84538b6193502de6ad17fedeaf0d62c8d6a"
+        ],
+        "expected_version": 1,
+        "operation_id": "live-writeback-1",
+        "resource_id": "csv-target",
+        "resulting_version": 2,
+        "revision": 2,
+        "status": "applied"
+      }
+    ]
+  },
+  "actor": {
+    "kind": "human_coordinator"
+  },
+  "authoritative_state_hash": "blake3:17d1d4c22438f986a88a5ccbd2920ecd1eefdc6ba474331d772c4e1307f8fc98",
+  "member_id": "01M355YMVFC737C7B02FW07VG7",
+  "room_seq": 16,
+  "swarm": {
+    "acceptance_criteria": [
+      {
+        "text": "The delivered csv_tool.py passes all 26 fixed CSV, JSON, and CLI behavioral checks and independent source review."
+      }
+    ],
+    "constraints": [
+      "All reasoning and code must use the configured subscription-backed Codex model and effort; no substitute models or direct API execution.",
+      "Worker processes are read-only and have no tools. When submitting a contribution or candidate, put its deliverable in artifact.inline_text as a JSON string containing the complete source, design or tests. Proposals and claims have no artifact. The coordinator publishes those exact bytes as an attributed artifact.",
+      "Agents a, b and c may do planning, implementation or independent test authoring. Reserve judge for final independent review: do not assign judge implementation, contribution, claim or proposal work.",
+      "Parallel work must have non-overlapping responsibilities and clear interfaces. A task count limit is a ceiling, not a required count.",
+      "Stop ordinary planning with Wait when enough source/test contributions exist for integration. The delivery evaluation phase will then request integration and independent review in this same Room."
+    ],
+    "correction_failure_limit": 3,
+    "goal": "Build a standard-library-only Python library and command-line tool, delivered as csv_tool.py. Provide parse_records(text): parse CSV whose exact required header is name,note into a list of dicts with those two string fields. Support quoted commas, doubled quotes, embedded newlines, CRLF, Unicode and empty fields. Reject missing/wrong headers, malformed quoting and wrong column counts with ValueError. Provide format_records(records): serialize the same records as CSV with header name,note and LF line terminators, preserving all strings and rejecting missing/extra keys or non-string values with ValueError. Provide to_json(text): parse CSV and return valid JSON preserving original field strings, quoting, newlines and Unicode values. Running python csv_tool.py reads stdin, emits only the JSON result to stdout, and exits 0; invalid CSV emits a useful stderr message with no traceback, leaves stdout empty, and exits 2. Choose a useful decomposition and parallelize independent implementation or test-authoring work. Deliver concise artifacts that an integration owner can combine. Do not create redundant work just to manufacture concurrency. This trial also requires at least two distinct agents to execute useful independent WorkAttempts concurrently, then produce accepted Contributions for integration. Serial authoring does not satisfy the trial. Plan the ownership and dependencies before starting long work: the coordinator cannot plan again until the entire selected batch finishes.",
+    "progress_review_interval_seconds": 3600,
+    "room_id": "01M355YMVFZ5TK6F499SKH2RRM",
+    "roster": [
+      {
+        "configuration_revision": 1,
+        "configuration_state": "resolution_unreported",
+        "label": "Agent A",
+        "member_key": "a",
+        "moving_alias_acknowledged": true,
+        "provider": "codex",
+        "requested_effort": "medium",
+        "requested_model": "gpt-5.6-sol"
+      },
+      {
+        "configuration_revision": 1,
+        "configuration_state": "resolution_unreported",
+        "label": "Agent B",
+        "member_key": "b",
+        "moving_alias_acknowledged": true,
+        "provider": "codex",
+        "requested_effort": "medium",
+        "requested_model": "gpt-5.6-sol"
+      },
+      {
+        "configuration_revision": 1,
+        "configuration_state": "resolution_unreported",
+        "label": "Agent C",
+        "member_key": "c",
+        "moving_alias_acknowledged": true,
+        "provider": "codex",
+        "requested_effort": "medium",
+        "requested_model": "gpt-5.6-sol"
+      },
+      {
+        "configuration_revision": 1,
+        "configuration_state": "resolution_unreported",
+        "label": "Reserved independent judge",
+        "member_key": "judge",
+        "moving_alias_acknowledged": true,
+        "provider": "codex",
+        "requested_effort": "medium",
+        "requested_model": "gpt-5.6-sol"
+      }
+    ],
+    "source_label": "authoritative WorldStream participant projection",
+    "swarm_id": "swarm-95b519092425a3c00e1d59ab",
+    "working_area": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-live-coding-yxknger7/work/live-coding"
+  }
+}

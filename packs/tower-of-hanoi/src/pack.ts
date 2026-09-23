@@ -210,16 +210,36 @@ function isAccepted(state: HanoiState, eligible: readonly string[]): boolean {
   const summary = completionSummary(state, eligible);
   return integerValue(summary.approval_count, "completion approval_count") >= integerValue(summary.quorum, "completion quorum");
 }
-function initialState(disks: number, moveLimit: number, eligible: readonly string[]): HanoiState {
+function initialState(disks: number, moveLimit: number, eligible: readonly string[], board: Board | null = null): HanoiState {
   return {
     phase: "solving", disks,
-    board: { A: Array.from({ length: disks }, (_, index) => disks - index), B: [], C: [] },
+    board: board === null ? { A: Array.from({ length: disks }, (_, index) => disks - index), B: [], C: [] } : { A: [...board.A], B: [...board.B], C: [...board.C] },
     round: 1, work_revision: 0,
     contributions_by_member: Object.fromEntries(eligible.map((memberId) => [memberId, 0])),
     completion_claim: null, claim_assessments: {}, last_move: null,
     move_limit: moveLimit, outcome: { moves: 0, status: "in_progress" },
     member_notices: Object.fromEntries(eligible.map((memberId) => [memberId, SOLVER_NOTICE])),
   };
+}
+/** Accept an optional reviewed starting position so Participants can solve from mid-state. */
+function initialBoardValue(value: CanonicalJson | undefined, disks: number): Board | null {
+  if (value === null || value === undefined) return null;
+  const boardValue = record(value, "configuration.initial_board");
+  const seen: number[] = [];
+  const board = Object.fromEntries(rods().map((rod) => {
+    const stack = boardValue[rod];
+    if (!Array.isArray(stack)) throw new TypeError(`configuration.initial_board.${rod} must be an array`);
+    const stacked = stack.map((disk) => integerValue(disk, `configuration.initial_board.${rod}`));
+    if (stacked.some((disk) => disk < 1 || disk > disks)) throw new TypeError("configuration.initial_board disks must be within configuration.disks");
+    for (let index = 1; index < stacked.length; index += 1) {
+      if (stacked[index - 1]! <= stacked[index]!) throw new TypeError("configuration.initial_board stacks must be strictly decreasing");
+    }
+    seen.push(...stacked);
+    return [rod, stacked];
+  })) as unknown as Board;
+  const sorted = [...seen].sort((left, right) => left - right);
+  if (sorted.length !== disks || sorted.some((disk, index) => disk !== index + 1)) throw new TypeError("configuration.initial_board must place each disk exactly once");
+  return board;
 }
 function withKnownSolver(state: HanoiState, memberId: string): HanoiState {
   return Object.hasOwn(state.contributions_by_member, memberId) ? state : {
@@ -285,9 +305,13 @@ function boardChangedAttention(state: HanoiState, core: Record<string, Canonical
 function claimReviewAttention(state: HanoiState, core: Record<string, CanonicalJson>): readonly CanonicalJson[] {
   const claim = state.completion_claim;
   if (claim === null || state.phase === "complete") return [];
-  return eligibleSolverMembers(core).filter((memberId) => claim.electorate_members.includes(memberId) && memberId !== claim.claimant_member_id && state.claim_assessments[memberId] === undefined).map((memberId) => ({
+  // Re-signal every non-endorsing electorate member, not only the never-assessed
+  // ones, so a deferred or challenged review can still be revisited while the
+  // claim is open. The deduplication key changes with the claim round and the
+  // current round, so a fresh activation is issued after each decision.
+  return eligibleSolverMembers(core).filter((memberId) => claim.electorate_members.includes(memberId) && memberId !== claim.claimant_member_id && state.claim_assessments[memberId] !== "endorse").map((memberId) => ({
     action_types: [ASSESS_CLAIM_ACTION],
-    deduplication_key: `claim-review:${claim.work_revision}:${claim.claim_round}:${memberId}`,
+    deduplication_key: `claim-review:${claim.work_revision}:${claim.claim_round}:${state.round}:${memberId}`,
     priority: 1,
     reason: "claim_review_requested",
     target_member_id: memberId,
@@ -399,7 +423,7 @@ function projectionSchema(participant: boolean): CanonicalObject {
   if (participant) { properties.can_move = { type: "boolean" }; properties.private_member_id = { maxLength: 26, minLength: 26, type: "string" }; properties.private_role = { enum: ["observer", "solver"], type: "string" }; properties.member_notice = { maxLength: 256, minLength: 1, type: "string" }; required.push("can_move", "private_member_id", "private_role", "member_notice"); }
   return { additionalProperties: false, properties, required, type: "object" };
 }
-function configurationSchema(): CanonicalObject { return { additionalProperties: false, properties: { disks: { type: "integer", minimum: 1, maximum: MAX_DISKS }, move_limit: { type: "integer", minimum: 1, maximum: MAX_MOVE_LIMIT } }, required: ["disks", "move_limit"], type: "object" }; }
+function configurationSchema(): CanonicalObject { return { additionalProperties: false, properties: { disks: { type: "integer", minimum: 1, maximum: MAX_DISKS }, initial_board: boardSchema(), move_limit: { type: "integer", minimum: 1, maximum: MAX_MOVE_LIMIT } }, required: ["disks", "move_limit"], type: "object" }; }
 
 export default defineActivityPack({
   descriptor: {
@@ -417,7 +441,8 @@ export default defineActivityPack({
     const disks = integerValue(configuration.disks, "configuration.disks"), moveLimit = integerValue(configuration.move_limit, "configuration.move_limit");
     if (disks < 1 || disks > MAX_DISKS) throw new TypeError("configuration.disks is outside the bounded range");
     if (moveLimit < 1 || moveLimit > MAX_MOVE_LIMIT) throw new TypeError("configuration.move_limit is outside the bounded range");
-    return { initial_activity_state: stateCanonical(initialState(disks, moveLimit, eligibleSolverMembers(coreRecord(input.initial_core_state)))), timer_requests: [] };
+    const initialBoard = initialBoardValue(configuration.initial_board, disks);
+    return { initial_activity_state: stateCanonical(initialState(disks, moveLimit, eligibleSolverMembers(coreRecord(input.initial_core_state)), initialBoard)), timer_requests: [] };
   },
   reduce(input) { return reduceTower(input); },
   view(input) { return authorizedView(stateValue(input.activity_state), coreRecord(input.core), record(input.viewer, "viewer")); },

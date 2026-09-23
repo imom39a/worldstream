@@ -1,0 +1,16 @@
+{
+  "accepted_room_actions": 1,
+  "cleanup_proven": true,
+  "declaration_matches_live": true,
+  "elapsed_seconds": 560.892,
+  "failure": "worker-run --once exceeded the unchanged 90-second harness command deadline",
+  "generated_invocations": 3,
+  "identities_unchanged": true,
+  "room_candidate_count": 0,
+  "room_check_count": 0,
+  "room_contribution_count": 0,
+  "room_result_count": 0,
+  "room_review_count": 0,
+  "room_work_item_count": 1,
+  "status": "unsuccessful_harness_command_timeout"
+}

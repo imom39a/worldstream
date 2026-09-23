@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from examples.tower_of_hanoi.live_canvas import (
     BroadcastState,
+    HanoiObserver,
     LiveCanvasError,
+    ObserverConfig,
+    _safe_decision_event,
     _safe_projection,
     _safe_receipt_event,
+    _safe_sink_event,
 )
 
 MEMBER_A = "01ARZ3NDEKTSV4RRFFQ69G5FH1"
@@ -112,6 +120,8 @@ class LiveCanvasTests(unittest.TestCase):
             {
                 "kind": "disk_moved",
                 "actor": "solver-a",
+                "action_type": "move_disk",
+                "status": "observed",
                 "move": {"from": "A", "to": "C", "disk": 1},
                 "round": 2,
                 "room_seq": 7,
@@ -133,6 +143,87 @@ class LiveCanvasTests(unittest.TestCase):
                 }
             )
 
+    def test_decision_sink_is_bounded_and_strips_unlisted_provider_fields(self) -> None:
+        event, deadline = _safe_sink_event(
+            {
+                "schema": "worldstream/tower-of-hanoi-decision/v1",
+                "kind": "participant_decision",
+                "actor": "solver-a",
+                "engine": "openrouter",
+                "model": "openai/gpt-5.6-luna",
+                "observed_room_seq": 18,
+                "activation_reason": "board_changed",
+                "disposition": "act",
+                "selected": {"label": "move:A>C:1", "action_type": "move_disk"},
+                "status": "accepted",
+                "confidence": 0.91,
+                "ranked_alternatives": [
+                    {"label": "move:A>C:1", "score": 0.91},
+                    {"label": "move:A>B:1", "score": 0.09},
+                ],
+                "rationale": "Advance the tower while preserving the legal move set.",
+                "reason": "break_cycle",
+                "latency_ms": 312,
+                "recent_event_count": 4,
+                "cursor": {"from": 14, "to": 18},
+            }
+        )
+        self.assertIsNone(deadline)
+        self.assertEqual(event["kind"], "participant_decision")
+        self.assertEqual(event["selected"]["action_type"], "move_disk")
+        self.assertEqual(event["ranked_alternatives"][0]["score"], 0.91)
+        self.assertEqual(event["reason"], "break_cycle")
+        self.assertNotIn("schema", event)
+        self.assertNotIn("raw_prompt", event)
+
+    def test_decision_sink_supports_wait_without_an_action(self) -> None:
+        event = _safe_decision_event(
+            {
+                "schema": "worldstream/tower-of-hanoi-decision/v1",
+                "kind": "participant_decision",
+                "actor": "solver-a",
+                "engine": "openrouter",
+                "model": "openai/gpt-5.6-luna",
+                "observed_room_seq": 18,
+                "activation_reason": "claim_review_requested",
+                "disposition": "wait",
+                "selected": {"label": "wait", "action_type": None},
+                "status": "error",
+                "latency_ms": 120,
+                "recent_event_count": 1,
+            }
+        )
+        self.assertEqual(event["disposition"], "wait")
+        self.assertEqual(event["selected"], {"label": "wait"})
+
+    def test_decision_sink_rejects_unbounded_or_unknown_fields(self) -> None:
+        base = {
+            "schema": "worldstream/tower-of-hanoi-decision/v1",
+            "kind": "participant_decision",
+            "actor": "solver-a",
+            "engine": "jev",
+            "model": "jev-1.13.0",
+            "observed_room_seq": 1,
+            "activation_reason": "bootstrap",
+            "disposition": "act",
+            "selected": {"label": "move:A>C:1", "action_type": "move_disk"},
+            "latency_ms": 1,
+            "recent_event_count": 0,
+        }
+        with self.assertRaisesRegex(LiveCanvasError, "decision_invalid"):
+            _safe_decision_event({**base, "secret": "wsb1:" + "a" * 64})
+        with self.assertRaisesRegex(LiveCanvasError, "ranked_alternatives_invalid"):
+            _safe_decision_event(
+                {
+                    **base,
+                    "ranked_alternatives": [
+                        {"label": str(index), "score": 0.1} for index in range(9)
+                    ],
+                }
+            )
+        with self.assertRaisesRegex(LiveCanvasError, "decision_invalid"):
+            _safe_decision_event({**base, "disposition": "accepted"})
+
     def test_supervisor_receipt_exposes_only_labeled_action_result(self) -> None:
         event = _safe_receipt_event(
             {
@@ -149,11 +240,37 @@ class LiveCanvasTests(unittest.TestCase):
             {
                 "kind": "assess_claim_accepted",
                 "actor": "solver-a",
+                "action_type": "assess_claim",
+                "status": "accepted",
                 "room_seq": 7,
                 "work_revision": 1,
             },
         )
         self.assertNotIn(MEMBER_A, str(event))
+
+    def test_v2_supervisor_receipt_exposes_action_status(self) -> None:
+        event, deadline = _safe_sink_event(
+            {
+                "schema": "worldstream/tower-of-hanoi-live-receipt/v2",
+                "status": "stale",
+                "actor": "solver-a",
+                "action_type": "move_disk",
+                "room_seq": 8,
+                "work_revision": 7,
+            }
+        )
+        self.assertIsNone(deadline)
+        self.assertEqual(
+            event,
+            {
+                "kind": "move_disk_stale",
+                "actor": "solver-a",
+                "action_type": "move_disk",
+                "status": "stale",
+                "room_seq": 8,
+                "work_revision": 7,
+            },
+        )
 
     def test_projection_accepts_a_ten_disk_board(self) -> None:
         ten_disks = projection()
@@ -193,6 +310,106 @@ class LiveCanvasTests(unittest.TestCase):
         caught_up = broadcasts.subscribe(str(cursor))
         assert caught_up is not None
         self.assertTrue(caught_up.empty())
+
+    def test_observer_ack_has_no_prefetched_receive_and_repeats_serially(self) -> None:
+        stop = threading.Event()
+
+        class FakeStream:
+            def __init__(self) -> None:
+                self.frames = [
+                    {
+                        "frame_seq": 1,
+                        "cause_room_seq": 1,
+                        "observation": projection(
+                            last_move={
+                                "member_id": MEMBER_A,
+                                "move": {"from": "A", "to": "C", "disk": 1},
+                                "round": 2,
+                            }
+                        ),
+                    },
+                    {
+                        "frame_seq": 2,
+                        "cause_room_seq": 2,
+                        "observation": projection(),
+                    },
+                ]
+                self.receivers = 0
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                self.receivers += 1
+                try:
+                    if self.frames:
+                        return self.frames.pop(0)
+                    raise StopAsyncIteration
+                finally:
+                    self.receivers -= 1
+
+        class FakeRoom:
+            def __init__(self, stream: FakeStream) -> None:
+                self.last_projection_reset = {
+                    "projection": {"activity": projection()},
+                    "room_head": {"room_seq": 0},
+                }
+                self.stream = stream
+                self.acknowledged: list[int] = []
+
+            async def sync(self) -> list[dict[str, object]]:
+                return []
+
+            def events(self) -> FakeStream:
+                return self.stream
+
+            async def ack(self, frame_seq: int) -> None:
+                self.assert_no_pending_receive()
+                self.acknowledged.append(frame_seq)
+                if len(self.acknowledged) == 2:
+                    stop.set()
+
+            def assert_no_pending_receive(self) -> None:
+                if self.stream.receivers:
+                    raise AssertionError("observation receive remained pending during ack")
+
+            async def close(self) -> None:
+                return None
+
+        class FakeClient:
+            def __init__(self, room: FakeRoom) -> None:
+                self.room = room
+
+            async def open_room(self, _room_id: str, _member_id: str) -> FakeRoom:
+                return self.room
+
+        stream = FakeStream()
+        room = FakeRoom(stream)
+        client = FakeClient(room)
+        membership = {
+            "schema": "worldstream/membership-credentials/v1",
+            "role": "observer",
+            "pack": {"id": "worldstream.tower-of-hanoi"},
+            "room_id": "room",
+            "member_id": "member",
+            "bearer": "wsb1:" + "a" * 64,
+            "runtime_url": "ws://127.0.0.1:9999/v1/stream",
+        }
+        observer = HanoiObserver(
+            ObserverConfig(Path("/private/observer.json"), {}, 120),
+            BroadcastState(),
+            stop,
+        )
+
+        with (
+            patch("examples.tower_of_hanoi.live_canvas._owner_only"),
+            patch("examples.tower_of_hanoi.live_canvas.load_membership", return_value=membership),
+            patch("examples.tower_of_hanoi.live_canvas.Client", return_value=client),
+        ):
+            asyncio.run(observer._stream_once())
+
+        self.assertEqual(room.acknowledged, [1, 2])
+        self.assertEqual(stream.receivers, 0)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,27 @@
+{
+  "declaration.json": {
+    "blake3": "blake3:a40a84531f05366a7e187710652698da48eab540bd5d8fe92cc95826f9319d35",
+    "byte_length": 16458,
+    "sha256": "sha256:19bcf661125330589fede1871724d51cbbd54df5c7cc04359a83022d95f0334e"
+  },
+  "identities.json": {
+    "blake3": "blake3:f21f0ce775e6dd35c34b713d1d72fc9c5bdc8210763167ca5a5318afe5b474c9",
+    "byte_length": 4043,
+    "sha256": "sha256:d630d804261165ede631ee3047d144ab57bcd3abc8a0ed1acb5ca66420136db2"
+  },
+  "metadata.json": {
+    "blake3": "blake3:7b4eabf200489c6baeb855a2966606f752708cfe97f51dc782dcd5bc757ecd61",
+    "byte_length": 390,
+    "sha256": "sha256:8160583241e65688c193256288c4860a5bc4662729b22e2cb128ca06c41877a0"
+  },
+  "stderr": {
+    "blake3": "blake3:3c7d2be3c306a689c460754686c331b2709bf459e142eeb4d9580294d608c166",
+    "byte_length": 107,
+    "sha256": "sha256:a829b6d2b4154ba67e89f9029a8a5918dffc3241f65684e2c730b68285b9881c"
+  },
+  "summary.json": {
+    "blake3": "blake3:28e10ca66f6e4306261c894236f0a1b38b20549189612b186ec80d85f4246f13",
+    "byte_length": 264,
+    "sha256": "sha256:9f30273b48ca24195655937632cf49bc63185657049b963021bfe7dcb427c734"
+  }
+}

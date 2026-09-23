@@ -1,0 +1,293 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
+     Running unittests src/lib.rs (target/debug/deps/worldstream_agent_swarm-7f3c489a76c7931b)
+
+running 87 tests
+test coordinator::semantic_target_tests::claim_target_rejects_another_eligible_work_item_and_stale_revision ... ok
+test coordinator::semantic_target_tests::provider_plans_cannot_impersonate_trusted_check_or_writeback_bridges ... ok
+test coordinator::semantic_target_tests::member_configuration_uses_authenticated_identity_with_a_sanitized_projection ... ok
+test coordinator::semantic_target_tests::correction_outcome_binds_problem_work_and_completed_attempt ... ok
+test coordinator::semantic_target_tests::production_work_proposal_and_claim_bind_exact_authoritative_revisions ... ok
+test coordinator::semantic_target_tests::late_contribution_crosses_only_the_exact_completion_transition ... ok
+test coordinator::semantic_target_tests::planning_requires_read_only_scope_and_an_exact_snapshot ... ok
+test coordinator::semantic_target_tests::independent_review_and_finding_resolution_are_candidate_bound ... ok
+test coordinator::semantic_target_tests::dependency_revision_target_binds_fresh_work_and_dependency_revisions ... ok
+test coordinator::semantic_target_tests::semantic_target_requires_the_same_fresh_review_phase ... ok
+test coordinator::semantic_target_tests::planning_prompt_uses_a_decision_contract_without_room_actions ... ok
+test coordinator::semantic_target_tests::suggestion_target_binds_fresh_goal_direction_and_target_work_revisions ... ok
+test coordinator::semantic_target_tests::resource_version_references_reject_observed_resource_details_before_submission ... ok
+test coordinator::semantic_target_tests::unbound_scope_is_explicit_controlled_only_and_never_a_production_bypass ... ok
+test coordinator::semantic_target_tests::work_attempt_target_allows_only_work_bound_action_types ... ok
+test coordinator::semantic_target_tests::work_attempt_target_rejects_direction_superseded_authority_and_stale_output ... ok
+test coordinator::semantic_target_tests::premature_source_on_metadata_action_gets_specific_feedback ... ok
+test coordinator::semantic_target_tests::retained_environment_only_allows_the_exact_bound_local_codex_profile ... ok
+test coordinator_service::autonomy::tests::delivery_tests::delivery_checker_fixture ... ok
+test coordinator_service::autonomy::tests::dependency_selection_uses_retained_revisions_and_rejects_unknown_ids ... ok
+test coordinator_service::autonomy::tests::changed_head_discards_a_decision_before_selecting_new_configuration ... ok
+test coordinator_service::autonomy::tests::enabling_only_schedules_reasoning_and_wait_does_not_poll_same_head ... ok
+test coordinator_service::autonomy::tests::delivery_tests::autonomous_delivery_goal_change_and_stale_decision_cannot_apply_effects ... ok
+test coordinator_service::autonomy::tests::failed_unstaged_planning_does_not_resurrect_when_provider_recovers ... ok
+test coordinator_service::autonomy::tests::delivery_tests::autonomous_delivery_unknown_operation_returns_feedback_without_effects ... ok
+test coordinator_service::autonomy::tests::delivery_tests::autonomous_delivery_stop_prevents_selected_operation ... ok
+test coordinator_service::autonomy::tests::invalid_parallel_metadata_is_retained_for_model_correction_after_reopen ... ok
+test coordinator_service::autonomy::tests::progress_review_remains_visible_when_adaptive_invocation_budget_is_exhausted ... ok
+test coordinator_service::autonomy::tests::proposal_dependency_field_rejection_names_the_exact_correction ... ok
+test coordinator_service::autonomy::tests::invalid_selection_or_parallel_metadata_dispatches_no_partial_batch ... ok
+test coordinator_service::autonomy::tests::parallel_work_attempt_batch_is_all_or_none_at_budget_boundary ... ok
+test coordinator_service::tests::ambiguous_launch_stops_without_dispatch_harvest_or_retry ... ok
+test coordinator_service::tests::an_unbound_plan_is_never_guessed_as_the_interruption_target ... ok
+test coordinator_service::tests::cancellation_prepare_fence_replays_safely_after_restart ... ok
+test coordinator_service::tests::cancellation_conflict_requires_native_completion_and_terminal_coordinator_evidence ... ok
+test coordinator_service::autonomy::tests::selected_scope_preserves_model_instruction_and_enforces_budget ... ok
+test coordinator_service::autonomy::tests::three_failed_reasoning_turns_stop_before_spending_the_full_budget ... ok
+test coordinator_service::tests::claimed_review_uses_authenticated_identity_when_human_projection_strips_member_ids ... ok
+test coordinator_service::autonomy::tests::repeated_invalid_decisions_stop_at_the_existing_failure_bound ... ok
+test coordinator_service::tests::genesis_observation_at_sequence_zero_suppresses_review_discovery ... ok
+test coordinator_service::tests::claimed_review_is_bound_to_its_owner_and_exact_revisions ... ok
+test coordinator_service::tests::opening_service_performs_no_daemon_command ... ok
+test coordinator_service::autonomy::tests::delivery_tests::autonomous_delivery_checker_deadline_contains_process_and_publishes_no_pass ... ok
+test coordinator_service::tests::due_review_generates_one_durable_plan_across_polls_and_restart ... ok
+test coordinator_service::autonomy::tests::delivery_tests::autonomous_delivery_lost_action_reply_is_not_retried_after_reopen ... ok
+test coordinator_service::tests::unknown_interruption_without_completion_evidence_is_not_terminal ... ok
+test coordinator_service::tests::direction_cancels_only_the_exact_bound_invocation_and_is_cycle_idempotent ... ok
+test coordinator_service::tests::verified_effective_configuration_is_distinct_from_reported_session ... ok
+test execution::local_codex::tests::native_turn_receipts_require_distinct_completed_turns_and_exact_selection ... ok
+test coordinator_service::tests::retained_plan_is_restaged_after_a_crash_window ... ok
+test coordinator_service::tests::stage_rejects_an_unbound_plan_before_retaining_or_calling_the_driver ... ok
+test execution::local_codex::tests::trial_profile_rejects_changed_native_guard ... ok
+test execution::provider::codex_app_server::tests::api_key_or_missing_login_never_starts_a_thread ... ok
+test execution::provider::codex_app_server::tests::eof_duplicate_messages_and_oversized_frames_fail_closed ... ok
+test execution::provider::codex_app_server::tests::named_evaluation_profile_is_verified_before_prompt ... ok
+test execution::local_codex::tests::trial_profile_rejects_scope_drift_expiry_and_changed_configuration ... ok
+test execution::provider::codex_app_server::tests::refuses_missing_or_substituted_settings_before_model_work ... ok
+test execution::provider::codex_app_server::tests::rejects_interactive_requests_wrong_turns_and_unsuccessful_completions ... ok
+test execution::provider::codex_app_server::tests::resumed_token_usage_does_not_rebind_or_abort_the_new_turn ... ok
+test execution::provider::codex_app_server::tests::resume_uses_exact_thread_identity_and_keeps_session_tree_separate ... ok
+test execution::provider::codex_app_server::tests::verifies_subscription_and_effective_settings_before_sending_prompt ... ok
+test coordinator_service::autonomy::tests::delivery_tests::autonomous_delivery_judge_selection_discards_a_retained_resume_session ... ok
+test execution::provider::codex_app_server::tests::workspace_write_rejects_additional_roots_and_ambient_tmp ... ok
+test execution::supervisor::tests::version_one_state_migrates_existing_caps_as_manual_policy ... ok
+test managed_local::tests::exposes_the_packs_declared_rejection_code ... ok
+test coordinator_service::tests::review_bootstrap_uses_fresh_roster_revision_and_not_a_stale_retained_policy ... ok
+test coordinator_service::tests::due_review_reports_no_provider_or_waits_at_zero_capacity ... ok
+test managed_local::tests::omits_an_unselected_effort_from_pack_configuration ... ok
+test managed_local::tests::rejects_setup_status_for_a_different_operation ... ok
+test managed_local::tests::observes_exact_actor_and_submits_only_against_the_observed_head ... ok
+test managed_local::tests::retains_historical_pack_support_without_accepting_unknown_revisions ... ok
+test managed_local::tests::maps_member_keys_by_the_packs_sorted_worker_member_ids ... ok
+test planning::tests::decodes_parallel_dispatch_and_explicit_non_action_decisions ... ok
+test planning::tests::rejects_ambiguous_or_unbounded_dispatches ... ok
+test tui::tests::empty_blockers_do_not_hide_an_unresolved_problem ... ok
+test tui::tests::execution_summary_labels_verified_configuration_as_operational ... ok
+test tui::tests::roster_configuration_label_discloses_revision_and_alias_acknowledgement ... ok
+test tui::tests::unresolved_findings_and_pending_suggestions_are_visible_human_attention ... ok
+test managed_local::tests::rejects_wrong_human_seat_credentials_and_malformed_projection ... ok
+test managed_local::tests::creates_reopens_and_keeps_two_goals_in_two_operation_intents ... ok
+test managed_local::tests::retains_unreported_provider_selection_without_launching_a_worker ... ok
+test coordinator_service::tests::unknown_targeted_cancellation_requires_recovery_without_touching_other_work ... ok
+test execution::process::terminal_observation_tests::exit_becoming_observable_after_signal_race_is_required ... ok
+test coordinator_service::autonomy::tests::delivery_tests::autonomous_delivery_preserves_changed_target_and_refuses_policy_rebinding ... ok
+test execution::qualification::tests::portable_qualification_rederives_typed_receipts_and_escape_probe ... ok
+test coordinator_service::tests::review_generation_is_suppressed_by_pause_stop_recovery_and_completion ... ok
+test coordinator_service::autonomy::tests::delivery_tests::autonomous_delivery_revises_after_failed_checks_and_preserves_review_findings ... ok
+
+test result: ok. 87 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.99s
+
+     Running tests/application.rs (target/debug/deps/application-92c63f5d3d7a774b)
+
+running 6 tests
+test invalid_request_never_reaches_backend ... ok
+test roster_bound_matches_the_pack_worker_limit ... ok
+test moving_model_alias_requires_creation_time_acknowledgement ... ok
+test progress_review_interval_defaults_validates_and_round_trips ... ok
+test fixture_backend_never_manufactures_participant_authority ... ok
+test creates_reopens_and_separates_goals ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/artifacts.rs (target/debug/deps/artifacts-12bea0d3468da33e)
+
+running 9 tests
+test portable_paths_cannot_escape_the_authorized_root ... ok
+test only_the_final_component_may_be_absent ... ok
+test capture_rejects_symlink_files_and_directories ... ok
+test conflicting_room_refs_and_digest_mismatches_fail_closed ... ok
+test bounded_authoritative_capture_re_resolves_room_authority_before_reading ... ok
+test authoritative_room_reference_is_required_and_repeated_exact_refs_are_deduplicated ... ok
+test capture_is_content_addressed_and_immutable ... ok
+test selected_content_aliases_preserve_identity_and_reject_conflicting_claims ... ok
+test generated_evidence_publication_is_immutable_and_idempotent ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/code_change.rs (target/debug/deps/code_change-6d7634639c628630)
+
+running 5 tests
+test reconciliation_recognizes_success_after_a_lost_reply ... ok
+test concurrent_edits_are_preserved_as_content_addressed_conflicts ... ok
+test new_files_and_deletions_use_the_same_versioned_operation ... ok
+test candidate_edits_are_isolated_until_a_sealed_revision_is_applied ... ok
+test stable_operation_identity_cannot_be_rebound ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+     Running tests/code_change_service.rs (target/debug/deps/code_change_service-f74b6c962ba9a565)
+
+running 4 tests
+test controlled_code_change_checker ... ok
+test supplied_room_candidate_artifact_is_verified_and_bound_into_check_evidence ... ok
+test writeback_detects_drift_and_preserves_newer_bytes ... ok
+test durable_workflow_binds_exact_evidence_and_recovers_idempotent_writeback ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.97s
+
+     Running tests/codex_app_server.rs (target/debug/deps/codex_app_server-d9e4755e89e36808)
+
+running 4 tests
+test protocol_selection_cannot_diverge_from_prepared_binding ... ok
+test native_guard_drives_full_duplex_and_reaps_long_lived_server ... ok
+test native_guard_cancels_while_app_server_is_waiting_for_output ... ok
+test provider_exit_on_protocol_eof_is_reaped_without_a_false_containment_failure ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+
+     Running tests/controlled_artifacts.rs (target/debug/deps/controlled_artifacts-2a1d604c5db24a94)
+
+running 2 tests
+test controlled_artifact_writes_exact_fixture_and_returns_normal_proposal ... ok
+test controlled_artifact_rejects_unbounded_or_escaping_fixtures_before_writing ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/controlled_autonomy.rs (target/debug/deps/controlled_autonomy-c244f5e91d81989a)
+
+running 3 tests
+test autonomous_fixture_proposes_goal_bound_independent_work_and_claims_exact_target ... ok
+test planning_fixture_changes_its_decision_instruction_after_a_retained_worker_failure ... ok
+test autonomous_fixture_emits_owned_contribution_and_rejects_target_or_path_escape ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.52s
+
+     Running tests/coordinator.rs (target/debug/deps/coordinator-2d2dc59490f87991)
+
+running 12 tests
+test action_proposal_decoder_rejects_ambiguous_or_unbounded_shapes ... ok
+test next_invocation_revision_binds_model_effort_and_session ... ok
+test delayed_native_output_becomes_exact_late_contribution_without_changing_result ... ok
+test running_invocation_keeps_its_launch_bound_selection_after_human_update ... ok
+test daemon_owned_turn_survives_coordinator_detach_and_submits_exact_action ... ok
+test inline_contribution_captures_model_bytes_at_host_selected_path ... ok
+test queued_work_attempt_launches_after_unrelated_room_head_advances ... ok
+test direction_after_native_completion_harvests_evidence_and_rejects_stale_output ... ok
+test targeted_direction_cancels_only_affected_native_invocation_and_unrelated_finishes ... ok
+test queued_work_attempt_launches_past_unrelated_multi_target_direction ... ok
+test native_planning_decisions_are_durable_and_never_submit_room_actions ... ok
+test queued_work_attempt_rejects_changed_semantic_authority_before_launch ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.57s
+
+     Running tests/execution.rs (target/debug/deps/execution-4eeb044f73237fd0)
+
+running 16 tests
+test ambiguous_effect_blocks_resume_until_reconciled ... ok
+test external_provider_qualification_requires_explicit_effort_evidence ... ok
+test kiro_discovers_only_documented_headless_controls_and_stays_model_blocked ... ok
+test owned_command_rejects_executable_bytes_not_bound_by_caller ... ok
+test legacy_codex_qualification_cannot_authorize_new_app_server_transport ... ok
+test codex_and_claude_build_explicit_commands_but_static_discovery_stays_blocked ... ok
+test scheduler_enforces_cap_fairness_and_review_priority ... ok
+test supervisor_drains_budget_and_requires_resume_after_crash ... ok
+test provider_session_contracts_preserve_exact_conversation_identity ... ok
+test controlled_substitution_and_missing_report_fail_closed ... ok
+test controlled_provider_runs_with_exact_report_and_isolated_settings ... ok
+test manual_cap_journal_reopens_without_becoming_roster_policy ... ok
+test native_stop_reaps_owned_grandchild_and_preserves_unrelated_process ... ok
+test process_spawn_rejects_executable_changed_after_prepare ... ok
+test ephemeral_provider_profiles_are_exclusive_protected_and_crash_cleaned ... ok
+test installed_qualification_rechecks_bound_executable_bytes ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+
+     Running tests/execution_daemon.rs (target/debug/deps/execution_daemon-a2790c7592879b99)
+
+running 10 tests
+test legacy_register_payload_remains_valid_and_fail_closed ... ok
+test control_commands_fail_closed_for_missing_swarms ... ok
+test daemon_reopen_after_unclean_exit_requires_explicit_resume ... ok
+test daemon_survives_client_detach_and_enforces_single_owner ... ok
+test daemon_accepts_policy_queue_and_explicit_tick_without_launching_provider ... ok
+test daemon_effect_journal_blocks_crash_ambiguity_until_explicit_reconciliation ... ok
+test daemon_stop_reaps_owned_descendant_tree ... ok
+test native_daemon_waits_for_an_authenticated_request_after_accepting_connection ... ok
+test targeted_cancel_reaps_only_the_named_owned_descendant_tree ... ok
+test daemon_owns_delayed_invocation_across_client_detach_and_retains_result ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.58s
+
+     Running tests/reviewed_code_change.rs (target/debug/deps/reviewed_code_change-434f2af58ffe3368)
+
+running 4 tests
+test controlled_checker_fixture ... ok
+test self_review_and_unresolved_findings_remain_blocking ... ok
+test exact_check_and_independent_review_accept_the_revision ... ok
+test failed_or_stale_check_evidence_cannot_accept ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests/shared_capacity.rs (target/debug/deps/shared_capacity-70fc03413692379b)
+
+running 8 tests
+test roster_caps_use_global_max_and_never_replace_manual_override ... ok
+test roster_registration_admits_work_without_manual_provider_policy ... ok
+test roster_counts_are_bounded_and_unselected_providers_stay_closed ... ok
+test cancellation_crash_window_reopens_as_retained_unknown ... ok
+test invocation_budget_drains_to_pause_and_preserves_work_for_other_swarms ... ok
+test targeted_cancel_preserves_running_swarm_and_other_active_work ... ok
+test active_time_budget_requests_pause_at_the_declared_boundary ... ok
+test global_cap_and_fair_cursor_survive_durable_scheduling_rounds ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/tui.rs (target/debug/deps/tui-6ebb8cb5c326e886)
+
+running 6 tests
+test native_key_releases_and_unsupported_keys_are_ignored ... ok
+test native_terminal_events_map_to_inputs ... ok
+test input_bounds_selection_and_detaches_explicitly ... ok
+test authoritative_detail_surfaces_workflow_lineage_and_bounded_artifact_metadata ... ok
+test observed_dashboard_separates_room_facts_from_process_activity ... ok
+test dense_dashboard_renders_at_bounded_sizes ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/tui_flow.rs (target/debug/deps/tui_flow-535e830394926f0b)
+
+running 12 tests
+test script_error_still_restores_terminal ... ok
+test scripted_new_resize_list_open_refresh_and_detach_restores_terminal ... ok
+test tui_controls_attached_execution_without_changing_room_authority ... ok
+test human_authors_distinct_whole_swarm_suggestion ... ok
+test staged_human_action_requires_a_separate_confirmation_input ... ok
+test stale_authored_action_is_reported_once_without_replay ... ok
+test human_authors_selected_member_configuration_with_exact_revision_and_confirmation ... ok
+test human_authors_previews_cancels_and_confirms_a_complete_swarm_without_json ... ok
+test native_tui_previews_only_digest_verified_bounded_text_artifacts ... ok
+test tui_stages_and_confirms_explicit_capacity_priority_and_budget_policies ... ok
+test human_authors_capacity_priority_and_optional_budget_without_a_policy_file ... ok
+test human_authors_unicode_direction_targets_current_work_and_discovers_artifact ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/tui_pty.rs (target/debug/deps/tui_pty-284516168307f218)
+
+running 2 tests
+test packaged_tui_restores_after_backend_error_and_input_termination ... ok
+test packaged_tui_handles_native_keys_unicode_paste_resize_and_restores_terminal ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s
+
+   Doc-tests worldstream_agent_swarm
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,15 @@
+# Standalone local Agent Swarm configuration. Runtime addresses and protected
+# state roots are supplied explicitly by the operator or native launcher.
+config_version = 1
+
+[server]
+bind = "127.0.0.1:9410"
+
+[storage]
+profile = "sqlite-bundled"
+data_dir = ".worldstream/data"
+deployment_lineage = "agent-swarm/local"
+storage_epoch = 1
+
+[authority.bootstrap]
+secret_file = ".worldstream/authority.secret"

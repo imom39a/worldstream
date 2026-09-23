@@ -11,7 +11,30 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
-from examples.tower_of_hanoi.participant_runner import _invoke, participant_prompt
+from examples.tower_of_hanoi.participant_runner import (
+    _invoke,
+    _select_offer,
+    participant_prompt,
+)
+
+
+class _OfferSelectionTests(unittest.TestCase):
+    def test_claim_review_is_preferred_over_older_board_changes(self) -> None:
+        offers = [
+            {"reason_code": "board_changed", "activation_id": "a1"},
+            {"reason_code": "board_changed", "activation_id": "a2"},
+            {"reason_code": "claim_review_requested", "activation_id": "a3"},
+        ]
+        self.assertEqual(_select_offer(offers)["activation_id"], "a3")
+
+    def test_other_selection_ignores_unrelated_reasons(self) -> None:
+        offers = [
+            {"reason_code": "unknown_reason", "activation_id": "x"},
+            {"reason_code": "board_changed", "activation_id": "y"},
+        ]
+        self.assertEqual(_select_offer(offers)["activation_id"], "y")
+        self.assertIsNone(_select_offer([{"reason_code": "unknown_reason"}]))
+        self.assertIsNone(_select_offer([]))
 
 
 class _SuccessfulProcess:

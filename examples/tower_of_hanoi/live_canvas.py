@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import queue
 import re
@@ -41,13 +42,20 @@ from examples.cli_activity.credentials import (
 from .protocol import MAX_DISKS, PACK_ID
 
 MAX_BROWSER_EVENT_BYTES = 32_768
-MAX_RECENT_EVENTS = 16
+MAX_RECENT_EVENTS = 100
+MAX_DECISION_ALTERNATIVES = 8
+MAX_DECISION_RATIONALE = 280
+MAX_DECISION_RECENT_EVENTS = 32
 MAX_BROWSER_CLIENTS = 16
-MAX_BATCH_FRAMES = 32
 MAX_REPLAYED_BATCHES = 32
 MAX_MOVE_LIMIT = 10_000
 MAX_ROUND = 30_000
-MEMBER_LABEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,62}\Z")
+MEMBER_LABEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}\Z")
+DECISION_SCHEMA = "worldstream/tower-of-hanoi-decision/v1"
+DECISION_ACTIONS = {"move_disk", "post_completion_claim", "assess_claim"}
+DECISION_DISPOSITIONS = {"act", "claim", "assess", "wait"}
+DECISION_REASONS = {"progress", "break_cycle", "uncertain", "abandon"}
+DECISION_STATUSES = {"accepted", "stale", "rejected", "error"}
 
 
 class LiveCanvasError(RuntimeError):
@@ -90,6 +98,175 @@ def _move(value: object, label: str) -> dict[str, object]:
         "to": destination,
         "disk": _integer(move["disk"], label, minimum=1, maximum=MAX_DISKS),
     }
+
+
+def _decision_text(value: object, label: str, maximum: int) -> str:
+    if not isinstance(value, str) or not value or len(value) > maximum:
+        raise LiveCanvasError(f"{label}_invalid")
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        raise LiveCanvasError(f"{label}_invalid")
+    return value
+
+
+def _decision_ratio(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise LiveCanvasError(f"{label}_invalid")
+    ratio = float(value)
+    if not math.isfinite(ratio) or not 0.0 <= ratio <= 1.0:
+        raise LiveCanvasError(f"{label}_invalid")
+    return ratio
+
+
+def _safe_decision_event(value: object) -> dict[str, object]:
+    """Sanitize one provider decision before it reaches the browser.
+
+    The sink is owner-only. Even so, this boundary is deliberately strict: raw
+    prompts, provider responses, usage records, action payloads, and WorldStream
+    identifiers are not part of the decision trace DTO.
+    """
+    document = _record(value, "decision")
+    allowed = {
+        "schema",
+        "kind",
+        "actor",
+        "engine",
+        "model",
+        "observed_room_seq",
+        "activation_reason",
+        "disposition",
+        "selected",
+        "status",
+        "confidence",
+        "ranked_alternatives",
+        "rationale",
+        "reason",
+        "judge",
+        "latency_ms",
+        "recent_event_count",
+        "cursor",
+    }
+    if document.get("schema") != DECISION_SCHEMA or set(document) - allowed:
+        raise LiveCanvasError("decision_invalid")
+    if document.get("kind") != "participant_decision":
+        raise LiveCanvasError("decision_invalid")
+    actor = document.get("actor")
+    if not isinstance(actor, str) or MEMBER_LABEL_PATTERN.fullmatch(actor) is None:
+        raise LiveCanvasError("decision_invalid")
+    engine = _decision_text(document.get("engine"), "decision_engine", 64)
+    model = _decision_text(document.get("model"), "decision_model", 128)
+    activation_reason = _decision_text(
+        document.get("activation_reason"), "activation_reason", 128
+    )
+    disposition = document.get("disposition")
+    if disposition not in DECISION_DISPOSITIONS:
+        raise LiveCanvasError("decision_invalid")
+    selected = _record(document.get("selected"), "decision_selected")
+    if set(selected) not in ({"label"}, {"label", "action_type"}):
+        raise LiveCanvasError("decision_invalid")
+    selected_label = _decision_text(selected.get("label"), "selected_label", 128)
+    action_type = selected.get("action_type")
+    if action_type is not None and action_type not in DECISION_ACTIONS:
+        raise LiveCanvasError("decision_invalid")
+    selected_public: dict[str, object] = {"label": selected_label}
+    result: dict[str, object] = {
+        "kind": "participant_decision",
+        "actor": actor,
+        "engine": engine,
+        "model": model,
+        "observed_room_seq": _integer(
+            document.get("observed_room_seq"),
+            "observed_room_seq",
+            maximum=9_007_199_254_740_991,
+        ),
+        "activation_reason": activation_reason,
+        "disposition": disposition,
+        "selected": selected_public,
+        "latency_ms": _integer(
+            document.get("latency_ms"), "decision_latency", maximum=600_000
+        ),
+        "recent_event_count": _integer(
+            document.get("recent_event_count"),
+            "recent_event_count",
+            maximum=MAX_DECISION_RECENT_EVENTS,
+        ),
+    }
+    if action_type is not None:
+        selected_public["action_type"] = action_type
+    if disposition == "wait" and action_type is not None:
+        raise LiveCanvasError("decision_invalid")
+    if disposition != "wait" and action_type is None:
+        raise LiveCanvasError("decision_invalid")
+    status = document.get("status")
+    if status is not None:
+        if status not in DECISION_STATUSES:
+            raise LiveCanvasError("decision_status_invalid")
+        result["status"] = status
+    confidence = document.get("confidence")
+    if confidence is not None:
+        result["confidence"] = _decision_ratio(confidence, "confidence")
+    alternatives = document.get("ranked_alternatives")
+    if alternatives is not None:
+        if not isinstance(alternatives, list) or len(alternatives) > MAX_DECISION_ALTERNATIVES:
+            raise LiveCanvasError("ranked_alternatives_invalid")
+        public_alternatives: list[dict[str, object]] = []
+        for alternative in alternatives:
+            item = _record(alternative, "ranked_alternative")
+            if set(item) != {"label", "score"}:
+                raise LiveCanvasError("ranked_alternatives_invalid")
+            public_alternatives.append(
+                {
+                    "label": _decision_text(item.get("label"), "alternative_label", 128),
+                    "score": _decision_ratio(item.get("score"), "alternative_score"),
+                }
+            )
+        result["ranked_alternatives"] = public_alternatives
+    rationale = document.get("rationale")
+    if rationale is not None:
+        rationale_value = _decision_text(
+            rationale, "decision_rationale", MAX_DECISION_RATIONALE
+        ).strip()
+        if rationale_value:
+            result["rationale"] = rationale_value
+    reason = document.get("reason")
+    if reason is not None:
+        if reason not in DECISION_REASONS:
+            raise LiveCanvasError("decision_reason_invalid")
+        result["reason"] = reason
+    judge = document.get("judge")
+    if judge is not None:
+        judge_value = _record(judge, "decision_judge")
+        if set(judge_value) != {"engine", "model", "probability", "approved", "repaired"}:
+            raise LiveCanvasError("decision_judge_invalid")
+        approved = judge_value.get("approved")
+        repaired = judge_value.get("repaired")
+        if not isinstance(approved, bool) or not isinstance(repaired, bool):
+            raise LiveCanvasError("decision_judge_invalid")
+        result["judge"] = {
+            "engine": _decision_text(judge_value.get("engine"), "judge_engine", 64),
+            "model": _decision_text(judge_value.get("model"), "judge_model", 128),
+            "probability": _decision_ratio(judge_value.get("probability"), "judge_probability"),
+            "approved": approved,
+            "repaired": repaired,
+        }
+    cursor = document.get("cursor")
+    if cursor is not None:
+        cursor_value = _record(cursor, "decision_cursor")
+        if set(cursor_value) != {"from", "to"}:
+            raise LiveCanvasError("decision_cursor_invalid")
+        cursor_from = _integer(
+            cursor_value.get("from"),
+            "decision_cursor_from",
+            maximum=9_007_199_254_740_991,
+        )
+        cursor_to = _integer(
+            cursor_value.get("to"),
+            "decision_cursor_to",
+            maximum=9_007_199_254_740_991,
+        )
+        if cursor_to < cursor_from:
+            raise LiveCanvasError("decision_cursor_invalid")
+        result["cursor"] = {"from": cursor_from, "to": cursor_to}
+    return result
 
 
 def _board(value: object, disks: int) -> dict[str, list[int]]:
@@ -255,6 +432,8 @@ def _safe_projection(
         latest_event = {
             "kind": "disk_moved",
             "actor": labels.get(event["member_id"], "solver"),
+            "action_type": "move_disk",
+            "status": "observed",
             "move": _move(event["move"], "last_move_move"),
             "round": _integer(
                 event["round"], "last_move_round", minimum=1, maximum=MAX_ROUND
@@ -479,7 +658,6 @@ class HanoiObserver:
             raise LiveCanvasError("observer_membership_required")
         client = Client(sdk_base_url(membership), membership["bearer"])
         room = await client.open_room(membership["room_id"], membership["member_id"])
-        event_task: asyncio.Task[dict[str, Any]] | None = None
         try:
             await room.sync()
             reset = room.last_projection_reset
@@ -500,29 +678,15 @@ class HanoiObserver:
                 self._live_notified = True
 
             stream: AsyncIterator[dict[str, Any]] = room.events()
-            event_task = asyncio.create_task(_next_event(stream))
             while not self.stop.is_set():
-                frame = await event_task
-                event_task = asyncio.create_task(_next_event(stream))
-                frames = [frame]
-                while len(frames) < MAX_BATCH_FRAMES:
-                    done, _ = await asyncio.wait(
-                        {event_task}, timeout=self.config.batch_ms / 1000
-                    )
-                    if not done:
-                        break
-                    frames.append(event_task.result())
-                    event_task = asyncio.create_task(_next_event(stream))
-                projection, events = self._batch(frames)
-                await room.ack(frames[-1]["frame_seq"])
+                frame = await _next_event(stream)
+                projection, events = self._batch([frame])
+                # Room.events() and Room.ack() both receive on the same websocket.
+                # A prefetch task would race the acknowledgement's receive and make
+                # the observer reconnect even though direct snapshots still work.
+                await room.ack(frame["frame_seq"])
                 self._publish("observation_batch", projection, events)
         finally:
-            if event_task is not None:
-                event_task.cancel()
-                try:
-                    await event_task
-                except (asyncio.CancelledError, StopAsyncIteration):
-                    pass
             await room.close()
 
     def _batch(
@@ -559,8 +723,14 @@ class HanoiObserver:
                     {
                         "kind": "completion_claim_posted",
                         "actor": claim.get("actor", "solver"),
+                        "action_type": "post_completion_claim",
+                        "status": "observed",
+                        "claim_open": True,
                         "claim_round": claim.get("claim_round"),
                         "work_revision": claim.get("work_revision"),
+                        "quorum": claim.get("quorum"),
+                        "approval_count": completion.get("approval_count"),
+                        "endorsement_count": completion.get("endorsement_count"),
                         "room_seq": projection.get("room_seq"),
                     }
                 )
@@ -568,6 +738,9 @@ class HanoiObserver:
                 events.append(
                     {
                         "kind": "completion_claim_superseded",
+                        "action_type": "post_completion_claim",
+                        "status": "observed",
+                        "claim_open": False,
                         "room_seq": projection.get("room_seq"),
                     }
                 )
@@ -588,10 +761,16 @@ class HanoiObserver:
                         {
                             "kind": "completion_claim_assessed",
                             "actor": actor,
+                            "action_type": "assess_claim",
+                            "status": "observed",
+                            "claim_open": bool(completion.get("claim_open")),
                             "assessment": assessment,
                             "claim_round": claim.get("claim_round")
                             if isinstance(claim, dict)
                             else None,
+                            "quorum": completion.get("quorum"),
+                            "approval_count": completion.get("approval_count"),
+                            "endorsement_count": completion.get("endorsement_count"),
                             "room_seq": projection.get("room_seq"),
                         }
                     )
@@ -688,6 +867,8 @@ def _safe_receipt_event(value: object) -> dict[str, object]:
     event: dict[str, object] = {
         "kind": f"{action_type}_{status}",
         "actor": actor,
+        "action_type": action_type,
+        "status": status,
         "room_seq": _integer(
             receipt["room_seq"], "receipt_room_seq", maximum=9_007_199_254_740_991
         ),
@@ -704,7 +885,12 @@ def _safe_sink_event(
 ) -> tuple[dict[str, object] | None, dict[str, object] | None]:
     document = _record(value, "sink")
     schema = document.get("schema")
-    if schema == "worldstream/tower-of-hanoi-live-receipt/v1":
+    if schema == DECISION_SCHEMA:
+        return _safe_decision_event(document), None
+    if schema in {
+        "worldstream/tower-of-hanoi-live-receipt/v1",
+        "worldstream/tower-of-hanoi-live-receipt/v2",
+    }:
         return _safe_receipt_event(document), None
     if schema != "worldstream/tower-of-hanoi-live-window/v1" or set(document) != {
         "schema",

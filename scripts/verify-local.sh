@@ -72,4 +72,8 @@ pnpm --dir web/console build
 
 scripts/smoke-operator.sh
 
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  scripts/verify-agent-swarm-native.sh
+fi
+
 printf '%s\n' 'WorldStream bootstrap verification passed.'

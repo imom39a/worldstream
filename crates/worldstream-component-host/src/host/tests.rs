@@ -25,6 +25,7 @@ use super::{
     FAULT_OUTPUT_NOT_CANONICAL, FAULT_OUTPUT_SHAPE, FAULT_OUTPUT_TOO_LARGE, FAULT_RESOURCE_LIMIT,
     FAULT_TRAP, InvokeError, STORE_INSTANCE_LIMIT, STORE_LINEAR_MEMORY_BYTES, STORE_MEMORY_LIMIT,
     STORE_TABLE_ELEMENT_LIMIT, STORE_TABLE_LIMIT, canonical_bytes,
+    component_compilation_cache_from,
 };
 
 #[derive(Clone, Copy)]
@@ -674,5 +675,36 @@ fn host_fault_classes_are_stable_and_redacted() {
     assert_eq!(
         ComponentPackAdapterV1::input_encoding_fault(),
         PackFaultV1::Callback(FAULT_INPUT_ENCODING.to_owned())
+    );
+}
+
+#[test]
+fn absent_or_empty_component_cache_configuration_disables_caching() {
+    assert!(matches!(component_compilation_cache_from(None), Ok(None)));
+    assert!(matches!(
+        component_compilation_cache_from(Some(std::ffi::OsString::new())),
+        Ok(None)
+    ));
+}
+
+#[test]
+fn absolute_component_cache_directory_is_accepted_and_created() {
+    let directory = must(tempfile::tempdir());
+    let cache_directory = directory.path().join("component-cache");
+    let cache = must(component_compilation_cache_from(Some(
+        cache_directory.clone().into_os_string(),
+    )));
+    assert!(cache.is_some());
+    assert!(cache_directory.is_dir());
+}
+
+#[test]
+fn relative_component_cache_directory_fails_closed() {
+    let result = component_compilation_cache_from(Some(std::ffi::OsString::from(
+        "relative-component-cache",
+    )));
+    assert_eq!(
+        result.err(),
+        Some(ComponentHostErrorV1::ComponentCacheUnavailable)
     );
 }

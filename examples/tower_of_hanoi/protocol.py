@@ -7,6 +7,7 @@ a policy decision.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Iterable
@@ -17,7 +18,13 @@ PACK_VERSION = "0.1.0"
 MOVE_ACTION = "move_disk"
 POST_CLAIM_ACTION = "post_completion_claim"
 ASSESS_CLAIM_ACTION = "assess_claim"
+WAIT_ACTION = "wait"
 ACTIONS = frozenset((MOVE_ACTION, POST_CLAIM_ACTION, ASSESS_CLAIM_ACTION))
+DECISION_ACTIONS = ACTIONS | {WAIT_ACTION}
+DECISION_REASONS = frozenset(("progress", "break_cycle", "uncertain", "abandon"))
+SOLVER_DECISION_SCHEMA = "worldstream/tower-of-hanoi-solver-decision/v1"
+SOLVER_STATE_SCHEMA = "worldstream/tower-of-hanoi-solver-state/v1"
+MAX_RATIONALE = 256
 MAX_DISKS = 10
 MAX_MOVE_LIMIT = 10_000
 RODS = frozenset(("A", "B", "C"))
@@ -128,6 +135,119 @@ def offered_actions(value: object) -> list[str]:
             raise HanoiProtocolError("action_offers_invalid")
         parsed.append(action_type)
     return parsed
+
+
+def board_fingerprint(board: object) -> str:
+    """Hash a board arrangement so a solver can detect a revisited state."""
+    encoded = json.dumps(board, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.blake2s(encoded, digest_size=8).hexdigest()
+
+
+def _safe_rationale(value: object) -> str | None:
+    """Keep only bounded telemetry prose; never let it carry credentials."""
+    if not isinstance(value, str) or not value:
+        return None
+    text = value[:MAX_RATIONALE]
+    lowered = text.lower()
+    if any(token in lowered for token in ("bearer", "wsb1:", "prompt", "response")):
+        return None
+    return text
+
+
+def _safe_reason(value: object) -> str | None:
+    """Accept only a closed telemetry reason; it never changes protocol behavior."""
+    return value if isinstance(value, str) and value in DECISION_REASONS else None
+
+
+def decision_from_candidate(
+    label: str,
+    candidates: dict[str, dict[str, object]],
+    room_seq: int,
+    *,
+    rationale: object = None,
+    reason: object = None,
+) -> dict[str, object]:
+    """Project one offered candidate label onto the canonical solver decision."""
+    candidate = candidates.get(label)
+    if candidate is None:
+        raise HanoiProtocolError("decision_not_offered")
+    action_type = candidate.get("action_type")
+    if action_type not in DECISION_ACTIONS:
+        raise HanoiProtocolError("decision_not_offered")
+    payload = candidate.get("payload") if isinstance(candidate.get("payload"), dict) else {}
+    decision: dict[str, object] = {
+        "schema": SOLVER_DECISION_SCHEMA,
+        "based_on_room_seq": room_seq,
+        "action": action_type,
+        "payload": dict(payload),
+    }
+    safe_rationale = _safe_rationale(rationale)
+    if safe_rationale is not None:
+        decision["rationale"] = safe_rationale
+    safe_reason = _safe_reason(reason)
+    if safe_reason is not None:
+        decision["reason"] = safe_reason
+    return decision
+
+
+def resolve_solver_decision(
+    value: object,
+    candidates: dict[str, dict[str, object]],
+    expected_room_seq: int,
+) -> tuple[str, dict[str, object]]:
+    """Resolve one provider output to an offered label and canonical decision.
+
+    The provider may answer with a canonical decision object
+    (``based_on_room_seq``/``action``/``payload``/``rationale``) or with a bare
+    JSON choice label. Both forms are accepted so the LLM and JEV solvers share
+    one external contract while keeping their own internal answer styles.
+    """
+    if isinstance(value, str):
+        decision = decision_from_candidate(value, candidates, expected_room_seq)
+        return value, decision
+    if not isinstance(value, dict):
+        raise HanoiProtocolError("decision_invalid")
+    based_on = value.get("based_on_room_seq")
+    if based_on is not None and (
+        isinstance(based_on, bool)
+        or not isinstance(based_on, int)
+        or based_on < 0
+        or based_on != expected_room_seq
+    ):
+        raise HanoiProtocolError("decision_stale_head")
+    rationale = value.get("rationale")
+    reason = value.get("reason")
+    action = value.get("action")
+    if not isinstance(action, str):
+        raise HanoiProtocolError("decision_invalid")
+    if action in candidates:
+        label = action
+    elif action in DECISION_ACTIONS:
+        payload = value.get("payload") if isinstance(value.get("payload"), dict) else {}
+        label = _label_for_action_payload(action, payload, candidates)
+    else:
+        raise HanoiProtocolError("decision_not_offered")
+    decision = decision_from_candidate(
+        label, candidates, expected_room_seq, rationale=rationale, reason=reason
+    )
+    return label, decision
+
+
+def _label_for_action_payload(
+    action: str,
+    payload: dict[str, object],
+    candidates: dict[str, dict[str, object]],
+) -> str:
+    if action == WAIT_ACTION:
+        if payload:
+            raise HanoiProtocolError("decision_invalid")
+        return WAIT_ACTION
+    for label, candidate in candidates.items():
+        if candidate.get("action_type") != action:
+            continue
+        if candidate.get("payload") == payload:
+            return label
+    raise HanoiProtocolError("decision_not_offered")
 
 
 def activity_from_projection(value: object) -> dict[str, Any]:

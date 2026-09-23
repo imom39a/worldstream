@@ -1,0 +1,24 @@
+   Compiling worldstream-agent-swarm v0.1.0 (/Users/vinothshanmugam/code/agent-streamer/crates/worldstream-agent-swarm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.99s
+     Running unittests src/lib.rs (target/debug/deps/worldstream_agent_swarm-7f3c489a76c7931b)
+
+running 1 test
+test coordinator_service::autonomy::tests::delivery_tests::autonomous_delivery_judge_selection_discards_a_retained_resume_session ... FAILED
+
+failures:
+
+---- coordinator_service::autonomy::tests::delivery_tests::autonomous_delivery_judge_selection_discards_a_retained_resume_session stdout ----
+
+thread 'coordinator_service::autonomy::tests::delivery_tests::autonomous_delivery_judge_selection_discards_a_retained_resume_session' (346856732) panicked at crates/worldstream-agent-swarm/src/coordinator_service/autonomy/tests/delivery_tests.rs:657:5:
+assertion `left == right` failed
+  left: Resume { session_id: "earlier-conversation" }
+ right: Fresh { requested_id: None }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    coordinator_service::autonomy::tests::delivery_tests::autonomous_delivery_judge_selection_discards_a_retained_resume_session
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 86 filtered out; finished in 0.81s
+
+error: test failed, to rerun pass `-p worldstream-agent-swarm --lib`

@@ -1,0 +1,46 @@
+{
+  "date": "2026-09-22",
+  "execution_kind": "controlled_deterministic_workers",
+  "status": "failed_before_fix",
+  "provider_cap": 1,
+  "exit_code": 1,
+  "elapsed_seconds": 71.554,
+  "managed_processes_stopped": true,
+  "failure": "Unrelated accepted Contribution made an unchanged queued WorkAttempt require reevaluation before launch.",
+  "intents": [
+    {
+      "invocation_id": "challenge-serial-3",
+      "state": "settled",
+      "staged_room_seq": 6,
+      "semantic_target": {
+        "kind": "work_attempt",
+        "execution_epoch": 1,
+        "work_id": "parser",
+        "work_revision": 2,
+        "attempt_id": "attempt-parser",
+        "attempt_revision": 1
+      },
+      "launch_prepared": true,
+      "submission_status": "received",
+      "accepted_room_seq": 7,
+      "not_submitted_reason": null
+    },
+    {
+      "invocation_id": "challenge-serial-4",
+      "state": "needs_reevaluation",
+      "staged_room_seq": 6,
+      "semantic_target": {
+        "kind": "work_attempt",
+        "execution_epoch": 1,
+        "work_id": "formatter",
+        "work_revision": 2,
+        "attempt_id": "attempt-formatter",
+        "attempt_revision": 1
+      },
+      "launch_prepared": false,
+      "submission_status": "not_submitted",
+      "accepted_room_seq": null,
+      "not_submitted_reason": "authority_changed"
+    }
+  ]
+}

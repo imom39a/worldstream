@@ -1,0 +1,6 @@
+{
+  "kind": "exact_action_sdk_diagnostic",
+  "code": "invalid_payload",
+  "message": "the request payload is invalid",
+  "retryable": false
+}

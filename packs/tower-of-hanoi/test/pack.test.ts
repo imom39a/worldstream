@@ -102,11 +102,29 @@ test("claim publication leaves moves offered and emits one review Attention sign
   if (claim.activity_disposition_type === "apply") {
     assert.deepEqual(claim.ordered_attention_signals, [B, C, D, E].map((target_member_id) => ({
       action_types: ["assess_claim"],
-      deduplication_key: `claim-review:0:2:${target_member_id}`,
+      deduplication_key: `claim-review:0:2:2:${target_member_id}`,
       priority: 1,
       reason: "claim_review_requested",
       target_member_id,
     })));
+  }
+});
+
+test("a deferral re-signals every non-endorsing reviewer until quorum", () => {
+  const five = coreFor([A, B, C, D, E], true);
+  const claim = applied(reduce(initial(five), A, "post_completion_claim", { work_revision: 0 }, five));
+  const deferred = reduce(claim, B, "assess_claim", { work_revision: 0, claim_round: 2, assessment: "defer" }, five, 2);
+  assert.equal(deferred.activity_disposition_type, "apply");
+  if (deferred.activity_disposition_type !== "apply") throw new Error("expected apply");
+  const signals = deferred.ordered_attention_signals as ReadonlyArray<{
+    target_member_id: string;
+    reason: string;
+    deduplication_key: string;
+  }>;
+  assert.deepEqual(signals.map((signal) => signal.target_member_id), [B, C, D, E]);
+  for (const signal of signals) {
+    assert.equal(signal.reason, "claim_review_requested");
+    assert.equal(signal.deduplication_key, `claim-review:0:2:3:${signal.target_member_id}`);
   }
 });
 
@@ -235,4 +253,29 @@ test("the public A-to-C objective does not auto-complete a target-looking board"
   assert.deepEqual(view.projection.objective, { source_rod: "A", target_rod: "C", description: "Participants may aim to move the full tower from A to C." });
   assert.equal(view.projection.phase, "solving");
   assert.deepEqual(view.projection.outcome, { moves: 0, status: "in_progress" });
+});
+
+test("accepts a reviewed mid-state initial_board and starts from it", () => {
+  const state = pack.initialize({
+    configuration: { disks: 3, move_limit: 10000, initial_board: { A: [3], B: [2, 1], C: [] } },
+    initial_core_state: coreFor([A, B]),
+  }).initial_activity_state as CanonicalObject;
+  assert.deepEqual(state.board, { A: [3], B: [2, 1], C: [] });
+  assert.equal(state.work_revision, 0);
+  const view = pack.view({ activity_state: state, core: coreFor([A, B]), viewer: { member_id: A, viewer_type: "participant" } });
+  assert.deepEqual(view.projection.board, { A: [3], B: [2, 1], C: [] });
+});
+
+test("rejects an initial_board that duplicates, omits, or blocks a disk", () => {
+  const bad = [
+    { A: [3, 3], B: [], C: [1] },
+    { A: [3], B: [2], C: [] },
+    { A: [2, 3], B: [1], C: [] },
+  ];
+  for (const initial_board of bad) {
+    assert.throws(() => pack.initialize({
+      configuration: { disks: 3, move_limit: 10000, initial_board },
+      initial_core_state: coreFor([A, B]),
+    }));
+  }
 });

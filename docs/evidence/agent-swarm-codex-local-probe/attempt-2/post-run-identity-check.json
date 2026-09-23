@@ -1,0 +1,19 @@
+{
+  "checked_at_utc": "2026-09-22T14:19:23.000767+00:00",
+  "scope": "Post-run comparison performed before probe-script documentation/metric naming update; may follow other repository test builds. This is not an in-process attestation.",
+  "files": {
+    "script": {
+      "sha256": "edf5766e5aca8ff73395231bf835ba189e67ad795349cd617b4bf3dbabb2c9da",
+      "matches_before_run": true
+    },
+    "guard": {
+      "sha256": "1d004081675f8e0e2ae8db99cd9261d9f17d0fbfca64967e8b0d7574251a74c3",
+      "matches_before_run": true
+    },
+    "native_executable": {
+      "sha256": "f4a74117b8142cda581c95ff753abf4508b5636d89682c1ed77e4a9249af8963",
+      "matches_before_run": true
+    }
+  },
+  "primary_transcript_hashes_match": true
+}

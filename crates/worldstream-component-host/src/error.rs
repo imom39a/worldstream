@@ -7,6 +7,8 @@ pub enum ComponentHostErrorV1 {
     CompileConcurrencyLimit,
     #[error("portable Activity Pack Component bytes are malformed or unsupported")]
     ComponentRejected,
+    #[error("portable Activity Pack disposable compilation cache is unavailable")]
+    ComponentCacheUnavailable,
     #[error("portable Activity Pack Component imports a forbidden capability")]
     ForbiddenImport,
     #[error("portable Activity Pack Component exports do not match the frozen contract")]

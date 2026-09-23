@@ -6,7 +6,7 @@ import argparse
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from examples.tower_of_hanoi.local_harness import (
     LIVE_OBSERVER_CAPABILITY,
@@ -22,6 +22,8 @@ from examples.tower_of_hanoi.local_harness import (
     local_worldstream_environment,
     manual_setup,
     member_capability_request,
+    normalize_initial_board,
+    random_initial_board,
     room_create_arguments,
 )
 from examples.tower_of_hanoi.participant_runner import participant_prompt
@@ -57,6 +59,52 @@ class HarnessParsingTests(unittest.TestCase):
             arguments = _arguments()
         self.assertEqual(arguments.disks, 10)
         self.assertEqual(str(arguments.codex), "codex")
+
+    def test_random_board_is_reachable_and_seed_deterministic(self) -> None:
+        board = random_initial_board(4, seed=11)
+        self.assertEqual(set(board), {"A", "B", "C"})
+        self.assertEqual(
+            sorted(disk for stack in board.values() for disk in stack), [1, 2, 3, 4]
+        )
+        for stack in board.values():
+            self.assertEqual(stack, sorted(stack, reverse=True))
+        self.assertEqual(random_initial_board(4, seed=11), board)
+        self.assertEqual(
+            normalize_initial_board(board, 4),
+            board,
+        )
+
+    def test_setup_carries_a_reviewed_initial_board(self) -> None:
+        setup = manual_setup(
+            PACK,
+            ["solver-a"],
+            "observer",
+            disks=3,
+            initial_board={"A": [3], "B": [2, 1], "C": []},
+        )
+        self.assertEqual(
+            setup["configuration"],
+            {"disks": 3, "move_limit": 10_000, "initial_board": {"A": [3], "B": [2, 1], "C": []}},
+        )
+        with self.assertRaisesRegex(HarnessError, "initial_board_invalid"):
+            normalize_initial_board({"A": [3, 3], "B": [], "C": []}, 3)
+        with self.assertRaisesRegex(HarnessError, "initial_board_invalid"):
+            normalize_initial_board({"A": [2, 3], "B": [1], "C": []}, 3)
+
+    def test_parser_randomizes_or_reads_an_initial_board(self) -> None:
+        with patch(
+            "sys.argv",
+            ["local_harness", "--disks", "3", "--randomize-board", "--board-seed", "5"],
+        ):
+            randomized = _arguments()
+        self.assertIsNotNone(randomized.initial_board)
+        self.assertEqual(randomized.initial_board, random_initial_board(3, 5))
+        with patch(
+            "sys.argv",
+            ["local_harness", "--disks", "3", "--initial-board", '{"A":[3],"B":[2,1],"C":[]}'],
+        ):
+            explicit = _arguments()
+        self.assertEqual(explicit.initial_board, {"A": [3], "B": [2, 1], "C": []})
 
     def test_pack_and_setup_allow_one_to_sixteen_solver_participants(self) -> None:
         setup = manual_setup(PACK, ["solver-a"], "observer", disks=10)
@@ -178,6 +226,65 @@ class HarnessParsingTests(unittest.TestCase):
                 "0o600",
             )
             self.assertEqual(records[0]["kind"], "participant_supervisor_started")
+
+    def test_stop_cleans_managed_server_when_start_was_interrupted(self) -> None:
+        run = object.__new__(LocalRun)
+        run.arguments = argparse.Namespace(timeout_seconds=1)
+        run.config_path = Path("/run/.worldstream/worldstream.toml")
+        run.state_dir = Path("/run/.worldstream/studio")
+        run.controller_address = "127.0.0.1:12345"
+        run.participant_processes = []
+        run.canvas_process = None
+        run.runtime_reservation = None
+        run.controller_reservation = None
+        run.canvas_reservation = None
+        run.started = False
+        run.server_start_attempted = True
+        run.command = Mock(return_value={})
+
+        run.stop()
+
+        commands = [entry.args[0][:2] for entry in run.command.call_args_list]
+        self.assertEqual(commands, [["server", "stop"], ["server", "controller-stop"]])
+
+    def test_partial_room_setup_resumes_same_operation_until_complete(self) -> None:
+        operation = "op-01partial"
+        run = object.__new__(LocalRun)
+        run.arguments = argparse.Namespace(timeout_seconds=1)
+        run.config_path = Path("/run/.worldstream/worldstream.toml")
+        run.state_dir = Path("/run/.worldstream/studio")
+        run.controller_address = "127.0.0.1:12345"
+        run.command = Mock(
+            side_effect=[
+                {"status": "partial", "operation_id": operation},
+                {"status": "partial", "operation_id": operation},
+                {
+                    "status": "complete",
+                    "operation_id": operation,
+                    "room_id": "01ROOMCOMPLETE",
+                },
+            ]
+        )
+
+        result = run._resume_room_setup(
+            {
+                "status": "partial",
+                "code": "setup_incomplete",
+                "operation_id": operation,
+                "room_id": "01ROOMPARTIAL",
+            }
+        )
+
+        self.assertEqual(result["status"], "complete")
+        commands = [entry.args[0][:4] for entry in run.command.call_args_list]
+        self.assertEqual(
+            commands,
+            [
+                ["room", "setup", "status", operation],
+                ["room", "setup", "resume", operation],
+                ["room", "setup", "status", operation],
+            ],
+        )
 
     def test_safe_activity_requires_public_objective(self) -> None:
         activity = {

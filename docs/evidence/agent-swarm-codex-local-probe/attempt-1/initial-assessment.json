@@ -1,0 +1,40 @@
+{
+  "assessment_limit": "Shape/selection checks plus retained instructions support a narrow synthetic observation, not general planning quality or enforced no-tool confinement.",
+  "authorized_distinct_selections": true,
+  "decision": {
+    "decision": {
+      "kind": "dispatch",
+      "reason": "No implementation exists, and the offered options cleanly divide the initial producer work into CSV parsing, JSON serialization, and independent acceptance checks. These bounded tasks can proceed concurrently, while integration and review appropriately wait for their artifacts.",
+      "steps": [
+        {
+          "instruction": "Implement the Python CSV ingestion layer using standard CSV semantics: require a header, preserve quoted commas, escaped quotes, and embedded newlines, validate every record against the header field count, and return useful record-aware errors for malformed input.",
+          "member_key": "parser-author",
+          "target_id": "propose-parser-work"
+        },
+        {
+          "instruction": "Implement the JSON serialization layer that maps parsed headers to record fields, preserves all original field values as strings without unintended type coercion, and emits standards-compliant JSON.",
+          "member_key": "formatter-author",
+          "target_id": "propose-formatter-work"
+        },
+        {
+          "instruction": "Create an independent executable check suite covering required-header behavior, ordinary records, quoted commas, escaped quotes, embedded newlines, empty strings, Unicode, malformed quoting, inconsistent field counts, useful diagnostics, and JSON validity; structure it to run later against the exact integrated candidate.",
+          "member_key": "test-author",
+          "target_id": "propose-check-work"
+        }
+      ]
+    },
+    "schema": "worldstream/agent-swarm-planning-decision@1"
+  },
+  "expected_next_work_selected": true,
+  "no_tool_item_observed": true,
+  "observed_item_types": [
+    "agentMessage",
+    "userMessage"
+  ],
+  "selected_targets": [
+    "propose-check-work",
+    "propose-formatter-work",
+    "propose-parser-work"
+  ],
+  "strict_planning_shape": true
+}

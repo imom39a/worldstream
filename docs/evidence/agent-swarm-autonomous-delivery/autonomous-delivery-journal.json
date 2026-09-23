@@ -1,0 +1,333 @@
+{
+  "criteria": [
+    "The delivered csv_tool.py passes all 26 fixed CSV, JSON, and CLI behavioral checks and independent source review."
+  ],
+  "criteria_revision": 1,
+  "direction_revision": 0,
+  "executables": {
+    "/Users/vinothshanmugam/.local/share/uv/python/cpython-3.14.7-macos-aarch64-none/bin/python3.14": "blake3:1041e18947ce4e9a36821cde7b2cf373525ed1e4bab72cf5203456c4dcd67dc3",
+    "/Users/vinothshanmugam/code/agent-streamer/target/debug/worldstream-agent-swarm-process-guard": "blake3:a87ac9753909fb0b119746a6207bd8c7f879a7ba701fefe2cc2ecfaf45780420"
+  },
+  "goal_revision": 1,
+  "operations": {
+    "auto-b189ccec6968fcdf-0019-reason-operation": {
+      "actions": [
+        {
+          "action": {
+            "action_id": "674VHT599FVKFGFEKNNRQDVMYG",
+            "action_type": "record_check",
+            "actor": {
+              "kind": "human_coordinator"
+            },
+            "based_on_room_seq": 11,
+            "offer_id": "11:1:blake3:b32d97ba6846d08b9fe72086c4d1e3dfbb8349f9e46d5dafd958ef6d1879f84b",
+            "payload": {
+              "candidate": {
+                "candidate_id": "result-b189ccec6968fcdf",
+                "version": 1
+              },
+              "check_id": "criterion-1",
+              "evidence_refs": [
+                {
+                  "artifact": {
+                    "artifact_id": "check-evidence:result-b189ccec6968fcdf:1:criterion-1",
+                    "digest": "blake3:ae3e64c06385700f69a1468866445465152199bf5bc2d4a203955bd7af98ab4e",
+                    "local_path": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-autonomous-delivery-m5qkf6ir/work/live-coding/.swarm-check-b189ccec6968fcdf-v1-criterion-1.json",
+                    "media_type": "application/vnd.worldstream.agent-swarm-check-evidence+json;version=1"
+                  },
+                  "candidate": {
+                    "candidate_id": "result-b189ccec6968fcdf",
+                    "version": 1
+                  },
+                  "candidate_artifact": {
+                    "artifact_id": "csv-tool-candidate-v1",
+                    "digest": "blake3:46fb92162735fa13ebc14bd8d275e59a149a3aa0ef102fc2bcfcff4e6b4dea73",
+                    "local_path": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-autonomous-delivery-m5qkf6ir/work/live-coding/.swarm-generated-46fb92162735fa13ebc14bd8d275e59a149a3aa0ef102fc2bcfcff4e6b4dea73.txt",
+                    "media_type": "text/x-python"
+                  },
+                  "check_id": "criterion-1",
+                  "criteria_revision": 1,
+                  "criterion": "The delivered csv_tool.py passes all 26 fixed CSV, JSON, and CLI behavioral checks and independent source review.",
+                  "resource_basis": [
+                    {
+                      "resource_id": "csv-target",
+                      "version": 1
+                    }
+                  ]
+                }
+              ],
+              "expected_criteria_revision": 1,
+              "resource_basis": [
+                {
+                  "resource_id": "csv-target",
+                  "version": 1
+                }
+              ],
+              "status": "passed"
+            },
+            "payload_schema_digest": "blake3:b32d97ba6846d08b9fe72086c4d1e3dfbb8349f9e46d5dafd958ef6d1879f84b"
+          },
+          "receipt": {
+            "action_id": "674VHT599FVKFGFEKNNRQDVMYG",
+            "duplicate": false,
+            "room_seq": 12,
+            "status": "accepted"
+          }
+        }
+      ],
+      "detail": "Verified operation completed.",
+      "status": "completed",
+      "target": {
+        "artifact_digest": "blake3:46fb92162735fa13ebc14bd8d275e59a149a3aa0ef102fc2bcfcff4e6b4dea73",
+        "candidate": {
+          "candidate_id": "result-b189ccec6968fcdf",
+          "version": 1
+        },
+        "operation": {
+          "check_id": "criterion-1",
+          "kind": "check"
+        },
+        "target_id": "delivery-d9c2a7bbb074b0ec61d8ae13f22c12611e28761f0a23bde313eedc9bef265af4"
+      },
+      "writeback": null
+    },
+    "auto-b189ccec6968fcdf-0022-reason-operation": {
+      "actions": [
+        {
+          "action": {
+            "action_id": "0FARM7CK2AX91SVHNA97YVG2W1",
+            "action_type": "request_writeback",
+            "actor": {
+              "kind": "human_coordinator"
+            },
+            "based_on_room_seq": 13,
+            "offer_id": "13:9:blake3:cd86df62046db08698d45ae0de3ac6f0914371d1e85282c2134adf4b234cf023",
+            "payload": {
+              "candidate": {
+                "candidate_id": "result-b189ccec6968fcdf",
+                "version": 1
+              },
+              "expected_resource_version": 1,
+              "operation_id": "auto-b189ccec6968fcdf-0022-reason-operation",
+              "resource_id": "csv-target"
+            },
+            "payload_schema_digest": "blake3:cd86df62046db08698d45ae0de3ac6f0914371d1e85282c2134adf4b234cf023"
+          },
+          "receipt": {
+            "action_id": "0FARM7CK2AX91SVHNA97YVG2W1",
+            "duplicate": false,
+            "room_seq": 14,
+            "status": "accepted"
+          }
+        },
+        {
+          "action": {
+            "action_id": "4WC2J06JT859TSDPXHHKBP8NH9",
+            "action_type": "record_writeback_outcome",
+            "actor": {
+              "kind": "human_coordinator"
+            },
+            "based_on_room_seq": 14,
+            "offer_id": "14:10:blake3:0358da5df3bbdcda2af734328bc6dad47ac6f01a300042c0e8e6ea2bcfcff06f",
+            "payload": {
+              "evidence_refs": [
+                "code-change:blake3:783bd9a86a05afa735151a1a1b406b0c94bf007b8aff4e0b97b55872483b6151"
+              ],
+              "expected_writeback_revision": 1,
+              "operation_id": "auto-b189ccec6968fcdf-0022-reason-operation",
+              "resulting_version": 2,
+              "status": "applied"
+            },
+            "payload_schema_digest": "blake3:0358da5df3bbdcda2af734328bc6dad47ac6f01a300042c0e8e6ea2bcfcff06f"
+          },
+          "receipt": {
+            "action_id": "4WC2J06JT859TSDPXHHKBP8NH9",
+            "duplicate": false,
+            "room_seq": 15,
+            "status": "accepted"
+          }
+        },
+        {
+          "action": {
+            "action_id": "3X2HQFV1GQHYN354F0SB6YWMR9",
+            "action_type": "accept_result",
+            "actor": {
+              "kind": "human_coordinator"
+            },
+            "based_on_room_seq": 15,
+            "offer_id": "15:3:blake3:29cd55a67df32a0c458c84291ec42c3646e779d7e691c136112872af40a2310c",
+            "payload": {
+              "candidate": {
+                "candidate_id": "result-b189ccec6968fcdf",
+                "version": 1
+              },
+              "check_refs": [
+                {
+                  "id": "criterion-1",
+                  "revision": 1
+                }
+              ],
+              "expected_direction_revision": 0,
+              "result_id": "result-b189ccec6968fcdf",
+              "review_refs": [
+                {
+                  "id": "review-b189ccec6968fcdf-v1-judge",
+                  "revision": 1
+                }
+              ]
+            },
+            "payload_schema_digest": "blake3:29cd55a67df32a0c458c84291ec42c3646e779d7e691c136112872af40a2310c"
+          },
+          "receipt": {
+            "action_id": "3X2HQFV1GQHYN354F0SB6YWMR9",
+            "duplicate": false,
+            "room_seq": 16,
+            "status": "accepted"
+          }
+        }
+      ],
+      "detail": "Verified operation completed.",
+      "status": "completed",
+      "target": {
+        "artifact_digest": "blake3:46fb92162735fa13ebc14bd8d275e59a149a3aa0ef102fc2bcfcff4e6b4dea73",
+        "candidate": {
+          "candidate_id": "result-b189ccec6968fcdf",
+          "version": 1
+        },
+        "operation": {
+          "kind": "deliver"
+        },
+        "target_id": "delivery-2b2d86c1c6d063ab2d0959d88531d7473f8784a04180283422e04011b0166f0c"
+      },
+      "writeback": {
+        "disposition": "applied",
+        "operation_id": "auto-b189ccec6968fcdf-0022-reason-operation",
+        "revision_digest": "blake3:783bd9a86a05afa735151a1a1b406b0c94bf007b8aff4e0b97b55872483b6151",
+        "targets": [
+          {
+            "outcome": {
+              "observed": {
+                "byte_length": 4854,
+                "digest": "blake3:46fb92162735fa13ebc14bd8d275e59a149a3aa0ef102fc2bcfcff4e6b4dea73"
+              },
+              "outcome": "applied"
+            },
+            "path": "csv_tool.py"
+          }
+        ]
+      }
+    }
+  },
+  "original": {
+    "byte_length": 52,
+    "digest": "blake3:da115d085d1bb3bee6899f56f8ee3ed51bb35697d5af7bf97ba22db5e484de59"
+  },
+  "versions": {
+    "1": {
+      "checks": {
+        "criterion-1": {
+          "action_payload": {
+            "candidate": {
+              "candidate_id": "result-b189ccec6968fcdf",
+              "version": 1
+            },
+            "check_id": "criterion-1",
+            "evidence_refs": [
+              {
+                "artifact": {
+                  "artifact_id": "check-evidence:result-b189ccec6968fcdf:1:criterion-1",
+                  "digest": "blake3:ae3e64c06385700f69a1468866445465152199bf5bc2d4a203955bd7af98ab4e",
+                  "local_path": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-autonomous-delivery-m5qkf6ir/work/live-coding/.swarm-check-b189ccec6968fcdf-v1-criterion-1.json",
+                  "media_type": "application/vnd.worldstream.agent-swarm-check-evidence+json;version=1"
+                },
+                "candidate": {
+                  "candidate_id": "result-b189ccec6968fcdf",
+                  "version": 1
+                },
+                "candidate_artifact": {
+                  "artifact_id": "csv-tool-candidate-v1",
+                  "digest": "blake3:46fb92162735fa13ebc14bd8d275e59a149a3aa0ef102fc2bcfcff4e6b4dea73",
+                  "local_path": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-autonomous-delivery-m5qkf6ir/work/live-coding/.swarm-generated-46fb92162735fa13ebc14bd8d275e59a149a3aa0ef102fc2bcfcff4e6b4dea73.txt",
+                  "media_type": "text/x-python"
+                },
+                "check_id": "criterion-1",
+                "criteria_revision": 1,
+                "criterion": "The delivered csv_tool.py passes all 26 fixed CSV, JSON, and CLI behavioral checks and independent source review.",
+                "resource_basis": [
+                  {
+                    "resource_id": "csv-target",
+                    "version": 1
+                  }
+                ]
+              }
+            ],
+            "expected_criteria_revision": 1,
+            "resource_basis": [
+              {
+                "resource_id": "csv-target",
+                "version": 1
+              }
+            ],
+            "status": "passed"
+          },
+          "evidence": {
+            "binding": {
+              "candidate": "blake3:b94293313e2356487dca903e5b79d9d4c204c7982ec673b49d9ec941ad45a68e",
+              "criteria": {
+                "byte_length": 117,
+                "digest": "blake3:13e425ae98e41dbe0909638779230906ee6cd9f28ae4f53153a8095c9ebe162b"
+              },
+              "inputs": []
+            },
+            "check_id": "criterion-1",
+            "checker": {
+              "arguments": [
+                "-B",
+                "-c",
+                "\nimport json, os, sys\nfrom pathlib import Path\nroot = Path.cwd().resolve(strict=True)\npython = Path(sys.executable).resolve(strict=True)\nruntime = python.parents[1]\nancestors = sorted(set(root.parents) | set(runtime.parents) | {Path('/usr')})\nreadable = [root, runtime, Path('/System'), Path('/usr/lib'), Path('/private/etc')]\nfilters = ['(subpath ' + json.dumps(str(p)) + ')' for p in readable]\nfilters += ['(literal ' + json.dumps(str(p)) + ')' for p in ancestors]\nfilters += ['(literal \"/dev/null\")', '(literal \"/dev/urandom\")']\nprofile = '(version 1) (deny default) (allow process-exec process-fork file-map-executable) (allow signal (target self)) (allow sysctl-read mach-lookup file-read-metadata) (allow file-read-data ' + ' '.join(filters) + ')'\nos.execv('/usr/bin/sandbox-exec', ['/usr/bin/sandbox-exec', '-p', profile, str(python), '-B', '-c', sys.argv[1]])\n",
+                "\nimport json, runpy\nmodule = runpy.run_path(\"csv_tool.py\")\nparse, fmt = module[\"parse_records\"], module[\"format_records\"]\nchecks = []\ndef equal(name, actual, expected):\n    checks.append((name, actual == expected))\ndef rejects(name, function, argument):\n    try:\n        function(argument)\n    except ValueError:\n        checks.append((name, True))\n    else:\n        checks.append((name, False))\nequal(\"empty_records\", parse(\"name,note\\n\"), [])\nequal(\"plain\", parse(\"name,note\\nAda,hello\\n\"), [{\"name\":\"Ada\",\"note\":\"hello\"}])\nequal(\"quoted_comma\", parse('name,note\\nAda,\"a,b\"\\n'), [{\"name\":\"Ada\",\"note\":\"a,b\"}])\nequal(\"escaped_quote\", parse('name,note\\nAda,\"say \"\"hi\"\"\"\\n'), [{\"name\":\"Ada\",\"note\":'say \"hi\"'}])\nequal(\"embedded_newline\", parse('name,note\\nAda,\"first\\nsecond\"\\n'), [{\"name\":\"Ada\",\"note\":\"first\\nsecond\"}])\nequal(\"crlf\", parse(\"name,note\\r\\nAda,hello\\r\\n\"), [{\"name\":\"Ada\",\"note\":\"hello\"}])\nequal(\"unicode\", parse(\"name,note\\nZoë,東京\\n\"), [{\"name\":\"Zoë\",\"note\":\"東京\"}])\nequal(\"empty_fields\", parse(\"name,note\\n,\\n\"), [{\"name\":\"\",\"note\":\"\"}])\nrejects(\"missing_header\", parse, \"\")\nrejects(\"wrong_header\", parse, \"note,name\\nhello,Ada\\n\")\nrejects(\"missing_field\", parse, \"name,note\\nAda\\n\")\nrejects(\"extra_field\", parse, \"name,note\\nAda,hello,extra\\n\")\nrejects(\"unclosed_quote\", parse, 'name,note\\nAda,\"oops')\nequal(\"empty_format\", fmt([]), \"name,note\\n\")\nrows = [{\"name\":\"Zoë, Ada\", \"note\":'first\\n\"東京\"'}, {\"name\":\"\", \"note\":\"\"}]\ntry:\n    equal(\"round_trip\", parse(fmt(rows)), rows)\nexcept (ValueError, TypeError):\n    checks.append((\"round_trip\", False))\nrejects(\"invalid_format_fields\", fmt, [{\"name\":\"Ada\"}])\n\nimport subprocess, sys\nto_json = module[\"to_json\"]\nequal(\"json_strings_preserved\", json.loads(to_json(\"name,note\\n001,true\\n\")), [{\"name\":\"001\",\"note\":\"true\"}])\nequal(\"json_escaping\", json.loads(to_json('name,note\\nZoë,\"first\\n\"\"東京\"\"\"\\n')), [{\"name\":\"Zoë\",\"note\":'first\\n\"東京\"'}])\nequal(\"json_empty\", json.loads(to_json(\"name,note\\n\")), [])\nrejects(\"format_non_string\", fmt, [{\"name\":\"Ada\",\"note\":5}])\ncli = subprocess.run([sys.executable,\"-B\",\"csv_tool.py\"],input=\"name,note\\nAda,hi\\n\",text=True,capture_output=True,timeout=5)\nequal(\"cli_valid\", (cli.returncode,json.loads(cli.stdout),cli.stderr), (0,[{\"name\":\"Ada\",\"note\":\"hi\"}],\"\"))\ncli = subprocess.run([sys.executable,\"-B\",\"csv_tool.py\"],input=\"wrong,header\\n\",text=True,capture_output=True,timeout=5)\nequal(\"cli_invalid\", (cli.returncode,cli.stdout,bool(cli.stderr.strip()),\"Traceback\" in cli.stderr), (2,\"\",True,False))\nrejects(\"quote_in_unquoted_field\", parse, 'name,note\\nA,b\"c\\n')\nrejects(\"junk_after_quoted_field\", parse, 'name,note\\nA,\"b\"x\\n')\nrejects(\"format_extra_keys\", fmt, [{\"name\":\"A\",\"note\":\"B\",\"extra\":\"C\"}])\ncr_rows = [{\"name\":\"A\\rB\",\"note\":\"C\\rD\"}]\ntry:\n    equal(\"carriage_return_roundtrip\", parse(fmt(cr_rows)), cr_rows)\nexcept (ValueError, TypeError):\n    checks.append((\"carriage_return_roundtrip\", False))\n\nfailed = [name for name, passed in checks if not passed]\nprint(json.dumps({\"cases\":len(checks), \"passed\":len(checks)-len(failed), \"failed\":failed}))\nraise SystemExit(0 if len(checks) == 26 and not failed else 1)\n"
+              ],
+              "environment": {},
+              "executable": {
+                "byte_length": 18800624,
+                "digest": "blake3:1041e18947ce4e9a36821cde7b2cf373525ed1e4bab72cf5203456c4dcd67dc3"
+              },
+              "executable_path": "/Users/vinothshanmugam/.local/share/uv/python/cpython-3.14.7-macos-aarch64-none/bin/python3.14"
+            },
+            "outcome": {
+              "outcome": "passed"
+            },
+            "stderr": {
+              "byte_length": 0,
+              "digest": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+            },
+            "stdout": {
+              "byte_length": 42,
+              "digest": "blake3:0aea4f8eddae67cd4ab5ec1067bf773852cee313b918a7098753e538a86b34b6"
+            }
+          },
+          "pack_reference": "check:criterion-1:1"
+        }
+      },
+      "sealed": {
+        "candidate_artifact": {
+          "artifact_id": "csv-tool-candidate-v1",
+          "digest": "blake3:46fb92162735fa13ebc14bd8d275e59a149a3aa0ef102fc2bcfcff4e6b4dea73",
+          "local_path": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-autonomous-delivery-m5qkf6ir/work/live-coding/.swarm-generated-46fb92162735fa13ebc14bd8d275e59a149a3aa0ef102fc2bcfcff4e6b4dea73.txt",
+          "media_type": "text/x-python"
+        },
+        "candidate_digest": "blake3:b94293313e2356487dca903e5b79d9d4c204c7982ec673b49d9ec941ad45a68e",
+        "candidate_id": "result-b189ccec6968fcdf",
+        "pack_candidate": {
+          "candidate_id": "result-b189ccec6968fcdf",
+          "version": 1
+        },
+        "required_checks": [
+          "criterion-1"
+        ],
+        "revision_digest": "blake3:783bd9a86a05afa735151a1a1b406b0c94bf007b8aff4e0b97b55872483b6151"
+      }
+    }
+  },
+  "working_area": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-autonomous-delivery-m5qkf6ir/work/live-coding"
+}

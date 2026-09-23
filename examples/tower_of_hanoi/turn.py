@@ -230,6 +230,88 @@ async def act(
         await room.close()
 
 
+async def act_on_room(
+    room: Any,
+    client: Any,
+    action_type: str,
+    payload: object,
+    expected_room_seq: int,
+    timeout: float,
+) -> dict[str, object]:
+    """Submit an Action on an already attached Participant Room.
+
+    A stream-aware Participant must not open a second Membership session for
+    each move: the server fences the older session, which strands its
+    observation cursor.  The caller owns synchronization and serialization of
+    this Room; this helper only performs the same stale/offer checks as
+    :func:`act` and uses the existing websocket for the Action.
+    """
+    from worldstream_sdk import LostActionReply
+
+    if action_type not in ACTIONS:
+        raise HanoiProtocolError("action_type_invalid")
+    if (
+        isinstance(expected_room_seq, bool)
+        or not isinstance(expected_room_seq, int)
+        or expected_room_seq < 0
+    ):
+        raise HanoiProtocolError("room_head_invalid")
+    safe_payload = action_payload_from_json(action_type, payload)
+    current = await client.projection(room.room_id)
+    current_room_seq = room_seq_from_projection(current)
+    if current_room_seq != expected_room_seq:
+        return {
+            "status": "stale",
+            "code": "stale_head",
+            "current_room_seq": current_room_seq,
+            "action_type": action_type,
+            "transport": _attachment_metadata(room, []),
+        }
+    if not action_is_offered(current, action_type):
+        return {
+            "status": "rejected",
+            "code": "action_not_offered",
+            "current_room_seq": current_room_seq,
+            "action_type": action_type,
+            "transport": _attachment_metadata(room, []),
+        }
+    try:
+        receipt = await room.act(
+            action_type,
+            safe_payload,
+            expected_room_seq=expected_room_seq,
+            timeout=timeout,
+        )
+    except LostActionReply as error:
+        receipt = await error.retry(timeout=timeout)
+    head = receipt.get("room_head") if isinstance(receipt, dict) else None
+    sequence = head.get("room_seq") if isinstance(head, dict) else None
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
+        return {
+            "status": "stale"
+            if closed_code(receipt.get("code"))
+            in {"stale_head", "stale_room_state"}
+            else "rejected",
+            "code": closed_code(receipt.get("code")),
+            "current_room_seq": current_room_seq,
+            "action_type": action_type,
+            "transport": _attachment_metadata(room, []),
+            "action_receipt": _safe_receipt(receipt),
+        }
+    updated = await client.projection(room.room_id)
+    activity = safe_activity(activity_from_projection(updated))
+    return {
+        "status": "accepted",
+        "room_seq": sequence,
+        "action_type": action_type,
+        "phase": activity["phase"],
+        "outcome": activity["outcome"],
+        "work_revision": activity["work_revision"],
+        "transport": _attachment_metadata(room, []),
+        "action_receipt": _safe_receipt(receipt),
+    }
+
+
 async def verify_terminal(path: Path, role: str = "observer") -> dict[str, object]:
     from worldstream_sdk import Client
 

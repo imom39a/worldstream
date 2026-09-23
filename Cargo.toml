@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/worldstream-agent-swarm",
     "crates/worldstream-activity-client",
     "crates/worldstream-hosted-contract",
     "crates/worldstream-hosted-gateway",
@@ -69,7 +70,7 @@ tower = { version = "=0.5.3", features = ["util"] }
 tungstenite = "=0.29.0"
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt", "json"] }
-wasmtime = { version = "=48.0.1", default-features = false, features = ["component-model", "cranelift", "parallel-compilation", "runtime", "std", "threads"] }
+wasmtime = { version = "=48.0.1", default-features = false, features = ["cache", "component-model", "cranelift", "parallel-compilation", "runtime", "std", "threads"] }
 wat = "=1.258.0"
 rustls = { version = "=0.23.35", default-features = false, features = ["ring", "std", "tls12"] }
 ring = "=0.17.14"

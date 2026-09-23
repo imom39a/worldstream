@@ -1,0 +1,53 @@
+{
+  "account_type": "chatgpt",
+  "configuration_sha256": "d5cc45ce105f56ccdbb2849b33d2e0e2a30a0a8b67a761783e370d213a4bc187",
+  "executable_sha256": "f4a74117b8142cda581c95ff753abf4508b5636d89682c1ed77e4a9249af8963",
+  "guard_sha256": "a0e8f950fb4c03acd7e826e045ae44e0c397a38d46adb3973af94a34400d10f4",
+  "inside_read": {
+    "exitCode": 0,
+    "stderr": "",
+    "stdout": "SYNTHETIC_INSIDE"
+  },
+  "inside_write": {
+    "exitCode": 1,
+    "stderr": "touch: /private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-autonomous-delivery-m5qkf6ir/work/live-coding/forbidden-write: Operation not permitted\n",
+    "stdout": ""
+  },
+  "mcp_server_count": 0,
+  "network": {
+    "exitCode": 7,
+    "stderr": "curl: (7) Failed to connect to 127.0.0.1 port 60156 after 0 ms: Couldn't connect to server\n",
+    "stdout": ""
+  },
+  "network_baseline": {
+    "exit_code": 0,
+    "stdout": "SYNTHETIC_NETWORK"
+  },
+  "outside_read": {
+    "exitCode": 1,
+    "stderr": "cat: /private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-autonomous-delivery-m5qkf6ir/live-evaluation/native/.native-outside-canary: Operation not permitted\n",
+    "stdout": ""
+  },
+  "outside_write": {
+    "exitCode": 1,
+    "stderr": "touch: /private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-autonomous-delivery-m5qkf6ir/live-evaluation/native/forbidden-write: Operation not permitted\n",
+    "stdout": ""
+  },
+  "thread_configuration": {
+    "activePermissionProfile": {
+      "extends": null,
+      "id": "worldstream_swarm_read"
+    },
+    "instructionSources": [],
+    "model": "gpt-5.6-sol",
+    "reasoningEffort": "medium",
+    "runtimeWorkspaceRoots": [
+      "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-autonomous-delivery-m5qkf6ir/work/live-coding"
+    ],
+    "sandbox": {
+      "networkAccess": false,
+      "type": "readOnly"
+    }
+  },
+  "working_area": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-autonomous-delivery-m5qkf6ir/work/live-coding"
+}

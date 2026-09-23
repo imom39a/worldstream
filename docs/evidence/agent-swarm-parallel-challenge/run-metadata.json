@@ -1,0 +1,42 @@
+{
+  "date": "2026-09-22T13:10:17.638573+00:00",
+  "platform": "Darwin",
+  "architecture": "arm64",
+  "python_version": "3.14.7",
+  "execution_kind": "controlled_deterministic_workers",
+  "exit_code": 0,
+  "elapsed_seconds": 321.331,
+  "managed_processes_stopped": true,
+  "source_report": "results.json",
+  "report_sha256": "sha256:fe5cac535287b2aae5e26278ec0031f58716f8a1b5bd144fac01cb4b0cce2248",
+  "binary_identity_capture": "Post-run hashes; all binaries modified before run and frozen throughout execution.",
+  "binaries": {
+    "worldstream-agent-swarm": {
+      "sha256": "sha256:118c1b2ab82efe25ec933db4471e6f1cbc0ba5c298d08c10e250091b56e081d7",
+      "modified_before_run": true
+    },
+    "worldstream-agent-swarmd": {
+      "sha256": "sha256:c51d3eee2fb42d79ed5a0b37d846d9e59c29d69eab4126a24af1a87cd4213110",
+      "modified_before_run": true
+    },
+    "worldstream-agent-swarmctl": {
+      "sha256": "sha256:3adb06cf2c01da081414369be39107c4afd96bea64dbf8363197cf14c811c8ad",
+      "modified_before_run": true
+    },
+    "worldstream-agent-swarm-controlled-worker": {
+      "sha256": "sha256:9027f421f8bcdf3c942b9cc402500d22abef1fb25a41294370977778ef00c4a3",
+      "modified_before_run": true
+    },
+    "worldstream-agent-swarm-process-guard": {
+      "sha256": "sha256:f79f6bea2e6bf54b20b5117edd4ff0e8398599bb73f3f363c01adee27ca92978",
+      "modified_before_run": true
+    }
+  },
+  "source_files": {
+    "crates/worldstream-agent-swarm/src/coordinator.rs": "sha256:7d504cd50d9f7cacaf43878631da4982d9c6a8f6c3e86ed03b22ff9c7f97a6d3",
+    "crates/worldstream-agent-swarm/src/execution/daemon.rs": "sha256:0e263fd0b9e34764e68c2b20512a5929a021c6015ee72e25d4abf4bfb4f74eef",
+    "crates/worldstream-agent-swarm/src/bin/controlled_worker.rs": "sha256:463f05e72a2cfd4f28d391dd7e8f7c72e696e2c1333a7ac2e20feebd66371810",
+    "scripts/agent_swarm_challenge.py": "sha256:468f82f658914b920454400d8f4ac103d0c8debfffcd3501a45a9d7acd9ad5c3",
+    "scripts/verify-agent-swarm-managed.py": "sha256:3acfd2422b7382a1f2a52325b0e814a56bf03bb464e93b1269f12133dff4c6ae"
+  }
+}

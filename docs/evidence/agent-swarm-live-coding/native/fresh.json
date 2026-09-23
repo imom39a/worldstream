@@ -1,0 +1,78 @@
+{
+  "configuration_sha256": "d5cc45ce105f56ccdbb2849b33d2e0e2a30a0a8b67a761783e370d213a4bc187",
+  "executable_sha256": "f4a74117b8142cda581c95ff753abf4508b5636d89682c1ed77e4a9249af8963",
+  "guard_sha256": "2719692d96d8ee4bec37fae81c319c3e4e270b814b9fd8a227c079dd00a9cb10",
+  "observation": {
+    "elapsed_seconds": 4.055,
+    "exit_code": 0,
+    "observed_process_count": 2,
+    "observed_process_groups_reaped": true,
+    "remaining_observed_live_process_count": 0,
+    "session_mode": "fresh",
+    "stderr_bytes": 0,
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "timed_out": false
+  },
+  "transcript": {
+    "completion": {
+      "threadId": "01a0ca5f-2e3e-7c83-99b1-68ad5ad513b5",
+      "turn": {
+        "completedAt": 1790101633,
+        "durationMs": 3237,
+        "error": null,
+        "id": "01a0ca5f-2e58-7613-afe7-7df74fc44e78",
+        "items": [
+          {
+            "delivery": null,
+            "id": "msg_00a5ffe5455dde43016ab2c881945c87d2b7f2740466313a9e",
+            "memoryCitation": null,
+            "phase": "final_answer",
+            "text": "{\"probe\":\"fresh\"}",
+            "type": "agentMessage"
+          }
+        ],
+        "itemsView": "summary",
+        "startedAt": 1790101630,
+        "status": "completed"
+      }
+    },
+    "configuration": {
+      "activePermissionProfile": {
+        "extends": null,
+        "id": "worldstream_swarm_read"
+      },
+      "effort": "medium",
+      "instructionSources": [],
+      "model": "gpt-5.6-sol",
+      "provider_session_id": "01a0ca5f-2e3e-7c83-99b1-68ad5ad513b5",
+      "runtimeWorkspaceRoots": [
+        "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-live-coding-yxknger7/work/live-coding"
+      ],
+      "sandbox": {
+        "networkAccess": false,
+        "type": "readOnly"
+      },
+      "thread_id": "01a0ca5f-2e3e-7c83-99b1-68ad5ad513b5"
+    },
+    "messages": [
+      {
+        "delivery": null,
+        "id": "msg_00a5ffe5455dde43016ab2c881945c87d2b7f2740466313a9e",
+        "memoryCitation": null,
+        "phase": "final_answer",
+        "text": "{\"probe\":\"fresh\"}",
+        "type": "agentMessage"
+      }
+    ],
+    "observed_item_types": [
+      "agentMessage",
+      "userMessage"
+    ],
+    "schema": "worldstream/codex-app-server-turn@1",
+    "timing": {
+      "turn_completed_unix_ms": 1790101633791,
+      "turn_started_unix_ms": 1790101630552
+    },
+    "turn_id": "01a0ca5f-2e58-7613-afe7-7df74fc44e78"
+  }
+}

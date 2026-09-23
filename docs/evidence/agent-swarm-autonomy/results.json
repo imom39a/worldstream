@@ -1,0 +1,403 @@
+{
+  "automatic_result_acceptance": false,
+  "controlled_adapter_work_attempt_delay_ms": 250,
+  "controlled_contribution_delay_ms": 1500,
+  "execution_kind": "controlled_state_sensitive_planner_fixture",
+  "identities": {
+    "application_sha256": "sha256:c30644f83d0a60b9f03e273db71dc922114330b566198893ad0963f3c37da2ff",
+    "autonomy_script_sha256": "sha256:853f9b0151eaaeaebc94700c61b4eba92f632ee988356ac6e0e359527cef2762",
+    "challenge_helper_sha256": "sha256:468f82f658914b920454400d8f4ac103d0c8debfffcd3501a45a9d7acd9ad5c3",
+    "controlled_worker_sha256": "sha256:a2a4c20c989e376df8009d16647068a273d3097463abaa51e25d77d40fef0c9d",
+    "daemon_sha256": "sha256:6a1e7fcb2af24d0b81b96d0a146b9485c1bc73af892fd17956ea67a5d847c0de",
+    "execution_control_sha256": "sha256:304eb695c74b65190a4bb8672cd79bf160b94300c2064e7b5076876997860565",
+    "managed_harness_sha256": "sha256:c144cd0e28ff4f12f644eb47cc9617b4b6ef4a7a2dac4a925ba5bc34eb350bea",
+    "pack_revision_digest": "blake3:304877a0d3853944c3f9c09b0bfaff03ea3243c2ffae17a8b24d91095830a67e",
+    "process_guard_sha256": "sha256:1d004081675f8e0e2ae8db99cd9261d9f17d0fbfca64967e8b0d7574251a74c3"
+  },
+  "managed_processes_stopped": true,
+  "manual_worker_plans": 0,
+  "real_model_reasoning_tested": false,
+  "review_gate_evidence": "The separate managed CSV challenge exercises exact checks and independent review.",
+  "review_gate_tested_here": false,
+  "schema": "worldstream/agent-swarm-autonomy-protocol-check/v1",
+  "status": "passed",
+  "trials": [
+    {
+      "authoritative_state_hash": "blake3:cd9cda48a13ea4e1f0ee5dff8b55abff2714b3a32eb48d27ce5ad78c1ded9f90",
+      "autonomy": {
+        "generated_invocation_count": 12,
+        "generated_work_count": 2,
+        "invocation_limit": 16,
+        "max_work_items": 2,
+        "phase": "waiting",
+        "reason": "The fixture's two independent contributions are ready for integration and review."
+      },
+      "concurrency_samples": [
+        {
+          "cycle": 1,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 2,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 3,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 4,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 5,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 6,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 7,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 8,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 9,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 10,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 11,
+          "native_running_without_completion": [
+            "auto-0e941d4b0da10d14-0009-reason-step-0",
+            "auto-0e941d4b0da10d14-0009-reason-step-1"
+          ]
+        },
+        {
+          "cycle": 12,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 13,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 14,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 15,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 16,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 17,
+          "native_running_without_completion": []
+        }
+      ],
+      "contribution_artifacts": [
+        {
+          "artifact_id": "artifact-auto-0e941d4b0da10d14-0009-reason-step-0",
+          "digest": "blake3:ec3ae83f0925defd9240d862f39be4640df5e18c8454e860577b17285d82e3a0",
+          "work_id": "auto-work-0e941d4b0da10d14-1"
+        },
+        {
+          "artifact_id": "artifact-auto-0e941d4b0da10d14-0009-reason-step-1",
+          "digest": "blake3:eca04122befa23489f9b8946f857b37fbe417fc57075a68719b17562eb20adf3",
+          "work_id": "auto-work-0e941d4b0da10d14-2"
+        }
+      ],
+      "contribution_count": 2,
+      "elapsed_seconds": 52.389,
+      "human_work_action_count": 0,
+      "invocation_kinds": {
+        "planning": 6,
+        "work_attempt": 2,
+        "work_claim": 2,
+        "work_proposal": 2
+      },
+      "manually_staged_plan_count": 0,
+      "max_observed_native_running": 2,
+      "mode": "parallel",
+      "paused_cycle_generated_nothing": true,
+      "planning_invocation_count": 6,
+      "policy": {
+        "allowed_tools": [],
+        "invocation_limit": 16,
+        "max_work_items": 2,
+        "resource_policy": "workspace_write"
+      },
+      "recovery": {
+        "attempts": [
+          {
+            "accepted": true,
+            "invocation_id": "auto-0e941d4b0da10d14-0009-reason-step-0",
+            "process_failed": false,
+            "revised_instruction": false
+          },
+          {
+            "accepted": true,
+            "invocation_id": "auto-0e941d4b0da10d14-0009-reason-step-1",
+            "process_failed": false,
+            "revised_instruction": false
+          }
+        ],
+        "failed_invocation_count": 0,
+        "recovered_work_count": 0
+      },
+      "restart_did_not_duplicate_work": true,
+      "restart_scope": "The coordinator command process reopens each cycle; the execution daemon stays alive.",
+      "result_count": 0,
+      "room_id": "01M34QY13KM1R9WZ1F102K7Y2C",
+      "room_seq": 7,
+      "scripted_setup_confirmation_count": 1,
+      "swarm_id": "swarm-948a1d0eac15b2588fc93acb",
+      "work_item_count": 2,
+      "worker_invocation_count": 6,
+      "worker_run_process_count": 17
+    },
+    {
+      "authoritative_state_hash": "blake3:625bf35473fdaced804cd7274f04d0a4b1d40c6dadb5946e86b15d2f477d4b10",
+      "autonomy": {
+        "generated_invocation_count": 14,
+        "generated_work_count": 2,
+        "invocation_limit": 16,
+        "max_work_items": 2,
+        "phase": "waiting",
+        "reason": "The fixture's two independent contributions are ready for integration and review."
+      },
+      "concurrency_samples": [
+        {
+          "cycle": 1,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 2,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 3,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 4,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 5,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 6,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 7,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 8,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 9,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 10,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 11,
+          "native_running_without_completion": [
+            "auto-c85bb105594baf01-0009-reason-step-1"
+          ]
+        },
+        {
+          "cycle": 12,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 13,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 14,
+          "native_running_without_completion": [
+            "auto-c85bb105594baf01-0012-reason-step-0"
+          ]
+        },
+        {
+          "cycle": 15,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 16,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 17,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 18,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 19,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 20,
+          "native_running_without_completion": []
+        }
+      ],
+      "contribution_artifacts": [
+        {
+          "artifact_id": "artifact-auto-c85bb105594baf01-0009-reason-step-1",
+          "digest": "blake3:7c2620af5ab84b6d43710dd4036ad758824d0b436081d9c76d0e604cec810eeb",
+          "work_id": "auto-work-c85bb105594baf01-2"
+        },
+        {
+          "artifact_id": "artifact-auto-c85bb105594baf01-0012-reason-step-0",
+          "digest": "blake3:ec42d121c950ccd1f062904dc275cb3de5cb362f0635c5d03885948298879f1e",
+          "work_id": "auto-work-c85bb105594baf01-1"
+        }
+      ],
+      "contribution_count": 2,
+      "elapsed_seconds": 71.537,
+      "human_work_action_count": 0,
+      "invocation_kinds": {
+        "planning": 7,
+        "work_attempt": 3,
+        "work_claim": 2,
+        "work_proposal": 2
+      },
+      "manually_staged_plan_count": 0,
+      "max_observed_native_running": 1,
+      "mode": "recovery",
+      "paused_cycle_generated_nothing": true,
+      "planning_invocation_count": 7,
+      "policy": {
+        "allowed_tools": [],
+        "invocation_limit": 16,
+        "max_work_items": 2,
+        "resource_policy": "workspace_write"
+      },
+      "recovery": {
+        "attempts": [
+          {
+            "accepted": false,
+            "invocation_id": "auto-c85bb105594baf01-0009-reason-step-0",
+            "process_failed": true,
+            "revised_instruction": false
+          },
+          {
+            "accepted": true,
+            "invocation_id": "auto-c85bb105594baf01-0012-reason-step-0",
+            "process_failed": false,
+            "revised_instruction": true
+          },
+          {
+            "accepted": true,
+            "invocation_id": "auto-c85bb105594baf01-0009-reason-step-1",
+            "process_failed": false,
+            "revised_instruction": false
+          }
+        ],
+        "failed_invocation_count": 1,
+        "recovered_work_count": 1
+      },
+      "restart_did_not_duplicate_work": true,
+      "restart_scope": "The coordinator command process reopens each cycle; the execution daemon stays alive.",
+      "result_count": 0,
+      "room_id": "01M34QZM8XWH9DKYNTBGJ5SJTH",
+      "room_seq": 7,
+      "scripted_setup_confirmation_count": 1,
+      "swarm_id": "swarm-69283414c249bdfcf24f1286",
+      "work_item_count": 2,
+      "worker_invocation_count": 7,
+      "worker_run_process_count": 20
+    },
+    {
+      "authoritative_state_hash": "blake3:932f243d8f649b7c3af87a4537ce6078ca6f7f8c355616aa48415ac062c5df1e",
+      "autonomy": {
+        "generated_invocation_count": 1,
+        "generated_work_count": 0,
+        "invocation_limit": 1,
+        "max_work_items": 2,
+        "phase": "budget_exhausted",
+        "reason": "The selected batch exceeds the remaining Invocation budget; no part was dispatched."
+      },
+      "concurrency_samples": [
+        {
+          "cycle": 1,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 2,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 3,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 4,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 5,
+          "native_running_without_completion": []
+        },
+        {
+          "cycle": 6,
+          "native_running_without_completion": []
+        }
+      ],
+      "contribution_artifacts": [],
+      "contribution_count": 0,
+      "elapsed_seconds": 8.148,
+      "human_work_action_count": 0,
+      "invocation_kinds": {
+        "planning": 1
+      },
+      "manually_staged_plan_count": 0,
+      "max_observed_native_running": 0,
+      "mode": "budget",
+      "paused_cycle_generated_nothing": true,
+      "planning_invocation_count": 1,
+      "policy": {
+        "allowed_tools": [],
+        "invocation_limit": 1,
+        "max_work_items": 2,
+        "resource_policy": "workspace_write"
+      },
+      "recovery": {
+        "attempts": [],
+        "failed_invocation_count": 0,
+        "recovered_work_count": 0
+      },
+      "restart_did_not_duplicate_work": true,
+      "restart_scope": "The coordinator command process reopens each cycle; the execution daemon stays alive.",
+      "result_count": 0,
+      "room_id": "01M34R1T4FH602P09AWPJQKXR1",
+      "room_seq": 1,
+      "scripted_setup_confirmation_count": 1,
+      "swarm_id": "swarm-58e1e82a1ae61253574b8165",
+      "work_item_count": 0,
+      "worker_invocation_count": 0,
+      "worker_run_process_count": 6
+    }
+  ]
+}

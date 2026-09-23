@@ -1,0 +1,21 @@
+{
+  "kind": "post_stop_diagnostic_only",
+  "recorded_in_room": false,
+  "converts_live_attempt_to_success": false,
+  "checker_executable": {
+    "digest": "blake3:84a8f36339470db7c0fe6c8a56ecab6d1fea4d80636e8571208c0e3db726e328",
+    "byte_length": 102560
+  },
+  "outcome": {
+    "outcome": "passed"
+  },
+  "stdout": "{\"cases\": 26, \"passed\": 26, \"failed\": []}\n",
+  "candidate_binding": {
+    "candidate": "blake3:04ce2646b2aa67e7061ef558df1134384bc6bfd606fac6c1d9e6df01c382beb6",
+    "inputs": [],
+    "criteria": {
+      "digest": "blake3:13e425ae98e41dbe0909638779230906ee6cd9f28ae4f53153a8095c9ebe162b",
+      "byte_length": 117
+    }
+  }
+}

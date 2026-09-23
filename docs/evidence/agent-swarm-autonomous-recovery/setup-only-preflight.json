@@ -1,0 +1,68 @@
+{
+  "status": "complete",
+  "root": "/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-recovery-setup-validate-of2e3fyt",
+  "goal_bytes": 2358,
+  "constraints": 10,
+  "source_constraint_bytes": [
+    1584,
+    1602,
+    1552,
+    461
+  ],
+  "result": {
+    "schema": "worldstream/operator-command/v1",
+    "command": "room validate",
+    "status": "complete",
+    "code": "complete",
+    "message": "The operator command completed.",
+    "next_action": "No further action is required for this command.",
+    "room_setup": {
+      "pack": {
+        "id": "worldstream.agent-swarm",
+        "version": "0.2.0",
+        "digest": "blake3:304877a0d3853944c3f9c09b0bfaff03ea3243c2ffae17a8b24d91095830a67e"
+      },
+      "seat_count": 5
+    }
+  },
+  "cleanup_proven": true,
+  "cleanup_receipt": {
+    "schema": "worldstream/operator-command/v1",
+    "command": "server status",
+    "status": "unavailable",
+    "code": "controller_unavailable",
+    "message": "The local controller is unavailable.",
+    "next_action": "Check the initialized control state and controller availability.",
+    "retained_server": {
+      "schema": "worldstream/retained-server-inspection/v1",
+      "evidence": "retained_only",
+      "controller": {
+        "availability": "available",
+        "generation": "a51b601947cf735e7e9a19dd1deb0563dc89e798d4be9f09e53c0a9863e5aab2",
+        "phase": "stopped",
+        "pid": 99329,
+        "endpoint": "127.0.0.1:59977",
+        "lease": "released"
+      },
+      "runtime": {
+        "availability": "available",
+        "generation": "c1ec421e3e54d0213e7bbd67c3aaf82b33dc134ca1c6d886e56e6b1ff273cc98",
+        "phase": "stopped",
+        "pid": 99330,
+        "endpoint": "127.0.0.1:59976",
+        "lease": "released"
+      },
+      "operation": {
+        "availability": "available",
+        "checkpoint": {
+          "schema": "worldstream/managed-lifecycle-operation/v1",
+          "operation_id": 2,
+          "action": "stop",
+          "stage": "complete",
+          "captured_running": [],
+          "restore_remaining": []
+        }
+      }
+    }
+  }
+}

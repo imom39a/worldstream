@@ -79,7 +79,7 @@ pub use activity_pack::{
     PackWireValidatedViewV1, PackWireViewerV1, PortablePackAdmissionV1, PreparedNewRoomGenesisV1,
     RetainedActivityPackV1, RoleDefinitionV1, SchemaReferenceV1, ValidatedPackObservationV1,
     ValidatedPackViewV1, ViewInputV1, activity_start_is_applicable,
-    projection_hash_for_canonical_bytes,
+    projection_hash_for_canonical_bytes, validate_pack_schema_document, validate_pack_schema_value,
 };
 pub use agent_heist::{
     ACCEPT_EXCHANGE, ACKNOWLEDGE_RESULT, AGENT_HEIST_PACK_ID, AGENT_HEIST_RETAINED_VERSION,

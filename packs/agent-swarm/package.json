@@ -1,0 +1,22 @@
+{
+  "name": "@worldstream/agent-swarm",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.18.1"
+  },
+  "scripts": {
+    "pack:check": "worldstream-pack check",
+    "pack:test": "worldstream-pack test",
+    "pack:build": "worldstream-pack build",
+    "pack:inspect": "worldstream-pack inspect",
+    "pack:prove": "worldstream-pack prove"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "@worldstream/pack-cli": "workspace:*",
+    "@worldstream/pack-sdk": "workspace:*",
+    "typescript": "5.9.2"
+  }
+}

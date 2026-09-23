@@ -1693,12 +1693,29 @@ fn serve_cursor_enforcing_connection(listener: &TcpListener, action_receipt: Opt
     // The protected Console is read-only with respect to Membership Cursor. A
     // rendered frame head is never an ACK and therefore must remain null here.
     assert_eq!(attach["body"]["after_frame_seq"], Value::Null);
-    send_fixture_message(
-        &mut socket,
-        "room.attached",
-        &fixture_attached(MEMBER_ID, "enabled"),
-    );
-    send_fixture_message(&mut socket, "projection.reset", &fixture_projection_reset());
+    if action_receipt.is_some() {
+        send_fixture_message(
+            &mut socket,
+            "room.attached",
+            &fixture_attached_with_retained_frames(),
+        );
+        // More than the old eight-message scan limit proves that the gateway
+        // drains the complete sync branch before acknowledging and submitting.
+        for frame_seq in 1..=9 {
+            send_fixture_message(
+                &mut socket,
+                "observation.deliver",
+                &fixture_observation_delivery(frame_seq),
+            );
+        }
+    } else {
+        send_fixture_message(
+            &mut socket,
+            "room.attached",
+            &fixture_attached(MEMBER_ID, "enabled"),
+        );
+        send_fixture_message(&mut socket, "projection.reset", &fixture_projection_reset());
+    }
     if let Some(action_receipt) = action_receipt {
         let sync_ack = read_fixture_message(&mut socket, "cursor sync ack");
         assert_eq!(sync_ack["type"], "room.sync_ack");
@@ -1758,6 +1775,30 @@ fn fixture_attached(member_id: &str, standing: &str) -> Value {
         "sync_token": "fixture-sync-token",
         "sync": {"kind":"projection_reset","baseline_frame_head":7,"reason":"initial_attach"},
         "pack": {"id":"agent-heist","version":"0.2.0","digest":format!("blake3:{}", "2".repeat(64))}
+    })
+}
+
+fn fixture_attached_with_retained_frames() -> Value {
+    let mut attached = fixture_attached(MEMBER_ID, "enabled");
+    attached["frame_head"] = json!(9);
+    attached["sync"] = json!({
+        "kind": "retained_frames",
+        "cursor_exclusive": 0,
+        "through_frame_head": 9,
+    });
+    attached
+}
+
+fn fixture_observation_delivery(frame_seq: u64) -> Value {
+    json!({
+        "room_id": ROOM_ID,
+        "member_id": MEMBER_ID,
+        "frame_seq": frame_seq,
+        "cause_room_seq": 7,
+        "frame_kind": "transition",
+        "observation_schema": "agent-heist.participant.v1",
+        "observation": {"frame": frame_seq},
+        "frame_payload_hash": format!("blake3:{}", "c".repeat(64)),
     })
 }
 

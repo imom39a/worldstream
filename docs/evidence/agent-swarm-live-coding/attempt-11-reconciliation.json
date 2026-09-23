@@ -1,0 +1,8 @@
+{
+  "kind": "explicit_exact_action_retry",
+  "payload_modified": false,
+  "returncode": 0,
+  "stdout": "{\n  \"event\": \"submission_uncertain\",\n  \"invocation_id\": \"auto-e4908122df7eddbf-0011-reason-step-0\"\n}\n",
+  "stderr": "",
+  "at_unix": 1790096771.799574
+}

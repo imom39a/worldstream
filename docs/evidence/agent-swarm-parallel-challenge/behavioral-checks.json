@@ -1,0 +1,179 @@
+{
+  "source_report": "results.json",
+  "checks": [
+    {
+      "mode": "serial",
+      "candidate_version": 1,
+      "outcome": {
+        "exit_code": 1,
+        "outcome": "failed"
+      },
+      "stdout": {
+        "cases": 16,
+        "passed": 15,
+        "failed": [
+          "round_trip"
+        ]
+      },
+      "stdout_artifact": {
+        "byte_length": 54,
+        "digest": "blake3:91609f67868b6b4b147abdb9c56ddb113b7545da712aadf3f837921edc0770a0"
+      },
+      "candidate_binding": {
+        "candidate": "blake3:f10279908c142e0a9487a12c69b795259e06dd5c788a639257760b31bd01909f",
+        "criteria": {
+          "byte_length": 66,
+          "digest": "blake3:535615215bcc958b615079ac78e9854362fb51f2f4d25a84e00e64dcd8d75a25"
+        },
+        "inputs": []
+      },
+      "checker_executable": {
+        "byte_length": 18800624,
+        "digest": "blake3:1041e18947ce4e9a36821cde7b2cf373525ed1e4bab72cf5203456c4dcd67dc3"
+      }
+    },
+    {
+      "mode": "serial",
+      "candidate_version": 2,
+      "outcome": {
+        "outcome": "passed"
+      },
+      "stdout": {
+        "cases": 16,
+        "passed": 16,
+        "failed": []
+      },
+      "stdout_artifact": {
+        "byte_length": 42,
+        "digest": "blake3:a9284e71c35b8c79c85039a5b2e7d9c11d9de84d4db7823906210fba8ad341ce"
+      },
+      "candidate_binding": {
+        "candidate": "blake3:f9c136be2a7cfd19b205b68b7e9adcb9299af372e9ceb171c20a8dcabd84ee9d",
+        "criteria": {
+          "byte_length": 66,
+          "digest": "blake3:535615215bcc958b615079ac78e9854362fb51f2f4d25a84e00e64dcd8d75a25"
+        },
+        "inputs": []
+      },
+      "checker_executable": {
+        "byte_length": 18800624,
+        "digest": "blake3:1041e18947ce4e9a36821cde7b2cf373525ed1e4bab72cf5203456c4dcd67dc3"
+      }
+    },
+    {
+      "mode": "serial",
+      "candidate_version": 3,
+      "outcome": {
+        "outcome": "passed"
+      },
+      "stdout": {
+        "cases": 16,
+        "passed": 16,
+        "failed": []
+      },
+      "stdout_artifact": {
+        "byte_length": 42,
+        "digest": "blake3:a9284e71c35b8c79c85039a5b2e7d9c11d9de84d4db7823906210fba8ad341ce"
+      },
+      "candidate_binding": {
+        "candidate": "blake3:95451d968e4dd723aba53b93426834aa9fdeb70a659015fb73afa56f19078bf4",
+        "criteria": {
+          "byte_length": 66,
+          "digest": "blake3:535615215bcc958b615079ac78e9854362fb51f2f4d25a84e00e64dcd8d75a25"
+        },
+        "inputs": []
+      },
+      "checker_executable": {
+        "byte_length": 18800624,
+        "digest": "blake3:1041e18947ce4e9a36821cde7b2cf373525ed1e4bab72cf5203456c4dcd67dc3"
+      }
+    },
+    {
+      "mode": "parallel",
+      "candidate_version": 1,
+      "outcome": {
+        "exit_code": 1,
+        "outcome": "failed"
+      },
+      "stdout": {
+        "cases": 16,
+        "passed": 15,
+        "failed": [
+          "round_trip"
+        ]
+      },
+      "stdout_artifact": {
+        "byte_length": 54,
+        "digest": "blake3:91609f67868b6b4b147abdb9c56ddb113b7545da712aadf3f837921edc0770a0"
+      },
+      "candidate_binding": {
+        "candidate": "blake3:f10279908c142e0a9487a12c69b795259e06dd5c788a639257760b31bd01909f",
+        "criteria": {
+          "byte_length": 66,
+          "digest": "blake3:535615215bcc958b615079ac78e9854362fb51f2f4d25a84e00e64dcd8d75a25"
+        },
+        "inputs": []
+      },
+      "checker_executable": {
+        "byte_length": 18800624,
+        "digest": "blake3:1041e18947ce4e9a36821cde7b2cf373525ed1e4bab72cf5203456c4dcd67dc3"
+      }
+    },
+    {
+      "mode": "parallel",
+      "candidate_version": 2,
+      "outcome": {
+        "outcome": "passed"
+      },
+      "stdout": {
+        "cases": 16,
+        "passed": 16,
+        "failed": []
+      },
+      "stdout_artifact": {
+        "byte_length": 42,
+        "digest": "blake3:a9284e71c35b8c79c85039a5b2e7d9c11d9de84d4db7823906210fba8ad341ce"
+      },
+      "candidate_binding": {
+        "candidate": "blake3:f9c136be2a7cfd19b205b68b7e9adcb9299af372e9ceb171c20a8dcabd84ee9d",
+        "criteria": {
+          "byte_length": 66,
+          "digest": "blake3:535615215bcc958b615079ac78e9854362fb51f2f4d25a84e00e64dcd8d75a25"
+        },
+        "inputs": []
+      },
+      "checker_executable": {
+        "byte_length": 18800624,
+        "digest": "blake3:1041e18947ce4e9a36821cde7b2cf373525ed1e4bab72cf5203456c4dcd67dc3"
+      }
+    },
+    {
+      "mode": "parallel",
+      "candidate_version": 3,
+      "outcome": {
+        "outcome": "passed"
+      },
+      "stdout": {
+        "cases": 16,
+        "passed": 16,
+        "failed": []
+      },
+      "stdout_artifact": {
+        "byte_length": 42,
+        "digest": "blake3:a9284e71c35b8c79c85039a5b2e7d9c11d9de84d4db7823906210fba8ad341ce"
+      },
+      "candidate_binding": {
+        "candidate": "blake3:95451d968e4dd723aba53b93426834aa9fdeb70a659015fb73afa56f19078bf4",
+        "criteria": {
+          "byte_length": 66,
+          "digest": "blake3:535615215bcc958b615079ac78e9854362fb51f2f4d25a84e00e64dcd8d75a25"
+        },
+        "inputs": []
+      },
+      "checker_executable": {
+        "byte_length": 18800624,
+        "digest": "blake3:1041e18947ce4e9a36821cde7b2cf373525ed1e4bab72cf5203456c4dcd67dc3"
+      }
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "cancellation": {
+    "path": "cancellation.json",
+    "sha256": "ac48bbcfdb296fd0fe5df46ef8498b7dd0f278e8168945e05c68e82c13c50d06"
+  },
+  "effort": "medium",
+  "executable": "/Users/vinothshanmugam/.nvm/versions/node/v25.9.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+  "executable_sha256": "f4a74117b8142cda581c95ff753abf4508b5636d89682c1ed77e4a9249af8963",
+  "fresh": {
+    "path": "fresh.json",
+    "sha256": "0e240db8828cf6d54bc7a0b019ff73d648f07da72d035e1a5890f9374cbdc6f8"
+  },
+  "guard": "/Users/vinothshanmugam/code/agent-streamer/target/debug/worldstream-agent-swarm-process-guard",
+  "guard_sha256": "2719692d96d8ee4bec37fae81c319c3e4e270b814b9fd8a227c079dd00a9cb10",
+  "isolation": {
+    "path": "isolation.json",
+    "sha256": "687da0ee6f89ef2452503252ca647c60e1ee0b88f16b517866871531bb688db3"
+  },
+  "model": "gpt-5.6-sol",
+  "owner_loss": {
+    "path": "owner-loss.json",
+    "sha256": "53065e3b5b58643a891857f66575c1d7bde82586537dd42c3d78cd06068a276d"
+  },
+  "profile": {
+    "config_sha256": "d5cc45ce105f56ccdbb2849b33d2e0e2a30a0a8b67a761783e370d213a4bc187",
+    "expires_at": 1790105239,
+    "guard_sha256": "2719692d96d8ee4bec37fae81c319c3e4e270b814b9fd8a227c079dd00a9cb10",
+    "profile_root": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-live-coding-yxknger7/live-evaluation/native/profile",
+    "working_area": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-live-coding-yxknger7/work/live-coding"
+  },
+  "resumed": {
+    "path": "resumed.json",
+    "sha256": "7a93f6c80e3c325470821fa49d59eb68ecc7dee5541118fd40429dd52223c2bb"
+  },
+  "schema": "worldstream/codex-native-local-admission@1"
+}

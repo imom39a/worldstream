@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeSet,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -12,8 +13,8 @@ use wasmtime::component::{
     types::{ComponentItem, Type},
 };
 use wasmtime::{
-    Config, Engine, Error as WasmtimeError, OutOfMemory, Store, StoreLimits, StoreLimitsBuilder,
-    Trap,
+    Cache, CacheConfig, Config, Engine, Error as WasmtimeError, OutOfMemory, Store, StoreLimits,
+    StoreLimitsBuilder, Trap,
 };
 use worldstream_core::{
     ActivityDispositionV1, ActivityGenesisInputV1, ActivityPackV1, CanonicalJsonError,
@@ -78,6 +79,16 @@ pub const STORE_TABLE_LIMIT: usize = 2_000;
 /// Maximum native stack reserved for WebAssembly execution.
 pub const COMPONENT_MAX_WASM_STACK_BYTES: usize = 2 * 1024 * 1024;
 
+/// Environment variable selecting a disposable host-local compilation cache.
+///
+/// When set to an absolute, non-empty directory, the host enables Wasmtime's
+/// on-disk compilation cache for the pinned deterministic engine profile. This
+/// never carries authority: original Component bytes remain authoritative, the
+/// cache is disposable, and any identity or configuration mismatch simply
+/// recompiles from those bytes. Leaving it unset preserves the original
+/// behavior of compiling on every admission.
+pub const COMPONENT_CACHE_DIRECTORY_ENV: &str = "WORLDSTREAM_COMPONENT_CACHE_DIR";
+
 static COMPILE_GATE: ConcurrencyGate = ConcurrencyGate::new(COMPILE_CONCURRENCY_LIMIT);
 static CALLBACK_GATE: ConcurrencyGate = ConcurrencyGate::new(CALLBACK_CONCURRENCY_LIMIT);
 
@@ -93,7 +104,8 @@ impl ComponentPackHostV1 {
     /// # Errors
     ///
     /// Returns a stable error if this process cannot initialize the pinned
-    /// Wasmtime engine under the required deterministic configuration.
+    /// Wasmtime engine under the required deterministic configuration, or if
+    /// an explicitly configured disposable compilation cache is unusable.
     pub fn new() -> Result<Self, ComponentHostErrorV1> {
         let mut config = Config::new();
         // The Wasmtime dependency deliberately omits every async/WASI feature;
@@ -108,6 +120,9 @@ impl ComponentPackHostV1 {
             .max_wasm_stack(COMPONENT_MAX_WASM_STACK_BYTES)
             .cranelift_nan_canonicalization(true)
             .parallel_compilation(COMPONENT_PARALLEL_COMPILATION);
+        if let Some(cache) = component_compilation_cache()? {
+            config.cache(Some(cache));
+        }
         let engine = Engine::new(&config).map_err(|_| ComponentHostErrorV1::ComponentRejected)?;
         Ok(Self { engine })
     }
@@ -151,6 +166,31 @@ impl ComponentPackHostV1 {
             status,
         ))
     }
+}
+
+/// Builds the optional disposable compilation cache from the environment.
+///
+/// An unset or empty variable disables caching. A configured directory must be
+/// absolute; the cache itself creates it. Explicit misconfiguration fails
+/// closed rather than silently compiling every admission.
+fn component_compilation_cache() -> Result<Option<Cache>, ComponentHostErrorV1> {
+    component_compilation_cache_from(std::env::var_os(COMPONENT_CACHE_DIRECTORY_ENV))
+}
+
+fn component_compilation_cache_from(
+    directory: Option<std::ffi::OsString>,
+) -> Result<Option<Cache>, ComponentHostErrorV1> {
+    let Some(directory) = directory else {
+        return Ok(None);
+    };
+    if directory.is_empty() {
+        return Ok(None);
+    }
+    let mut cache_config = CacheConfig::new();
+    cache_config.with_directory(PathBuf::from(directory));
+    Cache::new(cache_config)
+        .map(Some)
+        .map_err(|_| ComponentHostErrorV1::ComponentCacheUnavailable)
 }
 
 struct ComponentPackAdapterV1 {

@@ -64,8 +64,11 @@ struct LaunchFacts {
 
 impl LaunchFacts {
     fn same_policy(&self, other: &Self) -> bool {
+        self.executable == other.executable && self.same_installation_policy(other)
+    }
+
+    fn same_installation_policy(&self, other: &Self) -> bool {
         self.state == other.state
-            && self.executable == other.executable
             && self.config == other.config
             && self.working_directory == other.working_directory
             && self.data_directory == other.data_directory
@@ -270,6 +273,31 @@ impl ProcessRuntimeControl {
         }
         command.spawn().map_err(|_| LifecycleError::Unavailable)
     }
+
+    fn clean_stop_allows_executable_rebind(
+        &self,
+        retained: &LaunchFacts,
+        desired: &LaunchFacts,
+    ) -> Result<bool, LifecycleError> {
+        // A side-by-side application update changes the fixed shipped Runtime
+        // path. Explicit Start may replace only that path after the previous
+        // generation published a clean stop and released ownership; every
+        // installation/configuration input remains exact.
+        if retained.executable == desired.executable || !retained.same_installation_policy(desired)
+        {
+            return Ok(false);
+        }
+        let Some((snapshot, current)) = self.retained()? else {
+            return Ok(false);
+        };
+        Ok(current.generation == retained.generation
+            && snapshot.phase == ProcessPhase::Stopped
+            && !self
+                .ownership
+                .is_leased(ProcessRole::Runtime)
+                .map_err(|_| LifecycleError::Unavailable)?
+            && stopped_or_foreign(current.endpoint) == RuntimeObservation::Stopped)
+    }
 }
 
 impl RuntimeControl for ProcessRuntimeControl {
@@ -308,9 +336,9 @@ impl RuntimeControl for ProcessRuntimeControl {
             .lock()
             .map_err(|_| LifecycleError::Unavailable)?;
         let mut facts = self.desired_facts()?;
-        if self
-            .read_facts()?
-            .is_some_and(|retained| !retained.same_policy(&facts))
+        if let Some(retained) = self.read_facts()?
+            && !retained.same_policy(&facts)
+            && !self.clean_stop_allows_executable_rebind(&retained, &facts)?
         {
             return Err(LifecycleError::Invalid);
         }

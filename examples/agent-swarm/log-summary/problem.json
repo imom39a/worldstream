@@ -1,0 +1,12 @@
+{
+  "goal": "Implement a standard-library Python module named log_summary.py with summarize_log(text). Each nonblank input line must be LEVEL: message where LEVEL is INFO, WARN, or ERROR. Return a dictionary with total_lines and counts keyed by all three levels. Ignore blank lines. Raise ValueError for malformed lines or unknown levels, and include the one-based line number in the error message.",
+  "constraints": [
+    "Keep the implementation in log_summary.py and use only the Python standard library.",
+    "Do not change the checker or problem definition; submit a Contribution containing the complete implementation."
+  ],
+  "acceptance_criterion": "The configured checker passes all valid-input, blank-line, count, unknown-level, and malformed-line cases against the integrated Candidate.",
+  "target": "log_summary.py",
+  "initial_source_file": "log_summary.py",
+  "checker_file": "checker.py",
+  "require_parallel": false
+}

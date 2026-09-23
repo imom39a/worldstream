@@ -64,5 +64,6 @@ pnpm --dir web/console test
 pnpm --dir web/console build
 
 & "$PSScriptRoot/smoke-operator.ps1"
+& "$PSScriptRoot/verify-agent-swarm-native.ps1"
 
 Write-Host 'WorldStream bootstrap verification passed.'

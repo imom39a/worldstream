@@ -17,6 +17,7 @@ worldstream-core = { path = "../worldstream-core" }
 worldstream-pack-bundle = { path = "../worldstream-pack-bundle" }
 
 [dev-dependencies]
+tempfile.workspace = true
 wat.workspace = true
 worldstream-core = { path = "../worldstream-core", features = ["conformance-tracer"] }
 

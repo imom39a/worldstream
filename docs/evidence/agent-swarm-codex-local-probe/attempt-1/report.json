@@ -1,0 +1,82 @@
+{
+  "cli_version": "0.149.0",
+  "error": "guarded turn failed: {\"elapsed_seconds\": 11.516, \"exit_code\": 1, \"timed_out\": false, \"stderr_bytes\": 436, \"stderr_sha256\": \"0745bb1a5723af44d9b97437bee2b7a3e0ddfecee31dbf5e23b1aacbc4245580\", \"session_mode\": \"resume\"}",
+  "guard_sha256": "43954c7cf34e37953b1b1de87dcc40138f3b7be27d29515233bfea3eaf048e47",
+  "moving_alias_acknowledged": true,
+  "native_executable_blake3": "blake3:04b8065938aecf56fb0c76a8505ca4b79b44a9495be5bf72a0ec9067aaea69e0",
+  "native_executable_sha256": "f4a74117b8142cda581c95ff753abf4508b5636d89682c1ed77e4a9249af8963",
+  "provider_admission": "blocked",
+  "release_qualification": "not_attempted",
+  "requested_effort": "medium",
+  "requested_model": "gpt-5.6-sol",
+  "schema": "worldstream/codex-local-prequalification-probe@1",
+  "script_sha256": "1d42e1199a816dbdb43b73591ea2d6a6cea4492d3ea6af5def6af2420729c2d8",
+  "standalone_permission_canaries": {
+    "results": {
+      "read:read_inside": {
+        "exit_code": 0,
+        "in_root_canary_returned": true,
+        "os_denial_reported": false,
+        "out_of_root_canary_returned": false
+      },
+      "read:read_outside": {
+        "exit_code": 1,
+        "in_root_canary_returned": false,
+        "os_denial_reported": true,
+        "out_of_root_canary_returned": false
+      },
+      "read:write_inside": {
+        "exit_code": 1,
+        "in_root_canary_returned": false,
+        "os_denial_reported": true,
+        "out_of_root_canary_returned": false
+      },
+      "read:write_outside": {
+        "exit_code": 1,
+        "in_root_canary_returned": false,
+        "os_denial_reported": true,
+        "out_of_root_canary_returned": false
+      },
+      "write:read_inside": {
+        "exit_code": 0,
+        "in_root_canary_returned": true,
+        "os_denial_reported": false,
+        "out_of_root_canary_returned": false
+      },
+      "write:read_outside": {
+        "exit_code": 1,
+        "in_root_canary_returned": false,
+        "os_denial_reported": true,
+        "out_of_root_canary_returned": false
+      },
+      "write:write_inside": {
+        "exit_code": 0,
+        "in_root_canary_returned": false,
+        "os_denial_reported": false,
+        "out_of_root_canary_returned": false
+      },
+      "write:write_outside": {
+        "exit_code": 1,
+        "in_root_canary_returned": false,
+        "os_denial_reported": true,
+        "out_of_root_canary_returned": false
+      }
+    },
+    "scope": "standalone Codex sandbox, not app-server/Swarm invocation qualification"
+  },
+  "status": "incomplete",
+  "turns": [
+    {
+      "elapsed_seconds": 24.499,
+      "exit_code": 0,
+      "expected_next_work_selected": true,
+      "no_tool_item_observed": true,
+      "session_mode": "fresh",
+      "stage": "initial",
+      "stderr_bytes": 404,
+      "stderr_sha256": "2c6af82cf711f446b8de20b974c44eea6df079d843fb7f5670c269ccf402d708",
+      "timed_out": false,
+      "transcript_sha256": "7d52ed5872753009897928333ed15ff899597c6ee0c1d4acd4d91625f0f3315e"
+    }
+  ]
+}

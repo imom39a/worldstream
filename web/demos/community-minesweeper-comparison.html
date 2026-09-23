@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WorldStream · Minesweeper · LLM vs JEV</title>
+  <style>
+    :root { color-scheme: dark; --bg:#090d12; --panel:#121a22; --panel2:#17232d; --line:#2a3946; --ink:#f3efe4; --muted:#9ca9b2; --left:#ff9a62; --right:#74d5c0; --gold:#ffd166; --bad:#ff7182; --good:#83e3a6; }
+    * { box-sizing:border-box } body { margin:0; min-height:100vh; color:var(--ink); background:radial-gradient(circle at 10% 0%,rgba(255,154,98,.16),transparent 31rem),radial-gradient(circle at 92% 4%,rgba(116,213,192,.13),transparent 29rem),var(--bg); font-family:Inter,ui-sans-serif,system-ui,sans-serif }
+    button,select,input { font:inherit } button { cursor:pointer } main { width:min(1480px,calc(100% - 32px)); margin:0 auto; padding:28px 0 94px }
+    header { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; padding-bottom:20px; border-bottom:1px solid var(--line) } .eyebrow,.micro { color:var(--gold); font:700 .64rem ui-monospace,monospace; letter-spacing:.12em; text-transform:uppercase } h1 { margin:7px 0 0; font-size:clamp(2.2rem,5vw,5.6rem); letter-spacing:-.07em; line-height:.9 } .lede { max-width:690px; color:var(--muted); line-height:1.5; margin:14px 0 0 } .status { display:flex; gap:9px; align-items:center; border:1px solid var(--line); border-radius:99px; color:var(--muted); padding:9px 12px; font:700 .66rem ui-monospace,monospace; text-transform:uppercase; white-space:nowrap } .dot { width:8px; height:8px; border-radius:50%; background:var(--gold); box-shadow:0 0 0 4px rgba(255,209,102,.12) } .status.running .dot { background:var(--good); box-shadow:0 0 0 4px rgba(131,227,166,.13) } .status.error .dot { background:var(--bad) } .status.complete .dot { background:var(--good); box-shadow:0 0 0 4px rgba(131,227,166,.16) }
+    .setup { display:grid; grid-template-columns:1fr auto 1fr; gap:1px; margin-top:18px; background:var(--line); border:1px solid var(--line); border-radius:15px; overflow:hidden } .setup-pane { background:rgba(18,26,34,.97); padding:16px } .setup-pane.left { border-top:3px solid var(--left) } .setup-pane.right { border-top:3px solid var(--right) } .setup-title { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:.8rem; font-weight:750 } .setup-title small { color:var(--muted); font:700 .62rem ui-monospace,monospace; text-transform:uppercase } .controls { display:flex; flex-wrap:wrap; gap:9px; margin-top:14px } .control { display:grid; gap:5px; color:var(--muted); font:700 .62rem ui-monospace,monospace; letter-spacing:.04em; text-transform:uppercase } select,input[type=number],input[type=text] { min-width:150px; border:1px solid var(--line); border-radius:8px; background:#0c1319; color:var(--ink); padding:8px 10px; font-size:.78rem; text-transform:none; letter-spacing:0 } input[type=number] { min-width:76px; width:84px } .timer { min-width:184px; display:grid; place-items:center; padding:16px 18px; background:linear-gradient(180deg,#18212a,#10171e); text-align:center } .timer strong { display:block; font:800 clamp(2rem,4vw,3.3rem)/1 ui-monospace,monospace; letter-spacing:-.08em } .timer span { color:var(--muted); font:700 .62rem ui-monospace,monospace; text-transform:uppercase; margin-top:8px } .actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; align-items:end; margin-top:12px } .primary,.secondary { border:1px solid transparent; border-radius:9px; padding:9px 13px; font-size:.76rem; font-weight:750 } .primary { color:#111820; background:var(--gold) } .secondary { color:var(--ink); border-color:var(--line); background:transparent } .primary:disabled,.secondary:disabled { opacity:.45; cursor:default }
+    .meta { display:flex; flex-wrap:wrap; gap:8px; padding:13px 2px 0; color:var(--muted); font:700 .64rem ui-monospace,monospace; text-transform:uppercase } .meta span { padding:5px 8px; border:1px solid var(--line); border-radius:99px }
+    .rooms { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:16px } .room { min-width:0; border:1px solid var(--line); border-radius:16px; overflow:hidden; background:rgba(18,26,34,.96); box-shadow:0 18px 55px rgba(0,0,0,.28) } .room-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 16px; border-bottom:1px solid var(--line) } .room-head h2 { margin:0; font-size:1rem } .room-head p { margin:4px 0 0; color:var(--muted); font:700 .66rem ui-monospace,monospace } .room-pill { border:1px solid var(--line); border-radius:99px; padding:6px 9px; color:var(--muted); font:700 .62rem ui-monospace,monospace; text-transform:uppercase } .room.left .room-pill { color:var(--left) } .room.right .room-pill { color:var(--right) } .room-controls { display:flex; gap:6px } .room-controls button { background:transparent; border:1px solid var(--line); color:var(--muted); border-radius:8px; padding:5px 8px; font:700 .58rem ui-monospace,monospace; letter-spacing:.06em; text-transform:uppercase; cursor:pointer } .room-controls button:hover:not(:disabled) { color:var(--ink) } .room-controls button:disabled { opacity:.4; cursor:not-allowed } .room-controls .room-end { color:var(--bad) }
+    .board-wrap { display:grid; grid-template-columns:minmax(0,1fr) 220px; height:390px; background:#0b1218 } canvas { display:block; width:100%; height:100% }
+    .decision-trace { height:100%; overflow:auto; padding:11px 12px; border-left:1px solid var(--line); background:linear-gradient(180deg,rgba(9,13,18,.55),rgba(9,13,18,.88)); color:#dbe5e6 } .decision-trace.empty { color:var(--muted); font-size:.65rem; line-height:1.4 } .decision-kicker { display:flex; justify-content:space-between; gap:8px; color:var(--muted); font:700 .57rem ui-monospace,monospace; letter-spacing:.07em; text-transform:uppercase } .decision-choice { margin-top:5px; color:var(--ink); font:800 .86rem ui-monospace,monospace; overflow-wrap:anywhere } .decision-action { margin-top:3px; color:var(--gold); font:700 .63rem ui-monospace,monospace } .decision-meta { display:flex; flex-wrap:wrap; gap:5px 8px; margin-top:7px; color:var(--muted); font:600 .58rem ui-monospace,monospace } .decision-meta b { color:#dbe5e6 } .decision-reason { margin-top:7px; color:#c1cdd0; font-size:.64rem; line-height:1.35 } .decision-reason strong { color:var(--muted); font:700 .57rem ui-monospace,monospace; letter-spacing:.06em; text-transform:uppercase } .decision-bars { display:grid; gap:4px; margin-top:8px } .decision-bar { display:grid; grid-template-columns:minmax(0,1fr) 52px 30px; align-items:center; gap:6px; color:var(--muted); font:600 .57rem ui-monospace,monospace } .decision-bar i { display:block; height:5px; border-radius:99px; background:linear-gradient(90deg,var(--gold),var(--good)); transform-origin:left center } .decision-bar span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap } .decision-bar b { text-align:right; color:#dbe5e6 } .confidence { display:flex; align-items:center; gap:8px; margin-top:8px; color:var(--muted); font:700 .57rem ui-monospace,monospace; text-transform:uppercase } .confidence i { flex:1; height:6px; border-radius:99px; background:rgba(255,255,255,.09); overflow:hidden } .confidence i b { display:block; height:100%; width:0; border-radius:99px; background:linear-gradient(90deg,var(--gold),var(--good)) } .decision-trace.disposition-mine { border-left-color:var(--bad) } .decision-trace.disposition-win { border-left-color:var(--good) }
+    .room-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--line); border-top:1px solid var(--line) } .stat { padding:10px 12px; min-width:0; background:var(--panel) } .stat span { display:block; color:var(--muted); font:700 .58rem ui-monospace,monospace; text-transform:uppercase } .stat b { display:block; margin-top:5px; font-size:.92rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis } .stat b.success { color:var(--good) } .stat b.claiming { color:var(--gold) } .stat b.failure { color:var(--bad) }
+    @media (max-width:900px) { .setup,.rooms { grid-template-columns:1fr } .timer { order:-1; min-height:90px } } @media (max-width:560px) { main { width:calc(100% - 18px); padding-top:17px } header { align-items:flex-start; flex-direction:column } h1 { font-size:3.4rem } .board-wrap { grid-template-columns:1fr; grid-template-rows:300px auto; height:auto } .decision-trace { border-left:0; border-top:1px solid var(--line); max-height:200px } .room-stats { grid-template-columns:repeat(2,1fr) } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><div class="eyebrow">WorldStream / Minesweeper</div><h1>Minesweeper</h1></div>
+      <div class="status" id="status"><i class="dot"></i><span>idle · ready</span></div>
+    </header>
+
+    <section class="setup" aria-label="Comparison setup">
+      <div class="setup-pane left"><div class="setup-title"><span>01 / LLM only</span><small id="leftStatus">idle</small></div><div class="controls"><label class="control">Model<select id="sharedModel"></select></label></div></div>
+      <div class="timer"><strong id="timer">05:00</strong><span id="timerLabel">shared clock · not started</span></div>
+      <div class="setup-pane right"><div class="setup-title"><span>02 / JEV</span><small id="rightStatus">idle</small></div><div class="controls"><label class="control">JEV model<select id="jevModel"></select></label></div></div>
+    </section>
+
+    <div class="actions">
+      <label class="control">Width<input id="width" type="number" min="2" max="30" value="8"></label>
+      <label class="control">Height<input id="height" type="number" min="2" max="30" value="8"></label>
+      <label class="control">Mines<input id="mines" type="number" min="1" max="249999" value="10"></label>
+      <label class="control">Time (seconds)<input id="duration" type="number" min="5" max="3600" value="300"></label>
+      <label class="control">Board seed<input id="seed" type="text" placeholder="optional"></label>
+      <button class="secondary" id="stop" disabled>Stop run</button>
+      <button class="primary" id="start">Start two Rooms</button>
+    </div>
+
+    <section class="rooms" aria-label="Live comparison rooms">
+      <article class="room left">
+        <div class="room-head"><div><h2>LLM only</h2><p id="leftSubtitle">Waiting for a comparison run.</p></div><div class="room-controls"><button class="room-pause" data-side="left" type="button">Pause</button><button class="room-end" data-side="left" type="button">End room</button></div></div>
+        <div class="board-wrap"><canvas id="leftBoard" aria-label="LLM Minesweeper board"></canvas><div class="decision-trace empty" id="leftDecision" aria-live="polite">No decision trace yet.</div></div>
+        <div class="room-stats"><div class="stat"><span>Round</span><b id="leftRound">0</b></div><div class="stat"><span>Revealed</span><b id="leftRevealed">0 / 54</b></div><div class="stat"><span>Mines left</span><b id="leftMinesLeft">10</b></div><div class="stat"><span>Outcome</span><b id="leftOutcome">waiting</b></div></div>
+      </article>
+      <article class="room right">
+        <div class="room-head"><div><h2>JEV</h2><p id="rightSubtitle">Waiting for a comparison run.</p></div><div class="room-controls"><button class="room-pause" data-side="right" type="button">Pause</button><button class="room-end" data-side="right" type="button">End room</button></div></div>
+        <div class="board-wrap"><canvas id="rightBoard" aria-label="JEV Minesweeper board"></canvas><div class="decision-trace empty" id="rightDecision" aria-live="polite">No decision trace yet.</div></div>
+        <div class="room-stats"><div class="stat"><span>Round</span><b id="rightRound">0</b></div><div class="stat"><span>Revealed</span><b id="rightRevealed">0 / 54</b></div><div class="stat"><span>Mines left</span><b id="rightMinesLeft">10</b></div><div class="stat"><span>Outcome</span><b id="rightOutcome">waiting</b></div></div>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    const sample = { width:8, height:8, mines:10, phase:'ready', round:0, cells:'?'.repeat(64), revealed_count:0, safe_total:54, flags:0, boom:null, outcome:{status:'ready', moves:0, revealed:0, safe_total:54} };
+    const state = { config:null, timer:{status:'idle'}, sides:{ left:{status:'idle', projection:sample, events:[], decisions:[], event_total:0}, right:{status:'idle', projection:sample, events:[], decisions:[], event_total:0} } };
+    const $ = id => document.getElementById(id);
+    const number = n => Number(n ?? 0).toLocaleString('en-US');
+    const duration = ms => { const total = Math.max(0, Math.round(Number(ms) / 1000)); return `${String(Math.floor(total / 60)).padStart(2,'0')}:${String(total % 60).padStart(2,'0')}`; };
+    const DIGIT_COLORS = { '1':'#69b9ff','2':'#72e0a1','3':'#ff9a5c','4':'#947ff1','5':'#ffd166','6':'#74d5c0','7':'#f386d4','8':'#d28cff' };
+    const TERMINAL = new Set(['won','lost','time_limit','ended','error']);
+
+    function sideProjection(side) { return state.sides[side].projection || sample; }
+
+    function roundRect(ctx, x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+
+    function draw(side) {
+      const canvas = $(side + 'Board');
+      const rect = canvas.getBoundingClientRect();
+      const dpr = Math.min(devicePixelRatio || 1, 2);
+      const ctx = canvas.getContext('2d');
+      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const w = rect.width, h = rect.height, p = sideProjection(side);
+      ctx.clearRect(0, 0, w, h);
+      if (!p || typeof p.cells !== 'string') return;
+      const cols = p.width, rows = p.height, pad = 14;
+      const cell = Math.floor(Math.min((w - 2 * pad) / cols, (h - 2 * pad) / rows));
+      const boardW = cell * cols, boardH = cell * rows;
+      const ox = Math.floor((w - boardW) / 2), oy = Math.floor((h - boardH) / 2);
+      const boom = Array.isArray(p.boom) ? p.boom : null;
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const token = p.cells[r * cols + c];
+          const x = ox + c * cell, y = oy + r * cell, inset = Math.max(1, Math.floor(cell * 0.06));
+          const isBoom = boom && boom[0] === r && boom[1] === c;
+          if (token === '?') {
+            ctx.fillStyle = '#22313c'; roundRect(ctx, x + inset, y + inset, cell - 2 * inset, cell - 2 * inset, 3); ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,.07)'; ctx.lineWidth = 1; ctx.stroke();
+          } else if (token === 'F') {
+            ctx.fillStyle = '#3a2f18'; roundRect(ctx, x + inset, y + inset, cell - 2 * inset, cell - 2 * inset, 3); ctx.fill();
+            ctx.fillStyle = '#ffd166'; ctx.font = `800 ${Math.floor(cell * 0.5)}px ui-monospace,monospace`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText('F', x + cell / 2, y + cell / 2 + 1);
+          } else if (token === '*') {
+            ctx.fillStyle = isBoom ? '#7a2230' : '#2b1a20'; roundRect(ctx, x + inset, y + inset, cell - 2 * inset, cell - 2 * inset, 3); ctx.fill();
+            ctx.fillStyle = isBoom ? '#ffd7dc' : '#ff7182'; ctx.font = `800 ${Math.floor(cell * 0.55)}px ui-monospace,monospace`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText('*', x + cell / 2, y + cell / 2 + 1);
+          } else {
+            ctx.fillStyle = '#101820'; roundRect(ctx, x + inset, y + inset, cell - 2 * inset, cell - 2 * inset, 3); ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,.04)'; ctx.lineWidth = 1; ctx.stroke();
+            if (token !== '0') {
+              ctx.fillStyle = DIGIT_COLORS[token] || '#dbe5e6';
+              ctx.font = `800 ${Math.floor(cell * 0.52)}px ui-monospace,monospace`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+              ctx.fillText(token, x + cell / 2, y + cell / 2 + 1);
+            }
+          }
+        }
+      }
+    }
+
+    function renderDecision(side) {
+      const box = $(side + 'Decision');
+      const decision = (state.sides[side].decisions || []).filter(item => item && item.kind === 'participant_decision').at(-1);
+      if (!decision) {
+        box.className = 'decision-trace empty';
+        box.replaceChildren(Object.assign(document.createElement('span'), { textContent: 'No decision trace yet.' }));
+        return;
+      }
+      const selected = decision.selected || {};
+      const status = decision.fallback ? 'fallback' : (decision.reason || 'choice');
+      box.className = `decision-trace disposition-${decision.fallback ? 'mine' : (decision.reason || 'act')}`;
+      const kicker = document.createElement('div'); kicker.className = 'decision-kicker';
+      kicker.append(
+        Object.assign(document.createElement('span'), { textContent: `${decision.actor || side} · round ${number(decision.round)}` }),
+        Object.assign(document.createElement('span'), { textContent: status })
+      );
+      const choice = document.createElement('div'); choice.className = 'decision-choice';
+      choice.textContent = `reveal ${selected.cell || '—'}`;
+      const action = document.createElement('div'); action.className = 'decision-action';
+      action.textContent = decision.fallback ? 'fallback · no usable provider choice' : `row ${number((selected.row ?? 0) + 1)} · col ${number((selected.col ?? 0) + 1)}`;
+      const meta = document.createElement('div'); meta.className = 'decision-meta';
+      [decision.provider_model ? `model ${decision.provider_model}` : '', decision.reason ? `reason ${decision.reason}` : ''].filter(Boolean)
+        .forEach(value => meta.append(Object.assign(document.createElement('span'), { textContent: value })));
+      box.replaceChildren(kicker, choice, action);
+      if (meta.childElementCount) box.append(meta);
+      const confidence = Number(decision.confidence);
+      if (Number.isFinite(confidence)) {
+        const wrap = document.createElement('div'); wrap.className = 'confidence';
+        wrap.append(Object.assign(document.createElement('span'), { textContent: 'confidence' }));
+        const track = document.createElement('i'); const fill = document.createElement('b');
+        fill.style.width = `${Math.round(Math.max(0, Math.min(1, confidence)) * 100)}%`;
+        track.append(fill); wrap.append(track);
+        wrap.append(Object.assign(document.createElement('span'), { textContent: `${Math.round(confidence * 100)}%` }));
+        box.append(wrap);
+      }
+      const probabilities = decision.probabilities;
+      if (probabilities && typeof probabilities === 'object') {
+        const entries = Object.entries(probabilities).filter(([, v]) => typeof v === 'number').sort((a, b) => b[1] - a[1]).slice(0, 4);
+        if (entries.length) {
+          const bars = document.createElement('div'); bars.className = 'decision-bars';
+          for (const [label, value] of entries) {
+            const bar = document.createElement('div'); bar.className = 'decision-bar';
+            bar.append(Object.assign(document.createElement('span'), { textContent: label }));
+            const track = document.createElement('i'); track.style.transform = `scaleX(${Math.max(0, Math.min(1, value))})`; bar.append(track);
+            bar.append(Object.assign(document.createElement('b'), { textContent: `${Math.round(value * 100)}%` }));
+            bars.append(bar);
+          }
+          box.append(bars);
+        }
+      }
+      if (decision.rationale) {
+        const reason = document.createElement('div'); reason.className = 'decision-reason';
+        reason.append(Object.assign(document.createElement('strong'), { textContent: 'rationale · ' }));
+        reason.append(Object.assign(document.createElement('span'), { textContent: decision.rationale }));
+        box.append(reason);
+      }
+    }
+
+    function renderSide(side) {
+      const p = sideProjection(side), info = state.sides[side];
+      $(side + 'Status').textContent = info.status || 'idle';
+      const subtitle = info.status === 'live' ? `Live · ${info.model || ''}`
+        : info.status === 'starting' ? 'Preparing board.'
+        : info.status === 'paused' ? 'Paused by operator.'
+        : info.status === 'won' ? 'Board cleared.'
+        : info.status === 'lost' ? 'Hit a mine.'
+        : info.status === 'time_limit' ? 'Time limit reached.'
+        : info.status === 'ended' ? 'Ended by operator.'
+        : info.status === 'error' ? 'Provider error.'
+        : 'Waiting for a comparison run.';
+      $(side + 'Subtitle').textContent = subtitle;
+      renderDecision(side);
+      const revealed = p.outcome?.revealed ?? p.revealed_count ?? 0;
+      const safeTotal = p.safe_total ?? p.outcome?.safe_total ?? 0;
+      $(side + 'Round').textContent = number(p.outcome?.moves ?? p.round ?? 0);
+      $(side + 'Revealed').textContent = `${number(revealed)} / ${number(safeTotal)}`;
+      $(side + 'MinesLeft').textContent = number((p.mines ?? 0) - (p.flags ?? 0));
+      const done = info.status === 'won', failed = info.status === 'lost';
+      const elapsed = Number.isFinite(info.elapsed_ms) ? duration(info.elapsed_ms) : null;
+      const outcome = $(side + 'Outcome');
+      outcome.textContent = done ? (elapsed ? `cleared · ${elapsed}` : 'cleared')
+        : failed ? 'mine hit'
+        : info.status === 'time_limit' ? 'time limit'
+        : info.status === 'ended' ? 'ended'
+        : info.status === 'paused' ? 'paused'
+        : (p.phase || 'waiting');
+      outcome.className = done ? 'success' : failed ? 'failure' : '';
+      const pause = document.querySelector(`.room-pause[data-side="${side}"]`);
+      if (pause) pause.textContent = info.status === 'paused' ? 'Resume' : 'Pause';
+    }
+
+    function remaining() { if (!state.timer.deadline_at_ms) return null; return Math.max(0, state.timer.deadline_at_ms - Date.now()); }
+
+    function render() {
+      const running = ['running', 'preparing', 'arming'].includes(state.timer.status);
+      const active = Boolean(state.config) && state.timer.status !== 'idle';
+      const finalMs = Number.isFinite(state.timer.frozen_elapsed_ms)
+        ? state.timer.frozen_elapsed_ms
+        : (state.timer.status === 'complete' && Number.isFinite(state.timer.elapsed_ms) ? state.timer.elapsed_ms : null);
+      const left = remaining();
+      $('timer').textContent = finalMs !== null ? duration(finalMs) : (left === null ? '05:00' : `${String(Math.floor(left / 60000)).padStart(2, '0')}:${String(Math.ceil((left % 60000) / 1000) % 60).padStart(2, '0')}`);
+      const by = state.timer.frozen_by === 'left' ? 'LLM' : state.timer.frozen_by === 'right' ? 'JEV' : '';
+      $('timerLabel').textContent = state.timer.status === 'complete' ? 'shared clock · complete'
+        : finalMs !== null ? `shared clock · final · ${by} finished first`
+        : state.timer.status === 'running' ? 'shared clock · running'
+        : 'shared clock · not started';
+      const status = $('status');
+      status.className = 'status ' + (state.timer.status === 'complete' ? 'complete' : running ? 'running' : state.timer.status === 'error' ? 'error' : '');
+      status.querySelector('span').textContent = state.timer.status === 'idle' ? 'idle · ready' : state.timer.status;
+      $('start').disabled = running;
+      $('stop').disabled = !active;
+      renderSide('left'); renderSide('right');
+    }
+
+    function apply(payload) {
+      if (!payload || payload.type !== 'comparison') return;
+      if (payload.config) state.config = payload.config;
+      if (payload.timer) state.timer = payload.timer;
+      if (payload.sides) for (const side of ['left', 'right']) if (payload.sides[side]) state.sides[side] = { ...state.sides[side], ...payload.sides[side] };
+      render();
+    }
+
+    async function loadConfig() {
+      try {
+        const response = await fetch('/config');
+        const value = await response.json();
+        const catalog = (value.models || {}).openrouter || [];
+        const select = $('sharedModel');
+        select.replaceChildren(...catalog.map(item => Object.assign(document.createElement('option'), { value: item.id, textContent: item.label || item.id })));
+        if (catalog[0]) select.value = catalog[0].id;
+        const jev = (value.models || {}).jev || [];
+        const jevSelect = $('jevModel');
+        jevSelect.replaceChildren(...jev.map(item => Object.assign(document.createElement('option'), { value: item.id, textContent: item.label || item.id })));
+        const defaults = value.defaults || {};
+        if (defaults.max_dimension) { $('width').max = String(defaults.max_dimension); $('height').max = String(defaults.max_dimension); }
+        if (defaults.width != null) $('width').value = String(defaults.width);
+        if (defaults.height != null) $('height').value = String(defaults.height);
+        if (defaults.mines != null) $('mines').value = String(defaults.mines);
+        if (defaults.duration_seconds != null) $('duration').value = String(defaults.duration_seconds);
+        const keys = value.keys || {};
+        if (!keys.openrouter || !keys.jev) {
+          $('status').className = 'status error';
+          $('status').querySelector('span').textContent = `missing key: ${[!keys.openrouter ? 'OPENROUTER_API_KEY' : '', !keys.jev ? 'JEV_API_KEY' : ''].filter(Boolean).join(', ')}`;
+        }
+      } catch {
+        $('status').querySelector('span').textContent = 'config unavailable';
+      }
+      syncMineMax();
+    }
+
+    function syncMineMax() {
+      const cells = Math.max(1, Number($('width').value) * Number($('height').value));
+      const max = Math.max(1, cells - 1);
+      $('mines').max = String(max);
+      if (Number($('mines').value) > max) $('mines').value = String(max);
+    }
+    $('width').addEventListener('input', syncMineMax);
+    $('height').addEventListener('input', syncMineMax);
+
+    $('start').addEventListener('click', async () => {
+      const body = {
+        width: Number($('width').value),
+        height: Number($('height').value),
+        mines: Number($('mines').value),
+        duration_seconds: Number($('duration').value),
+        model: $('sharedModel').value,
+        jev_model: $('jevModel').value,
+      };
+      const seed = $('seed').value.trim();
+      if (seed !== '' && /^\d+$/.test(seed)) body.seed = Number(seed);
+      $('start').disabled = true;
+      try {
+        const response = await fetch('/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'start failed');
+        apply({ type: 'comparison', config: result.config, timer: { status: 'running' } });
+      } catch (error) {
+        $('status').className = 'status error';
+        $('status').querySelector('span').textContent = error.message;
+        $('start').disabled = false;
+      }
+    });
+    $('stop').addEventListener('click', async () => { await fetch('/stop', { method: 'POST' }); });
+    for (const side of ['left', 'right']) {
+      document.querySelector(`.room-pause[data-side="${side}"]`).addEventListener('click', async () => {
+        const paused = state.sides[side].status === 'paused';
+        await fetch(paused ? '/resume' : '/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ side }) });
+      });
+      document.querySelector(`.room-end[data-side="${side}"]`).addEventListener('click', async () => {
+        await fetch('/end', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ side }) });
+      });
+    }
+
+    window.addEventListener('resize', () => { draw('left'); draw('right'); });
+    const feed = new EventSource('/events');
+    feed.addEventListener('comparison', event => { try { apply(JSON.parse(event.data)); } catch { /* ignore malformed frame */ } });
+    feed.onerror = () => { if (state.timer.status === 'idle') $('status').querySelector('span').textContent = 'reconnecting'; };
+    setInterval(() => { render(); draw('left'); draw('right'); }, 1000);
+    loadConfig();
+    render();
+    draw('left'); draw('right');
+  </script>
+</body>
+</html>

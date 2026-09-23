@@ -1,0 +1,12 @@
+{
+  "root": "/private/var/folders/gt/qcjtsn_937df98x1cb6_jmwh0000gn/T/swarm-autonomous-recovery-vt6ypc8y",
+  "started_at": 1790154316.34851,
+  "measured_files": 25,
+  "exit_code": 1,
+  "elapsed_seconds": 73.014,
+  "cleanup_proven": true,
+  "identities_unchanged": true,
+  "declaration_matches_live": false,
+  "offline_verification_passed": false,
+  "offline_verification_exit_code": null
+}

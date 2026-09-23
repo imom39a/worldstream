@@ -1,0 +1,213 @@
+{
+  "autonomous_goal_planning_tested": false,
+  "backend": "managed_local",
+  "coding_time_ratio_serial_over_parallel": 1.415,
+  "controlled_delay_ms": 1500,
+  "equal_final_artifact": true,
+  "execution_kind": "controlled_deterministic_workers",
+  "identities": {
+    "application_sha256": "sha256:1ccdf76a416b42750db332fd14fdf33c208ee06686cdb6a198a4a9eb2556379a",
+    "challenge_script_sha256": "sha256:b167822878a7e9821cb9034b2ba096e24cc39af4e2a04baa33c84dab351bf404",
+    "checker_source_sha256": "sha256:413d5121f9a9dce282abd5367d7a0f6f83440189efbd1ef3a91e95650677bfbc",
+    "controlled_worker_sha256": "sha256:76c3ed1c0c3ad54dc6ca6595d278266bf2e4e941732e7355974ad02c5732e5fb",
+    "pack_revision_digest": "blake3:304877a0d3853944c3f9c09b0bfaff03ea3243c2ffae17a8b24d91095830a67e",
+    "process_guard_sha256": "sha256:7ef6d607ec31582689e336925f502370e7d2c8f5fea32f4b1725c3bf21dd6cfd"
+  },
+  "managed_processes_stopped": true,
+  "real_model_reasoning_tested": false,
+  "review_kind": "scripted_independent_roster_review",
+  "schema": "worldstream/agent-swarm-coding-challenge/v1",
+  "status": "passed",
+  "synthetic_delay_ms_per_coding_turn": 1500,
+  "timing_note": "One trial per cap; synthetic execution overlap, not model coding speedup. No ratio threshold.",
+  "timing_scope": "two already-claimed coding WorkAttempts through accepted contributions",
+  "trials": [
+    {
+      "accepted_candidate_version": 3,
+      "accepted_result": {
+        "accepted_by_member_id": "01M34JM7BQ3C616H5NTDVKJPMP",
+        "candidate": {
+          "candidate_id": "csv-result",
+          "version": 3
+        },
+        "check_refs": [
+          {
+            "id": "criterion-1",
+            "revision": 3
+          }
+        ],
+        "criteria_revision": 1,
+        "direction_revision": 0,
+        "execution_epoch": 1,
+        "resource_basis": [
+          {
+            "resource_id": "csv-target",
+            "version": 2
+          }
+        ],
+        "result_id": "csv-result",
+        "review_refs": [
+          {
+            "id": "review-3",
+            "revision": 1
+          }
+        ],
+        "version": 1
+      },
+      "bootstrap_generated_work_items": 0,
+      "candidate_versions": 3,
+      "cases_passed": 16,
+      "coding_seconds": 11.033,
+      "concurrency_samples": [
+        {
+          "elapsed_ms": 1696,
+          "launched_and_running": [
+            "challenge-serial-3"
+          ],
+          "native_running_without_completion": [
+            "challenge-serial-3"
+          ],
+          "running": [
+            "challenge-serial-3"
+          ]
+        },
+        {
+          "elapsed_ms": 5511,
+          "launched_and_running": [],
+          "native_running_without_completion": [],
+          "running": []
+        },
+        {
+          "elapsed_ms": 8970,
+          "launched_and_running": [],
+          "native_running_without_completion": [],
+          "running": [
+            "challenge-serial-4"
+          ]
+        }
+      ],
+      "controlled_fixture_direct_actions": 1,
+      "faults": {
+        "bad_candidate_rejected": true,
+        "blocking_finding_survived_passing_review": true,
+        "concurrent_edit_preserved": true,
+        "conflict_blocked_acceptance": true,
+        "independent_review_requested_changes": true,
+        "premature_integration_rejected": true,
+        "revalidated_candidate_accepted": true,
+        "stale_candidate_rejected": true
+      },
+      "final_authoritative_state_hash": "blake3:21c77452739807d7fbcb3750359df2c04af646d2639642bfc5ab0e4e895f5b2e",
+      "final_candidate_artifact": {
+        "artifact_id": "artifact-challenge-serial-13",
+        "digest": "blake3:c41ec66a240220023258511f02c2ecc0fafb948ce88ef5bd26c2209352d5fb2b",
+        "media_type": "text/x-python"
+      },
+      "final_room_seq": 30,
+      "final_source_sha256": "sha256:a6c3d6fdae39e418afa3e9bf1148ff3bf109ef900a043cc4ef850432f2946ebf",
+      "manually_staged_plan_count": 14,
+      "max_observed_launched_running": 1,
+      "mode": "serial",
+      "overlap_evidence": "launched plus supervisor-active plus native Collect returning NotFound before harvest",
+      "provider_cap": 1,
+      "room_id": "01M34JM7BQKRM2M6NZX6GKX2R0",
+      "scripted_human_action_count": 20,
+      "scripted_human_reconciliations": 2,
+      "sealed_revision_digest": "blake3:fe8a132599d40936691ae62051a760cf79b14b1edf9d8b8987e332834915753d",
+      "swarm_id": "swarm-4fb6157c0fee8adb4f5d330a",
+      "total_seconds": 133.534,
+      "unexpected_interventions": 0
+    },
+    {
+      "accepted_candidate_version": 3,
+      "accepted_result": {
+        "accepted_by_member_id": "01M34JR9QXFQQJQ7WZQ724M3WE",
+        "candidate": {
+          "candidate_id": "csv-result",
+          "version": 3
+        },
+        "check_refs": [
+          {
+            "id": "criterion-1",
+            "revision": 3
+          }
+        ],
+        "criteria_revision": 1,
+        "direction_revision": 0,
+        "execution_epoch": 1,
+        "resource_basis": [
+          {
+            "resource_id": "csv-target",
+            "version": 2
+          }
+        ],
+        "result_id": "csv-result",
+        "review_refs": [
+          {
+            "id": "review-3",
+            "revision": 1
+          }
+        ],
+        "version": 1
+      },
+      "bootstrap_generated_work_items": 0,
+      "candidate_versions": 3,
+      "cases_passed": 16,
+      "coding_seconds": 7.799,
+      "concurrency_samples": [
+        {
+          "elapsed_ms": 2006,
+          "launched_and_running": [
+            "challenge-parallel-3",
+            "challenge-parallel-4"
+          ],
+          "native_running_without_completion": [
+            "challenge-parallel-3",
+            "challenge-parallel-4"
+          ],
+          "running": [
+            "challenge-parallel-3",
+            "challenge-parallel-4"
+          ]
+        },
+        {
+          "elapsed_ms": 6201,
+          "launched_and_running": [],
+          "native_running_without_completion": [],
+          "running": []
+        }
+      ],
+      "controlled_fixture_direct_actions": 1,
+      "faults": {
+        "bad_candidate_rejected": true,
+        "blocking_finding_survived_passing_review": true,
+        "concurrent_edit_preserved": true,
+        "conflict_blocked_acceptance": true,
+        "independent_review_requested_changes": true,
+        "premature_integration_rejected": true,
+        "revalidated_candidate_accepted": true,
+        "stale_candidate_rejected": true
+      },
+      "final_authoritative_state_hash": "blake3:6e1aa56fabfb558cb8f736918cc9268256634885f064b2d5413b98fa8921837c",
+      "final_candidate_artifact": {
+        "artifact_id": "artifact-challenge-parallel-13",
+        "digest": "blake3:c41ec66a240220023258511f02c2ecc0fafb948ce88ef5bd26c2209352d5fb2b",
+        "media_type": "text/x-python"
+      },
+      "final_room_seq": 30,
+      "final_source_sha256": "sha256:a6c3d6fdae39e418afa3e9bf1148ff3bf109ef900a043cc4ef850432f2946ebf",
+      "manually_staged_plan_count": 14,
+      "max_observed_launched_running": 2,
+      "mode": "parallel",
+      "overlap_evidence": "launched plus supervisor-active plus native Collect returning NotFound before harvest",
+      "provider_cap": 2,
+      "room_id": "01M34JR9QXCHES6HT64SKZ5CN3",
+      "scripted_human_action_count": 20,
+      "scripted_human_reconciliations": 2,
+      "sealed_revision_digest": "blake3:fe8a132599d40936691ae62051a760cf79b14b1edf9d8b8987e332834915753d",
+      "swarm_id": "swarm-a2fcf9f444ec783183875d43",
+      "total_seconds": 131.482,
+      "unexpected_interventions": 0
+    }
+  ]
+}

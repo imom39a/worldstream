@@ -1830,6 +1830,29 @@ fn validate_schema_node(
     Ok(())
 }
 
+/// Validates one value against an exact installed Pack schema document.
+///
+/// The caller must bind the schema's canonical digest to its current Action
+/// offer before using this result. Errors can contain an undeclared input key;
+/// callers that display them must remove that key.
+///
+/// # Errors
+/// Returns a schema path and violated rule when the value does not match.
+pub fn validate_pack_schema_value(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+) -> Result<(), String> {
+    validate_schema_node(schema, value, "$", 0)
+}
+
+/// Validates the shape of an installed Pack schema before using it on Actions.
+///
+/// # Errors
+/// Returns the invalid schema path and rule.
+pub fn validate_pack_schema_document(schema: &serde_json::Value) -> Result<(), String> {
+    validate_schema_shape(schema, "$", 0)
+}
+
 #[derive(Serialize)]
 struct SchemaBundleDigestV1<'a> {
     domain: &'static str,

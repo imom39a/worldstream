@@ -21,6 +21,7 @@ import asyncio
 import datetime as dt
 import json
 import os
+import random
 import signal
 import socket
 import stat
@@ -58,6 +59,10 @@ class HarnessError(RuntimeError):
     """Closed failure whose text contains neither credentials nor child output."""
 
 
+class HarnessStopRequested(Exception):
+    """Internal signal used to leave a held canvas and run normal cleanup."""
+
+
 OBSERVER_SCOPES = (
     "room:attach",
     "room:observe_member",
@@ -69,6 +74,9 @@ REPLAY_VERIFIER_SCOPES = (
 )
 _ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 MAX_MOVE_LIMIT = 10_000
+MAX_ROOM_SETUP_RESUME_ATTEMPTS = 3
+COMPONENT_CACHE_DIRECTORY_ENV = "WORLDSTREAM_COMPONENT_CACHE_DIR"
+COMPONENT_CACHE_DIRNAME = "worldstream-component-cache"
 
 
 @dataclass(frozen=True)
@@ -128,13 +136,23 @@ def _json_object(value: str, code: str) -> dict[str, Any]:
     return parsed
 
 
-def local_worldstream_environment(environment: dict[str, str]) -> dict[str, str]:
-    """Keep ambient WorldStream configuration out of a fresh local experiment."""
-    return {
+def local_worldstream_environment(
+    environment: dict[str, str], *, additions: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Keep ambient WorldStream configuration out of a fresh local experiment.
+
+    The caller may add explicit, harness-owned operational variables (for example
+    a disposable compilation cache directory). These are never read from the
+    ambient environment; the experiment owns them.
+    """
+    filtered = {
         key: value
         for key, value in environment.items()
         if not key.startswith("WORLDSTREAM")
     }
+    if additions:
+        filtered.update(additions)
+    return filtered
 
 
 def pack_identity_from_inspection(value: object) -> PackIdentity:
@@ -191,6 +209,43 @@ def room_create_arguments(setup_path: Path, common: Sequence[str]) -> list[str]:
     ]
 
 
+def random_initial_board(disks: int, seed: int | None = None) -> dict[str, list[int]]:
+    """Return one reachable mid-state board; every Hanoi arrangement is solvable."""
+    rng = random.Random(seed)
+    board: dict[str, list[int]] = {"A": [], "B": [], "C": []}
+    for disk in range(1, disks + 1):
+        board[rng.choice(("A", "B", "C"))].append(disk)
+    for rod in ("A", "B", "C"):
+        board[rod].sort(reverse=True)
+    return board
+
+
+def normalize_initial_board(
+    value: object, disks: int
+) -> dict[str, list[int]] | None:
+    """Validate an operator-supplied board against the configured disk count."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"A", "B", "C"}:
+        raise HarnessError("initial_board_invalid")
+    seen: set[int] = set()
+    board: dict[str, list[int]] = {}
+    for rod in ("A", "B", "C"):
+        stack = value[rod]
+        if not isinstance(stack, list) or any(
+            isinstance(disk, bool) or not isinstance(disk, int) or not 1 <= disk <= disks
+            for disk in stack
+        ):
+            raise HarnessError("initial_board_invalid")
+        if any(stack[index] <= stack[index + 1] for index in range(len(stack) - 1)):
+            raise HarnessError("initial_board_invalid")
+        seen.update(stack)
+        board[rod] = list(stack)
+    if seen != set(range(1, disks + 1)):
+        raise HarnessError("initial_board_invalid")
+    return board
+
+
 def manual_setup(
     pack: PackIdentity,
     solver_seats: Sequence[str],
@@ -198,6 +253,7 @@ def manual_setup(
     *,
     disks: int = 3,
     move_limit: int = MAX_MOVE_LIMIT,
+    initial_board: dict[str, list[int]] | None = None,
     solver_role: str = "solver",
     observer_role: str = "observer",
 ) -> dict[str, object]:
@@ -211,10 +267,14 @@ def manual_setup(
         or not 1 <= move_limit <= MAX_MOVE_LIMIT
     ):
         raise HarnessError("move_limit_invalid")
+    safe_board = normalize_initial_board(initial_board, disks)
     seats: list[dict[str, object]] = []
     for label in solver_seats:
         seats.append(_external_agent_seat(label, solver_role))
     seats.append(_external_agent_seat(observer_seat, observer_role))
+    configuration: dict[str, object] = {"disks": disks, "move_limit": move_limit}
+    if safe_board is not None:
+        configuration["initial_board"] = safe_board
     return {
         "schema": "worldstream/room-setup/v1",
         "pack": {
@@ -222,7 +282,7 @@ def manual_setup(
             "version": pack.version,
             "digest": pack.revision_digest,
         },
-        "configuration": {"disks": disks, "move_limit": move_limit},
+        "configuration": configuration,
         "seats": seats,
         "operator_view": False,
     }
@@ -402,10 +462,14 @@ def codex_command(
     repo: Path,
     python: Path,
     membership_file: Path,
+    model: str = "gpt-5.6-luna",
+    context_file: Path | None = None,
 ) -> list[str]:
-    """Return the fixed isolated-network JSONL invocation for one Luna seat."""
+    """Return the fixed isolated-network JSONL invocation for one Codex seat."""
     if effort not in {"low", "medium"}:
         raise HarnessError("codex_effort_invalid")
+    if not model or any(character.isspace() for character in model):
+        raise HarnessError("codex_model_invalid")
     if "wsb1:" in prompt.lower():
         raise HarnessError("credential_secret_in_prompt")
     shell_values = {
@@ -415,6 +479,8 @@ def codex_command(
         "HANOI_PYTHON": str(python.absolute()),
         "HANOI_MEMBERSHIP_FILE": str(membership_file.resolve()),
     }
+    if context_file is not None:
+        shell_values["HANOI_CONTEXT_FILE"] = str(context_file.resolve())
     if any("wsb1:" in value.lower() for value in shell_values.values()):
         raise HarnessError("credential_secret_in_shell_environment")
     shell_set = (
@@ -446,7 +512,7 @@ def codex_command(
         "-c",
         shell_set,
         "-m",
-        "gpt-5.6-luna",
+        model,
         "-c",
         f'model_reasoning_effort="{effort}"',
         prompt,
@@ -538,6 +604,7 @@ class LocalRun:
         self.data_dir = self.run_root / ".worldstream" / "data"
         self.config_path: Path | None = None
         self.started = False
+        self.server_start_attempted = False
         self.pack: PackIdentity | None = None
         self.canvas_process: subprocess.Popen[bytes] | None = None
         self.canvas_url: str | None = None
@@ -547,6 +614,31 @@ class LocalRun:
         self.gameplay_deadline_at: float | None = None
         self.gameplay_deadline_epoch_ms: int | None = None
         self.setup_started_at = time.monotonic()
+        self.component_cache_dir = self._resolve_component_cache_dir()
+
+    def _resolve_component_cache_dir(self) -> Path | None:
+        """Select the opt-in disposable Component compilation cache directory.
+
+        ``--fast-start`` defaults to one stable directory under ``target/`` so a
+        first run populates it and later runs reuse the compiled Component. An
+        explicit ``--component-cache-dir`` always wins. Without either, caching
+        stays disabled and every admission recompiles from original bytes.
+        """
+        explicit = getattr(self.arguments, "component_cache_dir", None)
+        if explicit is not None:
+            return explicit.resolve()
+        if getattr(self.arguments, "fast_start", False):
+            return (self.repo / "target" / COMPONENT_CACHE_DIRNAME).resolve()
+        return None
+
+    def _child_environment(self) -> dict[str, str]:
+        cache_dir = getattr(self, "component_cache_dir", None)
+        additions = (
+            {COMPONENT_CACHE_DIRECTORY_ENV: str(cache_dir)}
+            if cache_dir is not None
+            else None
+        )
+        return local_worldstream_environment(dict(os.environ), additions=additions)
 
     @property
     def common(self) -> list[str]:
@@ -583,7 +675,7 @@ class LocalRun:
         # Initialization deliberately records ambient WorldStream configuration when
         # present.  This retained experiment must instead own one explicit local
         # configuration, so no WorldStream variable reaches any child process.
-        environment = local_worldstream_environment(dict(os.environ))
+        environment = self._child_environment()
         completed = subprocess.run(
             [str(self.arguments.worldstreamctl), *arguments],
             cwd=self.run_root,
@@ -714,7 +806,7 @@ class LocalRun:
         self.canvas_process = subprocess.Popen(
             command,
             cwd=self.repo,
-            env=local_worldstream_environment(dict(os.environ)),
+            env=self._child_environment(),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -872,15 +964,16 @@ class LocalRun:
         )
         if inspected.pack_id != PACK_ID or inspected.version != PACK_VERSION:
             raise HarnessError("tower_pack_identity_mismatch")
-        proof = self.command(
-            ["pack", "prove", str(bundle), "--json", *self.config_args]
-        )
-        if (
-            proof.get("status") != "passed"
-            or proof.get("bundle_digest") != inspected.bundle_digest
-            or proof.get("revision_digest") != inspected.revision_digest
-        ):
-            raise HarnessError("pack_proof_failed")
+        if not self.arguments.skip_pack_proof:
+            proof = self.command(
+                ["pack", "prove", str(bundle), "--json", *self.config_args]
+            )
+            if (
+                proof.get("status") != "passed"
+                or proof.get("bundle_digest") != inspected.bundle_digest
+                or proof.get("revision_digest") != inspected.revision_digest
+            ):
+                raise HarnessError("pack_proof_failed")
         stamp = (
             dt.datetime.now(dt.UTC)
             .replace(microsecond=0)
@@ -967,6 +1060,7 @@ class LocalRun:
         for reservation in (self.runtime_reservation, self.controller_reservation):
             if reservation is not None:
                 reservation.close()
+        self.server_start_attempted = True
         self.command(["server", "start", *self.common])
         self.started = True
         self.command(["server", "status", *self.common])
@@ -983,13 +1077,18 @@ class LocalRun:
             self.arguments.observer_seat,
             disks=self.arguments.disks,
             move_limit=self.arguments.move_limit,
+            initial_board=getattr(self.arguments, "initial_board", None),
             solver_role=self.arguments.solver_role,
             observer_role=self.arguments.observer_role,
         )
         setup_path = self.run_root / "tower-room-setup.json"
         _write_new_json(setup_path, setup)
         self.command(["room", "validate", "--file", str(setup_path), *self.common])
-        created = self.command(room_create_arguments(setup_path, self.common))
+        created = self.command(
+            room_create_arguments(setup_path, self.common), allow_failure=True
+        )
+        if created.get("status") == "partial" and created.get("code") == "setup_incomplete":
+            created = self._resume_room_setup(created)
         operation_id = created.get("operation_id")
         room_id = created.get("room_id")
         if (
@@ -1066,6 +1165,46 @@ class LocalRun:
         if any(item.room_id != room_id for item in [*solvers, observer]):
             raise HarnessError("credential_room_mismatch")
         return operation_id, room_id, solvers, runners, observer
+
+    def _resume_room_setup(self, initial: dict[str, Any]) -> dict[str, Any]:
+        """Resume one retained partial setup, within a small explicit retry bound."""
+        operation_id = initial.get("operation_id")
+        if not isinstance(operation_id, str) or not operation_id:
+            raise HarnessError("room_setup_incomplete")
+
+        status = self.command(
+            ["room", "setup", "status", operation_id, *self.common],
+            allow_failure=True,
+        )
+        if status.get("operation_id") != operation_id:
+            raise HarnessError("room_setup_incomplete")
+        if status.get("status") == "complete":
+            return status
+        if status.get("status") != "partial":
+            raise HarnessError("room_setup_incomplete")
+
+        for _attempt in range(MAX_ROOM_SETUP_RESUME_ATTEMPTS):
+            resumed = self.command(
+                ["room", "setup", "resume", operation_id, *self.common],
+                allow_failure=True,
+            )
+            if resumed.get("operation_id") != operation_id:
+                raise HarnessError("room_setup_incomplete")
+            if resumed.get("status") == "complete":
+                return resumed
+            if resumed.get("status") != "partial":
+                raise HarnessError("room_setup_incomplete")
+            status = self.command(
+                ["room", "setup", "status", operation_id, *self.common],
+                allow_failure=True,
+            )
+            if status.get("operation_id") != operation_id:
+                raise HarnessError("room_setup_incomplete")
+            if status.get("status") == "complete":
+                return status
+            if status.get("status") != "partial":
+                raise HarnessError("room_setup_incomplete")
+        raise HarnessError("room_setup_incomplete")
 
     def _operator_bearer(self) -> str:
         """Read the fresh Runtime bootstrap secret without retaining it in evidence."""
@@ -1208,11 +1347,32 @@ class LocalRun:
                 self.arguments.solver_effort,
                 "--codex-timeout-seconds",
                 str(self.arguments.codex_timeout_seconds),
+                "--solver-engine",
+                getattr(self.arguments, "solver_engine", "codex"),
+                "--solver-model",
+                getattr(self.arguments, "solver_model", "gpt-5.6-luna"),
+                "--context-mode",
+                getattr(self.arguments, "context_mode", "snapshot"),
+                "--judge-engine",
+                getattr(self.arguments, "judge_engine", "none"),
+                "--judge-model",
+                getattr(self.arguments, "judge_model", "jev-latest"),
+                "--judge-threshold",
+                str(getattr(self.arguments, "judge_threshold", 0.5)),
+                "--checkpoint-file",
+                str(supervisor_evidence / "participant.checkpoint.json"),
+                "--grant-file",
+                str(self.evidence / "action-grant.json"),
                 "--deadline-at-ms",
                 str(self.gameplay_deadline_epoch_ms),
                 "--evidence-file",
                 str(evidence),
             ]
+            for fallback in getattr(self.arguments, "fallback_model", []):
+                command.extend(["--fallback-model", fallback])
+            model_file = getattr(self.arguments, "model_file", None)
+            if model_file is not None:
+                command.extend(["--model-file", str(model_file)])
             if self.canvas_sink is not None:
                 command.extend(["--event-file", str(self.canvas_sink)])
             try:
@@ -1220,7 +1380,7 @@ class LocalRun:
                     process = subprocess.Popen(
                         command,
                         cwd=self.repo,
-                        env=local_worldstream_environment(dict(os.environ)),
+                        env=self._child_environment(),
                         stdin=subprocess.DEVNULL,
                         stdout=output,
                         stderr=subprocess.STDOUT,
@@ -1235,7 +1395,10 @@ class LocalRun:
                     "kind": "participant_supervisor_started",
                     "seat": solver.seat,
                     "deadline_at_ms": self.gameplay_deadline_epoch_ms,
-                    "model": "gpt-5.6-luna",
+                    "engine": getattr(self.arguments, "solver_engine", "codex"),
+                    "model": getattr(self.arguments, "solver_model", "gpt-5.6-luna"),
+                    "judge_engine": getattr(self.arguments, "judge_engine", "none"),
+                    "judge_model": getattr(self.arguments, "judge_model", "jev-latest"),
                     "reasoning_effort": self.arguments.solver_effort,
                 },
             )
@@ -1357,7 +1520,7 @@ class LocalRun:
         ):
             if reservation is not None:
                 reservation.close()
-        if not self.started:
+        if not (self.started or self.server_start_attempted):
             return
         # Retain the run directory and evidence; only stop the processes this run started.
         try:
@@ -1394,18 +1557,102 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--timeout-seconds", type=int, default=60)
     parser.add_argument("--codex-timeout-seconds", type=int, default=180)
     parser.add_argument("--disks", type=int)
+    parser.add_argument(
+        "--initial-board",
+        type=str,
+        help='optional starting board as JSON, e.g. \'{"A":[3],"B":[2,1],"C":[]}\'',
+    )
+    parser.add_argument(
+        "--randomize-board",
+        action="store_true",
+        help="start from a random reachable mid-state instead of the full A tower",
+    )
+    parser.add_argument(
+        "--board-seed",
+        type=int,
+        help="deterministic seed for --randomize-board",
+    )
     parser.add_argument("--move-limit", type=int, default=MAX_MOVE_LIMIT)
     parser.add_argument("--solver-effort", choices=("low", "medium"), default="medium")
+    parser.add_argument(
+        "--solver-engine",
+        choices=("codex", "openrouter", "jev"),
+        default="codex",
+        help="provider used by each solver supervisor",
+    )
+    parser.add_argument(
+        "--solver-model",
+        default="gpt-5.6-luna",
+        help="Codex model name, OpenRouter model ID, or TypeSafe model ID",
+    )
+    parser.add_argument(
+        "--fallback-model",
+        action="append",
+        default=[],
+        help="model tried after repeated failures on the primary solver model",
+    )
+    parser.add_argument(
+        "--model-file",
+        type=Path,
+        help="shared model-ladder file so peer Rooms switch models together",
+    )
+    parser.add_argument(
+        "--context-mode",
+        choices=("snapshot", "stream"),
+        default="snapshot",
+        help="provider context source; stream uses claimed Invocation Context and a persistent observation cursor",
+    )
+    parser.add_argument(
+        "--judge-engine",
+        choices=("none", "jev"),
+        default="none",
+        help="optional verifier that scores the proposer's decision before submission",
+    )
+    parser.add_argument("--judge-model", default="jev-latest")
+    parser.add_argument("--judge-threshold", type=float, default=0.5)
     parser.add_argument("--canvas-demo", action="store_true")
     parser.add_argument("--community-demo", action="store_true")
     parser.add_argument("--canvas-port", type=int)
     parser.add_argument("--canvas-batch-ms", type=int, default=120)
     parser.add_argument("--canvas-demo-hold-seconds", type=int, default=0)
     parser.add_argument("--gameplay-seconds", type=int, default=300)
+    parser.add_argument(
+        "--start-at-ms",
+        type=int,
+        help="shared Unix epoch-millisecond start barrier for comparison runs",
+    )
+    parser.add_argument(
+        "--start-file",
+        type=Path,
+        help="wait for a coordinator release file before starting gameplay",
+    )
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument(
+        "--skip-pack-proof",
+        action="store_true",
+        help="skip the offline Pack golden-corpus proof during local setup",
+    )
+    parser.add_argument(
+        "--component-cache-dir",
+        type=Path,
+        help="disposable Component compilation cache directory for repeated runs",
+    )
+    parser.add_argument(
+        "--fast-start",
+        action="store_true",
+        help=(
+            "skip the build and Pack proof and reuse one disposable Component "
+            "compilation cache under target/ for repeated local runs"
+        ),
+    )
     parser.add_argument("--build-timeout-seconds", type=int, default=900)
     arguments = parser.parse_args()
+    if arguments.fast_start:
+        arguments.skip_build = True
+        arguments.skip_pack_proof = True
+    if arguments.component_cache_dir is not None:
+        arguments.component_cache_dir = arguments.component_cache_dir.expanduser().resolve()
     if arguments.community_demo:
         arguments.canvas_demo = True
         if arguments.solver_seat is None:
@@ -1424,6 +1671,20 @@ def _arguments() -> argparse.Namespace:
     )
     if not 1 <= arguments.disks <= 10:
         parser.error("disks must be between 1 and 10")
+    if arguments.randomize_board and arguments.initial_board is not None:
+        parser.error("use either --initial-board or --randomize-board, not both")
+    if arguments.board_seed is not None and not 0 <= arguments.board_seed <= 2**63 - 1:
+        parser.error("board-seed must be a non-negative integer")
+    if arguments.initial_board is not None:
+        try:
+            parsed_board = json.loads(arguments.initial_board)
+            arguments.initial_board = normalize_initial_board(parsed_board, arguments.disks)
+        except (json.JSONDecodeError, HarnessError):
+            parser.error("initial-board must be a legal board for the configured disks")
+    elif arguments.randomize_board:
+        arguments.initial_board = random_initial_board(arguments.disks, arguments.board_seed)
+    else:
+        arguments.initial_board = None
     arguments.solver_seat = arguments.solver_seat or ["solver-a", "solver-b"]
     _validate_seats(arguments.solver_seat, arguments.observer_seat)
     if (
@@ -1439,6 +1700,10 @@ def _arguments() -> argparse.Namespace:
         parser.error("canvas-batch-ms must be between 10 and 1000")
     if not 1 <= arguments.gameplay_seconds <= 3_600:
         parser.error("gameplay-seconds must be between 1 and 3600")
+    if arguments.start_at_ms is not None and arguments.start_at_ms <= 0:
+        parser.error("start-at-ms must be positive")
+    if arguments.start_file is not None and arguments.start_file.exists():
+        parser.error("start-file must not already exist")
     if not 0 <= arguments.canvas_demo_hold_seconds <= 3_600:
         parser.error("canvas-demo-hold-seconds must be between 0 and 3600")
     for port in (
@@ -1463,8 +1728,18 @@ def _hold_canvas(arguments: argparse.Namespace) -> None:
             time.sleep(1)
 
 
+def _handle_stop_signal(_signum: int, _frame: object) -> None:
+    """Convert coordinator SIGTERM into an exception that reaches ``finally``."""
+    raise HarnessStopRequested()
+
+
 def main() -> int:
     arguments = _arguments()
+    # The comparison coordinator terminates the harness process group after the
+    # gameplay deadline. Catch SIGTERM so LocalRun.stop can ask the managed
+    # Supervisor/Runtime to shut down cleanly before any bounded escalation.
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _handle_stop_signal)
     run = LocalRun(arguments)
     try:
         run.start_server()
@@ -1520,6 +1795,39 @@ def main() -> int:
             )
             _hold_canvas(arguments)
             return 0
+        # A comparison normally supplies a coordinator release file after both
+        # independent Rooms have reached canvas_live. The release contains one shared
+        # epoch so setup time never consumes either solver's gameplay budget.
+        if arguments.start_file is not None:
+            while not arguments.start_file.is_file():
+                time.sleep(0.25)
+            try:
+                release = _json_object(
+                    arguments.start_file.read_text(encoding="utf-8"),
+                    "start_file_invalid",
+                )
+                release_at_ms = release.get("start_at_ms")
+            except (OSError, UnicodeError, HarnessError):
+                raise HarnessError("start_file_invalid") from None
+            if (
+                isinstance(release_at_ms, bool)
+                or not isinstance(release_at_ms, int)
+                or release_at_ms <= 0
+            ):
+                raise HarnessError("start_file_invalid")
+            while True:
+                remaining = (release_at_ms - int(time.time() * 1000)) / 1000
+                if remaining <= 0:
+                    break
+                time.sleep(min(0.25, remaining))
+        # The legacy single-room option remains available for callers that already
+        # coordinate an epoch themselves.
+        elif arguments.start_at_ms is not None:
+            while True:
+                remaining = (arguments.start_at_ms - int(time.time() * 1000)) / 1000
+                if remaining <= 0:
+                    break
+                time.sleep(min(0.25, remaining))
         # This clock intentionally starts only after Room creation, Genesis replay, and
         # the actionless canvas observer are ready. Pack build/proof remain setup work.
         run.start_gameplay_window()
@@ -1556,6 +1864,7 @@ def main() -> int:
         _hold_canvas(arguments)
         return 0 if completed["status"] == "participant_accepted_completion" else 3
     except (
+        HarnessStopRequested,
         CredentialError,
         HanoiProtocolError,
         HarnessError,
@@ -1564,7 +1873,12 @@ def main() -> int:
         TimeoutError,
         ValueError,
     ) as error:
-        code = str(error) if isinstance(error, HarnessError) else type(error).__name__
+        if isinstance(error, HarnessStopRequested):
+            code = "stopped"
+        elif isinstance(error, HarnessError):
+            code = str(error)
+        else:
+            code = type(error).__name__
         print(
             json.dumps(
                 {"status": "error", "code": code, "run_root": str(run.run_root)},
@@ -1573,7 +1887,7 @@ def main() -> int:
             ),
             flush=True,
         )
-        return 3
+        return 0 if isinstance(error, HarnessStopRequested) else 3
     finally:
         run.stop()
 

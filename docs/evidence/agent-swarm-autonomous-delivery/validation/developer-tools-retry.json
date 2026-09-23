@@ -1,0 +1,19 @@
+{
+  "recorded_at": 1790124014.639943,
+  "rust_tests_passed": 190,
+  "cargo_exit_code": 0,
+  "test_log": "rust-tests-developer-tools.log",
+  "launcher_application": "/Applications/ChatGPT.app",
+  "startup_probes": {
+    "worldstream-agent-swarm --help": {
+      "elapsed_seconds": 0.024,
+      "exit_code": 0
+    },
+    "reviewed_code_change --list": {
+      "elapsed_seconds": 5.092,
+      "exit_code": 0
+    }
+  },
+  "user_reported_change": "Enabled ChatGPT and Terminal in macOS Developer Tools",
+  "permission_causation": "Startup recovered after the setting change; no controlled causal experiment was performed."
+}

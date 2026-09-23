@@ -3,7 +3,7 @@ use std::{net::TcpListener, time::Duration};
 use worldstream_runtime::CliOverrides;
 use worldstream_studio_supervisor::{
     local_initialization::{InitializationRequest, initialize_local},
-    managed_lifecycle::{RuntimeControl, RuntimeObservation},
+    managed_lifecycle::{LifecycleError, RuntimeControl, RuntimeObservation},
     process_ownership::{ProcessOwnership, ProcessRole},
     process_runtime::{ManagedRuntimeSpec, ProcessRuntimeControl},
 };
@@ -104,6 +104,48 @@ fn explicit_start_fences_a_free_abandoned_launch_before_replacement()
             .is_err()
     );
     assert!(!ownership.is_leased(ProcessRole::Runtime)?);
+    Ok(())
+}
+
+#[test]
+fn clean_stop_allows_an_explicit_side_by_side_runtime_update()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = initialized_fixture()?;
+    let current = ProcessRuntimeControl::open(fixture.spec.clone())?;
+    current.start()?;
+
+    let updated_executable = fixture
+        .temporary
+        .as_ref()
+        .ok_or("missing fixture root")?
+        .path()
+        .join("worldstreamd-update");
+    std::fs::hard_link(env!("CARGO_BIN_EXE_worldstreamd"), &updated_executable)?;
+    let mut updated_spec = fixture.spec.clone();
+    updated_spec.executable = updated_executable;
+    let updated = ProcessRuntimeControl::open(updated_spec.clone())?;
+
+    assert_eq!(updated.start(), Err(LifecycleError::Invalid));
+    assert_eq!(current.observe(), RuntimeObservation::Ready);
+
+    current.stop()?;
+    let changed_config = fixture
+        .temporary
+        .as_ref()
+        .ok_or("missing fixture root")?
+        .path()
+        .join("updated-config.toml");
+    std::fs::copy(&fixture.spec.config, &changed_config)?;
+    let mut changed_policy = updated_spec;
+    changed_policy.config = changed_config;
+    assert_eq!(
+        ProcessRuntimeControl::open(changed_policy)?.start(),
+        Err(LifecycleError::Invalid)
+    );
+    updated.start()?;
+    assert_eq!(updated.observe(), RuntimeObservation::Ready);
+    updated.stop()?;
+    assert_eq!(updated.observe(), RuntimeObservation::Stopped);
     Ok(())
 }
 

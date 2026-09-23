@@ -1,0 +1,23 @@
+{
+  "accepted_contributions": 2,
+  "candidate_action_has_empty_contribution_refs": true,
+  "candidate_action_has_receipt": false,
+  "candidate_action_id": "1XAQD9FPQET34QDEEF7MKFT7P5",
+  "candidate_action_state": "submission_uncertain",
+  "cleanup_proven": true,
+  "declaration_matches_live": true,
+  "early_invalid_integration_invocations": [
+    "auto-ad8de52da40455a8-0016-reason-step-0"
+  ],
+  "early_invalid_integration_reason": "provider_output_invalid",
+  "generated_invocations": 19,
+  "identities_unchanged": true,
+  "maximum_retained_observation_payload_bytes": 18851,
+  "note": "A repaired Contribution preceded any baseline Check. The exact-baseline Candidate proposal was never recorded as a Room Candidate; no Check or delivery occurred.",
+  "proposed_work_items": 3,
+  "protocol_verifier_status": "not_run_no_accepted_candidate_check_or_report",
+  "room_candidate_count": 0,
+  "room_check_count": 0,
+  "status": "unsuccessful_ordering_and_submission_uncertain",
+  "transport_cause": "unconfirmed; empty contribution_refs violate Pack schema and no semantic receipt exists"
+}

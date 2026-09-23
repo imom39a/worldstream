@@ -923,6 +923,13 @@ impl ParticipantConsoleGatewayV1 for FixedDaemonParticipantConsoleGatewayV1 {
         {
             return Err(ParticipantConsoleGatewayErrorV1::Rejected);
         }
+        // `room.attached` declares the exact initial sync branch, and the
+        // daemon writes that delivery before it can process `room.sync_ack`.
+        // Drain the complete bounded branch first. Skipping it happened to
+        // work for short histories because `read_type` ignored a few queued
+        // frames, but failed closed before submitting an Action once more than
+        // eight retained frames were waiting.
+        let _ = Self::read_delivery(&mut socket, authority, &attached.sync)?;
         Self::send(
             &mut socket,
             "room.sync_ack",

@@ -1,0 +1,29 @@
+[
+  {
+    "started_at": 1790122894.596878,
+    "exit_code": -2,
+    "elapsed_seconds": 115.694,
+    "cleanup_proven": true,
+    "identities_unchanged": true,
+    "attempt": 1,
+    "private_profile_removed": true,
+    "intervention": {
+      "status": "stopped_by_development_agent",
+      "reason": "Review found that selected review plans could inherit a previously retained Resume session instead of preserving the fresh-session policy used to generate their options. The trial roster did not have that history, but the production guarantee was corrected before continuing validation.",
+      "live_success_claimed": false,
+      "managed_cleanup_proven": true,
+      "measured_identities_unchanged": true
+    },
+    "journal": "attempt-1-adaptive.json"
+  },
+  {
+    "started_at": 1790124013.5866828,
+    "exit_code": 0,
+    "elapsed_seconds": 800.955,
+    "cleanup_proven": true,
+    "identities_unchanged": true,
+    "attempt": 2,
+    "private_profile_removed": true,
+    "journal": "attempt-2-adaptive.json"
+  }
+]

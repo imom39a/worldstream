@@ -1,0 +1,67 @@
+{
+  "action-summary.json": {
+    "blake3": "blake3:1b0bb54ede5842c2c8c2b40af0ce5346e65b26c58139acfc87e90eef7f5d500e",
+    "byte_length": 374,
+    "sha256": "sha256:2932daff4e0d31ebe935d6e8d26c143b260574d59fd5bd5f5cb744a451006cb0"
+  },
+  "declaration.json": {
+    "blake3": "blake3:717ebe97d1ece7021fe6baacab11e6f9db89117b7b976aab49b8b5b7d53cd20d",
+    "byte_length": 16811,
+    "sha256": "sha256:f2c0dd60ac70583e9cc7baa900d914f87a38f9279659313a77987060fc2b3ad8"
+  },
+  "identities.json": {
+    "blake3": "blake3:063bd436131fa79080cbda5a5793bae93de762b86ff979e8f98a42591de2e4c1",
+    "byte_length": 4043,
+    "sha256": "sha256:27e722b2d548c391389f9a6cdc579b0db5306b1bd82a41637153d54779cd2115"
+  },
+  "metadata.json": {
+    "blake3": "blake3:e64058f2876662c320119ba9b6b0eeedc0fb5b2ddf480f69770c4c47b8d4f8a7",
+    "byte_length": 392,
+    "sha256": "sha256:b8590a7a165050d41f152945f714f1eb185c9dbb65b37821286f565f4a354aab"
+  },
+  "native-samples.json": {
+    "blake3": "blake3:2dd871eabc185d2f29a69e89950b7643c64cf670e1062e76a989d6c8ff1c6980",
+    "byte_length": 314,
+    "sha256": "sha256:62044fa8e0ed47d9c60d5fa4b9de083ca337e9e2106b988a12ab4073c3cb2034"
+  },
+  "native/auto-2a39b009b62e54b3-0001-reason.stdout": {
+    "blake3": "blake3:46d65c6513cc2a20e8c62b5e8176ac2092701a2566165bc8220257770136e6cd",
+    "byte_length": 4605,
+    "sha256": "sha256:b07577cf9c527c43e41e4a43b285088af3169dd86d7dae97e558a0db4d45a564"
+  },
+  "native/auto-2a39b009b62e54b3-0002-reason-step-0.stdout": {
+    "blake3": "blake3:235db2ebd4a95bcb40bdae001360183c1c124aafaa8007f7ba76436f71fb32d7",
+    "byte_length": 2784,
+    "sha256": "sha256:6d3b40e724ba6179ecbe4921d6ff17291aa6668d23960b6bf41d0b2feff6dcdc"
+  },
+  "native/auto-2a39b009b62e54b3-0002-reason.stdout": {
+    "blake3": "blake3:2e755e30bf58e915e9670c35ac3505ffe089cafae8c1b0baa32efe2a3f45d2be",
+    "byte_length": 4713,
+    "sha256": "sha256:d16d7e3bc046e47127e0310a7020ee45e8bbedc565c348090ac3b8006af73a99"
+  },
+  "room-summary.json": {
+    "blake3": "blake3:d1e00667ff479e45158bad37e6e9b6305faebd353090a495b5a7181f89295a3e",
+    "byte_length": 1780,
+    "sha256": "sha256:209fd78e2ea25e832a0e81083f565549bf0082e5c1ac5615586cf3073c349298"
+  },
+  "selected-intents.json": {
+    "blake3": "blake3:7559312cc0b833bbe6ebed7eea2cacc8ce21aa8a6dc19f49dab3042c8ab904e2",
+    "byte_length": 31087,
+    "sha256": "sha256:c704ba0d6dd764d4c593fbedd621fcba707092420ace416c3e38f0c1f320bda4"
+  },
+  "service-summary.json": {
+    "blake3": "blake3:32fa5e56e8c40a5f366ef45c94930d4921f1d72795e1d7763c39a7632883f1c6",
+    "byte_length": 1712,
+    "sha256": "sha256:6108b800c02b35a1da88d3858d3254242c12dc94852b607d3b307a04d0d12b0a"
+  },
+  "stderr": {
+    "blake3": "blake3:3d41c2bd431d71a2a5da771b23ea291d2d5f744cb3ba4199aa3025d81a389b7a",
+    "byte_length": 371,
+    "sha256": "sha256:998fa92e621601baae84b0d76d7faa1e1ec5649de0ab526c271a388fd52d9809"
+  },
+  "summary.json": {
+    "blake3": "blake3:519d4a63ddef5868765e4ceb74f96017563778611184c90de6e9f33d21b9182b",
+    "byte_length": 498,
+    "sha256": "sha256:7230bf6bd6c9116d7385f25221fd8a8b196431a4104d61460f4567e3e442a931"
+  }
+}
