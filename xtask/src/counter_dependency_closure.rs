@@ -36,7 +36,26 @@ const HISTORICAL_CLOSURE_DIGEST: &str =
 const V3_CLOSURE_DIGEST: &str =
     "blake3:ab6522185e745316baa46dcec26e41644c57198df8d28a5170c0b1ecaa5302ae";
 
-type EnabledFeatures = BTreeMap<(String, String), BTreeSet<String>>;
+type PackageKey = (String, String);
+type EnabledFeatures = BTreeMap<PackageKey, BTreeSet<String>>;
+
+#[derive(Clone)]
+struct ScopedGraph {
+    features: EnabledFeatures,
+    edges: BTreeSet<(PackageKey, PackageKey)>,
+}
+
+impl ScopedGraph {
+    fn contains_edge(&self, parent: &Value, child: &Value) -> Result<bool> {
+        let key = |package: &Value| -> Result<PackageKey> {
+            Ok((
+                string(package, "name")?.to_owned(),
+                string(package, "version")?.to_owned(),
+            ))
+        };
+        Ok(self.edges.contains(&(key(parent)?, key(child)?)))
+    }
+}
 type LockEntries<'a> = BTreeMap<(String, String, Option<String>), &'a toml::Value>;
 
 pub fn generate(repository_root: &Path) -> Result<()> {
@@ -125,7 +144,7 @@ fn expected_bytes(repository_root: &Path) -> Result<Vec<u8>> {
         .with_context(|| format!("cannot canonicalize {}", repository_root.display()))?;
     let metadata = cargo_metadata(&repository_root)?;
     let lock = cargo_lock(&repository_root)?;
-    let features = cargo_tree_features(&repository_root)?;
+    let features = cargo_tree_graph(&repository_root)?;
     let value = closure_value(
         &repository_root,
         &metadata,
@@ -160,7 +179,7 @@ fn cargo_lock(repository_root: &Path) -> Result<toml::Value> {
     toml::from_str(&source).with_context(|| format!("invalid {}", path.display()))
 }
 
-fn cargo_tree_features(repository_root: &Path) -> Result<EnabledFeatures> {
+fn cargo_tree_graph(repository_root: &Path) -> Result<ScopedGraph> {
     let output = Command::new("cargo")
         .current_dir(repository_root)
         .args([
@@ -171,7 +190,10 @@ fn cargo_tree_features(repository_root: &Path) -> Result<EnabledFeatures> {
             "--target",
             "all",
             "-e",
-            "normal,build,features",
+            "normal,build",
+            "--prefix",
+            "depth",
+            "--no-dedupe",
             "--format",
             "{p}|{f}",
         ])
@@ -184,20 +206,28 @@ fn cargo_tree_features(repository_root: &Path) -> Result<EnabledFeatures> {
         );
     }
 
-    let mut features = EnabledFeatures::new();
-    for raw_line in String::from_utf8(output.stdout)
-        .context("cargo tree emitted non-UTF-8 feature output")?
-        .lines()
-    {
-        if raw_line.contains("[build-dependencies]") {
-            continue;
+    parse_scoped_tree(
+        &String::from_utf8(output.stdout).context("cargo tree emitted non-UTF-8 output")?,
+    )
+}
+
+fn parse_scoped_tree(output: &str) -> Result<ScopedGraph> {
+    let mut graph = ScopedGraph {
+        features: EnabledFeatures::new(),
+        edges: BTreeSet::new(),
+    };
+    let mut parents = Vec::<PackageKey>::new();
+    for line in output.lines().filter(|line| !line.is_empty()) {
+        let depth_end = line
+            .find(|character: char| !character.is_ascii_digit())
+            .context("cargo tree line has no package")?;
+        let depth: usize = line[..depth_end]
+            .parse()
+            .context("invalid cargo tree depth")?;
+        if depth > parents.len() {
+            bail!("cargo tree skips a parent depth: {line}");
         }
-        let line =
-            raw_line.trim_start_matches(|character: char| !character.is_ascii_alphanumeric());
-        if line.is_empty() || line == "(*)" || line.contains(" feature ") {
-            continue;
-        }
-        let (package, enabled) = line
+        let (package, enabled) = line[depth_end..]
             .split_once('|')
             .with_context(|| format!("cargo tree package line lacks feature separator: {line}"))?;
         let (name, version) = package
@@ -207,28 +237,30 @@ fn cargo_tree_features(repository_root: &Path) -> Result<EnabledFeatures> {
             .split_whitespace()
             .next()
             .context("cargo tree package version is empty")?;
-        let enabled = enabled.strip_suffix(" (*)").unwrap_or(enabled);
-        let entry = features
-            .entry((name.to_owned(), version.to_owned()))
-            .or_default();
-        entry.extend(
+        let key = (name.to_owned(), version.to_owned());
+        graph.features.entry(key.clone()).or_default().extend(
             enabled
                 .split(',')
                 .filter(|feature| !feature.is_empty())
                 .map(str::to_owned),
         );
+        parents.truncate(depth);
+        if let Some(parent) = parents.last() {
+            graph.edges.insert((parent.clone(), key.clone()));
+        }
+        parents.push(key);
     }
-    if features.is_empty() {
-        bail!("cargo tree yielded no Counter package feature records");
+    if graph.features.is_empty() {
+        bail!("cargo tree yielded no Counter package records");
     }
-    Ok(features)
+    Ok(graph)
 }
 
 fn closure_value(
     repository_root: &Path,
     metadata: &Value,
     lock: &toml::Value,
-    enabled_features: &EnabledFeatures,
+    graph: &ScopedGraph,
     schema: &str,
 ) -> Result<Value> {
     let packages = metadata["packages"]
@@ -269,8 +301,16 @@ fn closure_value(
             .get(&id)
             .copied()
             .with_context(|| format!("resolved graph has no node for {id}"))?;
+        let parent = package_by_id
+            .get(&id)
+            .with_context(|| format!("metadata has no package for {id}"))?;
         for dependency in normal_or_build_dependencies(node)? {
-            queue.push_back(dependency);
+            let child = package_by_id
+                .get(&dependency)
+                .with_context(|| format!("metadata has no package for {dependency}"))?;
+            if graph.contains_edge(parent, child)? {
+                queue.push_back(dependency);
+            }
         }
     }
 
@@ -286,7 +326,8 @@ fn closure_value(
             .with_context(|| format!("resolved graph has no node for {id}"))?;
         let name = string(package, "name")?;
         let version = string(package, "version")?;
-        let enabled_features = enabled_features
+        let enabled_features = graph
+            .features
             .get(&(name.to_owned(), version.to_owned()))
             .with_context(|| format!("cargo tree has no feature record for {name} {version}"))?;
         let source = package_source(repository_root, package)?;
@@ -302,7 +343,7 @@ fn closure_value(
         // unified. `cargo tree -p worldstream-core` scopes this to Counter's
         // normal/build root graph, so behavior-affecting features are bound
         // without absorbing unrelated workspace feature requests.
-        let edges = normal_or_build_edges(repository_root, node, &package_by_id)?;
+        let edges = normal_or_build_edges(repository_root, package, node, &package_by_id, graph)?;
         records.push(json!({
             "identity": package_identity(repository_root, package)?,
             "name": name,
@@ -341,8 +382,10 @@ fn normal_or_build_dependencies(node: &Value) -> Result<Vec<String>> {
 
 fn normal_or_build_edges(
     repository_root: &Path,
+    parent: &Value,
     node: &Value,
     package_by_id: &BTreeMap<String, &Value>,
+    graph: &ScopedGraph,
 ) -> Result<Vec<Value>> {
     let mut edges = Vec::new();
     for dependency in node["deps"]
@@ -371,6 +414,11 @@ fn normal_or_build_edges(
             .get(package_id)
             .copied()
             .with_context(|| format!("metadata has no package for {package_id}"))?;
+        // Workspace feature unification can add optional edges to metadata.
+        // Keep only edges present in Counter's own normal/build graph.
+        if !graph.contains_edge(parent, package)? {
+            continue;
+        }
         edges.push(json!({
             // Cargo metadata emits the effective dependency name here: this is
             // the rename when the manifest uses `package = "..."`.
@@ -572,13 +620,14 @@ mod tests {
         let metadata =
             cargo_metadata(&root).unwrap_or_else(|error| unreachable!("metadata: {error}"));
         let lock = cargo_lock(&root).unwrap_or_else(|error| unreachable!("lock: {error}"));
-        let features = cargo_tree_features(&root)
+        let features = cargo_tree_graph(&root)
             .unwrap_or_else(|error| unreachable!("Counter features: {error}"));
         let expected = closure_value(&root, &metadata, &lock, &features, CURRENT_SCHEMA)
             .unwrap_or_else(|error| unreachable!("closure: {error}"));
 
         let mut with_core_feature = features.clone();
         with_core_feature
+            .features
             .entry((ROOT_PACKAGE.to_owned(), "0.1.0".to_owned()))
             .or_default()
             .insert("behavior-affecting-core-feature".to_owned());
@@ -594,7 +643,7 @@ mod tests {
         let metadata =
             cargo_metadata(&root).unwrap_or_else(|error| unreachable!("metadata: {error}"));
         let lock = cargo_lock(&root).unwrap_or_else(|error| unreachable!("lock: {error}"));
-        let features = cargo_tree_features(&root)
+        let features = cargo_tree_graph(&root)
             .unwrap_or_else(|error| unreachable!("Counter features: {error}"));
         let expected = closure_value(&root, &metadata, &lock, &features, CURRENT_SCHEMA)
             .unwrap_or_else(|error| unreachable!("closure: {error}"));
@@ -610,6 +659,21 @@ mod tests {
             .as_array_mut()
             .unwrap_or_else(|| unreachable!("serde features"))
             .push(Value::String("unrelated-workspace-feature".to_owned()));
+        let zeroize_id = metadata["packages"]
+            .as_array()
+            .unwrap_or_else(|| unreachable!("packages"))
+            .iter()
+            .find(|package| package["name"] == "zeroize")
+            .unwrap_or_else(|| unreachable!("zeroize package"))["id"]
+            .clone();
+        shared["deps"]
+            .as_array_mut()
+            .unwrap_or_else(|| unreachable!("serde dependencies"))
+            .push(json!({
+                "name": "workspace_only_optional_dependency",
+                "pkg": zeroize_id,
+                "dep_kinds": [{"kind": null, "target": null}],
+            }));
         let from_workspace_unification = closure_value(
             &root,
             &workspace_unified_metadata,
@@ -622,6 +686,7 @@ mod tests {
 
         let mut with_unrelated_sqlite_feature = features.clone();
         with_unrelated_sqlite_feature
+            .features
             .entry(("rusqlite".to_owned(), "0.40.1".to_owned()))
             .or_default()
             .insert("bundled".to_owned());

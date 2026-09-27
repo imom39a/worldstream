@@ -8,10 +8,11 @@
   },
   "files": [
     "dist",
+    "bin",
     "assets"
   ],
   "bin": {
-    "worldstream-pack": "dist/main.js"
+    "worldstream-pack": "bin/worldstream-pack.mjs"
   },
   "exports": {
     ".": {
