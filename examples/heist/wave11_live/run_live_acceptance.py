@@ -125,7 +125,7 @@ def story_command(mode: str, args: argparse.Namespace) -> list[str]:
 
 
 def browser_command() -> list[str]:
-    return ["bash", "web/console/browser-privacy-smoke.sh"]
+    return ["bash", "examples/clients/inspector/browser-privacy-smoke.sh"]
 
 
 def main() -> int:

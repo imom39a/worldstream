@@ -6,38 +6,10 @@ import { activityClientBuildDigest } from "./activity-client-identities.mjs";
 
 const workspace = resolve(fileURLToPath(new URL("..", import.meta.url)));
 export const activityClientMounts = Object.freeze([
-  Object.freeze({ prefix: "/agent-heist-v12/", root: resolve(workspace, "clients/agent-heist-web/dist") }),
-  Object.freeze({ prefix: "/agent-heist-v11/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v11") }),
-  Object.freeze({ prefix: "/agent-heist-v10/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v10") }),
-  Object.freeze({ prefix: "/agent-heist-v9/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v9") }),
-  Object.freeze({ prefix: "/agent-heist-v8/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v8") }),
-  Object.freeze({ prefix: "/agent-heist-v7/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v7") }),
-  Object.freeze({ prefix: "/agent-heist-v6/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v6") }),
-  Object.freeze({ prefix: "/agent-heist-v5/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v5") }),
-  Object.freeze({ prefix: "/agent-heist-v4/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v4") }),
-  Object.freeze({ prefix: "/agent-heist-v3/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v3") }),
-  Object.freeze({ prefix: "/agent-heist-v2/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v2") }),
-  Object.freeze({ prefix: "/negotiate-v3/", root: resolve(workspace, "clients/negotiate-web/dist") }),
-  Object.freeze({ prefix: "/negotiate-v2/", root: resolve(workspace, "config/activity-clients/artifacts/negotiate-web-v2") }),
-  Object.freeze({ prefix: "/negotiate/", root: resolve(workspace, "config/activity-clients/artifacts/negotiate-web-v1") }),
-  Object.freeze({ prefix: "/midnight-archive-v14/", root: resolve(workspace, "clients/midnight-archive-web/dist") }),
-  Object.freeze({ prefix: "/midnight-archive-v13/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v13") }),
-  Object.freeze({ prefix: "/midnight-archive-v12/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v12") }),
-  Object.freeze({ prefix: "/midnight-archive-v11/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v11") }),
-  Object.freeze({ prefix: "/midnight-archive-v10/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v10") }),
-  Object.freeze({ prefix: "/midnight-archive-v9/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v9") }),
-  Object.freeze({ prefix: "/midnight-archive-v8/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v8") }),
-  Object.freeze({ prefix: "/midnight-archive-v7/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v7") }),
-  Object.freeze({ prefix: "/midnight-archive-v6/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v6") }),
-  Object.freeze({ prefix: "/midnight-archive-v5/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v5") }),
-  Object.freeze({ prefix: "/midnight-archive-v4/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v4") }),
-  Object.freeze({ prefix: "/midnight-archive-v3/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v3") }),
-  Object.freeze({ prefix: "/midnight-archive-v2/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v2") }),
-  Object.freeze({ prefix: "/midnight-archive-v1/", root: resolve(workspace, "config/activity-clients/artifacts/midnight-archive-web-v1") }),
-  Object.freeze({ prefix: "/inspector-v2/", root: resolve(workspace, "web/console/dist") }),
-  Object.freeze({ prefix: "/inspector/", root: resolve(workspace, "config/activity-clients/artifacts/inspector-web-v1") }),
-  // Inspector v1 used root-relative assets. Preserve those exact bytes too.
-  Object.freeze({ prefix: "/", root: resolve(workspace, "config/activity-clients/artifacts/inspector-web-v1") }),
+  Object.freeze({ prefix: "/agent-heist-v12/", root: resolve(workspace, "examples/clients/agent-heist-web/dist") }),
+  Object.freeze({ prefix: "/negotiate-v3/", root: resolve(workspace, "examples/clients/negotiate-web/dist") }),
+  Object.freeze({ prefix: "/midnight-archive-v14/", root: resolve(workspace, "examples/clients/midnight-archive-web/dist") }),
+  Object.freeze({ prefix: "/inspector-v2/", root: resolve(workspace, "examples/clients/inspector/dist") }),
 ]);
 
 const contentTypes = new Map([

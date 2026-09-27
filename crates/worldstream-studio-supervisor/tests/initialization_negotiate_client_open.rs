@@ -117,7 +117,7 @@ async fn reviewed_import_selects_and_opens_negotiate_0_2_client()
     };
     initialize_local(&installation)?;
     let declaration = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config/activity-clients/cli-import.json");
+        .join("../../examples/clients/catalog/cli-import.json");
     let mut request = InitializationImportRequest {
         installation,
         runner_templates: Vec::new(),

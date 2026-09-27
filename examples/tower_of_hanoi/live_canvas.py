@@ -1022,7 +1022,7 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument(
         "--document",
         type=Path,
-        default=repository / "web/demos/community-hanoi-live.html",
+        default=repository / "examples/tower_of_hanoi/web/community-hanoi-live.html",
     )
     parser.add_argument("--ready-file", type=Path)
     parser.add_argument("--live-file", type=Path)

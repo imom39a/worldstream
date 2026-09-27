@@ -2313,23 +2313,27 @@ mod tests {
     use super::*;
     use crate::room_setup_operations::RoomSetupOperationStageV1;
 
-    const LISTING: &[u8] = include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json");
+    const LISTING: &[u8] =
+        include_bytes!("../../../tests/fixtures/hosted/listings/agent-heist-0.2.0.json");
     const HOUSE_LISTING: &[u8] =
-        include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json");
+        include_bytes!("../../../tests/fixtures/hosted/listings/agent-heist-0.3.0.json");
     const CURRENT_LISTING: &[u8] =
-        include_bytes!("../../../config/hosted/listings/agent-heist-0.24.0.json");
+        include_bytes!("../../../tests/fixtures/hosted/listings/agent-heist-0.24.0.json");
     const HOUSE_AGENT: &[u8] =
-        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json");
+        include_bytes!("../../../tests/fixtures/hosted/house-agents/cooperative-planner-1.json");
     const CURRENT_PLANNER: &[u8] =
-        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-17.json");
+        include_bytes!("../../../tests/fixtures/hosted/house-agents/cooperative-planner-17.json");
     const CURRENT_AUDITOR: &[u8] =
-        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-16.json");
-    const LAUNCH: &[u8] =
-        include_bytes!("../../../fixtures/hosted-contract/valid/agent-heist-launch-request.json");
-    const ROSTER: &[u8] =
-        include_bytes!("../../../fixtures/hosted-contract/valid/agent-heist-frozen-roster.json");
-    const SETUP: &[u8] =
-        include_bytes!("../../../fixtures/hosted-contract/expected/agent-heist-room-setup.json");
+        include_bytes!("../../../tests/fixtures/hosted/house-agents/skeptical-auditor-16.json");
+    const LAUNCH: &[u8] = include_bytes!(
+        "../../../tests/fixtures/hosted-contract/valid/agent-heist-launch-request.json"
+    );
+    const ROSTER: &[u8] = include_bytes!(
+        "../../../tests/fixtures/hosted-contract/valid/agent-heist-frozen-roster.json"
+    );
+    const SETUP: &[u8] = include_bytes!(
+        "../../../tests/fixtures/hosted-contract/expected/agent-heist-room-setup.json"
+    );
 
     #[derive(Clone, Default)]
     struct FakeBackend {
@@ -2645,7 +2649,7 @@ mod tests {
             projection_schema: "agent-heist/projection/v1".to_owned(),
             authorized_core: serde_json::json!({"access_mode": "spectator"}),
             projection: value(include_bytes!(
-                "../../../fixtures/hosted-contract/valid/agent-heist-terminal-input.json"
+                "../../../tests/fixtures/hosted-contract/valid/agent-heist-terminal-input.json"
             ))["public_projection"]
                 .clone(),
             action_offers: vec![],
@@ -2865,7 +2869,7 @@ mod tests {
     #[test]
     fn full_reviewed_house_catalog_opens_within_the_shared_catalog_bound() {
         let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
-        let (listings, house_agents) = crate::hosted_artifacts::reviewed_hosted_artifacts()
+        let (listings, house_agents) = crate::test_hosted_catalog::reviewed_hosted_artifacts()
             .unwrap_or_else(|error| unreachable!("reviewed catalog: {error}"));
         let (request, current_listing, _) =
             current_house_request("hosted-full-reviewed-catalog", CURRENT_PLANNER);

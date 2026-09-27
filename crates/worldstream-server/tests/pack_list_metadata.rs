@@ -12,7 +12,7 @@ fn installed_pack_metadata_preserves_exact_identity_and_next_start_selection()
     assert!(PackBundleStoreV1::read_inventory_metadata(&absent)?.is_empty());
     assert!(!absent.exists());
     let data = worldstream_runtime::prepare_data_directory(&directory.path().join("data"))?;
-    let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packs/negotiate/releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack");
+    let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/packs/negotiate/releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack");
     approve_pack(
         &data,
         &bundle,

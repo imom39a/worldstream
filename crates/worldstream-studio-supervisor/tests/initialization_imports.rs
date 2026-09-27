@@ -345,7 +345,7 @@ fn reviewed_client_declarations_install_exact_targets_and_reuse_selection_policy
     initialize_local(&installation)?;
     let declarations = directory.path().join("declarations");
     fs::create_dir_all(declarations.join("releases"))?;
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/activity-clients");
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/clients/catalog");
     let declaration_bytes = fs::read(source.join("cli-import.json"))?;
     let imported = worldstream_studio_supervisor::initialization_inputs::parse_client_declaration(
         &declaration_bytes,

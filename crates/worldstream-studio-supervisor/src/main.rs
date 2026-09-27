@@ -1,9 +1,8 @@
-use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
 use worldstream_runtime::{CliOverrides, ConfigLoader};
-use worldstream_studio_supervisor::hosted_artifacts::reviewed_hosted_artifacts;
 use worldstream_studio_supervisor::{
     HttpDaemonStatusSource,
     activity_packs::HttpDaemonActivityPackSource,
@@ -45,11 +44,6 @@ use worldstream_studio_supervisor::{
 use worldstream_studio_supervisor::{
     control_access::ControlAccess,
     control_admission::protect_operator_routes,
-    hosted_browser_sessions::{HostedBrowserSessionBrokerV1, hosted_browser_session_router},
-    hosted_house_runners::HostedHouseRunnerOperationsV1,
-    hosted_launch::{HostedLaunchAccessV1, HostedLaunchOperationsV1, hosted_launch_router},
-    hosted_public_streams::{HostedPublicStreamBrokerV1, hosted_public_stream_router},
-    hosted_result_source::{HOSTED_RESULT_SOURCE_TIMEOUT, HttpHostedResultSourceV1},
     local_initialization::validate_initialized,
     managed_controller::{
         ControllerLifecycle, managed_controller_router, managed_lifecycle_router,
@@ -66,9 +60,6 @@ use worldstream_studio_supervisor::{
 
 /// Multi-step participant operations have a separate budget from health probes.
 const PARTICIPANT_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
-// Three safe membership reads, one ticket/rotation and one race-cleanup revoke
-// cost at most 5 * 4s + 750ms retry backoff, below the Gateway's 25s budget.
-const HOSTED_BROWSER_RUNTIME_REQUEST_TIMEOUT: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -558,176 +549,6 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
         agent_profiles.clone(),
         runner_registry.clone(),
     );
-    let hosted_launch = match (
-        env::var("WORLDSTREAM_HOSTED_INSTALLATION_ID").ok(),
-        env::var("WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY").ok(),
-    ) {
-        (None, None) => None,
-        (Some(installation_id), Some(authority)) => {
-            let (mut listings, mut house_agents) = reviewed_hosted_artifacts()?;
-            if let Ok(directory) = env::var("WORLDSTREAM_LOCAL_HOSTED_FIXTURE_DIRECTORY") {
-                if env::var("WORLDSTREAM_DEPLOYMENT_ENVIRONMENT").as_deref() != Ok("development")
-                    || env::var("WORLDSTREAM_DEVELOPMENT_FAKE_OPENROUTER").as_deref()
-                        != Ok("visible-local-only")
-                    || env::var("NODE_ENV").as_deref() == Ok("production")
-                    || env::var("VERCEL_ENV").as_deref() == Ok("production")
-                    || !args.bind.ip().is_loopback()
-                    || !args.daemon.ip().is_loopback()
-                {
-                    anyhow::bail!("local hosted fixture requires explicit loopback development");
-                }
-                let (fixture_listings, fixture_agents) =
-                    worldstream_studio_supervisor::hosted_artifacts::read_local_hosted_fixture(
-                        std::path::Path::new(&directory),
-                    )?;
-                listings.extend(fixture_listings);
-                house_agents.extend(fixture_agents);
-            }
-            let development_house_provider = development_house_provider_address()?;
-            let result_source = if let Some(ownership) = &managed_transport_ownership {
-                HttpHostedResultSourceV1::new_managed(
-                    args.daemon,
-                    HOSTED_RESULT_SOURCE_TIMEOUT,
-                    vault.clone(),
-                    ownership.clone(),
-                )
-            } else {
-                HttpHostedResultSourceV1::new(
-                    args.daemon,
-                    HOSTED_RESULT_SOURCE_TIMEOUT,
-                    vault.clone(),
-                )
-            }
-            .map_err(|_| anyhow::anyhow!("hosted result-source adapter is unavailable"))?;
-            let house_runners = if let Some(provider_address) = development_house_provider {
-                HostedHouseRunnerOperationsV1::open_development_loopback(
-                    &args.state_dir.join("hosted-house-runners"),
-                    &canonical_state_dir,
-                    &assignment_mcp_executable,
-                    &installation_id,
-                    listings.clone(),
-                    house_agents.clone(),
-                    agent_profiles.clone(),
-                    runner_registry.clone(),
-                    runners.clone(),
-                    assignment_mcp_launches.clone(),
-                    vault.clone(),
-                    task_setup.clone(),
-                    managed_agent_hosts.clone(),
-                    provider_address,
-                )
-            } else {
-                HostedHouseRunnerOperationsV1::open_production(
-                    &args.state_dir.join("hosted-house-runners"),
-                    &canonical_state_dir,
-                    &assignment_mcp_executable,
-                    &installation_id,
-                    listings.clone(),
-                    house_agents.clone(),
-                    agent_profiles.clone(),
-                    runner_registry.clone(),
-                    runners.clone(),
-                    assignment_mcp_launches.clone(),
-                    vault.clone(),
-                    task_setup.clone(),
-                    managed_agent_hosts.clone(),
-                )
-            }
-            .map_err(|_| anyhow::anyhow!("hosted House Runner adapter is unavailable"))?;
-            let operations = HostedLaunchOperationsV1::open(
-                &args.state_dir.join("hosted-launches"),
-                &installation_id,
-                listings,
-                house_agents,
-                room_operations.clone(),
-                task_setup.clone(),
-            )
-            .map_err(|_| anyhow::anyhow!("hosted launch adapter is unavailable"))?
-            .with_house_runners(house_runners)
-            .with_result_source(result_source);
-            let access = HostedLaunchAccessV1::new(&authority)
-                .map_err(|_| anyhow::anyhow!("hosted launch authority is invalid"))?;
-            let client_origin = env::var("WORLDSTREAM_HOSTED_CLIENT_ORIGIN").map_err(|_| {
-                anyhow::anyhow!(
-                    "WORLDSTREAM_HOSTED_CLIENT_ORIGIN is required with hosted launch configuration"
-                )
-            })?;
-            let browser_sessions = HostedBrowserSessionBrokerV1::new(
-                &installation_id,
-                &client_origin,
-                Duration::from_mins(1),
-                512,
-                task_setup.clone(),
-                FixedDaemonParticipantConsoleGatewayV1::new(
-                    args.daemon,
-                    HOSTED_BROWSER_RUNTIME_REQUEST_TIMEOUT,
-                )
-                .with_absolute_http_deadline(),
-                client_bindings.clone(),
-            )
-            .map_err(|_| anyhow::anyhow!("hosted Browser Activity Sessions are unavailable"))?;
-            let public_streams = HostedPublicStreamBrokerV1::open(
-                &args.state_dir.join("hosted-public-relays"),
-                operations.clone(),
-                vault.clone(),
-                FixedDaemonParticipantConsoleGatewayV1::new(
-                    args.daemon,
-                    HOSTED_BROWSER_RUNTIME_REQUEST_TIMEOUT,
-                )
-                .with_absolute_http_deadline(),
-                &client_origin,
-            )
-            .map_err(|_| anyhow::anyhow!("hosted Public Projection relay is unavailable"))?;
-            let lobby_reconciler = operations.clone();
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_millis(500));
-                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                let mut last_failure = None;
-                loop {
-                    interval.tick().await;
-                    let operations = lobby_reconciler.clone();
-                    match tokio::task::spawn_blocking(move || operations.reconcile_ready_lobbies())
-                        .await
-                    {
-                        Ok(Ok(())) => {
-                            if last_failure.take().is_some() {
-                                eprintln!("hosted Lobby readiness reconciliation recovered");
-                            }
-                        }
-                        Ok(Err(error)) => {
-                            // Runtime startup and planned restarts can temporarily
-                            // make an exact readiness check unavailable. Keep each
-                            // launch closed, but do not abandon future checks.
-                            if last_failure != Some(error) {
-                                eprintln!(
-                                    "hosted Lobby readiness reconciliation unavailable: {error:?}"
-                                );
-                                last_failure = Some(error);
-                            }
-                        }
-                        Err(error) => {
-                            eprintln!(
-                                "hosted Lobby readiness reconciliation task stopped: {error}"
-                            );
-                            break;
-                        }
-                    }
-                }
-            });
-            drop(authority);
-            Some(
-                hosted_launch_router(operations, access.clone())
-                    .merge(hosted_browser_session_router(
-                        browser_sessions,
-                        access.clone(),
-                    ))
-                    .merge(hosted_public_stream_router(public_streams, access)),
-            )
-        }
-        _ => anyhow::bail!(
-            "hosted launch installation and Controller authority must be configured together"
-        ),
-    };
     let room_launch = worldstream_studio_supervisor::room_launch::room_launch_router(
         room_creation.clone(),
         task_setup.clone(),
@@ -771,15 +592,12 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
     .merge(managed_agent_host_seat_router(agent_profiles, managed_agent_hosts))
     .merge(runner_attention_router(runner_attention))
     .merge(attention_inbox_router(attention_inbox));
-    let mut router = router
+    let router = router
         .merge(room_setup_operations_router(room_operations))
         .merge(room_launch)
         .merge(scoped_credentials)
         .merge(client_handoff)
         .merge(room_runners);
-    if let Some(hosted_launch) = hosted_launch {
-        router = router.merge(hosted_launch);
-    }
 
     // Admission must wrap the complete graph, including all late merges and
     // assignment-MCP aliases. No operator routes may be merged after this point.
@@ -842,25 +660,4 @@ fn parse_backup_profile(value: &str) -> Result<BackupStorageProfileV1, &'static 
         "ephemeral" => Ok(BackupStorageProfileV1::Ephemeral),
         _ => Err("profile must be sqlite-bundled, postgres-primary, or ephemeral"),
     }
-}
-
-fn development_house_provider_address() -> Result<Option<SocketAddr>> {
-    let Some(value) = env::var("WORLDSTREAM_DEVELOPMENT_HOUSE_OPENROUTER_ADDRESS").ok() else {
-        return Ok(None);
-    };
-    if env::var("WORLDSTREAM_DEPLOYMENT_ENVIRONMENT").as_deref() != Ok("development")
-        || env::var("WORLDSTREAM_DEVELOPMENT_FAKE_OPENROUTER").as_deref()
-            != Ok("visible-local-only")
-        || env::var("NODE_ENV").as_deref() == Ok("production")
-        || env::var("VERCEL_ENV").as_deref() == Ok("production")
-    {
-        anyhow::bail!("development House provider is forbidden outside explicit development");
-    }
-    let address = value
-        .parse::<SocketAddr>()
-        .map_err(|_| anyhow::anyhow!("development House provider address is invalid"))?;
-    if !address.ip().is_loopback() || address.port() == 0 {
-        anyhow::bail!("development House provider must be a nonzero loopback address");
-    }
-    Ok(Some(address))
 }

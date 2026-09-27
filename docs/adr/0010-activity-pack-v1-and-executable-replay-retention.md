@@ -11,7 +11,7 @@ date: 2026-08-15
 > `PackRevisionLockV1`, immutable Room pin, exact retained execution, privacy,
 > Recovery, and Replay requirements remain authoritative.
 >
-> [ADR 0027](0027-declare-generic-hosted-starts-and-reviewed-roster-options.md)
+> [ADR 0027](https://github.com/imom39a/worldstream/blob/ac7f443562bce33088229351d5f9eba40bb67bdd/docs/adr/0027-declare-generic-hosted-starts-and-reviewed-roster-options.md)
 > additionally extends the registry-status enumeration with independent,
 > exact-revision Activity Start approval. The selection and retention status
 > meanings below remain unchanged.

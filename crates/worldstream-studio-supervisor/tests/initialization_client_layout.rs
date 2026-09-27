@@ -24,7 +24,7 @@ fn exact_client_retry_completes_an_interrupted_empty_catalog_layout()
     // Explicit tracked non-secret declarations are read-only; all state is owned
     // by the temporary installation below.
     let declaration = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config/activity-clients/cli-import.json");
+        .join("../../examples/clients/catalog/cli-import.json");
     let mut request = InitializationImportRequest {
         installation,
         runner_templates: Vec::new(),

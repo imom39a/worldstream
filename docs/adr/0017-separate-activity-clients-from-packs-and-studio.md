@@ -220,7 +220,7 @@ cross-origin policy, and credential retention. An Activity Distribution or
 Artifact Registry entry cannot enable remote launch before that contract is
 accepted.
 
-[ADR 0020](0020-use-vercel-for-control-and-fly-for-direct-browser-streams.md)
+[ADR 0020](https://github.com/imom39a/worldstream/blob/ac7f443562bce33088229351d5f9eba40bb67bdd/docs/adr/0020-use-vercel-for-control-and-fly-for-direct-browser-streams.md)
 accepts that contract for the Hosted Activity Platform's exact Vercel HTTPS
 control plane and direct Fly WebSocket data plane. Other remote deployment
 shapes remain unauthorized.

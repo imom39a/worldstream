@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document specifies the native v0.1 protocol shape. The observation attach/reset/ACK and Activation operation/context contracts are frozen by [Observation Delivery and Activation](observation-and-activation.md); unrelated message names and fields may still evolve before their conformance fixtures, but no change may weaken the Frozen Requirements.
+This document specifies the native v0.1 protocol shape. The Observation Delivery and Activation documents define the attach, reset, acknowledgment, operation, and context contracts. Changes to other fields must preserve those contracts.
 
 The protocol serves:
 
@@ -56,9 +56,9 @@ A Room is described across four independent axes:
 
 `CoreRoomState v1` contains exactly Room Status plus the semantic Membership map. Room Head, hashes, integrity, Sessions, delivery, receipts, Activation, policy, diagnostics, telemetry, and commit time are envelope or operational records, not Core fields.
 
-A healthy archived Room permits authorized reads/export/Replay and ordered suspend/depart only. A faulted Room rejects every canonical mutation but may serve only its last verified authorized Projection, retained Frame Catch-up, and verified Replay with an explicit integrity envelope. A quarantined Room serves no normal Projection, Catch-up, or claimed-current Replay; only authenticated host-operator diagnostics, raw export, restore, and verification remain. A terminal pack phase normally rejects domain Actions while the Core Room may remain active until the host operator archives it.
+A healthy archived Room permits authorized reads/export/Replay and ordered suspend/depart only. A faulted Room rejects every canonical mutation. It can serve only its last verified authorized Projection, retained Frame Catch-up, and verified Replay. These responses include an explicit integrity envelope. A quarantined Room serves no normal Projection, Catch-up, or claimed-current Replay; only authenticated host-operator diagnostics, raw export, restore, and verification remain. A terminal pack phase normally rejects domain Actions while the Core Room may remain active until the host operator archives it.
 
-Whenever a protocol result names the Room Head, the complete value is represented: Room sequence, Genesis-or-Transition lineage hash, Core schema version, exact pack digest, and Core, Activity, and aggregate Authoritative State hashes. A sequence-only field is a causal convenience, not a Room Head.
+A protocol result that names the Room Head must include the complete value. This includes Room sequence, Genesis-or-Transition lineage hash, Core schema version, and exact Pack digest. It also includes Core, Activity, and aggregate Authoritative State hashes. A sequence-only field is a causal convenience, not a Room Head.
 
 ## Transport
 
@@ -108,9 +108,7 @@ GET /v1/operator/rooms/{room_id}
 ```
 
 The list is ordered by stable Room ID and uses the last returned Room ID as its
-continuation. Each list row and detail contains the stable Room identity,
-complete Room Head, exact immutable Activity Pack revision identity, Room
-Integrity State and generation, and an explicit freshness observation. These
+continuation. Each list row and detail contains the stable Room identity, complete Head, and exact Activity Pack revision. It also contains Room Integrity State, generation, and an explicit freshness observation. These
 fields are independent: freshness never substitutes for Room Integrity, and
 neither substitutes for Activity Phase.
 
@@ -285,7 +283,7 @@ The response captures one complete barrier and selects exactly one synchronizati
 
 The server then delivers the complete retained range 185 through 191. `role` is present only for participant-access Memberships; spectator and operator Memberships have no pack-defined Role.
 
-Suspended/departed Memberships and quarantined Rooms cannot attach. A faulted Room may attach only to the last verified authorized Projection/retained range and includes `room_health: "faulted"` plus its generation; it never represents unverified bytes as current.
+Suspended/departed Memberships and quarantined Rooms cannot attach. A faulted Room may attach only to the last verified authorized Projection/retained range and includes `room_health: "faulted"` plus its generation. It never represents unverified bytes as current.
 
 On first attach, visibility loss, or an unavailable range, `sync.kind` is `projection_reset` and carries the reset baseline instead. It never silently starts at the newest frame.
 
@@ -352,7 +350,7 @@ Attachment is serialized through the Room lane. The server captures the complete
 The `projection` value contains authorized Core Room State and Membership metadata, the pack-owned Activity Projection, and exactly one sibling `action_offers` list. The surrounding body is the Projection Envelope; `room_health` is operational metadata outside the Projection. A Projection Reset is not an Observation Frame. A client processes it atomically, stores `baseline_frame_head`, and then sends the Session's synchronization acknowledgement.
 The canonical `projection.action_offers` bytes are supplied by the exact pack view and reused unchanged by Observations, Invocation Context, and host pre-admission.
 
-`projection_hash` is BLAKE3 over the canonical object `{domain: "worldstream/projection-hash/v1", projection_schema, projection}`. It excludes Projection Envelope fields such as message ID, Room Integrity State/generation, Room sequence, frame sequence, and delivery time, so operational changes do not alter an otherwise identical Projection hash.
+`projection_hash` is BLAKE3 over the canonical object `{domain: "worldstream/projection-hash/v1", projection_schema, projection}`. It excludes message ID, Room Integrity State/generation, Room sequence, frame sequence, and delivery time from the Projection Envelope. Thus, operational changes do not alter an otherwise identical Projection hash.
 
 ### room.sync_ack
 
@@ -506,7 +504,7 @@ The same internal contract covers all Room operation classes:
 
 The server resolves a same-identity retry before later Room lifecycle, integrity, or Membership checks, after current authentication and authorization to read that result. Same identity with changed Canonical Request Hash is `idempotency_conflict` and never executes domain work.
 
-If database COMMIT may or may not have occurred, the server MUST keep the attempt `Indeterminate` and query the authoritative primary with the original identity/hash. It MUST NOT resubmit under a new identity, re-run pack logic, scan that timer again, regenerate or reseal creation values, acknowledge, or publish an assumed result. `resolve` acquires the same transaction-scoped Operation Identity guard used by commit, waits out every earlier same-identity writer, and rereads the writable primary. A plain snapshot miss or unavailable guard returns `ResolutionUnavailable`, never absence. If resolution cannot finish within the request budget, the server returns `commit_indeterminate`; a client retries only the identical identity/body to continue resolution. A stored creation resolution returns its original generated Room/Member IDs and exact Head zero. Synchronized `KnownAbsent` proves no Create, Advance, or disposition committed and maps to `RetryableKnownAbsent`. A retained sealed plan may then retry identically. For creation only, if restart lost the sealed value, the server may freshly generate only Room/Member IDs, Room seed, logical creation time, and the derived bundle under the unchanged caller identity/hash, request, exact pack, and current authority; no Action or other Semantic Time may be resampled through this rule. A generated Room-ID collision remains a separately proven-absent `Reprepare` that preserves caller identity/hash while resealing generated values.
+If database COMMIT may or may not have occurred, the server MUST keep the attempt `Indeterminate` and query the authoritative primary with the original identity/hash. It MUST NOT resubmit under a new identity, rerun Pack logic, or scan that timer again. It MUST NOT regenerate or reseal creation values. It MUST NOT acknowledge or publish an assumed result. `resolve` acquires the same transaction-scoped Operation Identity guard used by commit, waits out every earlier same-identity writer, and rereads the writable primary. A plain snapshot miss or unavailable guard returns `ResolutionUnavailable`, never absence. If resolution cannot finish within the request budget, the server returns `commit_indeterminate`; a client retries only the identical identity/body to continue resolution. A stored creation resolution returns its original generated Room/Member IDs and exact Head zero. Synchronized `KnownAbsent` proves no Create, Advance, or disposition committed and maps to `RetryableKnownAbsent`. A retained sealed plan may then retry identically. For creation only, a restart can lose the sealed value. The server may then generate new Room/Member IDs, Room seed, logical creation time, and their derived bundle. The caller identity/hash, request, exact Pack, and current authority must remain unchanged. This rule does not permit resampling an Action or other Semantic Time. A generated Room-ID collision remains a separately proven-absent `Reprepare` that preserves caller identity/hash while resealing generated values.
 
 ## Observation frames
 
@@ -651,9 +649,9 @@ Offers may be duplicated and may race another authorized runner.
 }
 ~~~
 
-`claim_id` is both the lease-attempt identity and the claim operation ID for this Activation and authenticated Runner. The server derives its canonical request hash from the complete authenticated request; clients do not submit a trusted hash field. The database atomically grants at most one current lease and persists that hash plus the result. Same claim ID and same request returns that original result after a lost reply while any required private context is retained; after context retirement it follows the deterministic `result_retired` rule below. A changed request or different authenticated Runner is an idempotency conflict. A Runner uses a new claim ID if it wants to try again after a stored not-available result.
+`claim_id` is both the lease-attempt identity and the claim operation ID for this Activation and authenticated Runner. The server derives its canonical request hash from the complete authenticated request; clients do not submit a trusted hash field. The database atomically grants at most one current lease and persists that hash plus the result. With the same claim ID and request, the server returns the original result while required private context remains. After context retirement, it follows the deterministic `result_retired` rule below. A changed request or different authenticated Runner is an idempotency conflict. A Runner uses a new claim ID if it wants to try again after a stored not-available result.
 
-Claim is one of four independent idempotent Activation operations; renew, release, and complete each carries its own operation ID, from which the server derives and stores a canonical request hash. After authentication, an existing identical receipt is returned before current availability is considered. Database COMMIT linearizes every newly recorded disposition.
+Claim is one of four independent idempotent Activation operations. Renew, release, and complete each have a separate operation ID. The server derives and stores a canonical request hash for each operation. After authentication, an existing identical receipt is returned before current availability is considered. Database COMMIT linearizes every newly recorded disposition.
 
 ### activation.claimed
 
@@ -739,9 +737,9 @@ Only after claim authorization does the server return private invocation context
 }
 ~~~
 
-The runner uses this exact committed payload to start a new Invocation or route work to a bounded Runner-owned execution runtime. `projection.action_offers` is the context's sole exact ordered ActionOfferV1 list. `runner_budget` and `runner_limits` are versioned bounded witnesses selected by the applicable policy and configuration for this grant; the illustrative values above are neither implementation evidence nor a release-performance claim. `delivery` is exactly one of `retained_frames` or `projection_reset { baseline_frame_head, reason }`. The complete Head and all displayed witnesses belong to the grant. WorldStream does not know which model is called.
+The runner uses this exact committed payload to start a new Invocation or route work to a bounded Runner-owned execution runtime. `projection.action_offers` is the context's sole exact ordered ActionOfferV1 list. `runner_budget` and `runner_limits` are versioned bounded witnesses. The applicable policy and configuration select them for this grant. The values above are examples, not implementation or performance evidence. `delivery` is exactly one of `retained_frames` or `projection_reset { baseline_frame_head, reason }`. The complete Head and all displayed witnesses belong to the grant. WorldStream does not know which model is called.
 
-The claim capability authorizes Activation handling only. To submit a domain Action, the Runner or Invocation uses separate participant authority bound to the target Principal and Membership. Receiving context, claiming, renewing, releasing, or completing the Activation does not advance the Membership Cursor; an authorized room client acknowledges Observation Frames explicitly after durable processing. See [ADR 0003](adr/0003-separate-activation-and-action-authority.md).
+The claim capability authorizes Activation handling only. To submit a domain Action, the Runner or Invocation uses separate participant authority bound to the target Principal and Membership. Receiving context or performing an Activation operation does not advance the Membership Cursor. An authorized Room client must acknowledge Observation Frames after durable processing. See [ADR 0003](adr/0003-separate-activation-and-action-authority.md).
 
 If the exact private context later reaches its retention limit, the stored original grant code and result/context hashes remain unchanged. An identical claim retry resolves that receipt but deterministically returns `result_retired`; it never regenerates context or rewrites the original result.
 
@@ -858,10 +856,7 @@ digest and reports stable pack ID, explanatory version, digest, display name,
 and the independent `selectable_for_new_rooms` and
 `runnable_for_retained_rooms` statuses.
 
-The detail operation accepts only the exact BLAKE3 revision digest. It returns
-the descriptor-declared Roles, exact configuration schema document, declared
-Actions with their exact payload schema documents, and Lobby compatibility
-only when that exact revision declares it. A malformed or unknown digest
+The detail operation accepts only the exact BLAKE3 revision digest. It returns the declared Roles, exact configuration schema, and declared Actions with their exact payload schemas. It returns Lobby compatibility only if that revision declares it. A malformed or unknown digest
 returns `activity_pack_revision_unavailable`; the runtime never searches by
 pack ID or explanatory version and never substitutes another revision.
 
@@ -882,7 +877,7 @@ Public network exposure of these endpoints is not a production-ready control pla
 
 worldstreamctl generates bearer capability secrets locally, sends only the protocol-defined token hash to POST /v1/capabilities, and prints the plaintext locally. The server never stores or must replay a plaintext token to satisfy HTTP idempotency.
 
-Room archive and Membership Standing, Access Mode, or Role changes are normalized as versioned Core Stimuli with canonical authority attribution, idempotency identity, exact expected Room sequence, stable reason code, and Core before/after values. A single request may carry a Member-ID-sorted atomic final-state changeset with at most one typed component per Membership. Component kinds are Join, Resume, AccessModeChange, RoleChange, Suspend, or Depart. Archive remains its own CoreProposed kind and cannot occur inside MembershipChangeSet. The server validates the complete state and Role cardinality without returning or persisting an intermediate assignment.
+The kernel normalizes Room archive and Membership Standing, Access Mode, or Role changes as versioned Core Stimuli. Each Stimulus contains authority attribution, idempotency identity, expected Room sequence, reason code, and Core before/after values. A single request may carry a Member-ID-sorted atomic final-state changeset with at most one typed component per Membership. Component kinds are Join, Resume, AccessModeChange, RoleChange, Suspend, or Depart. Archive remains its own CoreProposed kind and cannot occur inside MembershipChangeSet. The server validates the complete state and Role cardinality without returning or persisting an intermediate assignment.
 
 Join, Resume, AccessModeChange, and RoleChange components are vetoable; Suspend and Depart components are mandatory. A mixed-class MembershipChangeSet is rejected before pack entry with no pack call, Transition, or receipt. An all-vetoable set may receive one stable pack-declared administrative rejection for the whole atomic proposal with an idempotent receipt and no Transition. An all-mandatory set must Apply as a whole and a pack Reject is a fault. Archive is independently mandatory and cannot be vetoed. A pre-existing desired state may return durable NoChange. Every other accepted Core change commits its receipt and one ordered Transition. Archive is irreversible and atomically cancels timers and fences Activation work. See [ADR 0002](adr/0002-sequence-domain-relevant-room-changes.md) and [ADR 0005](adr/0005-canonical-core-state-integrity-and-hash-lineage.md).
 
@@ -1078,7 +1073,7 @@ Core error codes:
 | storage_unavailable | Persistence is unavailable before handoff or the write is proven absent; no semantic receipt was created |
 | slow_consumer | Connection closed; reconnect from cursor |
 
-Messages should be helpful, but clients must branch on code rather than English text. For an Action submission, known-absent transient errors do not consume the Action ID; retry the identical canonical Action with that same ID. `commit_indeterminate` is not permission to submit the domain operation again: the identical request continues identity resolution until the server returns the stored result or proves absence.
+Messages should be helpful, but clients must branch on code rather than English text. For an Action submission, known-absent transient errors do not consume the Action ID; retry the identical canonical Action with that same ID. `commit_indeterminate` does not permit a new submission of the domain operation. The identical request continues identity resolution until the server returns the stored result or proves absence.
 
 Some codes can appear in different envelopes because the operation has different idempotency semantics. After `action.submit` has passed authentication, strict parsing, and Membership lookup, stable `membership_not_enabled` and `room_archived` results use `action.rejected` and a durable receipt. The same codes use the generic error envelope for attach/read/administrative operations, or when no receiptable participant Action was admitted. Clients must branch on both envelope type and code.
 
@@ -1159,7 +1154,7 @@ BLAKE3 hashes canonical JSON bytes for these typed objects. Golden vectors MUST 
 - The server never changes an existing Room's digest or rewrites its Activity State in place.
 - Pack revisions may be selectable-and-runnable or retained-runnable. Every retained Room digest remains runnable; a newer executor never substitutes for it.
 - Unknown required capability yields an explicit failure.
-- The first public release remains a pre-stable developer-preview protocol.
+- This protocol is experimental. There is no supported production release.
 
 The five-operation `ActivityPackV1` semantic seam is frozen. Public portable
 Packs use that same contract through ADR 0014's WASI-free Component profile; no

@@ -2,7 +2,7 @@
 """Small fail-closed browser adapter for the release Heist DOM story.
 
 The command surface intentionally matches only the browser operations used by
-``web/console/live-browser-story.sh``.  It launches an explicitly identified
+``examples/clients/inspector/live-browser-story.sh``.  It launches an explicitly identified
 Chrome-for-Testing headless shell and drives it over the Chrome DevTools
 Protocol; it is not a general browser automation wrapper.
 """

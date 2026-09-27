@@ -1,9 +1,8 @@
 [workspace]
 members = [
-    "crates/worldstream-agent-swarm",
+    "examples/agent-swarm/app",
     "crates/worldstream-activity-client",
     "crates/worldstream-hosted-contract",
-    "crates/worldstream-hosted-gateway",
     "crates/worldstream-core",
     "crates/worldstream-protocol",
     "crates/worldstream-runtime",
@@ -18,9 +17,28 @@ members = [
     "crates/worldstream-studio-supervisor",
     "crates/worldstream-pack-bundle",
     "crates/worldstream-component-host",
-    "crates/worldstream-a202-adapter",
-    "crates/worldstream-negotiate-evidence",
-    "crates/worldstream-negotiate-oracle",
+    "examples/negotiate/a202-adapter",
+    "examples/negotiate/evidence-verifier",
+    "examples/negotiate/oracle",
+    "xtask",
+]
+default-members = [
+    "crates/worldstream-activity-client",
+    "crates/worldstream-hosted-contract",
+    "crates/worldstream-core",
+    "crates/worldstream-protocol",
+    "crates/worldstream-runtime",
+    "crates/worldstream-server",
+    "crates/worldstream-postgres",
+    "crates/worldstream-sqlite",
+    "crates/worldstream-sqlite-open",
+    "crates/worldstream-conformance",
+    "crates/worldstream-backup",
+    "crates/worldstream-transfer",
+    "crates/worldstream-windows-handle",
+    "crates/worldstream-studio-supervisor",
+    "crates/worldstream-pack-bundle",
+    "crates/worldstream-component-host",
     "xtask",
 ]
 resolver = "3"

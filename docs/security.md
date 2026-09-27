@@ -2,9 +2,9 @@
 
 ## Status
 
-WorldStream's first public release is a self-hosted developer preview. It is not a hardened public multi-tenant service, payment system, compliance product, or hostile-code isolation service.
+WorldStream is an experimental implementation for local or operator-controlled installations. There is no supported production release.
 
-The project should make narrow guarantees honestly and fail closed where it cannot preserve them.
+This document describes its trust boundaries. It does not establish protection for a public multi-tenant service or hostile code.
 
 ## Trust statement
 
@@ -215,9 +215,7 @@ Core bearer's stable token hash, never its wire value. Session keys come from
 the server-generated connection Session ID, Membership keys combine Room and
 Member IDs, and Room keys are independent. Activation claim/lease keys combine
 verified Principal, capability, and a closed operation class rather than a
-client-supplied activation ID. Operator keys likewise combine verified
-Principal, capability, and a closed endpoint class, so one caller cannot create
-arbitrary keys or impose a shared global endpoint throttle. HTTP requests are
+client-supplied activation ID. Operator keys combine verified Principal, capability, and a closed endpoint class. A caller cannot create arbitrary keys or impose a shared global endpoint throttle. HTTP requests are
 IP-limited before routing and authenticated operations are limited again before
 backend work. Runner-Capability issuance consumes one operator admission rather
 than one admission per target. Every WebSocket message is limited before
@@ -225,17 +223,12 @@ decoding/dispatch, with valid targeted envelopes receiving the additional
 Membership and Room checks.
 
 The limiter stores only process-keyed BLAKE3 fingerprints and bounds the live
-key count per scope. A target requires a verified Principal and an atomic,
-idle-expiring association; at most 256 distinct live targets belong to one
-Principal and at most 65,536 associations exist process-wide. Quota rejection
+key count per scope. A target requires a verified Principal and an atomic association that expires when idle. One Principal can have at most 256 distinct live targets. The process can have at most 65,536 associations. Quota rejection
 refreshes existing presented associations, preventing an attacker from aging
 out ownership while preserving global target buckets. Ten-minute idle expiry
 reclaims key and association capacity.
 
-WebSocket lifetime is separately bounded by 256 pending permits, 4,096 active
-permits, 64 active permits per Principal, a 15-second browser-ticket deadline,
-a 10-second first-hello deadline, and a 90-second post-welcome inbound-idle
-deadline. Pending-to-active conversion and release are atomic RAII operations.
+WebSocket limits are 256 pending permits, 4,096 active permits, and 64 active permits per Principal. The browser-ticket deadline is 15 seconds. The first-hello deadline is 10 seconds. After welcome, the inbound-idle deadline is 90 seconds. Pending-to-active conversion and release are atomic RAII operations.
 Exhausted buckets, target or connection capacity exhaustion, invalid key
 material, poisoned state, and clock regression all fail closed with a generic
 retryable `rate_limited` response. A rejected message reaches no semantic
@@ -305,7 +298,7 @@ Every integrity change increments a monotonic generation and appends an incident
 
 A faulted Room may expose only its last verified authorized Projection, retained Frame Catch-up, and verified Replay with explicit integrity metadata. A quarantined Room exposes no normal Projection, Catch-up, or claimed-current Replay. Authenticated host-operator diagnostics, raw export, restore, and verification remain available, with safe bounded details that do not disclose private state to a Room Member.
 
-An operator can request repair but cannot mark a Room healthy. Only a successful verifier conditioned on the current generation may do so. The verifier may rebuild materializations/caches, reinstall the exact retained pack, or restore exact canonical bytes from a verified backup; it cannot edit, skip, reorder, synthesize, or replace Genesis/Transitions.
+An operator can request repair but cannot mark a Room healthy. Only a successful verifier conditioned on the current generation may do so. The verifier may rebuild materializations/caches, reinstall the exact retained Pack, or restore exact canonical bytes from a verified backup. It cannot edit, skip, reorder, synthesize, or replace Genesis/Transitions.
 
 ## Agent runner and activation security
 
@@ -327,7 +320,7 @@ It MUST NOT contain:
 - other participants' state;
 - prompts or chain-of-thought.
 
-After an atomic successful claim, the server returns only the target Agent Participant Membership's exact committed Invocation Context: authorized Projection/hash, complete Head and witnesses, Action Offers, Artifact references, and exactly one retained-frame range or Projection Reset baseline.
+After an atomic successful claim, the server returns only the exact committed Invocation Context for the target Agent Participant Membership. Context contains the authorized Projection/hash, complete Head and witnesses, Action Offers, and Artifact references. It includes exactly one retained-frame range or Projection Reset baseline.
 
 Lease defenses:
 
@@ -342,7 +335,7 @@ Lease defenses:
 
 Archive and affected Membership/Access/Role changes cancel and generation-fence pending/leased intents. Capability revocation takes effect immediately. Runtime recovery state Loading, CatchingUp, Passivating, or Inactive, or Room Integrity State faulted or quarantined, makes pending intents unclaimable. A backward-clock anomaly fences current leases before work can resume.
 
-Replay verifies canonical Attention and recorded decision evidence only; it never evaluates policy, returns live Invocation Context, creates/offers an intent, grants a lease, or contacts a Runner.
+Replay verifies only canonical Attention and recorded decision evidence. It does not evaluate policy, return live Invocation Context, or create or offer an intent. It does not grant a lease or contact a Runner.
 
 A runner-reported handled status is operational. Only accepted room actions have authoritative effect.
 
@@ -514,7 +507,7 @@ Unsafe default fields:
 - model prompts, outputs, provider metadata, or chain-of-thought.
 - database/admin DSNs, secret-file contents, and exporter credentials.
 
-Metrics use low-cardinality counts and sizes, never entity IDs or raw participant text. Vendor-neutral JSON logs, Prometheus metrics, W3C trace correlation, and optional OpenTelemetry/OTLP export run after commit through bounded nonblocking queues; no exporter participates in admission, reduction, commit, Replay, Room Integrity State, or readiness. Overflow drops telemetry with a metric/rate-limited warning, and shutdown flush is bounded to three seconds.
+Metrics use low-cardinality counts and sizes, never entity IDs or raw participant text. After commit, bounded nonblocking queues carry JSON logs, Prometheus metrics, W3C trace correlation, and optional OpenTelemetry/OTLP export. Exporters do not participate in admission, reduction, commit, Replay, Room Integrity State, or readiness. Overflow drops telemetry with a metric/rate-limited warning, and shutdown flush is bounded to three seconds.
 
 ## Required security tests
 

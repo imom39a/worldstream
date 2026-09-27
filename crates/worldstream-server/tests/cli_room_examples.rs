@@ -27,7 +27,7 @@ fn catalogs() -> Result<Vec<Value>, Box<dyn std::error::Error>> {
             .to_bytes()?,
     )?;
     let bundle = PackBundleVerifierV1.inspect(std::sync::Arc::from(include_bytes!(
-        "../../../packs/negotiate/releases/0.2.0/worldstream-negotiate-83453ea9641f8b16e9b96bf536c5ee932611611817458f130d8b77c7b93ff9a8.wspack"
+        "../../../examples/packs/negotiate/releases/0.2.0/worldstream-negotiate-83453ea9641f8b16e9b96bf536c5ee932611611817458f130d8b77c7b93ff9a8.wspack"
     ).as_slice()))?;
     assert_eq!(
         bundle.descriptor().configuration_schema.schema_digest,

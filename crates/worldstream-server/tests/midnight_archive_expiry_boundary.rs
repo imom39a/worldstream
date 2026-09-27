@@ -184,15 +184,14 @@ async fn successful(
 impl Fixture {
     async fn new() -> TestResult<Self> {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let proof: Value = serde_json::from_slice(&fs::read(
-            workspace
-                .join("packs/midnight-archive/evidence/production-proof-0.1.0-session-expiry.json"),
-        )?)?;
+        let proof: Value = serde_json::from_slice(&fs::read(workspace.join(
+            "examples/packs/midnight-archive/evidence/production-proof-0.1.0-session-expiry.json",
+        ))?)?;
         let bundle = std::env::var_os("WORLDSTREAM_ARCHIVE_EXPIRY_BUNDLE")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 workspace.join(format!(
-                    "packs/midnight-archive/releases/0.1.0/worldstream-midnight-archive-{}.wspack",
+                    "examples/packs/midnight-archive/releases/0.1.0/worldstream-midnight-archive-{}.wspack",
                     proof["bundleDigest"]
                         .as_str()
                         .unwrap()
@@ -679,12 +678,12 @@ async fn in_flight_http_provider_completion_cannot_contribute_after_session_expi
         socket.write_all(&body)?;
         Ok(())
     });
-    let (_, revisions) =
-        worldstream_studio_supervisor::hosted_artifacts::reviewed_hosted_artifacts()?;
-    let revision = revisions
-        .into_iter()
-        .next()
-        .ok_or("reviewed House revision missing")?;
+    let revision_bytes = worldstream_core::CanonicalJsonV1::parse(include_bytes!(
+        "../../../tests/fixtures/hosted/house-agents/mira-1.json"
+    ))?
+    .to_bytes()?;
+    let revision =
+        worldstream_hosted_contract::HouseAgentRevision::from_canonical_bytes(&revision_bytes)?;
     let period = HouseAllowancePeriodV1::from_unix_seconds(
         time::OffsetDateTime::now_utc().unix_timestamp(),
     )?;

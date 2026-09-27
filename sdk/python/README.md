@@ -15,8 +15,7 @@ for observation in await room.sync():
 
 `Room.sync()` does not advance the durable Observation Cursor. After durable
 processing, call `await room.ack(frame_seq)`. A lost Action reply raises
-`LostActionReply`; retry its retained request with the same Action identity and
-canonical body, or reconnect first when the Session has closed.
+`LostActionReply`. Retry the retained request with the same Action identity and canonical body. If the Session has closed, reconnect first.
 
 The SDK rejects malformed envelopes, unknown fields, cross-membership frames,
 non-canonical numbers, oversized payloads, and mismatched complete Heads before

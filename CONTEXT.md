@@ -1,6 +1,6 @@
 # WorldStream
 
-WorldStream governs a shared reality in which humans and agents participate. In the canonical model, each independent authoritative shared situation is a Room governed by one Activity Pack; “shared reality” is positioning language, not a separate domain entity. This language applies to the whole product, while each Activity Pack may add its own domain language without changing the WorldStream model.
+WorldStream manages application state for human and agent participants. Each independent shared situation is a Room. One Activity Pack defines its rules. Activity Packs may add domain language without changing the kernel model.
 
 ## Rooms and rules
 
@@ -56,7 +56,7 @@ _Avoid_: Room status, Activity phase, canonical health state
 The immutable lineage of a Room's creation facts and ordered Transitions.
 _Avoid_: Observation stream, UI timeline, snapshot, prompt history
 
-## Product development
+## Application development
 
 **Pack Author**:
 A person or organization responsible for defining and maintaining an Activity Pack and its immutable revisions. Pack authorship grants no authority over a WorldStream installation or Room.
@@ -130,114 +130,6 @@ _Avoid_: Client Binding Store, Pack catalog, client marketplace, Host approval
 An external discovery service that indexes published Activity Distributions and Activity Client Releases without granting Host approval or executing them.
 _Avoid_: Client Binding Store, Artifact Registry, Studio catalog, marketplace authority
 
-**Agent Swarm**:
-An application in which a human gives a group of Agent Participants a coding or non-coding goal and observes and steers their shared work. WorldStream remains the authority for its Rooms; the application's name does not define a new canonical Room entity.
-_Avoid_: Room Runtime, Activity Pack, Runner when the application itself is meant
-
-**Hosted Activity Platform**:
-A separately branded application layer built on one operated WorldStream installation. It may own public discovery, Platform Accounts, authoritative platform-only pre-Genesis coordination, bounded launch orchestration, and derived result indexes and may broker Host-issued opaque client handoffs, but it is not the Room Runtime and owns no Room authority.
-_Avoid_: WorldStream hosted mode, Room Runtime, game-aware kernel, Client Catalog
-
-**Hosted Gateway**:
-A narrow application adapter through which one Hosted Activity Platform and its admitted clients reach an operated WorldStream installation without exposing generic Host or operator authority. It owns no Room state, Membership, legality, or Replay truth.
-_Avoid_: Public Runtime, generic proxy, Studio backend, Room authority
-
-**Hosted Deployment Revision**:
-One immutable correspondence among the source revision, deployed platform and Runtime artifacts, platform schema head, and exact Listing, Pack, Client, and projector identities of a coordinated hosted release. It is not a WorldStream release claim and does not alter any Room lineage.
-_Avoid_: Activity Listing Revision, Activity Distribution, mutable environment, WorldStream release
-
-**Hosted Recovery Checkpoint**:
-One verified recovery set preserving mutually coherent WorldStream and Hosted Activity Platform state for one Hosted Deployment Revision. It is the only unit from which the hosted preview may claim continuity after a restore.
-_Avoid_: Provider snapshot, independent database backup, WorldStream backup, Hosted Deployment Revision
-
-**Platform Operator**:
-The person or organization responsible for a Hosted Activity Platform's catalog, admission policy, House Agent definitions, and provider spending. This role grants no WorldStream installation authority; the initial project host separately holds both Platform Operator and Host Operator roles.
-_Avoid_: Host Operator, Operator Membership, creator, generic operator
-
-**Platform Account**:
-A stable pseudonymous identity recognized by a Hosted Activity Platform and linked separately to a mutable external authentication identity and optional public profile. It grants no WorldStream authority and is not a Principal. Removing the authentication link removes login and profile data but leaves retained shared history linkable through the pseudonymous account tombstone.
-_Avoid_: Principal, Membership, Host Operator, shared agent identity
-
-**Platform Coordination State**:
-Hosted Activity Platform-owned facts governing pre-Genesis formation, including Launch Requests, Seat Claims, Seat Invitations, quota reservations, and immutable Host-operation correspondence. It may be authoritative for platform coordination but never for Room, Membership, Activity Phase, Outcome, or Replay truth.
-_Avoid_: Core Room State, Activity State, Room Setup Operation, derived Room truth
-
-**Platform Capacity Reservation**:
-An authoritative Hosted Activity Platform coordination record that reserves either one account's pre-Genesis launch slot or one account and the deployment's active-Run capacity. It never describes Room Status or Activity Phase, and ambiguous Host state retains rather than reallocates it.
-_Avoid_: Room capacity, Activity Run status, billing quota, Host lease
-
-**Activity Listing**:
-A stable Hosted Activity Platform catalog identity describing one reviewed, launchable experience through immutable Activity Listing Revisions. Catalog review and listing never grant Host approval or Room authority.
-_Avoid_: Activity Pack, Activity Distribution, Client Catalog entry, mutable launch configuration, Host approval
-
-**Activity Listing Revision**:
-One immutable, content-identified revision of an Activity Listing. It pins the exact Activity Pack Revision, required Activity Client Release and Client Surface, reviewed launch-input contract, catalog visibility, fixed seat and creator-access policy, public-viewing policy, Result Publication Policy, and Result Projector Revision; it may reference an exact Activity Distribution as provenance without granting approval.
-_Avoid_: Mutable catalog row, Room Setup Specification, Activity Distribution, Host allowlist
-
-**Result Publication Policy**:
-The immutable part of an Activity Listing Revision that determines whether a projected result is public and fixes its accepted public schemas, pseudonymous attribution, and suppression behavior. The policy never defines or replaces an Outcome.
-_Avoid_: Outcome, mutable site setting, leaderboard rule, client result
-
-**Result Projector Revision**:
-One immutable, content-identified deterministic platform-code revision that interprets an exact authorized Public Projection for a compatible Activity Pack Revision, determines its result disposition, and may produce one schema-valid bounded summary. It owns no Outcome and adds no Activity Pack operation.
-_Avoid_: Activity Pack operation, Activity Client result, generic score extractor, LLM judge
-
-**Launch Request**:
-A Hosted Activity Platform's idempotent pre-Genesis request to start one exact Activity Listing Revision with schema-allowed inputs. It gathers permitted Seat Claims and House Agent Assignments for fixed seats, freezes one roster and Room Setup Specification, and maps to at most one Host-local Room Setup Operation; only a terminal failure proven to precede Genesis has no Activity Run, while ambiguous state reconciles the same operation and any observed Genesis creates exactly one Run.
-_Avoid_: Room Setup Operation, Activity Run, Room, generic remote administration
-
-**Roster Option**:
-One reviewed participant configuration offered by an Activity Listing Revision, specifying which of its predeclared seats will be provisioned. Selecting it does not change those seats' Roles or participation policies.
-_Avoid_: Membership, mutable in-game roster, arbitrary Room Setup Specification
-
-**Hosted Launch Closure**:
-An idempotent, creator-authorized request to terminally fence one Launch Request's retained Host setup lineage. It either proves the lineage closed before Genesis or archives its one canonical Room, retires its House Runners, and returns exact Host evidence before platform capacity is released. It deletes neither the Room nor its history and grants no general Room administration authority.
-_Avoid_: Room deletion, rollback, generic Host administration, replacement launch
-
-**Seat Claim**:
-A pre-Genesis correspondence between one authenticated Platform Account and one exact seat plus a server-derived reference for a new run-scoped Principal. It cannot change the seat's Role or policy and grants no Membership or Room authority.
-_Avoid_: Membership, Role selection, participant session, seat reservation after Genesis
-
-**Seat Invitation**:
-An opaque, revocable pre-Genesis capability to claim one exact unclaimed seat under its Activity Listing Revision's policy. It grants no Membership, Role choice, or Host authority.
-_Avoid_: Membership credential, client handoff, open join code, Role selector
-
-**Activity Run**:
-A Hosted Activity Platform record created only after one Room's Genesis and permanently referencing exactly that one authoritative Room and its originating Activity Listing Revision. It may carry platform discovery, admission, public-viewing, and indexing references, but owns no Room state, Membership, Activity Phase, Action legality, or Outcome.
-_Avoid_: Room, activity instance, Launch Request, parallel activity state machine
-
-**Run Membership Correspondence**:
-A private, immutable post-Genesis platform record that relates one Activity Run admission purpose to the exact Principal and Membership created by the Host. A participant correspondence also carries its seat, Role, and controlling Platform Account or House Agent Assignment; a spectator correspondence may instead represent the creator or a platform service. It supports scoped re-entry or service recovery but grants no Room authority and cannot replace the Membership.
-_Avoid_: Seat Claim, Membership, public participant profile, replaceable seat, Room authority
-
-**Run Entry Selector**:
-A random, opaque, non-secret reference that distinguishes one account-controlled Run Membership Correspondence within one Activity Run. It authorizes nothing without the matching Platform Account and never exposes or replaces the Principal, Membership, or Host-issued client handoff.
-_Avoid_: Membership credential, Seat Claim, Principal ID, Membership ID, reusable client handoff
-
-**Run Re-entry**:
-Renewed scoped access to an existing Activity Run through its original Run Membership Correspondence, without creating a new Room or replacing its Membership. It restores access, not a prior Activity Phase or a paused clock.
-_Avoid_: Rematch, new Seat Claim, Replay, pause, game restart
-
-**Run Terminal Evidence**:
-An immutable, non-authoritative Hosted Activity Platform record that one Activity Run's pinned Result Projector Revision classified its authorized Public Projection at one Complete Head as terminal. It justifies platform capacity release but does not copy or replace Activity Phase, Outcome, or Room Status.
-_Avoid_: Terminal Phase, Outcome, Indexed Activity Result, archived Room
-
-**Indexed Activity Result**:
-A rebuildable but immutable, non-authoritative internal platform record produced under one Activity Listing Revision's Result Publication Policy after its Result Projector Revision yields a final summary and healthy integrity and Replay verification agree through one Complete Head. It retains exact Room, Activity Pack Revision, projector, Public Projection, integrity, Replay, and Head provenance. A later Head yielding the same summary confirms it; a divergent summary conflicts; public suppression never rewrites it. It never replaces the Outcome or Replay evidence.
-_Avoid_: Outcome, mutable result, universal score, client-submitted result, leaderboard authority
-
-**Published Activity Result**:
-The privacy-reviewed public representation of an Indexed Activity Result. It uses reviewed pseudonymous seat labels by default, may join a current opted-in public profile, exposes no Host or platform-store identifiers, and may be suppressed without deleting immutable internal result evidence.
-_Avoid_: Outcome, raw Indexed Activity Result row, Public Projection, leaderboard entry
-
-**Result Indexer**:
-A platform service that uses a dedicated scoped Spectator Membership to obtain one Activity Run's authorized Public Projection and apply its pinned Result Projector Revision, including Replay-verification evidence when publication is enabled. It is distinct from the Public Projection Relay and holds no participant authority.
-_Avoid_: Public Projection Relay, Host Operator, anonymous viewer, Pack operation
-
-**Public Projection Relay**:
-A platform-controlled Activity Client authorized through a scoped Spectator Membership to republish only one Room's Public Projection to anonymous viewers when its Activity Listing Revision and Host policy explicitly permit that access. It creates no anonymous WorldStream access and holds no participant authority.
-_Avoid_: Public Room, shared participant credential, Projection authority, generic Pack interpreter, Result Indexer
-
 **Browser Activity Session**:
 An opaque Host-brokered continuation that binds one browser Activity Client to one current Membership and Client Selection without giving the browser the Membership's reusable authority credential. It is operational session state, not a Platform Account session, Membership, or part of Room state.
 _Avoid_: Platform session, Membership credential, Room session, browser bearer
@@ -283,22 +175,6 @@ _Avoid_: Human spectator, host operator
 **Agent Participant**:
 A Participant whose Principal represents a machine-operated policy. It is a durable logical participant, not an executing process.
 _Avoid_: Runner, invocation, model, resident agent
-
-**House Agent**:
-An Agent Participant supplied by a Hosted Activity Platform to fill an eligible seat when the Activity Listing Revision and creator's launch choice permit it. It remains distinct from its external Runner, provider model, and the creator's Principal and receives no broader platform or Host authority.
-_Avoid_: Default bot, model, Runner, creator's agent identity, fallback human
-
-**House Agent Revision**:
-An immutable Platform Operator-published definition that pins one House Agent's model route, behavior policy, exact Host-approved Agent Profile and Runner Template revisions, permitted tools, accounting tokenizer, and execution allowance. An Activity Listing Revision may allowlist it, but selection creates a new House Agent for one launch lineage rather than a reusable Principal.
-_Avoid_: User Agent profile, model alias, mutable provider configuration, Agent Principal
-
-**House Agent Assignment**:
-An immutable, Launch Request-scoped Hosted Activity Platform record created only after its retained Runner-capacity reservation succeeds. It binds one eligible seat and server-derived setup-local Principal reference to one exact House Agent Revision, provider slug, model, Runner identity, reservation receipt, and execution allowance before Genesis. Observed Genesis carries it into the corresponding Activity Run; later terminal pre-Genesis failure retires it with the Launch Request. It is platform coordination evidence, not Activity State or reusable agent identity.
-_Avoid_: House Agent Revision, Seat Claim, Membership, mutable bot slot, model fallback
-
-**House Fill Operation**:
-A durable, Launch Request-scoped Hosted Activity Platform operation that retains one final claim window, one eligible candidate and exclusion set, one random draw, and the exact House Agent and Runner-capacity reservation intents derived from it. Retry resumes the same draw and never selects replacements.
-_Avoid_: House Agent Assignment, matchmaking, reroll, reusable agent pool
 
 **Role**:
 An Activity Pack-defined responsibility held by a Participant through its Membership.
@@ -429,78 +305,6 @@ _Avoid_: Authoritative room state, invocation context, persistent WorldStream me
 **Logical Agent Persistence**:
 Continuity of an Agent Participant's Principal, Membership, observations, and Room facts across Invocations.
 _Avoid_: Continuous computation, sleeping agent, persistent mind, restored hidden state
-
-## Swarm activities
-
-**Swarm**:
-One goal-directed activity and its participating group in Agent Swarm, represented by exactly one Room. Returning to an existing goal preserves that Room's identity; starting a separate goal creates another Swarm.
-_Avoid_: Runner pool, provider conversation, persistent team accepting unrelated goals
-
-**Swarm Goal**:
-The human-specified intended outcome of one Swarm, together with its accepted constraints.
-_Avoid_: Activation Intent, Invocation, Outcome when the intended result is meant
-
-**Swarm Roster**:
-The human-selected set of Agent Participants and their chosen providers, models, and supported reasoning-effort settings for one Swarm. Starting a replacement Invocation does not create a new roster member.
-_Avoid_: Active process count, provider subscription, automatic agent admission
-
-**Swarm Direction**:
-An authorized Human Participant's binding amendment to a Swarm's accepted goal or constraints, applying to the whole Swarm or specified Swarm Work Items and their affected dependencies. A work-targeted Direction follows that work when ownership changes.
-_Avoid_: Swarm Suggestion, model prompt, tool permission
-
-**Swarm Suggestion**:
-An authorized Human Participant's advisory contribution that agents may evaluate and decline without changing the accepted Swarm Goal or its constraints.
-_Avoid_: Swarm Direction, assignment, mandatory instruction
-
-**Swarm Work Item**:
-A unit of work proposed toward a Swarm Goal, with one accountable Agent Participant as its owner when claimed. Other Participants may assist or review without acquiring that ownership.
-_Avoid_: Activation Intent, Invocation, fixed workflow node
-
-**Swarm Contribution**:
-An attributed finding, draft, analysis, or change submitted toward a Swarm Goal or Swarm Work Item. Recording a contribution does not itself accept it into the final result.
-_Avoid_: Accepted result, raw transcript, Artifact when the contribution itself is meant
-
-**Swarm Progress Review**:
-A Swarm Work Item that assesses evidence of progress toward the current Swarm Goal and its accepted constraints, identifies blocked or misdirected work, and records findings and recommended corrections. The review does not itself amend the goal or expand authority.
-_Avoid_: Swarm Direction, agent heartbeat, proof of goal completion
-
-**Swarm Assessment**:
-A versioned, non-authoritative structured judgment over one exact authorized Swarm state cut, including its evaluator identity and uncertainty. It may support attention and review but cannot own work, amend the goal, clear findings, or accept a result.
-_Avoid_: Swarm Progress Review, verdict, Participant Action, accepted fact
-
-**Swarm Result**:
-An accepted version of a Swarm Goal's deliverables, identified with the relevant input and acceptance-criteria versions and supporting check and review evidence. Reopening the goal can produce a new Swarm Result without silently changing the earlier accepted version.
-_Avoid_: Swarm Contribution, process output, Room archive
-
-**Swarm Pause**:
-A reversible suspension of new Invocations for a Swarm that lets already-running Invocations finish. Pausing is complete when no Invocation remains active.
-_Avoid_: Room archive, frozen Semantic Time, interrupted Invocation
-
-**Swarm Stop**:
-Interruption of current Invocations and suspension of new Invocations for a Swarm, preserving its work for explicit resumption. It does not complete or abandon the Swarm Goal.
-_Avoid_: Rollback, Room archive, goal cancellation
-
-## Companion activities
-
-**AI Companion**:
-An Agent Participant that assists a Human Participant in a game's crew through its own Role and Actions. Companion describes the gameplay relationship; House Agent describes platform supply.
-_Avoid_: Runner, model, House Agent when the gameplay relationship is meant
-
-**Companion Task**:
-An activity-level objective with explicit execution limits delegated to an AI Companion. It does not change the Participants' underlying Roles or Action permissions.
-_Avoid_: Invocation, Activation Intent, House Agent Assignment
-
-**Companion Plan**:
-A bounded sequence of intended task steps accepted from an AI Companion for one Companion Task. Its remaining steps are conditional on current game facts, task limits and participant eligibility.
-_Avoid_: Companion Task, model reasoning, future protocol requests
-
-**Activity Turn**:
-An Activity Pack-defined unit of gameplay progression. It is distinct from a canonical Transition and may encompass several accepted Actions.
-_Avoid_: Transition, Invocation, wall-clock interval
-
-**Location**:
-A place within an Activity Pack's fictional setting, described by its Activity State. It is not an independently authoritative Room.
-_Avoid_: Room, Activity Run, world instance
 
 ## Referenced material
 

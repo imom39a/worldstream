@@ -3,17 +3,17 @@
 // immutable compatibility evidence. No provider or network calls.
 import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
-import pack from "../../../../../packs/midnight-archive/.worldstream/conformance/src/pack.js";
-import { initializeArchiveState, startArchive, applyLeadAction } from "../../../../../packs/midnight-archive/.worldstream/conformance/src/rules.js";
-import { initialMiraState, applyMiraLeadControl, submitMiraPlan } from "../../../../../packs/midnight-archive/.worldstream/conformance/src/companions.js";
-import { authorizedView } from "../../../../../packs/midnight-archive/.worldstream/conformance/src/view.js";
+import pack from "../../../../../examples/packs/midnight-archive/.worldstream/conformance/src/pack.js";
+import { initializeArchiveState, startArchive, applyLeadAction } from "../../../../../examples/packs/midnight-archive/.worldstream/conformance/src/rules.js";
+import { initialMiraState, applyMiraLeadControl, submitMiraPlan } from "../../../../../examples/packs/midnight-archive/.worldstream/conformance/src/companions.js";
+import { authorizedView } from "../../../../../examples/packs/midnight-archive/.worldstream/conformance/src/view.js";
 
 assert.equal(pack.descriptor.schemaVersion, 5);
 const root = new URL("../../../../../", import.meta.url);
-const proof = JSON.parse(await readFile(new URL("packs/midnight-archive/evidence/production-proof-0.1.0-session-expiry.json", root)));
-const listing = JSON.parse(await readFile(new URL("config/hosted/listings/midnight-archive-0.3.0.json", root)));
+const proof = JSON.parse(await readFile(new URL("examples/packs/midnight-archive/evidence/production-proof-0.1.0-session-expiry.json", root)));
+const listing = JSON.parse(await readFile(new URL("tests/fixtures/hosted/listings/midnight-archive-0.3.0.json", root)));
 assert.equal(listing.pack.digest, proof.revisionDigest);
-const schemas = JSON.parse(await readFile(new URL("packs/midnight-archive/.worldstream/generated/schemas.json", root)));
+const schemas = JSON.parse(await readFile(new URL("examples/packs/midnight-archive/.worldstream/generated/schemas.json", root)));
 const plan = schemas.schemas.find((schema) => schema.schema_id === "worldstream.midnight-archive/action-submit_companion_plan/v5");
 const projectionSchema = "worldstream.midnight-archive/participant-projection/v5";
 const observationSchema = "worldstream.midnight-archive/participant-observation/v5";

@@ -3,6 +3,9 @@
 //! Room authority and all Room mutations remain behind the daemon's supported
 //! APIs. Lifecycle control is limited to one fixed local daemon configuration.
 
+#[cfg(test)]
+mod test_hosted_catalog;
+
 pub mod activity_packs;
 pub mod agent_profiles;
 pub mod assignment_mcp;
@@ -17,7 +20,6 @@ pub mod configuration_resolution;
 mod configuration_safety;
 pub mod control_access;
 pub mod control_admission;
-pub mod hosted_artifacts;
 pub mod hosted_browser_sessions;
 pub mod hosted_house_runners;
 pub mod hosted_launch;

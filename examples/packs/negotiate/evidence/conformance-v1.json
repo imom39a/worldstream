@@ -1,0 +1,82 @@
+{
+  "bundle": {
+    "bundle_digest": "blake3:9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5",
+    "codec_bundle_digest": "blake3:67b814baf1511b6c29ffe9862eeeb2b130988972c9c3a2c2ab6ff1f7018a6b30",
+    "descriptor_content_digest": "blake3:37608c23cdea8a8df63a5281167aecdbe875c7f5a4cbfcb1ced07330fefe74b7",
+    "executor_component_digest": "blake3:17ab497995271c36b4ddc753eb85519cd9210a1c0c26e97b29c35ce5c95d8aff",
+    "executor_component_size": 12745985,
+    "golden_corpus_digest": "blake3:3f37852137085a5c9954d1ae53a9e377eef4a0d63eee32d525389ee39cda40c1",
+    "path": "examples/packs/negotiate/releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack",
+    "revision_digest": "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589",
+    "schema_bundle_digest": "blake3:b3c4d9a0d06684a8736164639077a1c9b39f9088738b804cfce3dccce746f98f",
+    "size": 12805632
+  },
+  "component_contract": {
+    "execution_profile_id": "worldstream/component-deterministic/v1",
+    "exports": [
+      "descriptor",
+      "initialize",
+      "reduce",
+      "view",
+      "observe"
+    ],
+    "host_contract": "worldstream/activity-pack/v1",
+    "imports": []
+  },
+  "evidence_id": "worldstream/negotiate-official-pack-evidence/v1",
+  "oracle": {
+    "actions": 11,
+    "attention_reasons": 4,
+    "canonical_corpus_digest": "blake3:84cdd48a826df697c8a02fa72e344bbe45a43151d3a2eb2bebc92533a316cb78",
+    "negative_cases": 16,
+    "path": "examples/negotiate/oracle/fixtures/corpus-v1.json",
+    "phases": 8,
+    "privacy_mutations": 30,
+    "privacy_personas": 6,
+    "restart_after_step": 4,
+    "roles": 4,
+    "success_steps": 9
+  },
+  "pack_id": "worldstream.negotiate",
+  "production_proof": {
+    "asserted_unchanged_members": [
+      "codec-bundle.json",
+      "dependency-lock.json",
+      "descriptor.json",
+      "executor.component.wasm",
+      "revision-lock.json",
+      "schemas.json"
+    ],
+    "complete": {
+      "accepted_action": true,
+      "bundle_digest": "blake3:9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5",
+      "declared_rejection": true,
+      "pack_id": "worldstream.negotiate",
+      "private_views": 4,
+      "proof_type": "complete",
+      "retained_old_revision": true,
+      "revision_digest": "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589",
+      "roles": 4,
+      "room_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "status": "passed",
+      "transcript_digest": "blake3:5ca09a58fdb40dc35116130e42e6ce6f5f99a39d52c36a4c148c23386a29bcb2"
+    },
+    "draft": {
+      "actual_transcript_digest": "blake3:5ca09a58fdb40dc35116130e42e6ce6f5f99a39d52c36a4c148c23386a29bcb2",
+      "bundle_digest": "blake3:da1fe04d3752ae0ee5fac19d43124299abf0ec1746048695576b8577d75ed3d2",
+      "expected_transcript_digest": "blake3:63e3927867129349920a15d90c00dd29eaa649db7d7afad1f82bfdd8f0313e8c",
+      "pack_id": "worldstream.negotiate",
+      "proof_type": "needs_finalization",
+      "revision_digest": "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589",
+      "status": "needs_finalization"
+    },
+    "finalization_changed_only": [
+      "bundle-manifest.json",
+      "conformance.json",
+      "golden-corpus.json"
+    ],
+    "prover": "worldstreamctl pack prove <bundle> --json"
+  },
+  "result": "passed",
+  "version": "0.1.0"
+}

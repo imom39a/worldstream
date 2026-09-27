@@ -3,28 +3,7 @@
 The shipped `worldstreamctl` binary provides offline bundled-SQLite backup,
 restore, and verification, plus the resumable whole-deployment
 SQLite-to-PostgreSQL transfer. Stop `worldstreamd` before using these commands.
-All artifact directories and input files must be owner-only; existing output
-paths are refused.
-
-The Hosted Activity Platform preview uses a separate, installation-local
-offline volume-clone drill under
-[ADR 0024](adr/0024-operate-a-single-authority-hobby-preview.md). It preserves
-the full stopped Runtime and Controller directories and verifies an isolated
-copy with the production `pack restart-readiness` command, then pairs it with
-the same closed interval's platform-store export. It does not claim to produce
-the portable backup/envelope artifacts documented below. An independent
-provider snapshot or platform-store dump cannot claim hosted continuity.
-
-The hosted command currently qualifies **only zero-history prelaunch** state.
-It verifies the Controller's Host authority against the Runtime, checks empty
-activity history in all three stores, and requires closed admission. The
-append-only `verification-prelaunch-v1.json` receipt is required; the earlier
-v2 `verification.json` and its verified event alone are insufficient. After
-the first retained Room, launch, assignment, or Run, the command refuses to
-qualify recovery until populated cross-store correspondence and restored
-Assignment provider fencing are implemented. Preserve such archives, but do
-not present them as tested populated recovery. This limitation does not alter
-the portable backup/envelope contract below.
+Use owner-only artifact directories and input files. The commands reject existing output paths.
 
 Native SQLite evidence is admitted only as one standalone DELETE-journal main
 database (`read_version=1`, `write_version=1`) with no `-journal`, `-wal`, or
@@ -36,12 +15,8 @@ rewriting source evidence during backup.
 
 ## SQLite backup and restore
 
-A complete SQLite backup contains the native database image, its exact sealed
-companion envelope, and the original `.wspack` bytes for every Activity Pack
-Bundle referenced by retained Room lineage. A database/envelope pair without
-that referenced bundle set is incomplete. The command does not report success
-until all parts have been published, reopened, and independently verified by
-the native SQLite, bundle, and full WorldStream semantic verifiers.
+A complete SQLite backup contains the native database image and its exact sealed companion envelope. It also contains original `.wspack` bytes for every Activity Pack Bundle in retained Room lineage. A database/envelope pair without
+that referenced bundle set is incomplete. The command publishes and reopens all parts. It reports success only after the native SQLite, bundle, and full WorldStream semantic verifiers pass.
 
 ```text
 worldstreamctl sqlite backup \
@@ -65,15 +40,11 @@ seals it, and rejects missing, extra, substituted, noncanonical, or untrusted
 facts. A native database file without the successfully published envelope is
 an incomplete/orphaned artifact, not a complete WorldStream backup.
 
-Restore admits the backup through an owner-only open handle, copies those exact
-bytes to a private owner-only snapshot, and performs every native reopen and
-source-evidence pass against that snapshot. It restores only to a new path and
+Restore opens the backup through an owner-only handle. It copies the exact bytes to a private owner-only snapshot. Every native reopen and source-evidence check uses that snapshot. It restores only to a new path and
 reports `semantic_verifier: "pass"` only after rebuilding a full verifier
 `Ready` result from the exact published envelope. Referenced portable archives
 are re-verified and atomically published under the restored database's sibling
-`activity-packs/` store as `retained_only`. Source approval and selectability
-are never restored; the target operator must inspect, approve the exact physical
-digest, select it, and restart before creating a new Room with that revision.
+`activity-packs/` store as `retained_only`. Restore does not restore source approval or selectability. Inspect and approve the exact physical digest on the target. Select the revision and restart before you create a new Room.
 Keep the backup and envelope together and immutable.
 
 `sqlite verify` is deliberately narrower:
@@ -262,10 +233,7 @@ worldstreamctl postgres native restore \
   --timeout-seconds 1200
 ```
 
-The command returns success only after its contained worker tree is drained,
-target repair and credential retirement are proven, the exact dump and report
-are durably published without replacement, and the recovery journal records
-acknowledgement. Stdout is only a bounded completion receipt; the authoritative
+Before success, the command drains its contained worker tree and verifies target repair and credential retirement. It durably publishes the exact dump and report without replacement. The recovery journal must then record acknowledgment. Stdout is only a bounded completion receipt; the authoritative
 redacted Ready report is the file named by `--report`. It binds the source and
 target provider identities, dump digest and size, native backup point, every
 durable-domain digest, and the unified verifier result. The completion receipt
@@ -299,10 +267,7 @@ observe and retain that exact journal before invoking recovery after an
 interrupted run. Recovery rejects a pathname replacement before it reads the
 journal or starts target repair.
 
-Recovery first rebinds to the journaled target cluster/database identity,
-restores connection limit zero, retires the exact one-use role and all of its
-sessions, and only then validates or scrubs the journaled private/public
-artifact identity. It appends a durable completion tombstone; it does not mint
+Recovery first binds to the journaled target cluster/database identity and restores connection limit zero. It retires the exact one-use role and all its sessions. Only then does it validate or remove the journaled private/public artifact. It appends a durable completion tombstone; it does not mint
 a Ready witness. A containment-uncertain failure deliberately preserves the
 journal and performs no concurrent target or artifact cleanup. Escalate that
 record for operator recovery rather than deleting its directory by pathname.

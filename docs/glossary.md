@@ -1,18 +1,12 @@
-# Extended WorldStream Terminology
+# Technical terminology
 
-## Status and authority
+The root [domain context](../CONTEXT.md) defines domain terms. This document adds
+protocol, runtime, storage, and client terms. Change the root definition first
+if a domain term changes. Resolve any conflicting definitions.
 
-Status: extended product, protocol, runtime, storage, and UI terminology for the frozen v0.1 and v0.2 design.
-
-The project name **WorldStream** is provisional while public-brand clearance continues. The technical vocabulary in this document does not depend on the final brand.
-
-The root [WorldStream Domain Context](../CONTEXT.md) is authoritative for domain language. The [Frozen Requirements](requirements.md) are authoritative for release behavior and scope. This reference adds protocol, runtime, storage, and UI language. Rows that mention a domain term are navigation summaries or engineering elaborations, not independent definitions; edit `CONTEXT.md` first. Any conflict is a documentation defect and must be reconciled.
-
-This reference exists to keep architecture, protocol, code, UI, and examples aligned. It also records terms that should not be used because they imply capabilities WorldStream does not provide.
-
-## One-paragraph mental model
-
-Agent orchestrators coordinate agents to complete work. WorldStream governs a shared reality in which humans and agents participate. Its implementation category is a self-hosted **realtime room runtime for multi-agent applications**, with humans as first-class participants. One server hosts independent Rooms. Each Room pins exactly one Activity Pack, which defines its rules. Human and Agent Participants receive authorized Projections, submit typed Actions, and receive Membership-addressed Observation Frames. The Room Kernel orders accepted Stimuli, commits deterministic Transitions, preserves Recovery and Replay, and may create Activation Intents for external Runners. WorldStream does not host models or preserve a continuously running agent mind.
+One server hosts independent Rooms. Each Room uses one exact Activity Pack
+revision. Participants submit Actions and receive authorized views. The kernel
+records accepted Transitions. External Runners execute agents.
 
 ## Relationship map
 
@@ -38,36 +32,6 @@ flowchart TD
     T --> OF["Membership-addressed Observation Frames"]
     OF --> M
 ~~~
-
-## Product and category language
-
-| Term | Summary or technical elaboration | Usage guidance |
-|---|---|---|
-| **WorldStream** | Provisional project codename for the complete open-source system. | Capitalize exactly this way. Do not write WordStream or Worldstream. |
-| **WorldStream Server** | One deployed WorldStream process plus its configured durable storage profile. | This is the concrete shipped service. One server may host many independent rooms; a PostgreSQL primary may run on another host without creating another WorldStream process. |
-| **Realtime room runtime** | The preferred product category: a runtime that owns durable shared rooms and promptly delivers committed authorized changes. | Use in the primary product description. Realtime does not promise immediate model execution. |
-| **Room Kernel** | The internal domain-neutral correctness core: action admission, one-writer room ordering, deterministic pack application, transition commit preparation, projections, timers, and attention output. | Do not use Kernel as a synonym for the complete server, web UI, agent runner, or Activity Pack. |
-| **Multi-agent application** | An application in which multiple independently operated agent policies can affect the same evolving situation. | This is the primary target application category. It does not mean WorldStream hosts the agents. |
-| **Multi-participant** | The precise kernel model: more than one participant may act, and a participant may be human or agent-operated. | Prefer in architecture and protocol writing. |
-| **Multiplayer** | An analogy to authoritative game-server design: shared rooms, participants, rules, private views, concurrent actions, and reconnect. | Useful for explanation. Do not present WorldStream as game-only middleware. |
-| **Player** | A game-specific participant role. | Use only inside game Activity Packs such as Agent Heist, never as a core identity or protocol entity. |
-| **Self-hosted** | One host operator controls the WorldStream Server and its selected storage, whether the PostgreSQL service is self-managed or hosted. Agent runners may execute on other host-operator-approved machines. | This is an operational-control property, not an assertion that every process or durable byte is on one machine. |
-| **AI application** | An application that uses AI agents as participants while WorldStream supplies shared-state participation infrastructure. | Broader than games and narrower than generic business automation. |
-| **World** | Informal metaphor for a room's shared evolving situation. | There is no separate World entity in v0.1 or v0.2. Use Room in schemas and code. |
-| **Shared reality** | Positioning language for one Room's governed situation: its rules, authoritative state, permitted Actions, scoped views, and ordered history. | Use in product narrative. It is not a separate entity; use Room and Authoritative Room State in domain, protocol, and code. |
-| **Activity** | The domain experience occurring in one room under one Activity Pack, such as a Heist or Investigation. | The Activity Pack is the definition; the room is the running instance. |
-| **Reference activity** | A deliberately bounded application used to prove or falsify the runtime thesis. | Agent Heist and Investigation Room are reference activities, not the entire product. |
-| **Activity Client** | An independently executing browser, terminal, mobile, SDK-based, or agent-owned application that uses a scoped WorldStream client contract and may present one or more exact Activity Pack Revisions. | It is not an Activity Pack, Pack executor, Studio plugin, or authority shortcut. |
-| **Activity Client Release** | One immutable, content-addressed client build declaring exact artifacts, Client Surfaces, protocol contract, and informative evidence. | Publication, compatibility claims, and conformance do not create a Deployment or grant Host approval. |
-| **Client Surface** | One human-facing entry point of an Activity Client, such as a participant browser screen, spectator display, or terminal interface. | It is presentation, not a Projection or a React component imported into Studio. |
-| **Activity Distribution** | An integrator-owned manifest referencing separate exact Pack Bundles, Client Releases, and optional Runner integrations. | It proposes a combination but carries no secret, Deployment, Binding, or operational approval. |
-| **Client Deployment** | Host-approved availability of one exact Client Release at exact independently executing launch targets. | It is operational state, not a Release, Room session, or Studio plugin. |
-| **Deployment Trust Level** | Host classification of running client bytes as exactly verified or externally trusted without such proof. | It is not client compatibility, publisher reputation, Membership permission, or Room authority. |
-| **Client Binding** | Host-approved mapping from an exact Pack Revision, client contract, Access Mode, and Role set to an approved Deployment Surface. | Direct clients do not require one; it is not Room or Replay state. |
-| **Client Binding Store** | Host-local operational collection of approved Releases, Deployments, Bindings, disable/revocation state, and configured fallback. | It is not an artifact registry, Pack catalog, renderer registry, Room backup, or Activity Distribution. |
-| **Client Selection** | Resolution of one current Membership and Host-local bindings to one approved Surface for a handoff. | It changes no Membership or Room state and exposes only opaque choices to Studio. |
-| **Client SDK** | Non-authoritative library implementing the generic WorldStream client contract. | A library is not an Activity Client until an independent application uses it. |
-| **WorldStream Inspector** | The first-party Pack-neutral browser workbench for authorized Projection/Observation data, exact Action Offers, receipts, connection state, and Replay. | It is a diagnostic fallback, not a generated domain UI or centrally maintained Pack renderer registry. |
 
 ## Identity and participation
 
@@ -266,7 +230,7 @@ flowchart TD
 
 | Term | Summary or technical elaboration | Important distinction |
 |---|---|---|
-| **Reference UI** | The small first-party web client used to demonstrate, inspect, and test Agent Heist and Investigation Room. | It is not a general dashboard builder or required to operate the server. |
+| **Reference UI** | A browser client used to demonstrate and test an example Pack. | It is not a general dashboard builder or required to operate the server. |
 | **Public view** | A UI rendering of a public/spectator projection for an authorized read-only membership. | Public does not imply anonymous access or a raw global feed. |
 | **Participant view** | A UI rendering of one acting membership's authorized projection, Action Offers, and observation state. | It must never contain another membership's private fields. |
 | **Operator-membership view** | A UI rendering of room-scoped diagnostics, controls, and operator projection authorized for an operator membership. | It is distinct from the host operator trust role. UI visibility is not authorization; the server rechecks every operation. |
@@ -277,66 +241,15 @@ flowchart TD
 | **Catching-up mode** | The UI is applying retained frames or an explicit projection reset before joining live delivery. | It must not silently present stale data as current. |
 | **Replay mode** | The UI shows an authorized historical room sequence and is read-only. | It never submits live actions or creates activations. |
 
-## Reference-activity vocabulary
+## Naming
 
-| Term | Meaning |
-|---|---|
-| **WorldStream Negotiate** | The first serious public Pack: one pinned A202 bilateral formation session governed by one Room with exact Human approval, signatures, deadlines, privacy, and dual evidence. |
-| **Agent Heist** | A visual demo/conformance Pack for hidden views, timers, Attention, Recovery, and Replay. It is not the product category or first public adoption target. |
-| **Investigation Room** | A deferred serious-work design probe, not a committed release. |
-| **Cold Chain Incident** | The fictional deterministic Investigation fixture. It uses local immutable evidence and no live enterprise systems. |
-| **Evidence version** | An Investigation Pack identity for one immutable source revision. It is not a generic artifact-store column. |
-| **Fact** | A source-linked Investigation assertion derived from exact evidence versions. |
-| **Claim** | A higher-level Investigation assertion supported or challenged by facts/other claims. |
-| **Supersedes relation** | An explicit Investigation relationship saying a newer immutable evidence version replaces an earlier version for current analysis. It never overwrites history. |
-| **Invalidation / stale dependency** | A deterministic pack consequence marking derived work out of date when a referenced source/revision changes. It does not delete the prior work. |
+Use the domain names consistently. Use `room_seq` for the Room transition order
+and `frame_seq` for one Membership's observation order. Use protocol identifiers
+exactly as the schema defines them.
 
-## Preferred language
+Use “Host Operator” for the installation authority and “operator Membership”
+for the Room access mode. Use “Session,” “Runner,” and “Invocation” for transport,
+external execution ownership, and one bounded execution, respectively.
 
-| Avoid | Say instead | Why |
-|---|---|---|
-| “WorldStream is a multiplayer game server.” | “WorldStream is a realtime room runtime for multi-agent applications; multiplayer servers are the architectural analogy.” | The product supports non-game activities. |
-| “WorldStream is a multi-agent orchestrator.” | “WorldStream governs a shared reality in which humans and agents participate; external Runners operate the agents.” | It owns Room truth, rules, visibility, and history—not agent plans, models, or tool loops. |
-| “The runtime” when ownership is unclear. | Use “WorldStream Server,” “Room Kernel,” or “runner-owned execution runtime.” | These have different trust, durability, and execution responsibilities. |
-| “The operator” when scope is unclear. | Use “host operator” or “operator membership.” | One controls the deployment; the other is a room-scoped access mode. |
-| “Context” without qualification. | Use “deterministic context,” “invocation context,” or “agent-private memory.” | These name pack helpers, one run's authorized input, and runner-owned state respectively. |
-| “The agent lives in the room.” | “The agent has a durable room membership.” | Membership persists; computation normally does not. |
-| “The agent is sleeping.” | “The membership is enabled with no active invocation,” or “an activation is pending.” | There is no resident sleeping model or process. |
-| “WorldStream wakes the agent.” | “WorldStream creates/offers an activation intent; a runner may start a fresh invocation.” | The server requests execution but does not execute the model itself. |
-| “The agent resumes where it stopped.” | “A fresh invocation catches up from its cursor and authorized context.” | Hidden process/model state is not preserved. Use resume only for a runner-owned explicit checkpoint. |
-| “The agent is online.” | “A session is connected,” “a runner is available,” or “an invocation is running.” | These are three different operational facts. |
-| “Persistent agent memory.” | “Durable room state,” “invocation context,” or “runner-owned private memory.” | The system does not provide generic agent memory. |
-| “WorldStream is a context layer/database.” | “WorldStream owns authoritative room state and derives scoped invocation context.” | It is not generic RAG, vector memory, or document search. |
-| “Agents update shared state.” | “Agent Participants submit typed Actions; the Room Kernel commits validated Transitions.” | Clients cannot directly write Authoritative Room State. |
-| “The stream contains room state.” | “The Membership stream contains authorized Observation Frames; current state is obtained through a Projection.” | Raw Core Room State and Canonical Activity State never cross the client boundary. |
-| “Public stream.” | “Public projection materialized into each authorized membership stream.” | Every durable viewer has a membership and cursor in the frozen protocol. |
-| “Event” when the kind is unclear. | Use “action,” “stimulus,” “transition,” “domain event,” or “observation frame.” | These have different authority, ordering, and delivery semantics. |
-| “Exactly-once delivery/execution.” | “At-least-once delivery with idempotent requests, deduplication, and fenced leases.” | Networks and model processes cannot honestly provide exactly-once execution. |
-| “The room completed.” | “The Activity reached a Terminal Phase and established an Outcome; the Room remains active until archived.” | Activity Phase, Outcome, and core Room Status are separate. |
-| “The snapshot is the room history.” | “Genesis and transitions are canonical; snapshots accelerate recovery.” | Snapshots are replaceable caches. |
-| “Activity Pack plugin.” | “Activity Pack Revision” for semantic rules or “Activity Pack Bundle” for installable bytes. | Public Packs use a precise five-operation Component contract; plugin obscures identity and authority. |
-| “Project,” “Workspace,” or “world containing packs.” | “Independent room pinned to one Activity Pack.” | Cross-room projects and multi-pack rooms are explicitly deferred. |
-| “Worker” without qualification. | Use “runner,” “invocation,” “room actor,” or “participant.” | Worker is overloaded and hides ownership/lifecycle differences. |
-
-## Naming and spelling conventions
-
-- **WorldStream** is the provisional project spelling. Never write **WordStream**.
-- The current `agent-streamer` repository directory is a legacy local slug, not a product name. Rename it only after public-brand clearance.
-- Use **WorldStream Server** for the deployable service and **Room Kernel** for its internal correctness core.
-- Use **Activity Pack** for the named abstraction and **pack** after the context is established.
-- Use **WorldStream Negotiate**, **Agent Heist**, **Investigation Room**, and **Cold Chain Incident** as proper names.
-- Use **WebSocket**, **SQLite**, **BLAKE3**, **JSON**, **HTTP**, and **ULID** with their standard capitalization.
-- Use `room_id`, `member_id`, `principal_id`, `action_id`, `activation_id`, and `claim_id` in protocol/schema contexts.
-- Use `room_seq` for canonical transition order and `frame_seq` for one membership's observation order.
-- Use **realtime** in the product-category phrase. Do not imply a hard real-time system.
-- Use **self-hosted**, **multi-agent**, and **multi-participant** with hyphens.
-
-## Five-question terminology check
-
-Before introducing a new term, ask:
-
-1. Does it describe durable identity, temporary execution, transport, or domain state?
-2. Is it a core WorldStream concept or an Activity Pack concept?
-3. Is it authoritative input/history, derived projection, or operational telemetry?
-4. Does it accidentally imply model hosting, continuous cognition, exactly-once execution, or game-only scope?
-5. Can an existing canonical term express the same idea more precisely?
+Use “Projection” for an authorized view and “Authoritative Room State” for the
+accepted state. A Projection does not grant authority to change the Room.

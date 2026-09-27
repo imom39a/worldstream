@@ -30,11 +30,11 @@ SCHEMA = "worldstream/negotiate-golden-flow-acceptance/v1"
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BUNDLE = (
     ROOT
-    / "packs/negotiate/releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack"
+    / "examples/packs/negotiate/releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack"
 )
 DEFAULT_CTL = ROOT / "target/debug/worldstreamctl"
-CORPUS = ROOT / "crates/worldstream-negotiate-oracle/fixtures/corpus-v1.json"
-OFFICIAL_EVIDENCE = ROOT / "packs/negotiate/evidence/conformance-v1.json"
+CORPUS = ROOT / "examples/negotiate/oracle/fixtures/corpus-v1.json"
+OFFICIAL_EVIDENCE = ROOT / "examples/packs/negotiate/evidence/conformance-v1.json"
 MAX_JSON_BYTES = 32 * 1024 * 1024
 MAX_BUNDLE_BYTES = 64 * 1024 * 1024
 EXPECTED_ACTIONS = [

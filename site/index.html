@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="WorldStream is a Rust kernel for shared application state. It provides ordered changes, storage, participant views, and replay.">
+  <meta name="theme-color" content="#f5f3ee">
+  <meta property="og:title" content="WorldStream room kernel">
+  <meta property="og:description" content="A Rust kernel for shared application state. The repository contains the source, tests, documentation, and application examples.">
+  <meta property="og:type" content="website">
+  <link rel="canonical" href="https://imom39a.github.io/worldstream/">
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+  <title>WorldStream room kernel</title>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="page">
+    <header class="topbar">
+      <a class="wordmark" href="./" aria-label="WorldStream home"><span class="mark" aria-hidden="true">w/</span> WorldStream</a>
+      <nav aria-label="Main navigation"><a href="#architecture">Architecture</a><a href="#examples">Examples</a><a href="https://github.com/imom39a/worldstream">Source <span aria-hidden="true">↗</span></a></nav>
+    </header>
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="eyebrow"><span class="dot" aria-hidden="true"></span> Project reference</div>
+        <h1 id="hero-title">A kernel for<br><span>shared applications</span></h1>
+        <div class="hero-bottom"><p>WorldStream stores application state in Rooms. It checks each proposed change, records accepted changes, and sends each participant only the data they can access.</p><a class="button" href="https://github.com/imom39a/worldstream/blob/main/docs/getting-started.md">Run the kernel <span aria-hidden="true">↗</span></a></div>
+        <div class="metadata"><span>Written in Rust</span><span>SQLite / PostgreSQL</span><span>Apache 2.0</span></div>
+      </section>
+      <section class="section architecture" id="architecture" aria-labelledby="architecture-title">
+        <div class="section-label">01 / Architecture</div>
+        <div class="section-heading"><h2 id="architecture-title">System components</h2><p>An Activity Pack defines the application rules. The kernel controls the order of changes, storage, and participant access.</p></div>
+        <div class="diagram" role="img" aria-label="Human clients and external agent runners connect to the Room kernel. The kernel executes a pinned Activity Pack and commits to SQLite or PostgreSQL. Authorized observations return to participants; activation intents go to runners.">
+          <div class="diagram-clients"><span>Human clients</span><span>External agent runners</span></div>
+          <div class="diagram-flow">Actions ↓ <span>↑ Observations &amp; activation intents</span></div>
+          <div class="kernel"><span class="eyebrow">WorldStream</span><strong>Room kernel</strong><div class="kernel-parts"><span>Membership</span><span>Ordering</span><span>Persistence</span><span>Replay</span></div></div>
+          <div class="diagram-foundation"><div><span class="connector" aria-hidden="true">↓</span><strong>Pinned Activity Pack</strong><small>Rules · state · visibility · timers</small></div><div><span class="connector" aria-hidden="true">↓</span><strong>SQLite or PostgreSQL</strong><small>History · receipts · observations</small></div></div>
+        </div>
+        <div class="principles"><article><span class="number">01.1</span><h3>Storage before acknowledgment</h3><p>The storage adapter saves state, receipts, observations, timers, and activation intents in one transaction. The kernel then sends the successful response.</p></article><article><span class="number">01.2</span><h3>Participant access</h3><p>Each Membership receives an authorized view and a separate stream of changes. When a client reconnects, it supplies a cursor or receives a reset.</p></article><article><span class="number">01.3</span><h3>Replay</h3><p>Each Room uses one exact Pack revision. Replay uses the retained executor and recorded inputs to check the state after a restart.</p></article><article><span class="number">01.4</span><h3>External agent execution</h3><p>An external Runner controls the model, prompts, tools, and credentials. The kernel stores participant identities and requests for agent work.</p></article></div>
+        <a class="text-link" href="https://github.com/imom39a/worldstream/blob/main/docs/architecture.md">Read the architecture <span aria-hidden="true">↗</span></a>
+      </section>
+      <section class="section" aria-labelledby="transition-title">
+        <div class="section-label">02 / Action processing</div>
+        <div class="section-heading"><h2 id="transition-title">How the kernel<br>processes an Action</h2><p>A participant proposes an Action. The kernel checks the Action before it changes the Room state.</p></div>
+        <ol class="commit-path"><li><span>01</span><h3>Propose</h3><p>The participant sends an Action with its observed Room Head.</p></li><li><span>02</span><h3>Validate</h3><p>The kernel checks authority and the current Head. The Pack checks its rules.</p></li><li><span>03</span><h3>Commit</h3><p>The storage adapter records the transition and related effects in one transaction.</p></li><li><span>04</span><h3>Deliver</h3><p>The kernel sends the result and authorized observations. Runners can then claim available agent work.</p></li></ol>
+      </section>
+      <section class="section" id="examples" aria-labelledby="examples-title">
+        <div class="section-label">03 / Examples</div>
+        <div class="section-heading"><h2 id="examples-title">Application examples</h2><p>These examples use the same kernel. Each application defines its own rules and execution policy.</p></div>
+        <div class="examples">
+          <a href="https://github.com/imom39a/worldstream/tree/main/examples/counter"><span class="example-kind">Start here</span><h3>Counter</h3><p>This example sends typed Actions, reads participant views, reconnects a client, and restarts the runtime.</p><span class="arrow" aria-hidden="true">↗</span></a>
+          <a href="https://github.com/imom39a/worldstream/tree/main/examples/packs/tower-of-hanoi"><span class="example-kind">Puzzle</span><h3>Tower of Hanoi</h3><p>The Pack checks moves, records each contribution, and lets a participant claim completion.</p><span class="arrow" aria-hidden="true">↗</span></a>
+          <a href="https://github.com/imom39a/worldstream/tree/main/examples/heist"><span class="example-kind">Game</span><h3>Agent Heist</h3><p>This game uses hidden information, timed phases, private observations, and Replay.</p><span class="arrow" aria-hidden="true">↗</span></a>
+          <a href="https://github.com/imom39a/worldstream/tree/main/examples/agent-swarm"><span class="example-kind">Agent coordination</span><h3>Agent Swarm</h3><p>This application records work ownership, contributions, reviews, and accepted results in a Room.</p><span class="arrow" aria-hidden="true">↗</span></a>
+        </div>
+        <a class="text-link" href="https://github.com/imom39a/worldstream/blob/main/examples/README.md">See all examples, Packs, and clients <span aria-hidden="true">↗</span></a>
+      </section>
+      <section class="section closing" aria-labelledby="status-title">
+        <div class="section-label">04 / Project status</div>
+        <div><h2 id="status-title">Development has ended</h2><p>WorldStream was an experiment in applications for humans and AI agents. The product experiments did not meet their intended use. Product development has ended.</p><p>The repository contains the kernel, tests, documentation, and application examples. You can study or change the design. There is no supported production release or hosted service.</p><div class="closing-links"><a href="https://github.com/imom39a/worldstream">Browse the source ↗</a><a href="https://github.com/imom39a/worldstream/blob/main/docs/README.md">Read the technical docs ↗</a></div></div>
+      </section>
+    </main>
+    <footer><span>WorldStream <span class="footer-separator">/</span> Built by <a href="https://github.com/imom39a">Vinoth Shanmugam</a></span><span>Open source · Apache 2.0</span></footer>
+  </div>
+</body>
+</html>

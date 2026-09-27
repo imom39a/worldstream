@@ -1539,7 +1539,7 @@ def _arguments() -> argparse.Namespace:
         "--bundle",
         type=Path,
         default=repo
-        / "packs/tower-of-hanoi/releases/0.1.0/worldstream-tower-of-hanoi-candidate.wspack",
+        / "examples/packs/tower-of-hanoi/releases/0.1.0/worldstream-tower-of-hanoi-candidate.wspack",
     )
     parser.add_argument(
         "--worldstreamctl", type=Path, default=repo / "target/debug/worldstreamctl"

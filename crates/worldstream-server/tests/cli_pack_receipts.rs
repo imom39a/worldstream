@@ -74,7 +74,7 @@ fn exact_bundle_keeps_legacy_receipts_through_the_offline_lifecycle() -> TestRes
             serde_json::to_string(&authority_path)?,
         ),
     )?;
-    let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packs/negotiate/releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack").canonicalize()?;
+    let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/packs/negotiate/releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack").canonicalize()?;
     let original = fs::read(&bundle)?;
     assert_eq!(format!("blake3:{}", blake3::hash(&original)), BUNDLE_DIGEST);
     let bundle = bundle.to_str().ok_or("Bundle path is not UTF-8")?;

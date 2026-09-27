@@ -27,9 +27,7 @@ Pack, expected Role, equal setup seat, agent Principal, Runtime origin and
 single permitted Membership.
 
 Each Invocation keeps its Runner connection open only for its bounded wait
-window. It claims only the first matching reason for that exact
-Membership, compares the claimed Invocation Context with a fresh authorized
-Projection at the same Head, and submits at most one `submit_companion_plan`
+window. It claims only the first matching reason for that Membership. It compares the Invocation Context with a fresh authorized Projection at the same Head. It submits at most one `submit_companion_plan`
 Action with an explicit `expected_room_seq`. It never submits human Actions,
 commits a turn, rebases, or retries an Action. Its bounded wait loop only polls
 for that matching opportunity. A lost reply or
@@ -40,10 +38,7 @@ retains the accepted plan; the process keeps no private memory file.
 
 ## Integration recipe
 
-Use the existing local `worldstreamctl` Room Setup and credential-export seam,
-as used by `scripts/verify-midnight-archive-browser.mjs`. The assignment MCP
-helper is an alternative consumer of the same separately sealed authorities;
-this example connects through the SDK directly and does not launch that helper.
+Use the local `worldstreamctl` Room Setup and credential-export seam. The assignment MCP helper can use the same separately sealed authorities. This example connects through the SDK and does not start that helper.
 
 1. Install and approve the exact new Component Bundle. Create a
    `worldstream/room-setup/v1` specification using that Pack's exact digest and
@@ -114,5 +109,5 @@ checks the required `dialogue` field: 160 raw UTF-8 bytes, 192 bytes after two
 JSON string encodings, no C0 controls or unpaired surrogates, and nonempty text
 only when the companion's `dialogue_allowed` is true. The deterministic local
 selectors return an empty string. Reviewed House model policies live in
-`config/hosted/house-policies`; named hosted assignment wiring is qualified
+`tests/fixtures/hosted/house-policies`; named hosted assignment wiring is qualified
 separately and these local fixtures do not call a provider.

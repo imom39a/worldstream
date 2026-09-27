@@ -467,7 +467,7 @@ mod tests {
         let reference = vault.store(SecretKindV1::MembershipAuthority, &[0xab; 32])?;
         let room_id = "01JY0000000000000000000000";
         let listing_bytes = worldstream_core::CanonicalJsonV1::parse(include_bytes!(
-            "../../../config/hosted/listings/midnight-archive-0.2.0.json"
+            "../../../tests/fixtures/hosted/listings/midnight-archive-0.2.0.json"
         ))?
         .to_bytes()?;
         let listing =

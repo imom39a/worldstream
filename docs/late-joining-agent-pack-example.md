@@ -21,13 +21,9 @@ These are accepted semantics in
 or an explicitly authorized historical view. It is not a conversation that
 an agent must read before participating.
 
-Activation preparation reuses an installed serving trace. After a restart, both
-storage adapters can recover from a verified checkpoint with at most 250 tail
-Transitions; missing or untrusted checkpoints fall back to full Genesis replay.
+Activation preparation reuses an installed serving trace. After a restart, both storage adapters can recover from a verified checkpoint with at most 250 tail Transitions. Missing or untrusted checkpoints require full Genesis Replay.
 The model still receives a bounded current Projection rather than recovery
-history. The remaining resource caveat is operational-witness capture and
-verification, which scales with currently retained operational rows and falls
-back when its canonical witness would exceed 16 MiB.
+history. Operational-witness capture and verification scale with the retained operational rows. A canonical witness above 16 MiB causes a fallback.
 
 A new Membership does not inherit another Membership's Cursor, private
 observations, or historical visibility. Its current Projection follows the
@@ -121,8 +117,7 @@ supplies work IDs and current facts. Payload relationships are checked in
 See the actual [protocol structures](../crates/worldstream-protocol/src/messages.rs)
 and [Action Offer contract](activity-packs.md#view-action-offers-and-observation).
 
-With the scenario's small rule brief, the analyst can now recognize the open
-assessment, see why the old one is obsolete, and submit this example Action:
+The rule brief lets the analyst identify the open assessment and why the old one is obsolete. The analyst can submit this Action:
 
 ```json
 {
@@ -189,18 +184,16 @@ an airline API, model, database, or historical log.
 
 This fits the existing five callbacks. The actual Midnight Archive Pack
 already follows the same continuity principle: its
-[companion Projection](../packs/midnight-archive/src/view.ts) includes task,
+[companion Projection](../examples/packs/midnight-archive/src/view.ts) includes task,
 plan progress, deadline, knowledge, preparation, and last contribution.
-Its [Pack callbacks](../packs/midnight-archive/src/pack.ts) compute the view
+Its [Pack callbacks](../examples/packs/midnight-archive/src/pack.ts) compute the view
 from current state. These are existing code examples, not an implemented
 airline activity.
 
 ## How a generic agent understands the Pack
 
 Schemas explain structure; they are not sufficient teaching material for an
-unfamiliar activity. Supply a small versioned rule brief through the Runner
-integration or packaged documentation, covering the goal, Role, field meaning,
-Action meaning, evidence requirements, and completion/blocking criteria.
+unfamiliar activity. Supply a short, versioned rule brief through the Runner integration or documentation. Include the goal, Role, fields, Actions, evidence requirements, and completion/blocking criteria.
 The SDK also supports schema descriptions. There is no new `explain` callback
 or arbitrary brief field in ActionOfferV1 in this proposal.
 
@@ -266,4 +259,4 @@ that requirement by itself.
 
 These are proposed checks, not test results from this document. Existing
 server-scale gaps and the broader workload remain in the
-[long-running primitives proposal](long-running-room-primitives-proposal.md).
+[long-running primitives proposal](https://github.com/imom39a/worldstream/blob/ac7f443562bce33088229351d5f9eba40bb67bdd/docs/long-running-room-primitives-proposal.md).

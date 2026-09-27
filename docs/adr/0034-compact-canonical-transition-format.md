@@ -13,7 +13,7 @@ even when one transition changes only a small input or emits a small
 observation. Physical compression reduces disk bytes but does not remove the
 state copy during commit, or make a compressed record independently
 reconstructible. The repeatable comparison in
-[`docs/transition-format-comparison.md`](../transition-format-comparison.md)
+[`docs/transition-format-comparison.md`](https://github.com/imom39a/worldstream/blob/ac7f443562bce33088229351d5f9eba40bb67bdd/docs/transition-format-comparison.md)
 measures the tradeoff for 1, 16, 256, and 1024 KiB states at 1,000, 10,000,
 and 100,000 transitions.
 

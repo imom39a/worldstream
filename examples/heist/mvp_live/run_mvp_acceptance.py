@@ -1835,7 +1835,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--assignment-mcp", default="target/debug/worldstream-assignment-mcp"
     )
-    parser.add_argument("--console-dist", default="web/console/dist")
+    parser.add_argument("--console-dist", default="examples/clients/inspector/dist")
     parser.add_argument("--keep-artifacts", action="store_true")
     return parser
 

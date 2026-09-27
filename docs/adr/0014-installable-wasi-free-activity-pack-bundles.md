@@ -67,5 +67,5 @@ This decision partially supersedes ADR 0001's Heist-first / Investigation-only
 release order and ADR 0010's compiled-in-only distribution conclusion. Counter
 remains an internal tutorial/conformance Pack, Agent Heist becomes a bundled
 demo/conformance Pack, Investigation Room is deferred, and WorldStream
-Negotiate is the first serious public Pack. All other Room Kernel boundaries
+Negotiate is the public Pack selected in this decision. All other Room Kernel boundaries
 remain unchanged.

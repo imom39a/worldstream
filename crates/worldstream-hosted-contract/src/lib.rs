@@ -39,8 +39,7 @@ const RUST_RUNTIME_SOURCE_DIGEST: &str =
 const TYPESCRIPT_RUNTIME_SOURCE_DIGEST: &str =
     "blake3:375f96e77cec51ed81ffb83f22bc9187579dfaf00223917815bc947d07e30701";
 const RUST_RUNTIME_SOURCE: &[u8] = include_bytes!("runtime_v1.rs");
-const TYPESCRIPT_RUNTIME_SOURCE: &[u8] =
-    include_bytes!("../../../sdk/typescript-hosted-contract/src/runtimeV1.ts");
+const TYPESCRIPT_RUNTIME_SOURCE: &[u8] = include_bytes!("retained_runtime_v1.ts");
 
 /// Closed failures safe to expose across the hosted control/Room Host boundary.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]

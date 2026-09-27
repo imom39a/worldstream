@@ -29,9 +29,9 @@ Each Membership owns one durable Observation Stream with three independent posit
 
 The Cursor is shared by Sessions attached to the same Membership. Separate consumers that need independent progress require separate Memberships. Pruning never advances the Cursor and never permits sequence reuse.
 
-Genesis creates no Observation Frame. For each later accepted Transition and each authorized enabled Membership, materialization emits **zero or one** coalesced frame. A hidden Transition can advance the Room Head while emitting zero frames to a viewer. A frame names one Membership and one `cause_room_seq`; it can combine every public and private consequence authorized for that viewer but cannot contain another Membership's data.
+Genesis creates no Observation Frame. For each later accepted Transition and each authorized enabled Membership, materialization emits **zero or one** coalesced frame. A hidden Transition can advance the Room Head while emitting zero frames to a viewer. A frame names one Membership and one `cause_room_seq`. It can combine all public and private consequences that the viewer can access. It cannot contain another Membership's data.
 
-When a Transition removes a Membership's ability to see data, the server sends a complete authorized Projection Reset at the last permissible boundary or closes the Session. It never expresses removal by an incomplete delta that leaves hidden state installed.
+A Transition can remove access to data. The server then sends a complete authorized Projection Reset at the last permissible boundary or closes the Session. It never expresses removal by an incomplete delta that leaves hidden state installed.
 
 ### Retention and pruning
 
@@ -90,7 +90,7 @@ An Action result is permanently tied to its Action ID, Canonical Request Hash, a
 
 An Attention Signal is deterministic, canonical pack output bound into its Transition. It identifies the target Membership, typed reason, deduplication key, priority, and optional semantic deadline. It does not create or run an Invocation.
 
-The host evaluates a versioned operational Activation Policy. The policy revision plus allow/deny/intent decision is installed atomically beside the causing Transition but excluded from canonical hashes. Replay verifies or reproduces the recorded Attention Signal and exposes recorded decision evidence; it never evaluates current policy, creates an intent, offers work, grants a lease, or contacts a Runner.
+The host evaluates a versioned operational Activation Policy. The policy revision plus allow/deny/intent decision is installed atomically beside the causing Transition but excluded from canonical hashes. Replay checks or reproduces the recorded Attention Signal and shows the recorded decision evidence. It does not evaluate current policy or create an intent. It does not offer work, grant a lease, or contact a Runner.
 
 An intent is unique by `(room_id, cause_room_seq, member_id, attention_deduplication_key)` and has exactly one state:
 
@@ -118,7 +118,7 @@ A new claim requires all of the following at the claim linearization point:
 - exact Room, integrity, policy, authority, Membership, intent, and lease generations match the prepared witnesses;
 - the intent is pending, not expired, and no other intent for the Membership has a live lease.
 
-Archive atomically cancels pending/leased intents and advances a room-wide Activation fence. Suspend, departure, identity binding changes, Access Mode changes, or Role changes cancel/fence affected targets. Capability revocation applies immediately. A policy revision fences stale prepared claims. Runtime recovery state Loading, CatchingUp, Passivating, or Inactive, or Room Integrity State faulted or quarantined, preserves otherwise valid pending intents but makes them unclaimable; verified restoration may resume them if their deadline has not passed.
+Archive atomically cancels pending/leased intents and advances a room-wide Activation fence. Suspend, departure, identity binding changes, Access Mode changes, or Role changes cancel/fence affected targets. Capability revocation applies immediately. A policy revision fences stale prepared claims. Pending intents cannot be claimed during Loading, CatchingUp, Passivating, or Inactive recovery states. Faulted or quarantined Room Integrity States also prevent claims. These states preserve otherwise valid intents. Verified restoration may resume them before their deadline.
 
 The operational intent expiry is the earlier of its semantic deadline and the policy maximum. A lease is additionally capped by the policy maximum lease. A detected backward wall-clock jump fences every live lease, returns still-eligible intents to pending under a new generation, and requires a new claim.
 
@@ -130,7 +130,7 @@ Claim, renew, release, and complete each carry its own operation ID; `claim_id` 
 - same ID and different hash returns `idempotency_conflict`;
 - a new request can durably return `granted`, `not_available`, `expired`, `cancelled`, or `fenced` as applicable.
 
-A successful database COMMIT is the linearization point. Renew/release/complete also name the Activation ID, claim ID, Runner identity, and exact lease generation. An expired or superseded claimant cannot alter a later lease. Cancellation after persistence begins is advisory; an unknown COMMIT resolution is resolved by the same operation identity and Canonical Request Hash, never by inventing another ID.
+A successful database COMMIT is the linearization point. Renew/release/complete also name the Activation ID, claim ID, Runner identity, and exact lease generation. An expired or superseded claimant cannot alter a later lease. Cancellation is advisory after persistence starts. Resolve an unknown COMMIT outcome with the same operation identity and Canonical Request Hash. Do not create another ID.
 
 ### Exact Invocation Context
 
@@ -146,7 +146,7 @@ Private context is prepared outside the write lock, revalidated under exact witn
 
 A Head or delivery-witness mismatch may reprepare context under the same claim operation ID before any disposition commits. Authority or integrity mismatch is fenced. Claiming or receiving this context does not move the Cursor or satisfy any Session synchronization token.
 
-Compact intent data, operation receipts, Canonical Request Hashes, immutable original result codes/hashes, context hashes, generations, and dispositions are retained for the Room lifetime. Exact private Invocation Context is retained through terminal state plus seven days, or the longer applicable frame-privacy window; afterward an explicit retention discriminator replaces the bytes with a versioned auditable tombstone while preserving the context hash. A later exact retry deterministically returns wire `result_retired`, not regenerated possibly different private bytes and not a mutation of the original stored result.
+Compact intent data, operation receipts, Canonical Request Hashes, immutable original result codes/hashes, context hashes, generations, and dispositions are retained for the Room lifetime. Storage retains exact private Invocation Context through terminal state plus seven days, or the longer applicable frame-privacy window. Afterward, an explicit retention discriminator replaces the bytes with a versioned tombstone. It preserves the context hash. A later exact retry deterministically returns wire `result_retired`, not regenerated possibly different private bytes and not a mutation of the original stored result.
 
 ## Replay authorization
 

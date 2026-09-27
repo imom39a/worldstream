@@ -1,0 +1,411 @@
+@import "../../design/tokens.css";
+:root {
+  --game-void: #080e13;
+  --game-panel: #101b23;
+  --game-raised: #16242e;
+  --game-line: #2a3b45;
+  --game-muted: #a0b1bb;
+  --game-text: #eef3ed;
+  --game-gold: var(--ws-gold);
+  --game-cyan: var(--ws-cyan);
+  --game-display: var(--ws-ui-font);
+  --heist-art: url("./assets/heist-rooftop.webp");
+  color: var(--ws-text);
+  background: #10191e;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+body { min-width: 0; min-height: 100vh; margin: 0; }
+button, input, select { color: inherit; font: inherit; }
+h1, h2, h3, h4, p { margin-top: 0; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--ws-cyan); outline-offset: 3px; }
+.eyebrow { color: #b8b5ea; font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+
+.heist-live-shell { min-height: 100vh; background: #10191e; }
+.live-client-header {
+  display: flex;
+  min-height: 132px;
+  align-items: end;
+  justify-content: space-between;
+  gap: 30px;
+  padding: 28px max(28px, calc((100vw - 1420px) / 2));
+  color: var(--ws-text);
+  background: var(--ws-gold);
+}
+.live-client-header h1 { margin: 8px 0 0; font-size: clamp(40px, 6vw, 68px); line-height: 0.92; letter-spacing: -0.055em; }
+.live-client-badges { display: grid; justify-items: end; gap: 8px; }
+.live-mode { display: inline-flex; align-items: center; gap: 9px; padding: 10px 12px; border: 1px solid rgba(255,255,255,0.22); border-radius: 6px; font-size: 11px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; }
+.live-mode i { width: 8px; height: 8px; border-radius: 50%; background: #ffc868; }
+.live-mode-live i { background: var(--ws-cyan); box-shadow: 0 0 0 4px rgba(0,207,197,0.16); }
+.agent-assist { color: #deddf8; font-size: 10px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+.agent-assist-available { color: #7ef0ca; }
+.agent-assist-unavailable { color: #ffd08a; }
+.live-client-notice { display: grid; grid-template-columns: minmax(190px, 0.28fr) 1fr; gap: 22px; padding: 17px max(28px, calc((100vw - 1180px) / 2)); color: #d8fffc; background: #087d79; font-size: 12px; line-height: 1.5; }
+.live-client-notice strong { color: var(--ws-text); }
+
+.heist-status { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); padding: 0 max(24px, calc((100vw - 1420px) / 2)); color: var(--ws-text); background: var(--ws-raised); }
+.heist-status > div { display: grid; min-height: 88px; align-content: center; gap: 8px; padding: 18px 21px; border-left: 1px solid rgba(255,255,255,0.14); }
+.heist-status > div:last-child { border-right: 1px solid rgba(255,255,255,0.14); }
+.heist-status span { color: rgba(255,255,255,0.72); font-size: 11px; font-weight: 800; letter-spacing: 0.03em; }
+.heist-status strong { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; }
+.heist-status strong i { width: 7px; height: 7px; border-radius: 50%; }
+.metric-green { background: #4ee3b4; }
+.metric-amber { background: #ffc868; }
+.metric-blue { background: #70b8ff; }
+.metric-violet { background: #b9a6ff; }
+
+.inspector { display: grid; min-height: 680px; grid-template-columns: 238px minmax(500px, 1fr) 330px; color: #cbd7dc; background: #10191e; }
+.inspector-controls, .record-detail { padding: 25px 19px; background: #142027; }
+.inspector-controls { border-right: 1px solid #293941; }
+.record-detail { border-left: 1px solid #293941; }
+.panel-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 13px; color: #e8f0f3; font-size: 12px; letter-spacing: 0.03em; }
+.panel-heading > span { display: grid; width: 25px; height: 25px; place-content: center; border: 1px solid #536a74; border-radius: 4px; color: #79e9e1; font-size: 11px; }
+.panel-heading:not(:first-child) { margin-top: 30px; }
+.control-note { margin-top: 28px; padding: 14px; border: 1px solid #2d4048; border-radius: 6px; background: #10191e; }
+.control-note span { color: #79e9e1; font-size: 11px; font-weight: 800; letter-spacing: 0.03em; }
+.control-note p { margin: 9px 0 0; color: #acbbc0; font-size: 11px; line-height: 1.55; }
+.record-panel { min-width: 0; padding: 31px 26px 0; background: #0f171b; }
+.record-panel-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; padding-bottom: 24px; }
+.record-panel-heading > div > span { color: #7ee7e0; font-size: 12px; font-weight: 800; letter-spacing: 0.04em; }
+.record-panel-heading h2 { margin: 8px 0 0; color: #f2f6f7; font-size: clamp(25px, 3.2vw, 40px); line-height: 1.02; }
+.play-state { display: inline-flex; min-height: 38px; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid #435861; border-radius: 5px; color: #b5c3c8; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; }
+.play-state i { width: 7px; height: 7px; border-radius: 50%; background: #6a7a80; }
+.play-state i.is-running { background: var(--ws-cyan); box-shadow: 0 0 0 4px rgba(0,207,197,0.12); }
+.record-footer { display: flex; min-height: 48px; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 14px; padding-block: 8px; color: #a8b7bc; font-size: 11px; font-weight: 800; letter-spacing: 0.03em; }
+
+.authorized-membership { display: grid; grid-template-columns: 1fr auto; gap: 9px 12px; padding: 13px; border: 1px solid #2d4048; border-radius: 6px; background: #10191e; }
+.authorized-membership span { color: #9eb0b7; font-size: 11px; }
+.authorized-membership strong { color: #e6eef1; font-size: 11px; }
+.crew-presence { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.crew-presence li { display: grid; grid-template-columns: 9px 1fr auto; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid #2d4048; border-radius: 5px; background: #10191e; font-size: 11px; }
+.crew-presence i { width: 7px; height: 7px; border-radius: 50%; background: #5f7179; }
+.crew-presence i.is-present { background: #4ee3b4; }
+.crew-presence strong { color: #9fb0b6; font-size: 10px; }
+.reconnect-button { width: 100%; min-height: 40px; margin-top: 12px; border: 1px solid #756cf0; border-radius: 5px; color: var(--ws-text); background: #403d87; cursor: pointer; font-size: 11px; font-weight: 800; }
+
+.live-board { display: grid; gap: 18px; padding-bottom: 18px; }
+.phase-window { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid #2d4048; border-radius: 7px; background: #2d4048; }
+.phase-window > div { display: grid; gap: 7px; padding: 14px 17px; background: #142027; }
+.phase-window strong { color: #edf5f6; font-size: 12px; }
+.live-board-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.live-board-grid > section, .plan-board, .outcome-card { padding: 19px; border: 1px solid #2d4048; border-radius: 7px; background: #142027; }
+.live-panel-label { color: #79e9e1; font-size: 10px; font-weight: 800; letter-spacing: 0.07em; text-transform: uppercase; }
+.live-board h3 { margin: 8px 0 16px; color: #f0f5f6; font-size: 19px; }
+.live-data-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.live-data-list li { display: flex; justify-content: space-between; gap: 16px; padding: 10px; border: 1px solid #2d4048; border-radius: 5px; background: #10191e; font-size: 11px; }
+.live-data-list strong { color: #e8f1f3; text-transform: capitalize; }
+.commitment-meter { display: flex; align-items: baseline; gap: 10px; }
+.commitment-meter strong { color: #ffc868; font-size: 36px; }
+.commitment-meter span, .live-board section > p { color: #a8b8be; font-size: 11px; line-height: 1.5; }
+.plan-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.plan-grid article { padding: 14px; border: 1px solid #354951; border-radius: 6px; background: #10191e; }
+.plan-grid article > div, .plan-grid footer { display: flex; justify-content: space-between; gap: 10px; color: #9eb0b7; font-size: 10px; }
+.plan-grid article > div span { color: #b9a6ff; font-weight: 800; text-transform: uppercase; }
+.plan-grid h4 { margin: 13px 0 7px; color: #ecf3f5; font-size: 14px; text-transform: capitalize; }
+.plan-grid p { color: #aebcc1; font-size: 11px; text-transform: capitalize; }
+.plan-grid footer { padding-top: 10px; border-top: 1px solid #26373e; }
+.outcome-card { border-color: #3f7e70; }
+.outcome-card strong { color: #4ee3b4; }
+.empty-copy, .private-empty { color: #9eb0b7; font-size: 11px; line-height: 1.55; }
+
+.private-clue-list, .live-offer-list { display: grid; gap: 9px; }
+.private-clue-list article { display: grid; gap: 7px; padding: 13px; border: 1px solid #625a9d; border-radius: 6px; background: #292856; }
+.private-clue-list span { color: #b8b5ea; font-size: 9px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; }
+.private-clue-list strong { color: #f0efff; font-size: 13px; text-transform: capitalize; }
+.private-clue-list code { color: #79e9e1; font-size: 10px; overflow-wrap: anywhere; }
+.own-commitment { display: grid; gap: 6px; margin: 10px 0 16px; padding: 12px; border: 1px solid #39776b; border-radius: 6px; color: #dff6eb; background: #15332f; font-weight: 700; }
+.own-commitment span, .incoming-exchanges small { color: #8eb0aa; font-size: 9px; text-transform: uppercase; }
+.own-commitment strong { color: #d8fff5; font-size: 12px; }
+.own-commitment small { color: #a8c9c2; font-size: 9px; }
+.incoming-exchanges { display: grid; gap: 8px; }
+.incoming-exchanges article { display: grid; gap: 5px; padding: 11px; border: 1px solid #544d85; border-radius: 5px; background: #211f43; }
+.incoming-exchanges span { color: #e7e5ff; font-size: 11px; }
+.incoming-exchanges strong { color: #89e8df; font-size: 10px; }
+.live-action-form { display: grid; gap: 9px; padding: 13px; border: 1px solid #2f424a; border-radius: 6px; background: #10191e; }
+.live-action-form > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.live-action-form > div strong { color: #edf3f5; font-size: 12px; text-transform: capitalize; }
+.live-action-form code { color: #79e9e1; font-size: 9px; overflow-wrap: anywhere; }
+.live-action-form small, .live-action-form > p { margin: 0; color: #97a9b0; font-size: 9px; line-height: 1.4; }
+.live-action-form label { display: grid; gap: 5px; color: #adbbc0; font-size: 10px; }
+.live-action-form input, .live-action-form select { min-width: 0; min-height: 34px; padding: 6px 8px; border: 1px solid #40545c; border-radius: 4px; color: #e7eef0; background: #142027; font-size: 11px; }
+.live-action-form input[type="checkbox"] { width: 18px; min-height: 18px; }
+.live-action-form button { min-height: 37px; border: 1px solid #756cf0; border-radius: 5px; color: var(--ws-text); background: #403d87; cursor: pointer; font-size: 10px; font-weight: 800; }
+.live-action-form button:disabled { border-color: #405159; color: #84959c; background: #1b282e; cursor: not-allowed; }
+.live-action-form output { color: #79e9e1; font-size: 10px; line-height: 1.4; }
+
+.heist-boundary-shell { display: grid; min-height: 100vh; place-content: center; justify-items: start; padding: 32px; color: #dce6e9; background: #10191e; }
+.heist-boundary-shell h1 { max-width: 780px; margin: 12px 0 18px; color: var(--ws-text); font-size: clamp(38px, 7vw, 72px); letter-spacing: -0.05em; }
+.heist-boundary-shell p { max-width: 620px; color: #aebdc2; font-size: 14px; line-height: 1.65; }
+
+@media (max-width: 1000px) {
+  .heist-status { grid-template-columns: repeat(3, 1fr); }
+  .heist-status > div:nth-child(n+4) { border-top: 1px solid rgba(255,255,255,0.14); }
+  .inspector { grid-template-columns: 220px minmax(0, 1fr); }
+  .record-detail { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; border-top: 1px solid #293941; border-left: 0; }
+  .record-detail > .panel-heading:nth-of-type(2) { margin-top: 0; }
+}
+
+@media (max-width: 650px) {
+  .live-client-header { align-items: flex-start; flex-direction: column; padding-inline: 18px; }
+  .live-client-badges { width: 100%; justify-items: start; }
+  .live-client-notice { grid-template-columns: 1fr; gap: 4px; padding-inline: 18px; }
+  .heist-status { grid-template-columns: 1fr 1fr; padding-inline: 12px; }
+  .heist-status > div:last-child { grid-column: 1 / -1; }
+  .inspector { grid-template-columns: 1fr; }
+  .inspector-controls { border-right: 0; border-bottom: 1px solid #293941; }
+  .record-panel { padding-inline: 12px; }
+  .record-panel-heading { align-items: flex-start; flex-direction: column; }
+  .live-board-grid, .plan-grid, .record-detail, .phase-window { grid-template-columns: 1fr; }
+  .record-detail { display: block; }
+  .record-detail > .panel-heading:nth-of-type(2) { margin-top: 30px; }
+  .record-footer { align-items: flex-start; flex-direction: column; padding-block: 12px; }
+}
+
+/* Desktop Mission focus keeps the scene and the one current choice together. */
+@media (min-width: 761px) {
+  .mission-focus-layout { grid-template-columns: minmax(300px, .82fr) minmax(440px, 1.18fr); align-items: start; }
+  .mission-main { display: contents; }
+  .mission-hero { grid-column: 1; grid-row: 1; }
+  .mission-progress { grid-column: 1; grid-row: 2; }
+  .mission-action { grid-column: 2; grid-row: 1 / span 2; margin-top: 0; min-height: 100%; }
+  .mission-main > .outcome-debrief { grid-column: 1; grid-row: 3; }
+  .mission-moves { grid-column: 2; grid-row: 3; }
+  .mission-rail { display: flex; grid-column: 1 / -1; grid-row: 4; align-items: flex-start; }
+  .mission-rail > * { flex: 1 1 0; }
+}
+.private-intel > summary { color: var(--game-text); cursor: pointer; font-weight: 700; }
+.private-intel-content { display: grid; gap: 10px; margin-top: 14px; }
+.plan-builder { display: grid; grid-template-columns: 1fr; }
+.plan-step-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }.plan-step-tabs button { min-height: 42px; border: 1px solid #3b5655; color: var(--game-muted); background: #0c171d; cursor: pointer; font-size: .7rem; }.plan-step-tabs button[aria-selected="true"] { border-color: var(--game-gold); color: var(--game-gold); }.plan-step-tabs span { display: block; font-size: .625rem; }.plan-step-label { color: var(--game-cyan); font-size: .7rem; letter-spacing: .12em; text-transform: uppercase; }.plan-builder h4 { margin: -8px 0 0; color: var(--game-text); font-size: 1.4rem; }
+.plan-option-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }.plan-option-cards > button { display: grid; align-content: start; gap: 7px; min-width: 0; padding: 8px; border: 1px solid #3b5655; color: var(--game-text); background: #0c171d; text-align: left; cursor: pointer; }.plan-option-cards > button.selected { border-color: var(--game-gold); background: #2a241a; }.plan-option-cards .px-artwork, .plan-option-cards .px-window-art { min-height: 78px; }.plan-option-cards .px-card-art { width: 100%; min-height: 78px; max-height: 98px; object-fit: cover; }.plan-option-cards strong { font-size: .8rem; }.plan-option-cards small { color: var(--game-muted); font-size: .7rem; }.plan-option-cards .selected small { color: var(--game-gold); }
+.plan-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }.plan-summary span { display: grid; gap: 3px; min-width: 0; padding: 7px; border-top: 1px solid #3b5655; color: var(--game-text); font-size: .7rem; overflow-wrap: anywhere; }.plan-summary small { color: var(--game-muted); }.plan-step-controls { display: flex; justify-content: space-between; gap: 10px; }.plan-step-controls button { min-height: 40px; padding: 7px 12px; border: 1px solid #4a6060; color: var(--game-text); background: #0c171d; cursor: pointer; }.plan-step-controls button:last-child { border-color: var(--game-gold); color: var(--game-gold); }.plan-step-controls button:disabled { opacity: .45; cursor: not-allowed; }
+@media (max-width: 520px) { .plan-option-cards { grid-template-columns: 1fr; }.plan-option-cards > button { grid-template-columns: 90px 1fr; align-items: center; }.plan-option-cards > button .px-artwork, .plan-option-cards > button .px-window-art { grid-row: span 2; min-height: 58px; }.plan-option-cards > button .px-card-art { min-height: 58px; max-height: 66px; }.plan-summary { grid-template-columns: repeat(2, 1fr); } }
+
+/* Live Mission focus: one decision surface, with the public board on demand. */
+.mission-focus-shell { min-height: 100vh; background: radial-gradient(circle at 60% -10%, #173d39, transparent 33%), var(--game-void); }
+.mission-focus-header { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 24px max(20px, calc((100vw - 1220px) / 2)); border-bottom: 1px solid var(--game-line); }
+.mission-focus-header h1 { margin: 5px 0 0; font-size: clamp(2rem, 5vw, 3.8rem); letter-spacing: .02em; text-transform: uppercase; }
+.mission-focus-header h1 em { color: var(--game-gold); font-style: normal; }
+.mission-hud { display: flex; align-items: center; gap: 12px; }
+.connection-chip, .mission-clock { display: grid; gap: 3px; padding: 9px 12px; border: 1px solid var(--game-line); color: var(--game-muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; }
+.connection-live { color: var(--game-cyan); } .connection-disconnected { color: #ffcc70; }
+.mission-clock small { color: var(--game-muted); font-size: .625rem; }.mission-clock strong { color: var(--game-text); font-size: 1.1rem; letter-spacing: 0; }
+.mission-connection { display: flex; align-items: center; gap: 12px; padding: 11px max(20px, calc((100vw - 1220px) / 2)); border-bottom: 1px solid #28473f; color: #b4d4cb; background: #10251f; font-size: .875rem; }.mission-connection strong { color: #dff6eb; }.mission-connection button { margin-left: auto; padding: 7px 12px; border: 1px solid var(--game-gold); color: var(--game-gold); background: transparent; cursor: pointer; }
+.mission-focus-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); gap: 26px; max-width: 1220px; margin: auto; padding: 28px 20px 48px; }.mission-main { min-width: 0; }
+.mission-hero { position: relative; display: grid; min-height: 220px; align-items: end; overflow: hidden; padding: 28px; border: 1px solid #34504e; background: linear-gradient(125deg, #132d31, #0b141d 72%); }.mission-hero::after { position: absolute; inset: 0; content: ""; opacity: .38; background: repeating-linear-gradient(135deg, transparent 0 34px, #d4b16a11 35px 37px); }.mission-hero > * { position: relative; z-index: 1; }.mission-hero h2 { max-width: 620px; margin: 7px 0; color: var(--game-text); font-size: clamp(1.8rem, 4vw, 3.2rem); }.mission-hero p { max-width: 560px; margin: 0; color: var(--game-muted); line-height: 1.55; }.mission-hero > div > span { color: var(--game-gold); font-size: .75rem; text-transform: uppercase; letter-spacing: .12em; }.mission-scene-art { position: absolute; right: 28px; top: 18px; color: var(--game-gold); font-size: 7rem; opacity: .22; }
+.mission-progress { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; margin: 0; padding: 0; list-style: none; background: var(--game-line); }.mission-progress li { display: grid; gap: 3px; padding: 12px; color: var(--game-muted); background: #0d161d; font-size: .75rem; text-transform: capitalize; }.mission-progress li span { font-size: .65rem; }.mission-progress .current { color: var(--game-gold); background: #2a241a; }.mission-progress .past { color: var(--game-cyan); }
+.mission-action { margin-top: 24px; padding: clamp(18px, 3vw, 30px); border: 1px solid #41564e; background: #101d23; }.mission-section-heading > span { color: var(--game-cyan); font-size: .7rem; text-transform: uppercase; letter-spacing: .13em; }.mission-section-heading h3 { margin: 5px 0 16px; color: var(--game-text); font-size: 1.7rem; }.mission-action-surface { display: grid; gap: 16px; }.mission-action-surface > p { margin: 0; color: var(--game-muted); line-height: 1.55; }.mission-action-surface button { min-height: 48px; border: 1px solid var(--game-gold); color: #151710; background: var(--game-gold); cursor: pointer; font-weight: 800; }.mission-action-surface button:disabled { border-color: #405159; color: #84959c; background: #1b282e; cursor: not-allowed; }.mission-action-surface output { color: var(--game-cyan); }.action-stale, .intel-note, .no-action { margin: 0; color: #ffcc70; line-height: 1.55; }.seal-warning { padding: 12px; border-left: 3px solid var(--game-gold); background: #2a241a; }.mission-choice { display: grid; gap: 7px; color: var(--game-text); font-size: .875rem; }.mission-choice select { min-height: 46px; padding: 8px 11px; border: 1px solid #4a6060; color: var(--game-text); background: #0b151b; }.resource-choice { display: flex; align-items: center; gap: 10px; color: var(--game-text); }.resource-choice input { width: 20px; height: 20px; accent-color: var(--game-gold); }
+.plan-builder { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; margin: 0; padding: 16px; border: 1px solid #3b5655; }.plan-builder legend { padding: 0 6px; color: var(--game-text); font-weight: 700; }.plan-art-strip { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }.plan-art-strip .px-artwork, .plan-art-strip .px-window-art { min-width: 0; min-height: 44px; font-size: .625rem; }.plan-art-strip img { max-height: 52px; object-fit: cover; }
+.mission-moves { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }.mission-moves > span { display: flex; align-items: center; margin-right: 4px; color: var(--game-muted); font-size: .75rem; }.mission-moves button { min-height: 35px; padding: 6px 10px; border: 1px solid #3d5554; color: var(--game-text); background: #101d23; cursor: pointer; }.mission-moves button[aria-pressed="true"] { border-color: var(--game-gold); color: var(--game-gold); }
+.mission-rail { display: grid; align-content: start; gap: 14px; }.role-card, .private-intel, .mission-board, .mission-help { padding: 17px; border: 1px solid var(--game-line); background: #0d161d; }.role-card > span, .role-card h3 { color: var(--game-text); }.role-card > span { color: var(--game-gold); font-size: .7rem; text-transform: uppercase; letter-spacing: .1em; }.role-card h3 { margin: 6px 0; font-size: 1.5rem; text-transform: capitalize; }.role-card p, .role-card small { color: var(--game-muted); font-size: .825rem; line-height: 1.5; }.role-card ul { display: grid; gap: 7px; margin: 16px 0 0; padding: 0; list-style: none; }.role-card li { display: grid; grid-template-columns: 9px 1fr auto; gap: 8px; align-items: center; color: var(--game-text); font-size: .8rem; }.role-card i { width: 7px; height: 7px; border-radius: 50%; background: #596a72; }.role-card i.present { background: #4ee3b4; }
+.private-intel { display: grid; gap: 10px; }.dossier-card, .known-clue { display: flex; gap: 12px; padding: 12px; border: 1px solid #564b69; background: #171a2a; }.dossier-glyph, .result-glyph { display: grid; width: 36px; height: 36px; place-content: center; color: #cfb1eb; border: 1px solid #6d5f86; font-size: 1.2rem; }.dossier-card div, .known-clue { display: grid; gap: 3px; }.dossier-card strong, .known-clue strong { color: var(--game-text); }.dossier-card span, .dossier-card small, .known-clue span, .known-clue small { color: var(--game-muted); font-size: .75rem; }
+.mission-board summary, .mission-help summary { display: flex; justify-content: space-between; gap: 10px; color: var(--game-text); cursor: pointer; font-weight: 700; }.mission-board summary span { color: var(--game-muted); font-size: .7rem; font-weight: 400; }.crew-board-content { display: grid; gap: 16px; margin-top: 16px; }.crew-board-content section > span, .outcome-debrief > div > span { color: var(--game-cyan); font-size: .7rem; text-transform: uppercase; letter-spacing: .1em; }.crew-board-content p, .rules-copy p { color: var(--game-muted); font-size: .85rem; line-height: 1.55; }.crew-board-content ul, .outcome-debrief ul { display: grid; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }.crew-board-content li { display: flex; justify-content: space-between; gap: 8px; padding: 8px; color: var(--game-muted); background: #101b23; font-size: .8rem; }.crew-board-content li strong { color: var(--game-text); }.crew-plan-list { display: grid; gap: 8px; margin-top: 10px; }.crew-plan-list article { padding: 10px; border: 1px solid #3b5054; }.crew-plan-list b { color: var(--game-text); font-size: .8rem; }.crew-plan-list p { margin: 7px 0; }.crew-plan-list small { color: var(--game-muted); }.crew-commitments strong { display: block; margin-top: 6px; color: var(--game-gold); font-size: 1.5rem; }.outcome-debrief { display: flex; gap: 12px; padding: 14px; border: 1px solid #4a765f; background: #11261f; }.outcome-debrief h3 { margin: 5px 0; color: var(--game-text); }.outcome-debrief ul { grid-template-columns: repeat(2, minmax(0, 1fr)); }.outcome-debrief li { padding: 5px; font-size: .8rem; }.outcome-debrief .passed { color: #7ee3ba; }.outcome-debrief .missed { color: #efb27b; }.rules-copy { margin-top: 12px; }
+@media (max-width: 760px) { .mission-focus-header, .mission-connection { align-items: flex-start; flex-direction: column; }.mission-hud { width: 100%; justify-content: space-between; }.mission-connection button { margin-left: 0; }.mission-focus-layout { grid-template-columns: minmax(0, 1fr); padding-inline: 12px; }.mission-rail { order: -1; }.mission-progress { overflow-x: auto; }.mission-progress li { min-width: 92px; }.plan-builder { grid-template-columns: 1fr; }.plan-art-strip { grid-template-columns: repeat(2, 1fr); }.outcome-debrief ul { grid-template-columns: 1fr; } }
+
+/* Final live Mission Focus composition. Keep this after the legacy study rules:
+   the participant action is the primary surface, while the rail is secondary. */
+.mission-focus-shell .mission-focus-header { min-height: 82px; align-items: center; padding-block: 16px; }
+.mission-focus-shell .mission-focus-header h1 { font-size: clamp(34px, 4vw, 52px); }
+.mission-focus-shell .mission-connection { min-height: 42px; padding-block: 10px; }
+.mission-focus-shell .mission-focus-layout { grid-template-columns: minmax(0, .78fr) minmax(560px, 1.22fr); gap: 24px; max-width: 1420px; padding: 22px 24px 36px; }
+.mission-focus-shell .mission-main { display: contents; }
+.mission-focus-shell .mission-hero { grid-column: 1; grid-row: 1; min-height: 340px; align-content: end; background-image: linear-gradient(180deg, #0710151c 25%, #071015ed 100%), var(--heist-art); background-size: cover; background-position: center; }
+.mission-focus-shell .mission-progress { grid-column: 1; grid-row: 2; align-self: end; }
+.mission-focus-shell .mission-action { grid-column: 2; grid-row: 1 / span 2; align-self: start; min-width: 0; }
+.mission-focus-shell .mission-moves { grid-column: 2; grid-row: 3; }
+.mission-focus-shell .mission-rail { grid-column: 1 / -1; grid-row: 4; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.mission-focus-shell .mission-rail > * { min-width: 0; }
+.mission-focus-shell .role-card { margin: 0; }
+.mission-focus-shell .mission-action-surface { min-width: 0; }
+.mission-focus-shell .plan-builder { display: block; }
+.mission-focus-shell .plan-option-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.mission-focus-shell .plan-option-cards .px-artwork { min-width: 0; }
+.mission-focus-shell .plan-option-cards .px-card-art { display: block; width: 100%; min-height: 108px; max-height: 132px; object-fit: cover; }
+
+@media (max-width: 1050px) and (min-width: 761px) {
+  .mission-focus-shell .mission-focus-layout { grid-template-columns: minmax(0, .7fr) minmax(440px, 1.3fr); }
+  .mission-focus-shell .mission-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 760px) {
+  .mission-focus-shell .mission-focus-header { min-height: 92px; padding-block: 14px; }
+  .mission-focus-shell .mission-focus-layout { display: flex; flex-direction: column; gap: 14px; padding: 12px; }
+  .mission-focus-shell .mission-main { display: flex; flex-direction: column; gap: 14px; order: 1; }
+  .mission-focus-shell .mission-action { order: 0; }
+  .mission-focus-shell .mission-hero { order: 1; min-height: 190px; }
+  .mission-focus-shell .mission-progress { order: 2; }
+  .mission-focus-shell .mission-moves { order: 3; }
+  .mission-focus-shell .mission-rail { order: 2; display: flex; flex-direction: column; gap: 8px; }
+  .mission-focus-shell .mission-rail > .role-card { order: 2; }
+  .mission-focus-shell .mission-rail > .private-intel { order: 3; }
+  .mission-focus-shell .mission-rail > .mission-board { order: 4; }
+  .mission-focus-shell .mission-rail > .mission-help { order: 5; }
+  .mission-focus-shell .plan-option-cards { grid-template-columns: 1fr; }
+  .mission-focus-shell .plan-option-cards > button { grid-template-columns: 96px minmax(0, 1fr); align-items: center; }
+  .mission-focus-shell .plan-option-cards .px-card-art { display: block; min-height: 64px; max-height: 74px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}
+
+/* Game surfaces share a visual language; all live facts still come from the Projection. */
+.heist-live-shell { color: var(--game-text); background: var(--game-void); }
+.heist-live-shell h1, .heist-live-shell h2, .heist-live-shell h3, .mission-stage h3 { font-family: var(--game-display); font-weight: 700; }
+.live-client-header { min-height: 108px; align-items: center; padding-block: 22px; border-bottom: 1px solid var(--game-line); background: var(--game-void); }
+.live-client-header .eyebrow { color: var(--game-muted); font-size: .75rem; letter-spacing: .16em; }
+.live-client-header h1 { margin-top: 8px; font-size: 2.75rem; letter-spacing: .015em; text-transform: uppercase; }
+.live-client-header h1 em { color: var(--game-gold); font-style: normal; }
+.live-mode { border-color: var(--game-line); border-radius: 3px; font-size: .75rem; }
+.agent-assist { font-size: .75rem; color: var(--game-muted); }
+.agent-assist-available { color: var(--game-cyan); }
+.live-client-notice { padding: 13px max(24px, calc((100vw - 1420px) / 2)); border-bottom: 1px solid #28473f; color: #b4d4cb; background: #10251f; font-size: .875rem; }
+.heist-live-shell .heist-status { background: #0d161d; }
+.heist-live-shell .heist-status > div { border-color: var(--game-line); }
+.heist-live-shell .heist-status span { color: var(--game-muted); font-size: .75rem; font-weight: 500; }
+.heist-live-shell .heist-status strong { font-size: .875rem; }
+.heist-live-shell .inspector { grid-template-columns: 230px minmax(0, 1fr) 330px; max-width: 1600px; margin: 0 auto; min-height: 650px; background: var(--game-void); }
+.heist-live-shell .inspector-controls, .heist-live-shell .record-detail { background: #0d161d; border-color: var(--game-line); }
+.heist-live-shell .record-panel { padding: 26px 22px 0; background: var(--game-void); }
+.heist-live-shell .record-panel-heading h2 { font-size: 2.5rem; letter-spacing: 0; }
+.heist-live-shell .record-panel-heading > div > span { color: var(--game-muted); font-size: .75rem; letter-spacing: .15em; text-transform: uppercase; }
+.heist-live-shell .panel-heading { font-size: .875rem; }
+.heist-live-shell .panel-heading > span { color: var(--game-gold); border-color: #5b4b36; font-size: .75rem; }
+.crew-role-card { display: grid; justify-items: center; gap: 9px; padding: 24px 15px; margin-bottom: 16px; border: 1px solid #36534f; background: radial-gradient(ellipse at top, #173c37, transparent 80%), #101d23; text-align: center; }
+.role-emblem { display: grid; width: 76px; height: 76px; place-content: center; color: var(--game-cyan); font-size: 3.5rem; line-height: 1; }
+.crew-role-card > strong { color: var(--game-text); font: 700 1.65rem var(--game-display); text-transform: uppercase; letter-spacing: .06em; }
+.crew-role-card > span:last-child { color: var(--game-muted); font-size: .875rem; line-height: 1.5; }
+.role-insider { border-color: #4b4461; background: radial-gradient(ellipse at top, #302a43, transparent 80%), #101d23; }
+.role-insider .role-emblem { color: #c9b2ec; }
+.role-broker { border-color: #5d4a30; background: radial-gradient(ellipse at top, #403222, transparent 80%), #101d23; }
+.role-broker .role-emblem { color: var(--game-gold); }
+.heist-live-shell .authorized-membership { gap: 12px; background: transparent; border: 0; padding: 6px 0; }
+.heist-live-shell .authorized-membership :is(span, strong), .heist-live-shell .crew-presence li, .heist-live-shell .crew-presence strong { font-size: .8125rem; }
+.heist-live-shell .crew-presence li { padding: 13px 9px; border-radius: 3px; }
+.heist-live-shell .record-footer { color: var(--game-muted); font-size: .75rem; font-weight: 400; }
+.heist-live-shell .live-panel-label { color: var(--game-cyan); font-size: .75rem; letter-spacing: .1em; }
+.heist-live-shell .phase-window { border-radius: 3px; }
+.heist-live-shell .phase-window strong { font-size: .875rem; }
+.heist-live-shell .phase-window .phase-countdown { font-size: 1.5rem; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.phase-countdown-urgent { color: #ffcc70 !important; }
+.phase-countdown-note { color: #b7c9cc; font-size: .8125rem; }
+.heist-live-shell .live-board h3 { font-size: 1.75rem; }
+.heist-live-shell .live-board-grid > section, .heist-live-shell .plan-board, .heist-live-shell .outcome-card { border-radius: 3px; background: var(--game-panel); }
+.heist-live-shell .live-data-list li { flex-wrap: wrap; font-size: .875rem; }
+.heist-live-shell .commitment-meter span, .heist-live-shell .live-board section > p, .heist-live-shell .empty-copy, .heist-live-shell .private-empty { font-size: .875rem; line-height: 1.6; }
+.heist-live-shell .plan-grid { grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); }
+.heist-live-shell .plan-grid :is(p, footer), .heist-live-shell .plan-grid article > div { font-size: .75rem; line-height: 1.5; overflow-wrap: anywhere; }
+.heist-live-shell .plan-grid h4 { font-size: 1rem; }
+.heist-live-shell .private-clue-list article { background: #1c2234; border-color: #4d4865; border-left: 3px solid #bba4dd; border-radius: 3px; }
+.heist-live-shell .private-clue-list :is(span, code), .heist-live-shell .own-commitment :is(span, small), .heist-live-shell .incoming-exchanges :is(strong, small) { font-size: .75rem; line-height: 1.5; }
+.heist-live-shell .private-clue-list strong, .heist-live-shell .own-commitment strong, .heist-live-shell .incoming-exchanges span { font-size: .875rem; }
+.heist-live-shell .live-action-form { padding: 16px; border-radius: 3px; border-color: #445045; background: #121e24; }
+.heist-live-shell .live-action-form > div strong { font: 700 1.25rem var(--game-display); }
+.action-ready { color: var(--game-cyan); font-size: .75rem; }
+.heist-live-shell .live-action-form label { font-size: .875rem; }
+.heist-live-shell .live-action-form :is(input, select) { min-height: 44px; font-size: 1rem; border-radius: 3px; }
+.heist-live-shell .live-action-form input[type="checkbox"] { min-height: 22px; width: 22px; accent-color: var(--game-gold); }
+.heist-live-shell .live-action-form button, .heist-live-shell .reconnect-button { min-height: 44px; border: 1px solid var(--game-gold); border-radius: 2px; color: #151710; background: var(--game-gold); font-size: .875rem; text-transform: capitalize; transition: background .18s ease; }
+.heist-live-shell .live-action-form button:enabled:hover, .heist-live-shell .reconnect-button:hover { background: #ffd89d; }
+.heist-live-shell .live-action-form button:disabled { color: #a0b1bb; border-color: #405159; background: #1b282e; }
+.heist-live-shell .live-action-form output { font-size: .875rem; }
+.heist-live-shell .control-note :is(span, p) { font-size: .875rem; }
+.technical-details { margin-top: 22px; border-top: 1px solid var(--game-line); padding-top: 12px; color: var(--game-muted); font-size: .75rem; line-height: 1.65; }
+.technical-details summary { min-height: 38px; padding-block: 8px; color: var(--game-muted); cursor: pointer; }
+.technical-details code { display: block; overflow-wrap: anywhere; }
+.technical-details p { font-size: .8125rem; }
+.action-details { margin-top: 0; }
+.mission-stage { min-width: 0; margin-bottom: 16px; border: 1px solid #34504e; background: var(--game-void); }
+.mission-scene { display: flex; min-height: 270px; flex-direction: column; justify-content: space-between; padding: 20px 24px 26px; background-image: linear-gradient(0deg, #081116 0%, #08111633 75%), var(--heist-art); background-size: cover; background-position: center 48%; }
+.mission-scene-label { align-self: flex-start; max-width: 100%; padding: 6px 9px; border: 1px solid #74908566; color: #c2d4cd; background: #081116bd; font-size: .6875rem; letter-spacing: .1em; text-transform: uppercase; }
+.mission-scene h3, .heist-live-shell .mission-scene h3 { max-width: 390px; margin: 10px 0 0; color: var(--game-text); font: 700 clamp(1.75rem, 2.8vw, 2.5rem)/1.05 var(--game-display); text-wrap: balance; }
+.mission-scene .live-panel-label { color: var(--game-gold); font-size: .75rem; text-transform: uppercase; }
+.mission-phases { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); list-style: none; gap: 0; margin: 0; padding: 0; }
+.mission-phases.recorded-phases { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.mission-phases li { display: grid; justify-items: center; gap: 8px; min-width: 0; padding: 13px 3px; border-top: 2px solid #2a3b45; color: #8b9da7; }
+.mission-phases li > span { font: 700 .875rem var(--game-display); }
+.mission-phases strong { max-width: 100%; font: 700 .75rem var(--game-display); text-transform: capitalize; overflow-wrap: anywhere; }
+.mission-phases .phase-current { color: var(--game-gold); border-color: var(--game-gold); background: #f4bc6610; }
+.mission-phases .phase-past { color: var(--game-cyan); border-color: #528e82; }
+.heist-boundary-shell { color: var(--game-text); background-image: linear-gradient(90deg, #080e13f5, #080e13b8), var(--heist-art); background-size: cover; background-position: center; }
+.heist-boundary-shell h1 { font-family: var(--game-display); letter-spacing: 0; }
+.heist-boundary-shell p { font-size: 1rem; }
+.activity-client-navigation { display: flex; justify-content: flex-end; gap: 12px; min-height: 48px; padding: 8px max(24px, calc((100vw - 1420px) / 2)); border-bottom: 1px solid var(--game-line); background: #0d161d; }
+.activity-client-navigation :is(button, a) { min-height: 32px; padding: 7px 11px; border: 1px solid #36534f; color: var(--game-text); background: transparent; font: 700 .75rem var(--game-display); letter-spacing: .06em; text-decoration: none; text-transform: uppercase; cursor: pointer; }
+.activity-client-navigation a { border-color: var(--game-gold); color: var(--game-gold); }
+.heist-skip-link { position: fixed; z-index: 30; top: 8px; left: 8px; padding: 12px; color: #080e13; background: var(--game-gold); transform: translateY(-160%); }
+.heist-skip-link:focus { transform: translateY(0); }
+.heist-live-shell :is(button, input, select, a, summary):focus-visible { outline: 2px solid var(--game-gold); outline-offset: 4px; }
+@media (max-width: 1150px) {
+  .heist-live-shell .inspector { grid-template-columns: 210px minmax(0, 1fr); }
+  .heist-live-shell .record-detail { grid-column: 1 / -1; display: block; }
+  .heist-live-shell .live-offer-list { grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); align-items: start; }
+}
+@media (max-width: 650px) {
+  .heist-live-shell .inspector { grid-template-columns: minmax(0, 1fr); }
+  .heist-live-shell .record-panel { padding: 24px 12px 0; }
+  .heist-live-shell .live-client-header { gap: 18px; }
+  .heist-live-shell .heist-status > div { min-height: 78px; padding: 12px; }
+  .heist-live-shell .inspector-controls { display: block; }
+  .crew-role-card { grid-template-columns: 65px 1fr; justify-items: start; text-align: left; padding: 16px; }
+  .crew-role-card .role-emblem { grid-row: span 2; width: 60px; height: 60px; }
+  .crew-role-card > span:last-child { grid-column: 2; }
+  .mission-scene { min-height: 260px; padding-inline: 16px; }
+  .mission-phases, .mission-phases.recorded-phases { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .live-board-grid, .phase-window { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Player choices are cards, not primary form-submit buttons. Keep these
+   namespaced overrides after the retained gallery and legacy client rules. */
+.mission-focus-shell .plan-step-tabs button {
+  min-height: 44px; padding: 7px; border: 1px solid transparent;
+  border-radius: 6px; color: #b5c6d1; background: #18232f;
+}
+.mission-focus-shell .plan-step-tabs button[aria-selected="true"] {
+  color: #ffca73; background: #2a3948; border-color: #52677c;
+}
+.mission-focus-shell .plan-option-cards button {
+  min-width: 0; padding: 0 0 10px; overflow: hidden; border-radius: 8px;
+  border: 2px solid #415565; background: #101c26; color: #eef4ef;
+}
+.mission-focus-shell .plan-option-cards button[aria-checked="true"] {
+  border-color: #ffc96e; background: #202c35;
+}
+.mission-focus-shell .plan-option-cards button strong,
+.mission-focus-shell .plan-option-cards button small { display: block; padding: 4px 10px; }
+.mission-focus-shell .plan-option-cards button small { color: #b8cad4; }
+.mission-focus-shell .plan-step-label { display: block; margin-top: 12px; color: #83d8cd; }
+.mission-focus-shell .plan-builder h4 { margin: 6px 0 14px; font-size: 1.4rem; }
+.mission-focus-shell .mission-scene-art { display: none; }
+.mission-focus-shell .mission-focus-header { padding-block: 14px; }
+.mission-focus-shell .mission-focus-header h1 { font-size: 2rem; margin: 0; }
+.mission-focus-shell .mission-action { margin-top: 0; border-radius: 10px; padding: 20px; }
+.mission-focus-shell .mission-hero { border-radius: 8px; }
+@media (max-width: 650px) {
+  .mission-focus-shell .mission-focus-header { display: flex; flex-wrap: nowrap; align-items: center; padding: 10px 12px; gap: 8px; }
+  .mission-focus-shell .mission-focus-header .eyebrow { display: none; }
+  .mission-focus-shell .mission-focus-header h1 { font-size: 1.5rem; }
+  .mission-focus-shell .mission-hud { display: flex; gap: 6px; margin: 0; }
+  .mission-focus-shell .mission-hud .connection-chip { display: none; }
+  .mission-focus-shell .mission-clock { padding: 5px 8px; }
+  .mission-focus-shell .mission-clock small { font-size: .6rem; }
+  .mission-focus-shell .mission-clock .phase-countdown-note { max-width: 110px; font-size: .65rem; }
+  .mission-focus-shell .mission-connection { padding: 8px 12px; font-size: .75rem; }
+  .mission-focus-shell .mission-connection strong { display: none; }
+  .mission-focus-shell .mission-focus-layout { padding-top: 12px; }
+  .mission-focus-shell .mission-action { padding: 14px; }
+  .mission-focus-shell .mission-action-surface > p { margin: 8px 0 12px; font-size: .875rem; }
+  .mission-focus-shell .plan-builder { padding: 10px; }
+  .mission-focus-shell .plan-option-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .mission-focus-shell .plan-option-cards button { display: block; padding-bottom: 4px; }
+  .mission-focus-shell .plan-option-cards .px-artwork { display: block; width: 100%; height: auto; }
+  .mission-focus-shell .plan-option-cards img { display: block; width: 100%; height: 64px; object-fit: cover; }
+  .mission-focus-shell .plan-option-cards button strong { padding: 5px 3px; min-height: 30px; font-size: .75rem; }
+  .mission-focus-shell .plan-option-cards button small { padding: 3px; font-size: .65rem; }
+  .mission-focus-shell .plan-step-tabs button { padding: 4px 2px; font-size: .65rem; }
+  .mission-focus-shell .plan-summary { margin-block: 10px; }
+  .mission-focus-shell .plan-step-controls button { font-size: .8rem; padding-inline: 10px; }
+}

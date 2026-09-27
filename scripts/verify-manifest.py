@@ -210,7 +210,7 @@ def main() -> int:
             )
             or not isinstance(bundle_path, str)
             or bundle_path
-            != f"packs/negotiate/releases/0.1.0/worldstream-negotiate-{bare_bundle_digest}.wspack"
+            != f"examples/packs/negotiate/releases/0.1.0/worldstream-negotiate-{bare_bundle_digest}.wspack"
             or bundle.get("status") != "resolved"
             or bundle.get("required_for_release") is not True
         ):

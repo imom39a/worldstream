@@ -1890,7 +1890,7 @@ mod tests {
     };
 
     const HOUSE_REVISION: &[u8] =
-        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json");
+        include_bytes!("../../../tests/fixtures/hosted/house-agents/cooperative-planner-1.json");
     const ASSIGNMENT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
     const SECRET_REFERENCE: &str =
         "abababababababababababababababababababababababababababababababab";

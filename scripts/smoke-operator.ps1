@@ -73,7 +73,7 @@ try {
     $ReadyBody = $Ready.Content | ConvertFrom-Json
     $VersionBody = $Version.Content | ConvertFrom-Json
     if ($ReadyBody.status -ne 'ready') { throw 'readyz did not report the verified ready state' }
-    if ($VersionBody.manifest.release_ready -ne $true) { throw 'embedded release contract is not complete' }
+    if ($VersionBody.manifest.release_ready -ne $false) { throw 'checkout must not claim a qualified release' }
     if ($VersionBody.engine.status -ne 'verified') { throw 'version did not report the verified engine identity' }
     if (-not $VersionBody.engine.exact_identity.StartsWith('sqlite/')) { throw 'version did not report the bundled SQLite identity' }
 
