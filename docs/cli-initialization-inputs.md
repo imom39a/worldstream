@@ -33,9 +33,7 @@ the importer. These rules also apply to paths inside a declaration.
 
 The expanded non-secret declaration set is limited to 16 MiB. Each referenced
 Client Release or Client Binding bootstrap file is limited to 256 KiB.
-Referenced executable and secret bytes are separate from that JSON budget:
-an executable is nonempty and at most 256 MiB; a provider secret is nonempty
-and at most 64 KiB. The importer must bound reads before parsing or hashing.
+The JSON budget excludes referenced executable and secret bytes. An executable must be nonempty and at most 256 MiB. A provider secret must be nonempty and at most 64 KiB. The importer must bound reads before parsing or hashing.
 
 ## Runner Template
 
@@ -194,8 +192,8 @@ or replace the existing release, deployment, binding, or fallback contracts:
 Deployment entries use `worldstream/client-deployment/v1`; binding entries use
 `worldstream/client-binding/v1`; the required inspector fallback uses
 `worldstream/inspector-fallback/v1`. The tracked
-[CLI import wrapper](../config/activity-clients/cli-import.json) explicitly selects the
-[first-party declarations](../config/activity-clients/local-bindings.json)
+[CLI import wrapper](../examples/clients/catalog/cli-import.json) explicitly selects the
+[first-party declarations](../examples/clients/catalog/local-bindings.json)
 and their release files. These local development launch URLs require a separately
 running Client Host; importing the wrapper does not verify one is listening.
 The typed Activity Client
@@ -319,9 +317,7 @@ investigation or restoration of trustworthy retained state, not a new blanket
 approval. This is bounded import recovery, not general installation repair.
 
 The import and catalog-selection tests do not prove a live model invocation,
-live Heist or Negotiate run, browser handoff, or production deployment. Those
-require their separate end-to-end qualification; this work does not close the
-existing IMO-81 live-proof debt. Counter-compatible examples must not be
+live Heist or Negotiate run, browser handoff, or production deployment. Those uses require separate integration tests. Counter-compatible examples must not be
 presented as Heist-compatible managed execution.
 
 See the executable declaration fixtures in the retained Controller crate's

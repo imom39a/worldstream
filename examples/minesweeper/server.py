@@ -767,12 +767,12 @@ class Handler(BaseHTTPRequestHandler):
 
 def _default_html_path() -> Path:
     root = Path(__file__).resolve().parents[2]
-    return root / "web" / "demos" / "community-minesweeper-comparison.html"
+    return root / "examples" / "minesweeper" / "web" / "community-minesweeper-comparison.html"
 
 
 def _default_v2_html_path() -> Path:
     root = Path(__file__).resolve().parents[2]
-    return root / "web" / "demos" / "community-minesweeper-jev.html"
+    return root / "examples" / "minesweeper" / "web" / "community-minesweeper-jev.html"
 
 
 def main(argv: list[str] | None = None) -> int:

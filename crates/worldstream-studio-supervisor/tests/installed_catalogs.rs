@@ -45,7 +45,7 @@ fn fresh_installed_catalogs_need_no_source_imports_or_invented_client_approval()
     );
     assert_eq!(selection, Err(ClientBindingStoreErrorV1::Unavailable));
     assert_eq!(
-        std::fs::read_dir(directory.path().join("clients/inspector-fallback"))?.count(),
+        std::fs::read_dir(directory.path().join("examples/clients/inspector-fallback"))?.count(),
         0
     );
     Ok(())
@@ -57,7 +57,7 @@ fn reopening_client_approvals_preserves_records_and_never_widens_selection_polic
     let directory = tempfile::tempdir()?;
     let root = directory.path().join("clients");
     let configuration =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/activity-clients");
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/clients/catalog");
     // Explicit fixture import represents the separate reviewed prerequisite step,
     // not startup. These tracked declarations intentionally use external trust.
     let imported = ClientBindingStoreV1::open_configured(

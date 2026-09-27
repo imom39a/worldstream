@@ -30,7 +30,7 @@ fn exact_client_retry_completes_orphan_status_but_never_recreates_lost_status() 
     initialize_local(&installation)?;
     let declarations = directory.path().join("declarations");
     fs::create_dir_all(declarations.join("releases"))?;
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/activity-clients");
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/clients/catalog");
     let declaration_bytes = fs::read(source.join("cli-import.json"))?;
     let declaration =
         worldstream_studio_supervisor::initialization_inputs::parse_client_declaration(

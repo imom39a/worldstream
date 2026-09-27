@@ -103,7 +103,7 @@ release_verified_patches_status = "resolved"
 
 [migrations]
 logical_history_id = "worldstream-storage-v1"
-schema_contract_fingerprint = "blake3:3cdc135353791f8a362ecc6da4d08872d4ae2dff28f0b72481f99e9acc05262d"
+schema_contract_fingerprint = "blake3:ce0d34c5f7da9ffcfcd4d8ff52586cf1bd3e566edb74de1ac131cacae0dd8c22"
 schema_contract_fingerprint_status = "implementation_verified"
 direction = "forward_only"
 backend_specific_execution = true
@@ -268,6 +268,36 @@ status = "implementation_verified"
 id = "0009-authority-facts-v1"
 sqlite_checksum = ""
 postgresql_checksum = "blake3:51e00341ccfd64a447f61e2386f65797b172993c275374172186f6179e46a047"
+status = "implementation_verified"
+
+[[migrations.entries]]
+id = "0019-operational-history-roots-v2"
+sqlite_checksum = "blake3:7977311c54cfcdbec65d3846ddbd2071f53ca830464f5721092f5de958e0b98d"
+postgresql_checksum = "blake3:0c0d7397ac765d6d190fb779337ce72ee6fde8f98c97f5e2ddd68dd425ca7821"
+status = "implementation_verified"
+
+[[migrations.entries]]
+id = "0020-current-timers-v2"
+sqlite_checksum = "blake3:00116356f2c4490438c9e923b8197ab7a3704c22d32f4d0d9e3912dfa41f8471"
+postgresql_checksum = "blake3:169f9ab482006bdcff3dd7426ada6ca9f26c2f20f1d114f44fddb7758be41ebd"
+status = "implementation_verified"
+
+[[migrations.entries]]
+id = "0021-checkpoint-operational-witness-v2"
+sqlite_checksum = "blake3:52c9dbd493d058e5553c5b77a3ee4a5a1feecf8e6f881aedce36a4644662b8db"
+postgresql_checksum = "blake3:44fccf4c2618181d21dd16b89144224eb7146b0d332379c3314406ee68f2797c"
+status = "implementation_verified"
+
+[[migrations.entries]]
+id = "0022-operational-history-mmr-v1"
+sqlite_checksum = "blake3:e00976433df9a260598f3b1e766a2eaa076b54c0fcb88a18c3f623ea9b335c28"
+postgresql_checksum = "blake3:9f96142f8f2b9896a4cbef2145ef6f0d6cb492d5e1c3be8c2761ebd8ee5a3e50"
+status = "implementation_verified"
+
+[[migrations.entries]]
+id = "0023-checkpoint-operational-witness-v3"
+sqlite_checksum = "blake3:fc24f79e96a6d4e8cbeef25b753ba1c4ac229265f68991c780502338fb12418c"
+postgresql_checksum = "blake3:fcdad2c76c507f8a12bccf3f28c595fbab65f0f9f8b9ecc7f71f03d1cd896a5a"
 status = "implementation_verified"
 
 [transfer]
@@ -618,7 +648,7 @@ bundle_format_id = "worldstream/activity-pack-bundle/v1"
 revision_digest = "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589"
 bundle_digest_algorithm = "blake3"
 bundle_digest = "blake3:9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5"
-path = "packs/negotiate/releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack"
+path = "examples/packs/negotiate/releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack"
 status = "resolved"
 required_for_release = true
 

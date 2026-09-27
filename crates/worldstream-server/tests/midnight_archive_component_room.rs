@@ -76,7 +76,7 @@ const FORBIDDEN_PRIVATE_KEYS: &[&str] = &["authentic_candidate_id", "is_authenti
 
 fn client_binding_identity() -> TestResult<(String, String)> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config/activity-clients/releases/midnight-archive-web-v12.json");
+        .join("../../examples/clients/catalog/releases/midnight-archive-web-v12.json");
     let release: Value = serde_json::from_slice(&fs::read(path)?)?;
     let release_digest = release["release_digest"]
         .as_str()
@@ -98,7 +98,7 @@ fn client_binding_identity() -> TestResult<(String, String)> {
 
 fn current_listing_binding_identity() -> TestResult<(String, String, String)> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config/hosted/listings/midnight-archive-0.3.0.json");
+        .join("../../tests/fixtures/hosted/listings/midnight-archive-0.3.0.json");
     let listing: Value = serde_json::from_slice(&fs::read(path)?)?;
     let pack_revision_digest = listing["pack"]["digest"]
         .as_str()
@@ -125,14 +125,14 @@ fn release_bundle_path(bundle_digest: &str) -> PathBuf {
         .strip_prefix("blake3:")
         .unwrap_or_else(|| panic!("Archive Bundle digest has no blake3 prefix: {bundle_digest}"));
     workspace.join(format!(
-        "packs/midnight-archive/releases/0.1.0/worldstream-midnight-archive-{file_digest}.wspack"
+        "examples/packs/midnight-archive/releases/0.1.0/worldstream-midnight-archive-{file_digest}.wspack"
     ))
 }
 
 fn current_bundle_path() -> PathBuf {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let proof_path =
-        workspace.join("packs/midnight-archive/evidence/production-proof-0.1.0-dialogue.json");
+    let proof_path = workspace
+        .join("examples/packs/midnight-archive/evidence/production-proof-0.1.0-dialogue.json");
     let proof: Value = serde_json::from_slice(
         &fs::read(&proof_path)
             .unwrap_or_else(|error| panic!("read Archive proof {proof_path:?}: {error}")),

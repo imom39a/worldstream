@@ -1,6 +1,0 @@
-{"live_phase": "reasoning", "generated_invocations": 1}
-{"live_phase": "executing", "generated_invocations": 1}
-{"live_phase": "reasoning", "generated_invocations": 2}
-{"live_phase": "executing", "generated_invocations": 2}
-{"live_phase": "executing", "generated_invocations": 3}
-Agent Swarm managed native smoke failed: challenge command exceeded its 90-second deadline

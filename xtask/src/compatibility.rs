@@ -433,7 +433,7 @@ fn verify_node_workspace(repository_root: &Path, manifest: &Value) -> Result<()>
     let product = manifest["contracts"]["product"]
         .as_str()
         .context("manifest has no string contracts.product")?;
-    for relative in ["package.json", "web/console/package.json"] {
+    for relative in ["package.json", "examples/clients/inspector/package.json"] {
         let path = repository_root.join(relative);
         let source = fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
         let package: Value = serde_json::from_slice(&source)
@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn node_workspace_pins_fail_closed_on_drift() {
         let directory = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
-        fs::create_dir_all(directory.path().join("web/console"))
+        fs::create_dir_all(directory.path().join("examples/clients/inspector"))
             .unwrap_or_else(|error| unreachable!("create fixture: {error}"));
         fs::write(directory.path().join(".node-version"), "24.18.1\n")
             .unwrap_or_else(|error| unreachable!("write fixture: {error}"));
@@ -625,8 +625,13 @@ mod tests {
         let package = br#"{"version":"0.1.0","engines":{"node":"24.18.1"}}"#;
         fs::write(directory.path().join("package.json"), package)
             .unwrap_or_else(|error| unreachable!("write fixture: {error}"));
-        fs::write(directory.path().join("web/console/package.json"), package)
-            .unwrap_or_else(|error| unreachable!("write fixture: {error}"));
+        fs::write(
+            directory
+                .path()
+                .join("examples/clients/inspector/package.json"),
+            package,
+        )
+        .unwrap_or_else(|error| unreachable!("write fixture: {error}"));
         let manifest = serde_json::json!({
             "contracts": {"product": "0.1.0"},
             "toolchains": {"node": "24.18.1"}

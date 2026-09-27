@@ -322,7 +322,7 @@ fn revoked_deployment_blocks_new_handoffs_and_its_active_client() {
 fn fresh_documented_imports_select_current_and_retained_archive_clients()
 -> Result<(), Box<dyn std::error::Error>> {
     let configuration =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/activity-clients");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/clients/catalog");
     for (declaration_name, origin, suffix) in [
         ("cli-import.json", "http://127.0.0.1:5173", "/"),
         (
@@ -387,7 +387,7 @@ fn fresh_documented_imports_select_current_and_retained_archive_clients()
 fn loads_the_repository_client_host_configuration_without_pack_specific_code() {
     let state = TempDir::new().unwrap_or_else(|error| unreachable!("state: {error}"));
     let configuration =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/activity-clients");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/clients/catalog");
     let store = ClientBindingStoreV1::open_configured(
         &state.path().join("client-bindings"),
         &configuration.join("releases"),

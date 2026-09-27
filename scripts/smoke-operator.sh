@@ -84,7 +84,7 @@ with open(sys.argv[2], encoding="utf-8") as source:
     version = json.load(source)
 
 assert ready["status"] == "ready"
-assert version["manifest"]["release_ready"] is True
+assert version["manifest"]["release_ready"] is False
 assert version["engine"]["status"] == "verified"
 assert version["engine"]["exact_identity"] is not None
 PY

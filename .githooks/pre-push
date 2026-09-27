@@ -1,14 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-workspace_dir="$(git rev-parse --show-toplevel)"
-cd "$workspace_dir"
-
-export WORLDSTREAM_VERIFY_OFFLINE=1
-if [[ "${OS:-}" == "Windows_NT" ]] && command -v pwsh >/dev/null 2>&1; then
-  pwsh -NoProfile -File scripts/gates.ps1 pre-push --strict --offline
-else
-  scripts/gates.sh pre-push --strict --offline
-fi
-
-printf '%s\n' 'Pre-push compatibility gates passed; release evidence remains fail-closed until resolved.'
+cd "$(git rev-parse --show-toplevel)"
+scripts/verify-local.sh

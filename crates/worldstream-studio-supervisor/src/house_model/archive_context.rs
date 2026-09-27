@@ -164,9 +164,9 @@ mod tests {
 
     fn revision(role: &str) -> Result<HouseAgentRevision, Box<dyn Error>> {
         let document: Value = serde_json::from_slice(if role == "mira" {
-            include_bytes!("../../../../config/hosted/house-agents/mira-1.json").as_slice()
+            include_bytes!("../../../../tests/fixtures/hosted/house-agents/mira-1.json").as_slice()
         } else {
-            include_bytes!("../../../../config/hosted/house-agents/jonah-1.json").as_slice()
+            include_bytes!("../../../../tests/fixtures/hosted/house-agents/jonah-1.json").as_slice()
         })?;
         let canonical = CanonicalJsonV1::parse(&serde_json::to_vec(&document)?)?.to_bytes()?;
         Ok(HouseAgentRevision::from_canonical_bytes(&canonical)?)
@@ -330,7 +330,7 @@ mod tests {
         let fixture: Value =
             serde_json::from_slice(include_bytes!("fixtures/archive-v5-model-context.json"))?;
         let listing: Value = serde_json::from_slice(include_bytes!(
-            "../../../../config/hosted/listings/midnight-archive-0.3.0.json"
+            "../../../../tests/fixtures/hosted/listings/midnight-archive-0.3.0.json"
         ))?;
         assert_eq!(
             fixture["provenance"]["pack_revision_digest"],

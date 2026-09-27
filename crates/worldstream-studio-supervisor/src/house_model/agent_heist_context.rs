@@ -171,16 +171,17 @@ mod tests {
     };
     use super::*;
 
-    const COOPERATIVE_REVISION: &[u8] =
-        include_bytes!("../../../../config/hosted/house-agents/cooperative-planner-17.json");
+    const COOPERATIVE_REVISION: &[u8] = include_bytes!(
+        "../../../../tests/fixtures/hosted/house-agents/cooperative-planner-17.json"
+    );
     const SKEPTICAL_REVISION: &[u8] =
-        include_bytes!("../../../../config/hosted/house-agents/skeptical-auditor-16.json");
+        include_bytes!("../../../../tests/fixtures/hosted/house-agents/skeptical-auditor-16.json");
     const RETAINED_COOPERATIVE_REVISION: &[u8] =
-        include_bytes!("../../../../config/hosted/house-agents/cooperative-planner-8.json");
+        include_bytes!("../../../../tests/fixtures/hosted/house-agents/cooperative-planner-8.json");
     const RETAINED_SKEPTICAL_REVISION: &[u8] =
-        include_bytes!("../../../../config/hosted/house-agents/skeptical-auditor-7.json");
+        include_bytes!("../../../../tests/fixtures/hosted/house-agents/skeptical-auditor-7.json");
     const RETAINED_PACK_LISTING: &[u8] =
-        include_bytes!("../../../../config/hosted/listings/agent-heist-0.13.0.json");
+        include_bytes!("../../../../tests/fixtures/hosted/listings/agent-heist-0.13.0.json");
 
     fn digest(character: char) -> String {
         format!("blake3:{}", character.to_string().repeat(64))

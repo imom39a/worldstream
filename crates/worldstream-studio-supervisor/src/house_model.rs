@@ -2219,7 +2219,7 @@ mod tests {
     };
 
     const REVISION: &[u8] =
-        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json");
+        include_bytes!("../../../tests/fixtures/hosted/house-agents/cooperative-planner-1.json");
 
     fn revision() -> Result<HouseAgentRevision, Box<dyn Error>> {
         let canonical = CanonicalJsonV1::parse(REVISION)?.to_bytes()?;
@@ -2447,7 +2447,7 @@ mod tests {
     fn granite_response_uses_catalog_model_id_and_prefilter_endpoint_count()
     -> Result<(), Box<dyn Error>> {
         let canonical = CanonicalJsonV1::parse(include_bytes!(
-            "../../../config/hosted/house-agents/cooperative-planner-4.json"
+            "../../../tests/fixtures/hosted/house-agents/cooperative-planner-4.json"
         ))?
         .to_bytes()?;
         let revision = HouseAgentRevision::from_canonical_bytes(&canonical)?;

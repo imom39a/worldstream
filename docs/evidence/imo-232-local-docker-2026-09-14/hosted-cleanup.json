@@ -1,9 +1,0 @@
-{
-  "app": "worldstream-imo232-20260914-eae86c",
-  "app_lookup": "not_found",
-  "captured_at": "2026-09-14T15:31:48.088644Z",
-  "cost_bearing_resources_remaining": false,
-  "qualification_location": "local_docker_only",
-  "schema": "worldstream/imo-232-hosted-cleanup/v1",
-  "volume_lookup": "app_not_found"
-}

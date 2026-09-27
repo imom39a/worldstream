@@ -1,8 +1,7 @@
-# IMO-57 absent-Broker story
+# Agent Heist example
 
 `run_story.py` is a dependency-free, offline evidence harness for the public
-Agent Heist behavior. It is intentionally not a live server, SQLite,
-PostgreSQL, browser, SDK, or model integration test.
+Agent Heist behavior. It does not test a live server, database, browser, SDK, or model.
 
 From a fresh checkout:
 
@@ -14,16 +13,11 @@ python3 -m unittest discover -s examples/heist -p 'test_*.py'
 The selected public fixture is `service_window`. Navigator and Insider commit
 the same correct plan; Broker remains an immutable enabled seat with no
 commitment. The expected public reducer result is therefore a strict 2-of-3
-majority, `success`, score `5`, and `missing_roles: ["broker"]`. The harness
-uses labeled SHA-256 hashes over canonical UTF-8 JSON for repeatable evidence;
-these hashes are not a claim about the Rust revision's BLAKE3 pack digest.
+majority, `success`, score `5`, and `missing_roles: ["broker"]`. The harness uses labeled SHA-256 hashes over canonical UTF-8 JSON. These hashes are separate from the BLAKE3 Pack digest in the Rust implementation.
 
 ## Retained exact-executor fixture
 
-`story.py` also exercises the retained Heist executor locally. The fixture
-loads the Room from Genesis, projects the initial and final public views,
-advances all 15 retained Transitions one at a time, and performs read-only
-Replay. Replay compares the exact Core, Activity, aggregate Authoritative,
+`story.py` also exercises the retained Heist executor locally. The fixture loads the Room from Genesis and produces the initial and final public views. It applies 15 retained Transitions sequentially and runs read-only Replay. Replay compares the exact Core, Activity, aggregate Authoritative,
 lineage, and complete Transition-hash set. The retained executor is pinned to
 the public Heist digest recorded in `parity_fixture.json`; a missing or changed
 digest fails closed.

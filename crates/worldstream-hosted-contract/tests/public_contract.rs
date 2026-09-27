@@ -31,40 +31,44 @@ use worldstream_hosted_contract::{
     validate_hosted_result_source_evidence, validate_hosted_result_source_request,
 };
 
-const LISTING: &[u8] = include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json");
+const LISTING: &[u8] =
+    include_bytes!("../../../tests/fixtures/hosted/listings/agent-heist-0.2.0.json");
 const PROJECTOR: &[u8] =
-    include_bytes!("../../../config/hosted/result-projectors/agent-heist-0.2.0.json");
+    include_bytes!("../../../tests/fixtures/hosted/result-projectors/agent-heist-0.2.0.json");
 const RUNTIME: &[u8] = include_bytes!(
-    "../../../config/hosted/result-projector-runtimes/declarative-runtime-1.0.0.json"
+    "../../../tests/fixtures/hosted/result-projector-runtimes/declarative-runtime-1.0.0.json"
 );
-const PROJECTION_SCHEMA: &[u8] =
-    include_bytes!("../../../config/hosted/schemas/agent-heist-public-projection-v1.schema.json");
+const PROJECTION_SCHEMA: &[u8] = include_bytes!(
+    "../../../tests/fixtures/hosted/schemas/agent-heist-public-projection-v1.schema.json"
+);
 const RESULT_SCHEMA: &[u8] =
-    include_bytes!("../../../config/hosted/schemas/result-summary-v1.schema.json");
+    include_bytes!("../../../tests/fixtures/hosted/schemas/result-summary-v1.schema.json");
 const CLIENT_RELEASE: &[u8] =
-    include_bytes!("../../../config/activity-clients/releases/agent-heist-web.json");
-const CORPUS: &[u8] = include_bytes!("../../../fixtures/hosted-contract/corpus.json");
+    include_bytes!("../../../examples/clients/catalog/releases/agent-heist-web.json");
+const CORPUS: &[u8] = include_bytes!("../../../tests/fixtures/hosted-contract/corpus.json");
 const LAUNCH: &[u8] =
-    include_bytes!("../../../fixtures/hosted-contract/valid/agent-heist-launch-request.json");
+    include_bytes!("../../../tests/fixtures/hosted-contract/valid/agent-heist-launch-request.json");
 const ROSTER: &[u8] =
-    include_bytes!("../../../fixtures/hosted-contract/valid/agent-heist-frozen-roster.json");
-const NONTERMINAL: &[u8] =
-    include_bytes!("../../../fixtures/hosted-contract/valid/agent-heist-nonterminal-input.json");
+    include_bytes!("../../../tests/fixtures/hosted-contract/valid/agent-heist-frozen-roster.json");
+const NONTERMINAL: &[u8] = include_bytes!(
+    "../../../tests/fixtures/hosted-contract/valid/agent-heist-nonterminal-input.json"
+);
 const WITHOUT_OUTCOME: &[u8] = include_bytes!(
-    "../../../fixtures/hosted-contract/valid/agent-heist-terminal-without-outcome-input.json"
+    "../../../tests/fixtures/hosted-contract/valid/agent-heist-terminal-without-outcome-input.json"
 );
 const TERMINAL: &[u8] =
-    include_bytes!("../../../fixtures/hosted-contract/valid/agent-heist-terminal-input.json");
+    include_bytes!("../../../tests/fixtures/hosted-contract/valid/agent-heist-terminal-input.json");
 const EXPECTED_SETUP: &[u8] =
-    include_bytes!("../../../fixtures/hosted-contract/expected/agent-heist-room-setup.json");
-const EXPECTED_SUMMARY: &[u8] =
-    include_bytes!("../../../fixtures/hosted-contract/expected/agent-heist-result-summary.json");
+    include_bytes!("../../../tests/fixtures/hosted-contract/expected/agent-heist-room-setup.json");
+const EXPECTED_SUMMARY: &[u8] = include_bytes!(
+    "../../../tests/fixtures/hosted-contract/expected/agent-heist-result-summary.json"
+);
 const COOPERATIVE_HOUSE_AGENT: &[u8] =
-    include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json");
+    include_bytes!("../../../tests/fixtures/hosted/house-agents/cooperative-planner-1.json");
 const SKEPTICAL_HOUSE_AGENT: &[u8] =
-    include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-1.json");
+    include_bytes!("../../../tests/fixtures/hosted/house-agents/skeptical-auditor-1.json");
 const HOUSE_LISTING: &[u8] =
-    include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json");
+    include_bytes!("../../../tests/fixtures/hosted/listings/agent-heist-0.3.0.json");
 
 fn canonical(source: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(CanonicalJsonV1::parse(source)?.to_bytes()?)
@@ -1165,7 +1169,7 @@ fn semantic_contract_changes_change_identity_and_break_listing_pin() -> Result<(
 #[test]
 fn roster_options_derive_only_exact_selected_seats_and_assignments() -> Result<(), Box<dyn Error>> {
     let source =
-        include_bytes!("../../../fixtures/hosted-contract/valid/roster-options-listing.json");
+        include_bytes!("../../../tests/fixtures/hosted-contract/valid/roster-options-listing.json");
     let listing = ListingRevision::from_canonical_bytes(&canonical(source)?)?;
     let agents = [
         HouseAgentRevision::from_canonical_bytes(&canonical(COOPERATIVE_HOUSE_AGENT)?)?,
@@ -1266,7 +1270,7 @@ fn roster_options_derive_only_exact_selected_seats_and_assignments() -> Result<(
 fn roster_options_reject_missing_required_seats_and_unknown_defaults() -> Result<(), Box<dyn Error>>
 {
     let document = source_value(include_bytes!(
-        "../../../fixtures/hosted-contract/valid/roster-options-listing.json"
+        "../../../tests/fixtures/hosted-contract/valid/roster-options-listing.json"
     ))?;
     let mut invalid = document.clone();
     invalid["launch_input_schema"]["roster_options"][0]["seat_ids"] = json!(["mira"]);
@@ -1281,7 +1285,7 @@ fn roster_options_reject_missing_required_seats_and_unknown_defaults() -> Result
 fn roster_v3_requires_bounded_descriptions_and_retained_v2_stays_closed()
 -> Result<(), Box<dyn Error>> {
     let document = source_value(include_bytes!(
-        "../../../fixtures/hosted-contract/valid/roster-options-listing.json"
+        "../../../tests/fixtures/hosted-contract/valid/roster-options-listing.json"
     ))?;
     ListingRevision::from_canonical_bytes(&canonical_value(&document)?)?;
 

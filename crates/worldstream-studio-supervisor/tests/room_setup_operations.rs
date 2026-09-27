@@ -94,7 +94,7 @@ fn negotiate_catalog() -> TestResult<Catalog> {
     use worldstream_pack_bundle::PackBundleVerifierV1;
 
     let bytes = include_bytes!(
-        "../../../packs/negotiate/releases/0.2.0/worldstream-negotiate-83453ea9641f8b16e9b96bf536c5ee932611611817458f130d8b77c7b93ff9a8.wspack"
+        "../../../examples/packs/negotiate/releases/0.2.0/worldstream-negotiate-83453ea9641f8b16e9b96bf536c5ee932611611817458f130d8b77c7b93ff9a8.wspack"
     );
     let bundle = PackBundleVerifierV1.inspect(Arc::from(bytes.as_slice()))?;
     let descriptor = bundle.descriptor();
@@ -1015,7 +1015,8 @@ async fn browser_receipt_fixture_with_gateway(
             .create("browser-receipt", &heist_request()?)?
             .complete
     );
-    let configuration = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/activity-clients");
+    let configuration =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/clients/catalog");
     let clients = ClientBindingStoreV1::open_configured(
         &temp.path().join("clients"),
         &configuration.join("releases"),
@@ -1350,7 +1351,8 @@ async fn operator_handoff_requires_control_not_studio_origin_and_keeps_one_use_r
             .create("cli-client-open", &heist_request()?)?
             .complete
     );
-    let configuration = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/activity-clients");
+    let configuration =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/clients/catalog");
     let clients = ClientBindingStoreV1::open_configured(
         &temp.path().join("clients"),
         &configuration.join("releases"),

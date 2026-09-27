@@ -61,7 +61,7 @@ impl Drop for Installation {
 }
 
 fn prepare_offline_pack(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packs/negotiate/releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack").canonicalize()?;
+    let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/packs/negotiate/releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack").canonicalize()?;
     let bundle = bundle.to_str().ok_or("non-UTF8 test bundle")?;
     for arguments in [
         vec![

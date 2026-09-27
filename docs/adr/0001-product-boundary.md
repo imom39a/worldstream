@@ -46,7 +46,7 @@ WorldStream owns participation semantics, not model execution or business workfl
 
 The frozen releases:
 
-- include humans and agents as first-class participants;
+- include human and agent participants;
 - use trusted compiled-in Rust packs;
 - run exactly one WorldStream process and remain local-first by default; the optional PostgreSQL 17 primary may be hosted or self-managed on another machine without authorizing a second WorldStream process;
 - provide only a small first-party UI;

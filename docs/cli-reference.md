@@ -1,10 +1,8 @@
 # Operator CLI contract
 
-This is the authenticated `worldstreamctl` interface frozen by IMO-135 and
-[ADR 0018](adr/0018-cli-first-operator-surface.md). The CLI-first commands are
-part of the default build. The retired internal preview feature is not an
-installation mode and must not appear in runnable instructions. The
-[ticket plan](cli-first-ticket-plan.md) records the completed cutover.
+`worldstreamctl` is the authenticated Host Operator interface. It controls local
+installation, runtime processes, Room setup, and Pack approval. The headless
+Controller supports managed operations.
 
 ## Compatibility and output
 
@@ -229,8 +227,7 @@ the client build's `VITE_WORLDSTREAM_SUPERVISOR_URL` for a nondefault Controller
 MVP limit: `server restart` rejects before stopping anything when a running
 Runner Template instance is bound to a task. Its result code is
 `managed_runner_restart_unsupported`. Use `server stop`, `server start`, and
-explicit agent startup instead. Automatic restoration of these bound instances
-is deferred to IMO-147. Existing supported managed Agent Host restoration is
+explicit agent startup instead. Automatic restoration of these bound instances is not implemented. Existing supported managed Agent Host restoration is
 unchanged. This preview is not production-qualified process supervision.
 
 ## Room setup and participation
@@ -389,7 +386,7 @@ with missing input do not prompt implicitly or infer artifact approval.
 Pack lobby launch is explicit; active-at-Genesis Packs start their activity
 and deadlines at creation. No CLI command pauses domain time.
 
-See [the implementation plan](cli-first-implementation-plan.md) for the
+See [the implementation plan](https://github.com/imom39a/worldstream/blob/ac7f443562bce33088229351d5f9eba40bb67bdd/docs/cli-first-implementation-plan.md) for the
 verified retirement gate. Current runnable steps remain in
 [Getting started](getting-started.md).
 

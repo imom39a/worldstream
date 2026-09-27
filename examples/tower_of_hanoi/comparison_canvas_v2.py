@@ -468,7 +468,7 @@ class ComparisonHandlerV2(base.ComparisonHandler):
         if path == "/":
             try:
                 body = (
-                    server.root / "web/demos/community-hanoi-comparison-v2.html"
+                    server.root / "examples/tower_of_hanoi/web/community-hanoi-comparison-v2.html"
                 ).read_bytes()
             except OSError:
                 self._send(HTTPStatus.SERVICE_UNAVAILABLE, b"demo unavailable\n", "text/plain")

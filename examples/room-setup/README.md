@@ -22,9 +22,7 @@ Principal references are specification-local labels for new per-attempt
 identities, not existing Principal lookups. Creation must retain the resolved
 identities for retry. These external assignments need separately delivered
 Runner and Membership credentials; these files contain neither credential.
-External Agents do not require a local Agent Profile. A managed Agent must
-explicitly select both an installed Agent Profile revision and an approved,
-compatible Runner Template revision; neither is inferred or installed by setup.
+External Agents do not require a local Agent Profile. A managed Agent must select an installed Agent Profile revision and an approved, compatible Runner Template revision. Setup does not infer or install either revision.
 They do not start external processes, install Packs, approve Runner templates,
 or authorize browser Client Deployments. Operator Membership is off by default.
 An explicit `operator_view: true` asks creation for a separate roleless,

@@ -16,7 +16,7 @@ These concepts must not be collapsed:
 
 ### Core Room State
 
-The versioned WorldStream-owned value containing exactly Room Status and the canonically sorted semantic Membership map. Each Membership carries immutable Member/Principal identity and Principal kind plus standing, Access Mode, and current Role; the Room Head and every operational field are outside this value.
+The versioned WorldStream-owned value containing exactly Room Status and the canonically sorted semantic Membership map. Each Membership contains immutable Member/Principal identity and Principal kind. It also contains standing, Access Mode, and current Role. This value excludes the Room Head and operational fields.
 
 ### Activity State
 
@@ -444,4 +444,4 @@ The server may generate deterministic structural summaries such as counts, Actio
 
 ## The simple explanation
 
-WorldStream keeps the official shared scoreboard and history. When a human or AI needs to act, it receives only its current role-specific screen, the changes it missed, what it is allowed to do, and the exact evidence it may inspect.
+WorldStream keeps the official shared scoreboard and history. Before a human or AI acts, it receives its current role-specific view and missed changes. It also receives allowed Actions and references to authorized evidence.

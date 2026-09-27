@@ -54,10 +54,7 @@ operator attention or the observed live process. They never select another
 assignment, template, provider, model, or credential reference.
 
 Within one turn, identities derive from the exact Activation cursor, lease
-generation, and context digest. The host acquires an Activation, observes,
-lists current offers, submits the selected offer, acknowledges delivered
-frames after the Action receipt is retained, and completes the Activation with
-one closed `handled`, `declined`, or `failed` disposition. A no-work result
+generation, and context digest. The Host acquires an Activation, observes the Room, and lists current offers. It submits the selected offer and retains the Action receipt. It then acknowledges delivered frames and completes the Activation with one closed `handled`, `declined`, or `failed` disposition. A no-work result
 keeps the process alive with bounded backoff. The assignment MCP ledgers make
 ambiguous retries idempotent across process restart.
 

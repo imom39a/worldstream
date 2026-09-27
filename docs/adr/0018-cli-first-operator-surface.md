@@ -118,8 +118,8 @@ coordinated at the verified cutover.
 - Use the CLI-first successor release inventory. Continue to verify historical
   formats as compatibility evidence. This ADR does not claim release qualification.
 
-See the [CLI-first proposal](../cli-first-operator-proposal.md) for the source
+See the [CLI-first proposal](https://github.com/imom39a/worldstream/blob/ac7f443562bce33088229351d5f9eba40bb67bdd/docs/cli-first-operator-proposal.md) for the source
 audit and approved Q1–Q18 decisions. The consolidated
-[implementation plan](../cli-first-implementation-plan.md) is confirmed and
+[implementation plan](https://github.com/imom39a/worldstream/blob/ac7f443562bce33088229351d5f9eba40bb67bdd/docs/cli-first-implementation-plan.md) is confirmed and
 the design review and MVP cutover are complete. Production hardening and
 external release qualification remain separate work.

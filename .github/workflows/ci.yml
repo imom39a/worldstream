@@ -1,0 +1,79 @@
+name: Kernel and examples
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      RUST_TEST_THREADS: 1
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust
+        run: rustup show
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check kernel and example crates
+        run: cargo check --locked --workspace --all-targets
+      - name: Report existing lint backlog
+        continue-on-error: true
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Test kernel and examples
+        run: cargo test --locked --workspace
+      - name: Test managed Agent Swarm example
+        run: cargo test --locked -p worldstream-agent-swarm --features managed-local-runtime
+      - name: Verify retained identities
+        run: cargo run --locked -p xtask -- compat verify
+      - name: Test Core trace fixtures
+        run: cargo test --locked -p worldstream-core --features conformance-tracer
+
+  sdk-and-docs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - name: Install pinned package manager and dependencies
+        run: |
+          corepack enable
+          corepack install
+          pnpm install --frozen-lockfile
+      - name: Check SDKs and browser examples
+        run: |
+          pnpm sdk:check
+          pnpm pack:build
+          pnpm pack:lint
+          pnpm pack:test
+          pnpm --filter './examples/packs/*' --workspace-concurrency=1 pack:check
+          pnpm --filter './examples/packs/*' --workspace-concurrency=1 pack:test
+          pnpm activity-clients:check
+          pnpm activity-clients:build
+          node --test tests/activity_client_identities.test.mjs
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: 0.12.5
+      - name: Check Python SDK
+        run: |
+          uv sync --project sdk/python --locked
+          uv run --project sdk/python python -m pytest sdk/python/tests examples tests
+      - name: Check documentation and site
+        run: |
+          python3 scripts/check-docs.py
+          node scripts/check-site.mjs

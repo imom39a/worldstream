@@ -1,17 +1,20 @@
-## Agent skills
+# Repository guidance
 
-### Issue tracker
+Read `CONTEXT.md` and the relevant decisions in `docs/adr/` before changing Room
+semantics. `docs/adr/0044-preserve-kernel-and-examples.md` defines the current
+kernel-and-examples scope and supersedes earlier product/release plans.
 
-Issues are tracked in Linear under team Imom39a (`IMO`) and project WorldStream. See `docs/agents/issue-tracker.md`.
+Keep domain rules in Activity Packs and provider execution in external Runners.
+Preserve exact revision identities, retained executors, and conformance fixtures;
+they are inputs to Replay, not disposable generated output.
 
-### Triage labels
+Run `scripts/verify-local.sh` for Rust changes. See `docs/gates.md` for optional
+SDK and example checks. Update moved paths and verify documentation links when
+reorganizing files.
 
-The repository uses the canonical triage-label vocabulary. See `docs/agents/triage-labels.md`.
+The public site is plain HTML/CSS in `site/`, published by GitHub Pages. Keep it
+independent of application backends and package installation.
 
-### Domain docs
-
-This is a single-context repository governed by root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
-
-### Fly sizing
-
-Before resizing Fly or testing on a larger Machine, read the cost and sizing policy in `packaging/hosted/README.md`. Finish temporary testing by restoring the smallest working shared Machine size and verifying the live configuration.
+Use ASD-STE100 principles for documentation and site text. Use short sentences,
+active voice, consistent technical names, and direct instructions. Do not add
+marketing slogans. Keep protocol identifiers and code examples exact.

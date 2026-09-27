@@ -1092,7 +1092,7 @@ class ComparisonHandler(BaseHTTPRequestHandler):
         path = request.path
         if path == "/":
             try:
-                body = (server.root / "web/demos/community-hanoi-comparison.html").read_bytes()
+                body = (server.root / "examples/tower_of_hanoi/web/community-hanoi-comparison.html").read_bytes()
             except OSError:
                 self._send(HTTPStatus.SERVICE_UNAVAILABLE, b"demo unavailable\n", "text/plain")
                 return

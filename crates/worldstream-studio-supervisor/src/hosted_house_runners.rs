@@ -2279,11 +2279,12 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const LISTING: &[u8] = include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json");
+    const LISTING: &[u8] =
+        include_bytes!("../../../tests/fixtures/hosted/listings/agent-heist-0.3.0.json");
     const PLANNER: &[u8] =
-        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json");
+        include_bytes!("../../../tests/fixtures/hosted/house-agents/cooperative-planner-1.json");
     const AUDITOR: &[u8] =
-        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-1.json");
+        include_bytes!("../../../tests/fixtures/hosted/house-agents/skeptical-auditor-1.json");
 
     #[derive(Clone)]
     struct FakeSource {
@@ -2383,7 +2384,7 @@ mod tests {
     #[test]
     fn full_reviewed_house_catalog_opens_within_the_shared_catalog_bound() {
         let directory = tempdir().unwrap_or_else(|error| unreachable!("tempdir: {error}"));
-        let (listings, revisions) = crate::hosted_artifacts::reviewed_hosted_artifacts()
+        let (listings, revisions) = crate::test_hosted_catalog::reviewed_hosted_artifacts()
             .unwrap_or_else(|error| unreachable!("reviewed catalog: {error}"));
         assert_eq!(
             revisions.len(),
