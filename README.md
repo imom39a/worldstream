@@ -95,8 +95,7 @@ Replay. Portable packs and application code live under `examples/`.
 scripts/verify-local.sh
 ```
 
-The default Cargo members are the kernel and operator tools. `cargo test
---workspace --locked` also includes the Rust examples. Optional SDK, Pack, and
+The default Cargo members are the kernel and operator tools. `cargo test --workspace --locked -- --test-threads=1` also includes the Rust examples. Optional SDK, Pack, and
 browser-client checks are listed in [Verification](docs/gates.md).
 
 The [compatibility manifest](compatibility.toml) and its [JSON mirror](compatibility.json)

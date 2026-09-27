@@ -40,7 +40,7 @@ or transfer coverage. Provider credentials are never required by default CI.
 
 ```sh
 uv sync --project sdk/python --locked
-uv run --project sdk/python pytest sdk/python/tests
+uv run --project sdk/python python -m pytest sdk/python/tests
 pnpm install --frozen-lockfile
 pnpm sdk:check
 pnpm pack:build
@@ -81,11 +81,13 @@ The static GitHub Pages site is uploaded directly from `site/`. It has no packag
 install or frontend build. The CI workflow checks its links and repository docs.
 
 The old platform/release campaign, credential-dependent qualification gates, and
-their evidence dumps have been retired. Runtime manifest parity, exact Pack
+their reports have been removed. Runtime manifest parity, exact Pack
 identity, retained executors, and canonical golden fixtures remain checked.
 
 ## Lint status
 
 `cargo clippy --locked --workspace --all-targets -- -D warnings` currently reports
 an existing lint backlog, including documentation and style warnings in the
-unchanged kernel. CI shows this as an advisory step. Compiler checks, formatting, tests, and identity verification remain required. The Clippy warnings remain visible. This cleanup does not change kernel behavior to remove those warnings.
+unchanged kernel. CI reports these warnings in an advisory step.
+Compiler checks, formatting, tests, and identity verification remain required.
+This cleanup does not change kernel behavior to remove those warnings.
