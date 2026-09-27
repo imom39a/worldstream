@@ -811,6 +811,8 @@ mod tests {
                         thread::sleep(Duration::from_millis(5));
                         continue;
                     };
+                    // Use bounded blocking reads after the nonblocking accept.
+                    stream.set_nonblocking(false).expect("blocking HTTP peer");
                     stream
                         .set_read_timeout(Some(Duration::from_secs(1)))
                         .expect("read bound");

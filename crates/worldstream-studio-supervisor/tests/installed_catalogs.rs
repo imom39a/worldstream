@@ -45,7 +45,7 @@ fn fresh_installed_catalogs_need_no_source_imports_or_invented_client_approval()
     );
     assert_eq!(selection, Err(ClientBindingStoreErrorV1::Unavailable));
     assert_eq!(
-        std::fs::read_dir(directory.path().join("examples/clients/inspector-fallback"))?.count(),
+        std::fs::read_dir(directory.path().join("clients/inspector-fallback"))?.count(),
         0
     );
     Ok(())
