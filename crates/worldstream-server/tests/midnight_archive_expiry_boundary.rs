@@ -640,9 +640,19 @@ async fn in_flight_http_provider_completion_cannot_contribute_after_session_expi
     let projected = activity(&agent_view);
     let proposal = json!({"task_revision":projected["jonah"]["task"]["revision"],
         "opportunity_revision":projected["jonah"]["planning"]["opportunity_revision"],
-        "dialogue":"Recommend Records.","steps":[{"step_type":"move","destination":"records","source_id":"none","power_cost":0}]});
-    let projection = json!({"phase":projected["phase"],"jonah":{
-        "task":projected["jonah"]["task"],"planning":projected["jonah"]["planning"]}});
+        "dialogue":"","steps":[{"step_type":"move","destination":"records","source_id":"none","power_cost":0}]});
+    let projection = json!({
+        "schema": "worldstream/assignment-observation/v1",
+        "role": "jonah",
+        "pack": {"id": "worldstream.midnight-archive"},
+        "stream": {"frame_head": 0},
+        "observations": [],
+        "projection_reset": {
+            "baseline_frame_head": 0,
+            "projection_schema": "worldstream.midnight-archive/participant-projection/v5",
+            "projection": agent_view["projection"],
+        },
+    });
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let provider = DevelopmentLoopbackOpenRouterProviderPortV1::new(listener.local_addr()?)?;
     let (began_tx, began_rx) = mpsc::channel();
@@ -679,7 +689,7 @@ async fn in_flight_http_provider_completion_cannot_contribute_after_session_expi
         Ok(())
     });
     let revision_bytes = worldstream_core::CanonicalJsonV1::parse(include_bytes!(
-        "../../../tests/fixtures/hosted/house-agents/mira-1.json"
+        "../../../tests/fixtures/hosted/house-agents/jonah-1.json"
     ))?
     .to_bytes()?;
     let revision =
