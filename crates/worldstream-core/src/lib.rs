@@ -21,6 +21,10 @@ mod agent_heist_lobby_v5;
 mod agent_heist_lobby_v5_tests;
 mod agent_heist_registry;
 mod authority;
+#[cfg(feature = "conformance-tracer")]
+mod benchmark_fixture_identity;
+#[cfg(feature = "conformance-tracer")]
+mod benchmark_state;
 mod canonical;
 mod counter;
 #[allow(
@@ -34,15 +38,22 @@ mod counter_attention;
 )]
 mod counter_attention_v4;
 mod counter_registry;
+#[cfg(feature = "conformance-tracer")]
+mod gateway_benchmark;
 mod lineage;
+mod lineage_codec;
 mod model;
 mod operational_mmr;
+mod payload_budget;
 mod primitives;
 mod reducer;
 mod registry;
 mod room_commit;
 mod room_trace_cache;
 mod semantic_time;
+mod storage_read_deadline;
+
+pub use storage_read_deadline::{storage_read_deadline, with_storage_read_deadline};
 mod session;
 mod trace;
 
@@ -132,6 +143,8 @@ pub use authority::{
     RunnerControlOperationV1, RunnerMembershipSetV1, ValidatedAuthorityBootstrapV1,
     ValidatedAuthorityChangeV1, ViewerAdapterInputV1,
 };
+#[cfg(feature = "conformance-tracer")]
+pub use benchmark_state::benchmark_state_registry_for_conformance;
 pub use canonical::{CanonicalJsonError, CanonicalJsonV1, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER};
 pub use counter_registry::{
     builtin_counter_registry, counter_v1_digest, counter_v2_digest, counter_v3_digest,
@@ -147,9 +160,17 @@ pub use counter_registry::{
     counter_v2_semantic_mismatch_registry_for_conformance,
     counter_v3_historical_creation_registry_for_conformance,
 };
+#[cfg(feature = "conformance-tracer")]
+pub use gateway_benchmark::gateway_benchmark_registry_for_conformance;
 pub use lineage::{
     CANONICAL_CODEC_ID, CORE_SCHEMA_VERSION, GENESIS_VERSION, GenesisV1, HASH_SUITE_ID,
     TRANSITION_VERSION, TransitionV1,
+};
+pub use lineage_codec::{
+    CanonicalHistoryFormat, GENESIS_V2_CODEC_ID, GENESIS_V2_VERSION, GenesisRecord, GenesisV2,
+    LINEAGE_V2_HASH_SUITE_ID, LineageCodecError, RoomCreationRequestWithFormat,
+    TRANSITION_V2_CODEC_ID, TRANSITION_V2_VERSION, TransitionRecord, TransitionV2,
+    TransitionV2Input,
 };
 pub use model::{
     AccessModeV1, ActivityApplyV1, ActivityDispositionV1, ActivityReduceInputV1,
@@ -160,6 +181,10 @@ pub use model::{
     ParticipantActionV1, PrincipalKindV1, RecordedStimulusV1, RoomIntegrityAuditRecordV1,
     RoomIntegrityStateV1, RoomIntegrityStatusV1, RoomStatusV1, ScheduledTimerV1, TimerChangeV1,
     TimerFiredV1, TimerRequestV1,
+};
+pub use payload_budget::{
+    CanonicalGenesisPreparationError, PAYLOAD_BUDGET_V1, PAYLOAD_BUDGET_V1_ID,
+    PayloadBudgetErrorV1, PayloadBudgetV1, PayloadBudgetViolationV1, PayloadKindV1,
 };
 pub use primitives::{
     ActionAdmittedAt, ActionId, AuthorityChangeId, AuthorityCheckedAt, AuthorityGenerationV1,
@@ -175,34 +200,42 @@ pub use room_commit::{
     ActionAdmissionContextV1, ActionOfferWitnessV1, ActionOffersUnavailableReasonV1,
     ActorInstallationV1, AuthorizedReceiptResolverV1, CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V1,
     CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V2, CHECKPOINT_OPERATIONAL_WITNESS_SCHEMA_V3,
-    CREATE_ROOM_OPERATION_KIND, CanonicalRequestHashV1, CoreAdministrationIngressV1,
+    CREATE_ROOM_OPERATION_KIND, CanonicalRequestHashV1, CanonicalRoomCommitOutcome,
+    CanonicalRoomCommitStorage, CanonicalRoomPendingAttempt, CanonicalRoomRecoveryStorage,
+    CanonicalRoomResolve, CanonicalRoomRetry, CoreAdministrationIngressV1,
     CoreAdministrationRequestV1, ExistingRoomCommitOutcomeV1, ExistingRoomPendingAttemptV1,
     ExistingRoomReprepareV1, ExistingRoomResolveV1, ExistingRoomRetryV1,
     ExternalInputOperationIdentityV1, InitialMembershipProposalV1, OperationIdentityV1,
     OperationalHistoryRootV2, ParticipantActionIngressErrorV1, ParticipantActionIngressV1,
     ParticipantActionOperationIdentityV1, ParticipantActionReprepareV1, ParticipantActionRequestV1,
     PrepareRoomWriteErrorV1, PreparedActionInputWitnessV1, PreparedActivationDecisionV1,
-    PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1,
+    PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1, PreparedCanonicalAdvancePersistence,
+    PreparedCanonicalCreationPersistence, PreparedCanonicalExistingIntent,
+    PreparedCanonicalRoomCommit, PreparedCanonicalRoomCreation, PreparedCanonicalRoomWrite,
     PreparedCoreAdministrationInputWitnessV1, PreparedCreationPersistenceV1,
     PreparedExistingIntentV1, PreparedExternalInputWitnessV1, PreparedMembershipMaterializationV1,
     PreparedObservationConsequenceV1, PreparedObservationFrameV1, PreparedOperationInputWitnessV1,
     PreparedRoomCommitV1, PreparedRoomCreationV1, PreparedRoomWriteV1, PreparedTimerInputWitnessV1,
     PreparedTimerMaterializationV1, PreparedTimerMutationKindV1, PreparedTimerMutationV1,
     ReceiptSemanticInputV1, ReceiptSemanticTimeV1, RecoveredActivationDecisionV1,
-    RecoveredObservationConsequenceV1, RecoveredObservationFrameV1, RecoveredRoomExecutionV1,
-    RecoveredRoomMaterializationsV1, RecoveredTimerMaterializationV1, RecoveredTimerStateV1,
-    RecoveryIntegrityDispositionV1, ResolutionStatusV1, ResolveOutcomeV1,
-    RoomCheckpointOperationalWitnessV1, RoomCheckpointOperationalWitnessV2,
-    RoomCheckpointOperationalWitnessV3, RoomCommitResolutionV1, RoomCommitStorageV1,
-    RoomCreationCommitOutcomeV1, RoomCreationIngressV1, RoomCreationPendingAttemptV1,
-    RoomCreationReprepareV1, RoomCreationRequestV1, RoomCreationResolveV1, RoomCreationRetryV1,
-    RoomOperationIngressErrorV1, RoomRecoveryCandidateV1, RoomRecoveryCheckpointV1,
-    RoomRecoveryErrorV1, RoomRecoveryExecutionPathV1, RoomRecoveryExecutionReceiptV1,
-    RoomRecoveryStorageV1, SemanticResultV1, StoredSemanticResultV1, TimerFiredReprepareV1,
-    TimerFiredRequestV1, TimerOperationIdentityV1, TimerReprepareOutcomeV1,
-    VerifiedCurrentRoomMaterializationV1, authorize_core_administration_operation,
+    RecoveredCanonicalRoomExecution, RecoveredObservationConsequenceV1,
+    RecoveredObservationFrameV1, RecoveredRoomExecutionV1, RecoveredRoomMaterializationsV1,
+    RecoveredTimerMaterializationV1, RecoveredTimerStateV1, RecoveryIntegrityDispositionV1,
+    ResolutionStatusV1, ResolveOutcomeV1, RoomCheckpointOperationalWitnessV1,
+    RoomCheckpointOperationalWitnessV2, RoomCheckpointOperationalWitnessV3, RoomCommitResolutionV1,
+    RoomCommitStorageV1, RoomCreationCommitOutcomeV1, RoomCreationIngressV1,
+    RoomCreationPendingAttemptV1, RoomCreationReprepareV1, RoomCreationRequestV1,
+    RoomCreationResolveV1, RoomCreationRetryV1, RoomOperationIngressErrorV1,
+    RoomRecoveryCandidateV1, RoomRecoveryCheckpointV1, RoomRecoveryErrorV1,
+    RoomRecoveryExecutionPathV1, RoomRecoveryExecutionReceiptV1, RoomRecoveryStorageV1,
+    SemanticResultV1, StoredSemanticResultV1, TimerFiredReprepareV1, TimerFiredRequestV1,
+    TimerOperationIdentityV1, TimerReprepareOutcomeV1, VerifiedCanonicalCurrentRoomMaterialization,
+    VerifiedCanonicalGenesis, VerifiedCanonicalLineageRecord, VerifiedCurrentRoomMaterializationV1,
+    authorize_canonical_room_creation_operation, authorize_core_administration_operation,
     authorize_participant_action_operation, authorize_room_creation_operation,
-    commit_existing_room, commit_room_creation, external_input_request_hash,
+    commit_canonical_existing_room, commit_canonical_room_creation, commit_existing_room,
+    commit_room_creation, external_input_request_hash, recover_canonical_room_from_full_storage,
+    recover_canonical_room_from_storage, recover_canonical_room_from_storage_with_receipt,
     resolve_authorized_room_operation_for_adapter,
 };
 #[doc(hidden)]
@@ -210,7 +243,10 @@ pub use room_commit::{
     recover_room_from_full_storage, recover_room_from_storage,
     recover_room_from_storage_with_receipt,
 };
-pub use room_trace_cache::{CachedRoomTraceV1, RoomTraceCacheErrorV1, RoomTraceCacheV1};
+pub use room_trace_cache::{
+    CachedCanonicalRoomTrace, CachedRoomTraceV1, CanonicalRoomTraceCache, RoomTraceCacheErrorV1,
+    RoomTraceCacheV1,
+};
 pub use semantic_time::{
     ActionLaneReservationV1, ActionRoomAdmissionV1, AdmissionLaneClassV1, AdmissionLaneErrorV1,
     HostClockErrorV1, HostClockSampleV1, HostClockV1, LaneReservationV1, MonotonicHostClockV1,
@@ -222,11 +258,14 @@ pub use session::{
     SessionFrameV1, SessionPublishOutcomeV1, SessionStateV1, SessionSyncTokenV1, SessionV1,
 };
 pub use trace::{
-    AdvanceDispositionV1, CoreReducerV1, CoreTraceV1, HistoricalEvidencePageOutcomeV1,
-    HistoricalEvidenceReferenceV1, HistoricalReplayAccumulatorV1, HistoricalReplayErrorV1,
-    HistoricalReplayProjectionRequestV1, HistoricalReplayProjectionV1, MAX_DISTINCT_TIMER_IDS_V1,
-    MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1,
-    MAX_HISTORICAL_EVIDENCE_TIME_MS_V1, MAX_ROOM_MEMBERSHIPS_V1, PackFaultV1, PreparedCoreStateV1,
+    AdvanceDispositionV1, CanonicalAdvanceDisposition, CanonicalHistoricalReplayAccumulator,
+    CanonicalReplayReport, CanonicalRoomTrace, CanonicalStorageExecutableReplay,
+    CanonicalStorageHistoryPreflight, CanonicalStructuralHistory, CoreReducerV1, CoreTraceV1,
+    HistoricalEvidencePageOutcomeV1, HistoricalEvidenceReferenceV1, HistoricalReplayAccumulatorV1,
+    HistoricalReplayErrorV1, HistoricalReplayProjectionRequestV1, HistoricalReplayProjectionV1,
+    MAX_DISTINCT_TIMER_IDS_V1, MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1,
+    MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_TIME_MS_V1,
+    MAX_ROOM_MEMBERSHIPS_V1, PackFaultV1, PreparedCanonicalRoomTransition, PreparedCoreStateV1,
     PreparedRoomTransitionV1, ReplayActivationDecisionWitnessV1, ReplayFailureClassV1,
     ReplayFailureV1, ReplayMembershipWitnessV1, ReplayObservationPositionWitnessV1, ReplayReportV1,
     ReplayStepV1, ReplayStorageVerificationV1, RoomTransitionPreparerV1, RoomTransitionStateV1,
@@ -248,4 +287,10 @@ pub use operational_mmr::{
     OperationalMmrAppendV1, OperationalMmrErrorV1, OperationalMmrNodeCoordinateV1,
     OperationalMmrNodeV1, OperationalMmrProofNodeV1, OperationalMmrProofPlanV1,
     OperationalMmrProofV1, OperationalMmrReceiptV1, OperationalMmrV1,
+};
+
+#[cfg(feature = "conformance-tracer")]
+pub use trace::{
+    reset_retained_pack_reduce_invocations_for_conformance,
+    retained_pack_reduce_invocation_count_for_conformance,
 };

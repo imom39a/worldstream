@@ -36,6 +36,17 @@ Some PostgreSQL tests require an explicitly configured local test database and
 skip when it is absent. Their absence does not establish live PostgreSQL restore
 or transfer coverage. Provider credentials are never required by default CI.
 
+Compact history also requires the opt-in shared live conformance test. It
+executes the same scenarios in SQLite and PostgreSQL for both formats. Supply
+separate disposable PostgreSQL databases for the V1 and V2 lanes. A skipped
+test does not establish this parity. See the environment names in
+`crates/worldstream-conformance/tests/shared_live.rs`.
+
+The scaling scripts record separate Core, backend, and live gateway workloads.
+See [Payload and stream limits](payload-and-stream-limits.md) for accounting and
+measurement scope. Use a new output directory for each run. Preserve failed
+attempts and the exact binary identity with the results.
+
 ## Client SDKs and Activity Packs
 
 ```sh

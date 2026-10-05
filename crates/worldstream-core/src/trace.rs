@@ -32,6 +32,24 @@ use crate::{
     reducer::{CheckedCoreErrorV1, RoleValidationFailureV1, propose_core, validate_core_state},
 };
 
+#[path = "canonical_trace.rs"]
+mod canonical_trace;
+pub use canonical_trace::{
+    CanonicalAdvanceDisposition, CanonicalRoomTrace, PreparedCanonicalRoomTransition,
+};
+#[cfg(feature = "conformance-tracer")]
+pub use canonical_trace::{
+    reset_retained_pack_reduce_invocations_for_conformance,
+    retained_pack_reduce_invocation_count_for_conformance,
+};
+#[path = "canonical_history.rs"]
+mod canonical_history;
+pub(crate) use canonical_history::advance_membership_generations;
+pub use canonical_history::{
+    CanonicalHistoricalReplayAccumulator, CanonicalReplayReport, CanonicalStorageExecutableReplay,
+    CanonicalStorageHistoryPreflight, CanonicalStructuralHistory,
+};
+
 /// Unique in-memory current-Room executor. Production instances own the exact
 /// retained pack, immutable seed, and current reduction basis, and the type is
 /// deliberately not cloneable so stale snapshots cannot become independent
@@ -286,18 +304,45 @@ impl RoomTransitionPreparerV1 {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     fn prepare_inner(
         &self,
         state: &RoomTransitionStateV1,
         stimulus: RecordedStimulusV1,
         callback_counter: Option<&AtomicUsize>,
     ) -> Result<PreparedRoomTransitionV1, TraceErrorV1> {
+        self.prepare_canonical_inner(
+            state,
+            crate::CanonicalHistoryFormat::V1,
+            stimulus,
+            callback_counter,
+        )?
+        .into_legacy()
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn prepare_canonical_inner(
+        &self,
+        state: &RoomTransitionStateV1,
+        format: crate::CanonicalHistoryFormat,
+        stimulus: RecordedStimulusV1,
+        callback_counter: Option<&AtomicUsize>,
+    ) -> Result<PreparedCanonicalRoomTransition, TraceErrorV1> {
         if !Arc::ptr_eq(&self.identity, &state.preparer_identity) {
             return Err(TraceErrorV1::TransitionPreparerProvenanceMismatch);
         }
+        let payload_budget =
+            (format == crate::CanonicalHistoryFormat::V2).then_some(crate::PAYLOAD_BUDGET_V1);
+        if let Some(budget) = payload_budget {
+            budget.check_stimulus(&stimulus)?;
+        }
         let recorded_stimulus = stimulus.clone();
         let proposed = self.validate_stimulus(state, &stimulus)?;
+        if let Some(budget) = payload_budget {
+            budget.check_value(
+                crate::PayloadKindV1::CoreState,
+                &proposed.verified_state.state,
+            )?;
+        }
         let administration = match &stimulus {
             RecordedStimulusV1::CoreProposed(proposal) => Some((
                 proposal.operation_identity.clone(),
@@ -308,12 +353,12 @@ impl RoomTransitionPreparerV1 {
         };
         if proposed.no_change {
             let receipt = administration_receipt(&stimulus, &state.head, "no_change", None)?;
-            return Ok(PreparedRoomTransitionV1 {
+            return Ok(PreparedCanonicalRoomTransition {
                 preparer_identity: Arc::clone(&self.identity),
                 basis_complete_head: state.head.clone(),
                 recorded_stimulus,
                 action_offer_witness: None,
-                outcome: AdvanceDispositionV1::NoChangeRecorded {
+                outcome: CanonicalAdvanceDisposition::NoChangeRecorded {
                     existing: false,
                     canonical_receipt_bytes: receipt,
                 },
@@ -333,7 +378,7 @@ impl RoomTransitionPreparerV1 {
             recorded_stimulus: &stimulus,
         };
         let (disposition, action_offer_witness) =
-            self.reduce_activity(state, &input, callback_counter)?;
+            self.reduce_activity(state, &input, callback_counter, payload_budget)?;
         let apply = match disposition {
             ActivityDispositionV1::Apply(apply) => apply,
             ActivityDispositionV1::Reject(rejection) => {
@@ -344,12 +389,12 @@ impl RoomTransitionPreparerV1 {
                 }
                 let receipt =
                     administration_receipt(&stimulus, &state.head, "rejected", Some(&rejection))?;
-                return Ok(PreparedRoomTransitionV1 {
+                return Ok(PreparedCanonicalRoomTransition {
                     preparer_identity: Arc::clone(&self.identity),
                     basis_complete_head: state.head.clone(),
                     recorded_stimulus,
                     action_offer_witness,
-                    outcome: AdvanceDispositionV1::RejectionRecorded {
+                    outcome: CanonicalAdvanceDisposition::RejectionRecorded {
                         existing: false,
                         rejection,
                         canonical_receipt_bytes: receipt,
@@ -380,31 +425,76 @@ impl RoomTransitionPreparerV1 {
                     error.to_string(),
                 ))
             })?;
-        let transition = Self::build_transition(
-            state,
-            next_room_seq,
-            stimulus,
-            proposed,
-            apply,
-            normalized_timer_changes,
-        )?;
+        let core_after = proposed.verified_state.clone();
+        let activity_after = apply.next_activity_state.clone();
+        if let Some(budget) = payload_budget {
+            budget
+                .check_authoritative_state(&core_after.state, &activity_after)
+                .and_then(|()| {
+                    budget.check_effects(
+                        &apply.ordered_domain_events,
+                        &normalized_timer_changes,
+                        &apply.ordered_attention_signals,
+                    )
+                })
+                .map_err(|error| {
+                    self.retained_reduce_output_fault(PackFaultV1::OutputBoundExceeded(
+                        error.to_string(),
+                    ))
+                })?;
+        }
+        let transition = match format {
+            crate::CanonicalHistoryFormat::V1 => {
+                crate::TransitionRecord::V1(Self::build_transition(
+                    state,
+                    next_room_seq,
+                    stimulus,
+                    proposed,
+                    apply,
+                    normalized_timer_changes,
+                )?)
+            }
+            crate::CanonicalHistoryFormat::V2 => crate::TransitionRecord::V2(
+                crate::TransitionV2::new(crate::TransitionV2Input {
+                    room_id: state.head.room_id().clone(),
+                    room_seq: next_room_seq,
+                    pack_digest: state.head.pack_digest().clone(),
+                    previous_lineage_hash: state.head.genesis_or_transition_hash().clone(),
+                    recorded_stimulus: stimulus,
+                    ordered_domain_events: apply.ordered_domain_events,
+                    ordered_timer_changes: normalized_timer_changes,
+                    ordered_attention_signals: apply.ordered_attention_signals,
+                    resulting_core_state: &core_after.state,
+                    resulting_activity_state: &activity_after,
+                })
+                .map_err(canonical_trace::map_codec_error)?,
+            ),
+        };
+        if let Some(budget) = payload_budget {
+            budget
+                .check_bytes(
+                    crate::PayloadKindV1::Transition,
+                    &transition.canonical_bytes()?,
+                )
+                .map_err(|error| {
+                    self.retained_reduce_output_fault(PackFaultV1::OutputBoundExceeded(
+                        error.to_string(),
+                    ))
+                })?;
+        }
         let resulting_state = RoomTransitionStateV1 {
-            head: transition.head(),
-            core_state: VerifiedCoreStateV1 {
-                state: transition.resulting_core_state.clone(),
-                core_state_hash: transition.resulting_core_state_hash.clone(),
-                reducer_identity: Arc::clone(&self.core_reducer.identity),
-            },
-            activity_state: transition.resulting_activity_state.clone(),
+            head: transition.complete_head(),
+            core_state: core_after,
+            activity_state: activity_after,
             timers: next_timers,
             preparer_identity: Arc::clone(&self.identity),
         };
-        Ok(PreparedRoomTransitionV1 {
+        Ok(PreparedCanonicalRoomTransition {
             preparer_identity: Arc::clone(&self.identity),
             basis_complete_head: state.head.clone(),
             recorded_stimulus,
             action_offer_witness,
-            outcome: AdvanceDispositionV1::TransitionAccepted {
+            outcome: CanonicalAdvanceDisposition::TransitionAccepted {
                 existing: false,
                 transition: Box::new(transition),
             },
@@ -419,6 +509,7 @@ impl RoomTransitionPreparerV1 {
         state: &RoomTransitionStateV1,
         input: &ActivityReduceInputV1<'_>,
         callback_counter: Option<&AtomicUsize>,
+        payload_budget: Option<crate::PayloadBudgetV1>,
     ) -> Result<(ActivityDispositionV1, Option<Vec<u8>>), TraceErrorV1> {
         match &self.activity_reducer {
             BoundActivityReducerV1::Retained {
@@ -430,12 +521,15 @@ impl RoomTransitionPreparerV1 {
                     input.recorded_stimulus
                 {
                     let viewer = PackViewerV1::Participant(action.member_id.clone());
-                    Some(host.view(&ViewInputV1 {
-                        core: &state.core_state.state,
-                        activity_state: &state.activity_state,
-                        complete_head: &state.head,
-                        viewer: &viewer,
-                    })?)
+                    Some(host.view_with_budget(
+                        &ViewInputV1 {
+                            core: &state.core_state.state,
+                            activity_state: &state.activity_state,
+                            complete_head: &state.head,
+                            viewer: &viewer,
+                        },
+                        payload_budget,
+                    )?)
                 } else {
                     None
                 };
@@ -446,6 +540,9 @@ impl RoomTransitionPreparerV1 {
                         room_seed,
                         participant_view.as_ref(),
                         || {
+                            #[cfg(feature = "conformance-tracer")]
+                            canonical_trace::record_retained_pack_reduce_invocation_for_conformance(
+                            );
                             if let Some(counter) = callback_counter {
                                 counter.fetch_add(1, AtomicOrdering::Relaxed);
                             }
@@ -655,6 +752,15 @@ fn record_replay_observation_consequences(
         crate::PrepareRoomWriteErrorV1::Trace(error) => error,
         _ => TraceErrorV1::InvalidPreparedAdvance,
     })?;
+    fold_replay_observation_consequences(classified, resulting_state, frame_heads, consequences)
+}
+
+fn fold_replay_observation_consequences(
+    classified: Vec<crate::PreparedObservationConsequenceV1>,
+    resulting_state: &RoomTransitionStateV1,
+    frame_heads: &mut BTreeMap<MemberId, u64>,
+    consequences: &mut Vec<ReplayObservationConsequenceV1>,
+) -> Result<(), TraceErrorV1> {
     for consequence in classified {
         match consequence {
             crate::PreparedObservationConsequenceV1::ObservationFrame(frame) => {
@@ -672,14 +778,14 @@ fn record_replay_observation_consequences(
             crate::PreparedObservationConsequenceV1::ResetRequired(view) => {
                 consequences.push(ReplayObservationConsequenceV1::ResetRequired {
                     member_id: view.viewer().member_id().clone(),
-                    cause_room_seq: resulting_state.head.room_seq(),
+                    cause_room_seq: resulting_state.head().room_seq(),
                     projection_hash: view.projection_hash().map_err(TraceErrorV1::Canonical)?,
                 });
             }
             crate::PreparedObservationConsequenceV1::VisibilityLost(member_id) => {
                 consequences.push(ReplayObservationConsequenceV1::VisibilityLost {
                     member_id,
-                    cause_room_seq: resulting_state.head.room_seq(),
+                    cause_room_seq: resulting_state.head().room_seq(),
                 });
             }
         }
@@ -908,7 +1014,6 @@ impl CoreTraceV1 {
     /// Performs only the stable host-controlled Action admission checks. It
     /// never invokes Activity reduction and returns `None` when reduction is
     /// legal rather than fabricating a durable rejection.
-    #[allow(clippy::too_many_lines)]
     pub(crate) fn assess_stable_action_disposition(
         &self,
         request: &crate::ParticipantActionRequestV1,
@@ -917,22 +1022,48 @@ impl CoreTraceV1 {
         if request.room_id() != self.head.room_id() {
             return Err(TraceErrorV1::CompleteHeadMismatch);
         }
-        let retained_pack = self
+        let retained = self
             .retained_pack
             .as_ref()
             .ok_or(TraceErrorV1::RetainedPackUnavailable)?;
+        Self::assess_stable_action_from_values(
+            &self.head,
+            &self.core_state,
+            &self.activity_state,
+            retained,
+            request,
+            admitted_at,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn assess_stable_action_from_values(
+        head: &CompleteHeadV1,
+        core_state: &CoreRoomStateV1,
+        activity_state: &CanonicalJsonV1,
+        retained_pack: &RetainedActivityPackV1,
+        request: &crate::ParticipantActionRequestV1,
+        admitted_at: &crate::ActionAdmittedAt,
+        payload_budget: Option<crate::PayloadBudgetV1>,
+    ) -> Result<Option<StableActionAdmissionV1>, TraceErrorV1> {
+        if request.room_id() != head.room_id() {
+            return Err(TraceErrorV1::CompleteHeadMismatch);
+        }
+        if let Some(budget) = payload_budget {
+            budget.check_value(crate::PayloadKindV1::ActionPayload, request.payload())?;
+        }
         let declared_payload_schema = retained_pack
             .host()
             .preflight_action_payload(request.action_type(), request.payload())
             .map_err(map_activity_pack_reduce_error)?;
-        let membership = self
-            .core_state
+        let membership = core_state
             .membership(request.member_id())
             .ok_or(TraceErrorV1::ParticipantNotEligible)?;
         if membership.access_mode() != AccessModeV1::Participant {
             return Err(TraceErrorV1::ParticipantNotEligible);
         }
-        if self.core_state.room_status() == RoomStatusV1::Archived {
+        if core_state.room_status() == RoomStatusV1::Archived {
             return Ok(Some(StableActionAdmissionV1 {
                 code: "room_archived",
                 normalized_action: None,
@@ -950,16 +1081,19 @@ impl CoreTraceV1 {
         }
         let current_action_offers = || -> Result<Option<Vec<u8>>, TraceErrorV1> {
             let viewer = PackViewerV1::Participant(request.member_id().clone());
-            let view = retained_pack.host().view(&ViewInputV1 {
-                core: &self.core_state,
-                activity_state: &self.activity_state,
-                complete_head: &self.head,
-                viewer: &viewer,
-            })?;
+            let view = retained_pack.host().view_with_budget(
+                &ViewInputV1 {
+                    core: &core_state,
+                    activity_state: &activity_state,
+                    complete_head: &head,
+                    viewer: &viewer,
+                },
+                payload_budget,
+            )?;
             Ok(Some(view.action_offers().canonical_bytes().to_vec()))
         };
 
-        if request.based_on_room_seq() != self.head.room_seq() {
+        if request.based_on_room_seq() != head.room_seq() {
             let offers = current_action_offers()?;
             return Ok(Some(StableActionAdmissionV1 {
                 code: "stale_room_state",
@@ -971,12 +1105,15 @@ impl CoreTraceV1 {
             }));
         }
         let viewer = PackViewerV1::Participant(request.member_id().clone());
-        let view = retained_pack.host().view(&ViewInputV1 {
-            core: &self.core_state,
-            activity_state: &self.activity_state,
-            complete_head: &self.head,
-            viewer: &viewer,
-        })?;
+        let view = retained_pack.host().view_with_budget(
+            &ViewInputV1 {
+                core: &core_state,
+                activity_state: &activity_state,
+                complete_head: &head,
+                viewer: &viewer,
+            },
+            payload_budget,
+        )?;
         let offers = view.action_offers().canonical_bytes().to_vec();
         let Some(offer) = view
             .action_offers()
@@ -1003,13 +1140,10 @@ impl CoreTraceV1 {
             action_type: request.action_type().to_owned(),
             payload_schema_digest: offer.payload_schema_digest.clone(),
             canonical_payload: request.payload().clone(),
-            exact_basis_head: self.head.clone(),
+            exact_basis_head: head.clone(),
             admitted_at: admitted_at.clone(),
         };
-        match retained_pack
-            .host()
-            .pre_admit_action(&action, &view, &self.head)
-        {
+        match retained_pack.host().pre_admit_action(&action, &view, &head) {
             Ok(()) => Ok(None),
             Err(ActivityPackReduceErrorV1::Admission(error)) => {
                 let code = match error {
@@ -1397,61 +1531,18 @@ impl CoreTraceV1 {
         trace: &Self,
         request: HistoricalReplayProjectionRequestV1,
     ) -> Result<HistoricalReplayProjectionV1, HistoricalReplayErrorV1> {
-        if trace.head.room_id() != &request.room_id || trace.head.room_seq() != request.at_room_seq
-        {
-            return Err(HistoricalReplayErrorV1::AddressMismatch);
-        }
-        let historical_membership = trace
-            .core_state()
-            .membership(&request.member_id)
-            .ok_or(HistoricalReplayErrorV1::HistoricalMembershipUnavailable)?;
-        if historical_membership.standing() != MembershipStandingV1::Enabled {
-            return Err(HistoricalReplayErrorV1::HistoricalMembershipUnavailable);
-        }
-        let viewer = match request.projection_kind {
-            ReplayProjectionKindV1::HistoricalMembership => {
-                PackViewerV1::Historical(request.member_id.clone())
-            }
-            ReplayProjectionKindV1::FinalReveal => {
-                PackViewerV1::FinalReveal(request.member_id.clone())
-            }
-        };
         let retained_pack = trace
             .retained_pack
             .as_ref()
             .ok_or(HistoricalReplayErrorV1::ProjectionUnavailable)?;
-        let view = retained_pack
-            .host()
-            .view(&ViewInputV1 {
-                core: &trace.core_state,
-                activity_state: &trace.activity_state,
-                complete_head: &trace.head,
-                viewer: &viewer,
-            })
-            .map_err(|_| HistoricalReplayErrorV1::ProjectionUnavailable)?;
-        if !view.action_offers().offers().is_empty() {
-            return Err(HistoricalReplayErrorV1::ProjectionUnavailable);
-        }
-        let canonical_view = CanonicalJsonV1::from_canonical_bytes(view.canonical_bytes())
-            .map_err(|_| HistoricalReplayErrorV1::ProjectionUnavailable)?;
-        let historical_membership = historical_membership.clone();
-        let canonical_envelope = CanonicalJsonV1::from_serialize(&HistoricalReplayEnvelopeV1 {
-            envelope: "worldstream/historical-replay-projection/v1",
-            verified_head: &trace.head,
-            integrity: &request.integrity,
-            room_status: trace.core_state.room_status(),
-            membership: &historical_membership,
-            projection_kind: request.projection_kind,
-            activity_projection: &canonical_view,
-        })
-        .map_err(|_| HistoricalReplayErrorV1::ProjectionUnavailable)?;
-        Ok(HistoricalReplayProjectionV1 {
-            verified_head: trace.head.clone(),
-            integrity: request.integrity,
-            historical_room_status: trace.core_state.room_status(),
-            historical_membership,
-            canonical_envelope,
-        })
+        historical_projection_from_values(
+            &trace.head,
+            &trace.core_state,
+            &trace.activity_state,
+            retained_pack,
+            request,
+            None,
+        )
     }
 
     pub(crate) fn replay_for_recovery(
@@ -2144,6 +2235,71 @@ impl CoreTraceV1 {
     }
 }
 
+fn historical_projection_from_values(
+    head: &CompleteHeadV1,
+    core_state: &CoreRoomStateV1,
+    activity_state: &CanonicalJsonV1,
+    retained_pack: &RetainedActivityPackV1,
+    request: HistoricalReplayProjectionRequestV1,
+    payload_budget: Option<crate::PayloadBudgetV1>,
+) -> Result<HistoricalReplayProjectionV1, HistoricalReplayErrorV1> {
+    if head.room_id() != &request.room_id || head.room_seq() != request.at_room_seq {
+        return Err(HistoricalReplayErrorV1::AddressMismatch);
+    }
+    let historical_membership = core_state
+        .membership(&request.member_id)
+        .ok_or(HistoricalReplayErrorV1::HistoricalMembershipUnavailable)?;
+    if historical_membership.standing() != MembershipStandingV1::Enabled {
+        return Err(HistoricalReplayErrorV1::HistoricalMembershipUnavailable);
+    }
+    let viewer = match request.projection_kind {
+        ReplayProjectionKindV1::HistoricalMembership => {
+            PackViewerV1::Historical(request.member_id.clone())
+        }
+        ReplayProjectionKindV1::FinalReveal => PackViewerV1::FinalReveal(request.member_id.clone()),
+    };
+    let view = retained_pack
+        .host()
+        .view_with_budget(
+            &ViewInputV1 {
+                core: core_state,
+                activity_state,
+                complete_head: head,
+                viewer: &viewer,
+            },
+            payload_budget,
+        )
+        .map_err(|_| HistoricalReplayErrorV1::ProjectionUnavailable)?;
+    if !view.action_offers().offers().is_empty() {
+        return Err(HistoricalReplayErrorV1::ProjectionUnavailable);
+    }
+    let canonical_view = CanonicalJsonV1::from_canonical_bytes(view.canonical_bytes())
+        .map_err(|_| HistoricalReplayErrorV1::ProjectionUnavailable)?;
+    let historical_membership = historical_membership.clone();
+    let canonical_envelope = CanonicalJsonV1::from_serialize(&HistoricalReplayEnvelopeV1 {
+        envelope: "worldstream/historical-replay-projection/v1",
+        verified_head: head,
+        integrity: &request.integrity,
+        room_status: core_state.room_status(),
+        membership: &historical_membership,
+        projection_kind: request.projection_kind,
+        activity_projection: &canonical_view,
+    })
+    .map_err(|_| HistoricalReplayErrorV1::ProjectionUnavailable)?;
+    if let Some(budget) = payload_budget {
+        budget
+            .check_value(crate::PayloadKindV1::Projection, &canonical_envelope)
+            .map_err(|_| HistoricalReplayErrorV1::ProjectionUnavailable)?;
+    }
+    Ok(HistoricalReplayProjectionV1 {
+        verified_head: head.clone(),
+        integrity: request.integrity,
+        historical_room_status: core_state.room_status(),
+        historical_membership,
+        canonical_envelope,
+    })
+}
+
 fn decode_replay_genesis(genesis_bytes: &[u8]) -> Result<GenesisV1, ReplayFailureV1> {
     GenesisV1::from_canonical_bytes(genesis_bytes).map_err(|error| {
         ReplayFailureV1::without_head(ReplayFailureClassV1::NonCanonicalRecord, error.to_string())
@@ -2458,7 +2614,28 @@ fn validate_preflight_core_transition(
             map_checked_core_error(error).to_string(),
         )
     })?;
-    match transition.recorded_stimulus() {
+    let derived = derive_preflight_core_transition(
+        head,
+        core_before,
+        timers,
+        transition.recorded_stimulus(),
+    )?;
+    if &derived != transition.resulting_core_state() {
+        return Err((
+            ReplayFailureClassV1::CoreState,
+            "stored Core result differs from the host reducer".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn derive_preflight_core_transition(
+    head: &CompleteHeadV1,
+    core_before: &CoreRoomStateV1,
+    timers: &TimerBookV1,
+    stimulus: &RecordedStimulusV1,
+) -> Result<CoreRoomStateV1, (ReplayFailureClassV1, String)> {
+    match stimulus {
         RecordedStimulusV1::ParticipantAction(action) => {
             let eligible =
                 core_before
@@ -2477,12 +2654,6 @@ fn validate_preflight_core_transition(
                     "stored participant Action is invalid at its exact prefix".to_owned(),
                 ));
             }
-            if transition.resulting_core_state() != core_before {
-                return Err((
-                    ReplayFailureClassV1::CoreState,
-                    "participant Action changed host-owned Core state".to_owned(),
-                ));
-            }
         }
         RecordedStimulusV1::TimerFired(fired) => {
             if core_before.room_status != RoomStatusV1::Active
@@ -2499,12 +2670,6 @@ fn validate_preflight_core_transition(
                     "stored Timer firing is invalid at its exact prefix".to_owned(),
                 ));
             }
-            if transition.resulting_core_state() != core_before {
-                return Err((
-                    ReplayFailureClassV1::CoreState,
-                    "Timer firing changed host-owned Core state".to_owned(),
-                ));
-            }
         }
         RecordedStimulusV1::CoreProposed(proposal) => {
             if proposal.expected_room_seq != head.room_seq {
@@ -2519,12 +2684,13 @@ fn validate_preflight_core_transition(
                     map_checked_core_error(error).to_string(),
                 )
             })?;
-            if proposed.no_change || proposed.state != *transition.resulting_core_state() {
+            if proposed.no_change {
                 return Err((
                     ReplayFailureClassV1::CoreState,
-                    "stored Core proposal result differs from the host reducer".to_owned(),
+                    "stored Transition contains a no-change Core proposal".to_owned(),
                 ));
             }
+            return Ok(proposed.state);
         }
         RecordedStimulusV1::ExternalInput(_) => {
             if core_before.room_status != RoomStatusV1::Active {
@@ -2533,15 +2699,9 @@ fn validate_preflight_core_transition(
                     "stored external input occurred after archive".to_owned(),
                 ));
             }
-            if transition.resulting_core_state() != core_before {
-                return Err((
-                    ReplayFailureClassV1::CoreState,
-                    "external input changed host-owned Core state".to_owned(),
-                ));
-            }
         }
     }
-    Ok(())
+    Ok(core_before.clone())
 }
 
 fn map_activity_pack_reduce_error(error: ActivityPackReduceErrorV1) -> TraceErrorV1 {
@@ -3203,6 +3363,9 @@ pub enum TraceErrorV1 {
     /// Canonical codec failure.
     #[error(transparent)]
     Canonical(#[from] CanonicalJsonError),
+    /// Unresolved fresh caller input exceeds its immutable Room policy.
+    #[error(transparent)]
+    PayloadBudget(#[from] crate::PayloadBudgetErrorV1),
     /// Core invariant failure.
     #[error(transparent)]
     Core(#[from] CoreValidationErrorV1),
@@ -3894,7 +4057,7 @@ fn replay_activation_decision_witnesses(
 }
 
 fn replay_observation_storage_witnesses(
-    report: &ReplayReportV1,
+    consequences: &[ReplayObservationConsequenceV1],
     memberships: &[ReplayMembershipWitnessV1],
 ) -> (
     Vec<ReplayObservationPositionWitnessV1>,
@@ -3908,7 +4071,7 @@ fn replay_observation_storage_witnesses(
     let mut replay_positions = BTreeMap::<MemberId, (u64, Option<u64>)>::new();
     let mut observation_frames = Vec::new();
     let mut observation_consequences = Vec::new();
-    for consequence in report.observation_consequences() {
+    for consequence in consequences {
         match consequence {
             ReplayObservationConsequenceV1::ObservationFrame(frame) => {
                 replay_positions
@@ -3998,7 +4161,7 @@ impl ReplayStorageVerificationV1 {
             .map_err(|error| error.to_string())?;
         let activation_decisions = replay_activation_decision_witnesses(transition_bytes)?;
         let (observation_positions, observation_frames, observation_consequences) =
-            replay_observation_storage_witnesses(report, &memberships);
+            replay_observation_storage_witnesses(report.observation_consequences(), &memberships);
         Ok(Self {
             memberships,
             timers,
@@ -4155,6 +4318,14 @@ pub struct ReplayFailureV1 {
     /// Head immediately before the corrupt/unreplayable record.
     pub last_verified_head: Option<Box<CompleteHeadV1>>,
 }
+
+impl fmt::Display for ReplayFailureV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "Replay failed: {:?}", self.class)
+    }
+}
+
+impl std::error::Error for ReplayFailureV1 {}
 
 impl ReplayFailureV1 {
     fn without_head(class: ReplayFailureClassV1, detail: String) -> Self {

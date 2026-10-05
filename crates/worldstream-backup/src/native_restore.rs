@@ -1114,6 +1114,8 @@ fn exact_canonical_evidence(room: &crate::RoomImageV1, limits: VerifierLimits) -
     if room.records.is_empty() || room.records.len() > limits.max_records_per_room {
         return false;
     }
+    let lineage =
+        worldstream_core::GenesisRecord::from_canonical_bytes(&room.records[0].bytes).ok();
     let mut previous = None;
     for (index, record) in room.records.iter().enumerate() {
         let expected_kind = if index == 0 {
@@ -1124,7 +1126,7 @@ fn exact_canonical_evidence(room: &crate::RoomImageV1, limits: VerifierLimits) -
         if record.kind != expected_kind
             || record.room_seq != index as u64
             || record.bytes.len() > limits.max_object_bytes
-            || !crate::canonical_record_hash_matches(record)
+            || !crate::canonical_record_hash_matches_in_lineage(record, lineage.as_ref())
             || record.previous_digest != previous
         {
             return false;

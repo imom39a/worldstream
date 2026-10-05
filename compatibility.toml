@@ -21,6 +21,25 @@ storage_schema = 1
 core_schema_version = "worldstream.core-room-state.v1"
 hash_suite = "blake3-canonical-json-v1"
 
+[[canonical_lineages]]
+canonical_history_format = "worldstream/transition/v1"
+genesis_version = "worldstream/genesis/v1"
+genesis_codec_id = "worldstream/canonical-json/v1"
+genesis_hash_suite = "blake3-canonical-json-v1"
+transition_version = "worldstream/transition/v1"
+transition_codec_id = "worldstream/canonical-json/v1"
+transition_hash_suite = "blake3-canonical-json-v1"
+
+[[canonical_lineages]]
+canonical_history_format = "worldstream/transition/v2"
+genesis_version = "worldstream/genesis/v2"
+genesis_codec_id = "worldstream/genesis-record/v2"
+genesis_hash_suite = "blake3-canonical-json-v2"
+transition_version = "worldstream/transition/v2"
+transition_codec_id = "worldstream/transition-record/v2"
+transition_hash_suite = "blake3-canonical-json-v2"
+payload_budget_id = "worldstream/payload-budget/v1"
+
 [toolchains]
 rust = "1.97.1"
 rust_edition = "2024"

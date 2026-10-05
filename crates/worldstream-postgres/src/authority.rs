@@ -106,14 +106,22 @@ impl PostgresRoomStore {
         &self,
         bearer: CapabilityBearerV1,
     ) -> Result<PostgresAuthenticatedCapabilityV1, PostgresAuthorityAuthenticationError> {
+        if super::storage_read_deadline_expired() {
+            return Err(PostgresAuthorityAuthenticationError::Unavailable);
+        }
         let token_hash = bearer.token_hash();
-        let mut client = self.connect().map_err(|error| {
+        let mut client = self.read_connection().map_err(|error| {
             self.record_error(&error);
             PostgresAuthorityAuthenticationError::Unavailable
         })?;
-        let checked_at = super::postgres_authority_checked_at(&mut client)
+        let mut tx = client
+            .transaction()
             .map_err(|_| PostgresAuthorityAuthenticationError::Unavailable)?;
-        let row = client
+        super::apply_storage_read_deadline(&mut tx)
+            .map_err(|_| PostgresAuthorityAuthenticationError::Unavailable)?;
+        let checked_at = super::postgres_authority_checked_at(&mut tx)
+            .map_err(|_| PostgresAuthorityAuthenticationError::Unavailable)?;
+        let row = tx
             .query_opt(
                 "SELECT c.capability_id, c.principal_id, p.principal_kind, c.expires_at, c.profile_kind, c.runner_id \
                  FROM worldstream_authority_capabilities c \
@@ -170,6 +178,8 @@ impl PostgresRoomStore {
             ("room_member" | "host_operator", None) => None,
             _ => return Err(PostgresAuthorityAuthenticationError::Corrupt),
         };
+        tx.commit()
+            .map_err(|_| PostgresAuthorityAuthenticationError::Unavailable)?;
         Ok(PostgresAuthenticatedCapabilityV1 {
             presented: PresentedCapabilityV1::new(capability_id, bearer),
             principal_id,
@@ -197,11 +207,21 @@ impl AuthorityStoreV1 for PostgresRoomStore {
         &self,
         query: &AuthoritySnapshotQueryV1,
     ) -> Result<Option<AuthoritySnapshotV1>, AuthorityStoreErrorV1> {
-        let mut client = self.connect().map_err(|error| {
+        if super::storage_read_deadline_expired() {
+            return Err(AuthorityStoreErrorV1::Unavailable);
+        }
+        let mut client = self.read_connection().map_err(|error| {
             self.record_error(&error);
             AuthorityStoreErrorV1::Unavailable
         })?;
-        let mut transaction = begin_consistent_transaction(&mut client)?;
+        let mut transaction = client
+            .transaction()
+            .map_err(|_| AuthorityStoreErrorV1::Unavailable)?;
+        super::apply_storage_read_deadline(&mut transaction)
+            .map_err(|_| AuthorityStoreErrorV1::Unavailable)?;
+        transaction
+            .batch_execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            .map_err(|_| AuthorityStoreErrorV1::Unavailable)?;
         let snapshot = load_authority_snapshot(&mut transaction, query, false)?;
         transaction
             .commit()
@@ -410,7 +430,7 @@ fn timestamp_key(
 }
 
 #[allow(clippy::too_many_lines)]
-fn load_authority_snapshot<C: GenericClient>(
+fn load_authority_snapshot<C: super::publication_read::ReadQuery>(
     client: &mut C,
     query: &AuthoritySnapshotQueryV1,
     lock_rows: bool,
@@ -435,7 +455,7 @@ fn load_authority_snapshot<C: GenericClient>(
         .map_err(|_| AuthorityStoreErrorV1::Corrupt)
 }
 
-pub(super) fn load_authority_snapshot_for_adapter<C: GenericClient>(
+pub(super) fn load_authority_snapshot_for_adapter<C: super::publication_read::ReadQuery>(
     client: &mut C,
     query: &AuthoritySnapshotQueryV1,
 ) -> Result<Option<AuthoritySnapshotV1>, AuthorityStoreErrorV1> {
@@ -443,7 +463,7 @@ pub(super) fn load_authority_snapshot_for_adapter<C: GenericClient>(
 }
 
 #[allow(clippy::too_many_lines)]
-fn load_capability<C: GenericClient>(
+fn load_capability<C: super::publication_read::ReadQuery>(
     client: &mut C,
     requested_id: &CapabilityId,
     lock_rows: bool,
@@ -550,7 +570,7 @@ fn load_capability<C: GenericClient>(
     .map_err(|_| AuthorityStoreErrorV1::Corrupt)
 }
 
-fn load_scopes<C: GenericClient>(
+fn load_scopes<C: super::publication_read::ReadQuery>(
     client: &mut C,
     capability_id: &CapabilityId,
 ) -> Result<CapabilityScopeSetV1, AuthorityStoreErrorV1> {
@@ -571,7 +591,7 @@ fn load_scopes<C: GenericClient>(
     CapabilityScopeSetV1::new(scopes).map_err(|_| AuthorityStoreErrorV1::Corrupt)
 }
 
-fn load_runner_memberships<C: GenericClient>(
+fn load_runner_memberships<C: super::publication_read::ReadQuery>(
     client: &mut C,
     capability_id: &CapabilityId,
 ) -> Result<Vec<RoomMembershipKeyV1>, AuthorityStoreErrorV1> {
@@ -595,7 +615,7 @@ fn load_runner_memberships<C: GenericClient>(
         .collect()
 }
 
-fn load_principal<C: GenericClient>(
+fn load_principal<C: super::publication_read::ReadQuery>(
     client: &mut C,
     principal_id: &PrincipalId,
     lock_rows: bool,
@@ -626,7 +646,7 @@ fn load_principal<C: GenericClient>(
     )))
 }
 
-fn load_runner<C: GenericClient>(
+fn load_runner<C: super::publication_read::ReadQuery>(
     client: &mut C,
     runner_id: &RunnerId,
     lock_rows: bool,
@@ -657,7 +677,7 @@ fn load_runner<C: GenericClient>(
     )))
 }
 
-fn load_membership<C: GenericClient>(
+fn load_membership<C: super::publication_read::ReadQuery>(
     client: &mut C,
     key: &RoomMembershipKeyV1,
     lock_rows: bool,

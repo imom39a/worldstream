@@ -38,3 +38,19 @@ This package is private and internal. It is not the FR-10 public Application
 SDK, a general realtime Room protocol implementation, or Pack presentation
 code. Activity Clients remain responsible for interpreting their Pack's
 authorized Projection and Observation schemas.
+
+### Explicit compact payload accounting
+
+The root export includes `PAYLOAD_BUDGET_V1_ID`, `PAYLOAD_BUDGET_V1_LIMITS`,
+`canonicalPayloadBytes`, and `checkFreshPayload`. These helpers count canonical
+UTF-8 bytes for an explicitly known payload kind and exact compact Room policy.
+Use them only for unresolved fresh work. Supply a complete array or accounting
+object for an aggregate kind. They do not change existing transport validation,
+wire messages, or accepted-retry behavior.
+Complete authorized views include schema identities, Action Offers, and
+authorized Core fields where present.
+
+`checkDeclaredArtifactReference` requires an application-declared schema
+identity. The application validates that schema. The helper does not scan other
+JSON values for references or grant download authority. This package does not
+add an HTTP Room creation client.

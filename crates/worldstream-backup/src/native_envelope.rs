@@ -59,7 +59,7 @@ const REQUIRED_COVERAGE_TABLES: [&str; 22] = [
 ];
 
 const TRUSTED_COMPATIBILITY_JSON_DIGEST: &str =
-    "629d360eca282d9d2901e311474232807b23b2d753e43b7f8dc7760b395aae16";
+    "11f4d608579a4e9fc9d78183eaa389095525c8674ecbedeba5da714b8da9ed1d";
 
 type RequestKey = (NativeSqliteRequestLedgerV1, Vec<u8>);
 type RequestMap = BTreeMap<RequestKey, Vec<u8>>;
@@ -1585,6 +1585,7 @@ mod compatibility_authority_tests {
         NativeSqliteRestoreEvidenceV1 {
             operational: NativeSqliteOperationalRowsV1 { tables },
             canonical_records: BTreeMap::new(),
+            canonical_pack_revision_locks: BTreeMap::new(),
             materializations: BTreeMap::new(),
             newest_valid_snapshots: BTreeMap::new(),
             integrity: BTreeMap::new(),

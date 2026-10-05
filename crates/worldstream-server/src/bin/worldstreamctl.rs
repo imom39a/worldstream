@@ -1248,7 +1248,7 @@ fn run_postgres_native_restore(args: NativePostgresRestoreArgs) -> Result<()> {
         &args.report,
         Duration::from_secs(args.timeout_seconds),
     )
-    .map_err(|_| anyhow::anyhow!("native PostgreSQL restore failed closed"))?;
+    .map_err(|error| anyhow::anyhow!("native PostgreSQL restore failed closed: {error}"))?;
     let report = outcome.report();
     let mut exact_report = serde_json::to_vec(report)
         .context("native PostgreSQL report receipt serialization failed")?;

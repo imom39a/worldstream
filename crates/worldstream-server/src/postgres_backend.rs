@@ -23,23 +23,21 @@ use worldstream_core::{
     AdministrationOperationIdentityV1, AdmissionLaneErrorV1, AuthorityChangeId, AuthorityChangeV1,
     AuthorityCheckedAt, AuthorityErrorV1, AuthorityStoreV1, AuthorityV1,
     AuthorizedReceiptResolverV1, AuthorizedRunnerControlV1, CORE_OPERATION_KIND,
-    CREATE_ROOM_OPERATION_KIND, CanonicalJsonV1, CapabilityBearerV1, CapabilityExpiresAt,
-    CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1, CoreAdministrationIngressV1,
-    CoreAdministrationRequestV1, CoreChangeSetV1, CoreProposedKindV1, CoreRecordedAt,
-    CreationRecordedAt, DiagnosticOperationV1, DiagnosticTargetV1, ExternalInputRecordedAt,
-    HistoricalReplayErrorV1, HostClockErrorV1, HostClockSampleV1, HostClockV1,
-    InitialMembershipProposalV1, MemberReadOperationV1, MembershipStandingV1, MembershipV1,
-    MonotonicHostClockV1, NewCapabilityV1, PackDigestV1, PackGenesisRequestV1, PackRegistryV1,
-    PackViewerV1, ParticipantActionIngressErrorV1, ParticipantActionIngressV1,
-    ParticipantActionRequestV1, PreparedRoomCreationV1, PrincipalKindV1, ReplayProjectionKindV1,
-    RoomAdmissionLanesV1, RoomCommitResolutionV1, RoomCommitStorageV1, RoomCreationIngressV1,
-    RoomCreationRequestV1, RoomId, RoomIntegrityStateV1, RoomIntegrityStatusV1,
-    RoomMembershipKeyV1, RoomSeedV1, RoomSequenceV1, RoomTraceCacheErrorV1, RoomTraceCacheV1,
-    RunnerControlOperationV1, RunnerId, RunnerMembershipSetV1, SemanticResultV1, SessionErrorV1,
-    SessionFrameV1, SessionSyncTokenV1, SessionV1, StoredSemanticResultV1, TimerFiredRequestV1,
-    TimerGenerationV1, TimerId, TransitionId, authorize_core_administration_operation,
-    authorize_participant_action_operation, authorize_room_creation_operation,
-    commit_room_creation,
+    CREATE_ROOM_OPERATION_KIND, CanonicalJsonV1, CanonicalRoomTraceCache, CapabilityBearerV1,
+    CapabilityExpiresAt, CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1,
+    CoreAdministrationIngressV1, CoreAdministrationRequestV1, CoreChangeSetV1, CoreProposedKindV1,
+    CoreRecordedAt, CreationRecordedAt, DiagnosticOperationV1, DiagnosticTargetV1,
+    ExternalInputRecordedAt, HistoricalReplayErrorV1, HostClockErrorV1, HostClockSampleV1,
+    HostClockV1, InitialMembershipProposalV1, MemberReadOperationV1, MembershipStandingV1,
+    MembershipV1, MonotonicHostClockV1, NewCapabilityV1, PackDigestV1, PackGenesisRequestV1,
+    PackRegistryV1, PackViewerV1, ParticipantActionIngressErrorV1, ParticipantActionIngressV1,
+    ParticipantActionRequestV1, PrincipalKindV1, ReplayProjectionKindV1, RoomAdmissionLanesV1,
+    RoomCommitResolutionV1, RoomCommitStorageV1, RoomCreationIngressV1, RoomCreationRequestV1,
+    RoomId, RoomIntegrityStateV1, RoomIntegrityStatusV1, RoomMembershipKeyV1, RoomSeedV1,
+    RoomSequenceV1, RoomTraceCacheErrorV1, RunnerControlOperationV1, RunnerId,
+    RunnerMembershipSetV1, SemanticResultV1, SessionErrorV1, SessionFrameV1, SessionSyncTokenV1,
+    SessionV1, StoredSemanticResultV1, TimerFiredRequestV1, TimerGenerationV1, TimerId,
+    TransitionId, authorize_core_administration_operation, authorize_participant_action_operation,
 };
 use worldstream_postgres::{
     PostgresActivationError, PostgresAuthorityAuthenticationError,
@@ -138,8 +136,10 @@ pub fn read_postgres_dsn(source: &SecretSource) -> Result<String> {
 pub struct PostgresGatewayBackend {
     store: Arc<PostgresRoomStore>,
     registry: Arc<PackRegistryV1>,
-    bindings: SessionBindings,
-    traces: RoomTraceCacheV1,
+    bindings: Arc<SessionBindings>,
+    #[cfg(test)]
+    live_payload_page_reads: std::sync::atomic::AtomicUsize,
+    traces: CanonicalRoomTraceCache,
     observation_retention: Mutex<PostgresObservationRetentionV1>,
     host_clock: Arc<dyn HostClockV1>,
     admission_lanes: RoomAdmissionLanesV1,
@@ -223,8 +223,10 @@ impl PostgresGatewayBackend {
         Self {
             store: Arc::new(store),
             registry,
-            bindings: SessionBindings::default(),
-            traces: RoomTraceCacheV1::default(),
+            bindings: Arc::new(SessionBindings::default()),
+            #[cfg(test)]
+            live_payload_page_reads: std::sync::atomic::AtomicUsize::new(0),
+            traces: CanonicalRoomTraceCache::default(),
             observation_retention: Mutex::new(PostgresObservationRetentionV1::default()),
             host_clock,
             admission_lanes,
@@ -926,7 +928,7 @@ impl PostgresGatewayBackend {
         room_id: &RoomId,
     ) -> Result<
         (
-            worldstream_core::CoreTraceV1,
+            worldstream_core::CanonicalRoomTrace,
             worldstream_postgres::PostgresRoomVerification,
         ),
         BackendError,
@@ -955,7 +957,7 @@ impl PostgresGatewayBackend {
         }
         let trace = self
             .store
-            .recover_room(self.registry.as_ref(), room_id.as_ref())
+            .recover_canonical_room(self.registry.as_ref(), room_id.as_ref())
             .map_err(map_recovery_error)?
             .ok_or(BackendError::NotFound)?;
         Ok((trace, verification))
@@ -975,7 +977,7 @@ impl PostgresGatewayBackend {
         &self,
         room_id: &RoomId,
         operation: impl FnOnce(
-            &mut worldstream_core::CoreTraceV1,
+            &mut worldstream_core::CanonicalRoomTrace,
             &PostgresRoomServingFenceV1,
         ) -> Result<R, BackendError>,
     ) -> Result<R, BackendError> {
@@ -1012,7 +1014,7 @@ impl PostgresGatewayBackend {
                     {
                         return Err(BackendError::Busy);
                     }
-                    *slot = Some(worldstream_core::CachedRoomTraceV1::new(
+                    *slot = Some(worldstream_core::CachedCanonicalRoomTrace::new(
                         trace,
                         current.integrity().clone(),
                     ));
@@ -1026,6 +1028,169 @@ impl PostgresGatewayBackend {
                 result
             })
             .map_err(map_trace_cache_error)?
+    }
+
+    fn commit_cached_plan(
+        &self,
+        room_id: &RoomId,
+        operation: impl FnOnce(
+            &worldstream_core::CanonicalRoomTrace,
+            &PostgresRoomServingFenceV1,
+        )
+            -> Result<worldstream_core::PreparedCanonicalRoomCommit, BackendError>,
+    ) -> Result<RoomCommitResolutionV1, BackendError> {
+        self.traces
+            .with_room(room_id, |slot| {
+                let mut fence = self
+                    .store
+                    .current_room_serving_fence(room_id)
+                    .map_err(map_serving_fence_error)?
+                    .ok_or(BackendError::NotFound)?;
+                match fence.integrity().status() {
+                    RoomIntegrityStatusV1::Healthy => {}
+                    RoomIntegrityStatusV1::Faulted => return Err(BackendError::RoomFaulted),
+                    RoomIntegrityStatusV1::Quarantined => {
+                        return Err(BackendError::RoomQuarantined);
+                    }
+                }
+                let cache_matches = slot.as_ref().is_some_and(|cached| {
+                    cached.trace().head() == fence.head() && cached.integrity() == fence.integrity()
+                });
+                if !cache_matches {
+                    *slot = None;
+                    let (trace, verification) = self.verified_trace(room_id)?;
+                    let current = self
+                        .store
+                        .current_room_serving_fence(room_id)
+                        .map_err(map_serving_fence_error)?
+                        .ok_or(BackendError::NotFound)?;
+                    if trace.head() != current.head()
+                        || verification.integrity_generation
+                            != current.integrity().generation().get()
+                        || verification.integrity_status
+                            != serving_integrity_status(current.integrity())
+                    {
+                        return Err(BackendError::Busy);
+                    }
+                    *slot = Some(worldstream_core::CachedCanonicalRoomTrace::new(
+                        trace,
+                        current.integrity().clone(),
+                    ));
+                    fence = current;
+                }
+                let cached = slot.as_mut().ok_or(BackendError::StorageUnavailable)?;
+                let result = operation(cached.trace(), &fence).map(|prepared| {
+                    worldstream_core::commit_canonical_existing_room(
+                        self.store.as_ref(),
+                        cached.trace_mut(),
+                        prepared,
+                    )
+                    .into_parts()
+                    .0
+                });
+                cached.trace_mut().discard_persisted_history();
+                if result.is_err()
+                    || matches!(
+                        &result,
+                        Ok(RoomCommitResolutionV1::Reprepare
+                            | RoomCommitResolutionV1::RetryableKnownAbsent
+                            | RoomCommitResolutionV1::Fenced
+                            | RoomCommitResolutionV1::Indeterminate
+                            | RoomCommitResolutionV1::Fault)
+                    )
+                {
+                    *slot = None;
+                }
+                result
+            })
+            .map_err(map_trace_cache_error)?
+    }
+
+    fn commit_cached_timer(
+        &self,
+        room: &RoomId,
+        authority: worldstream_core::AuthorizedTimerFiredV1,
+        request: &TimerFiredRequestV1,
+        transition: TransitionId,
+    ) -> Result<RoomCommitResolutionV1, BackendError> {
+        self.commit_cached_plan(room, |trace, fence| {
+            let prepared = trace
+                .prepare(worldstream_core::RecordedStimulusV1::TimerFired(
+                    worldstream_core::TimerFiredV1 {
+                        timer_id: request.timer_id().clone(),
+                        generation: request.generation(),
+                        scheduled_for: request.scheduled_for().clone(),
+                        canonical_payload: request.canonical_payload().clone(),
+                    },
+                ))
+                .map_err(crate::map_canonical_trace_preparation_error)?;
+            worldstream_core::PreparedCanonicalRoomCommit::for_authorized_timer_fired(
+                trace,
+                request,
+                prepared,
+                transition,
+                fence.integrity().generation(),
+                authority,
+                fence.frame_heads(),
+            )
+            .map_err(crate::map_canonical_write_preparation_error)
+        })
+    }
+
+    fn commit_cached_external_input(
+        &self,
+        room: &RoomId,
+        authority: worldstream_core::AuthorizedExternalInputV1,
+        based_on: RoomSequenceV1,
+        input: &worldstream_core::ExternalInputV1,
+        transition: TransitionId,
+    ) -> Result<RoomCommitResolutionV1, BackendError> {
+        self.commit_cached_plan(room, |trace, fence| {
+            let prepared = trace
+                .prepare(worldstream_core::RecordedStimulusV1::ExternalInput(
+                    input.clone(),
+                ))
+                .map_err(crate::map_canonical_trace_preparation_error)?;
+            worldstream_core::PreparedCanonicalRoomCommit::for_authorized_external_input(
+                trace,
+                room,
+                based_on,
+                input,
+                prepared,
+                transition,
+                fence.integrity().generation(),
+                authority,
+                fence.frame_heads(),
+            )
+            .map_err(|error| match error {
+                worldstream_core::PrepareRoomWriteErrorV1::PreparedBasisMismatch => {
+                    BackendError::Rejected
+                }
+                other => crate::map_canonical_write_preparation_error(other),
+            })
+        })
+    }
+
+    fn commit_cached_core_administration(
+        &self,
+        room: &RoomId,
+        authority: worldstream_core::AuthorizedCoreAdministrationV1,
+        request: &CoreAdministrationRequestV1,
+        recorded_at: CoreRecordedAt,
+        transition: TransitionId,
+    ) -> Result<RoomCommitResolutionV1, BackendError> {
+        self.commit_cached_plan(room, |trace, fence| {
+            worldstream_core::PreparedCanonicalRoomCommit::for_authorized_core_administration(
+                trace,
+                request,
+                recorded_at,
+                transition,
+                fence.integrity().generation(),
+                authority,
+                fence.frame_heads(),
+            )
+            .map_err(crate::map_canonical_write_preparation_error)
+        })
     }
 
     fn commit_cached_participant_action(
@@ -1070,7 +1235,7 @@ impl PostgresGatewayBackend {
                     {
                         return Err(BackendError::Busy);
                     }
-                    *slot = Some(worldstream_core::CachedRoomTraceV1::new(
+                    *slot = Some(worldstream_core::CachedCanonicalRoomTrace::new(
                         trace,
                         current.integrity().clone(),
                     ));
@@ -1109,7 +1274,7 @@ impl PostgresGatewayBackend {
                 let integrity = cached.integrity().clone();
                 let resolution = self
                     .store
-                    .commit_authorized_participant_action_from_serving_trace(
+                    .commit_authorized_participant_action_from_canonical_serving_trace(
                         authority,
                         request,
                         stimulus,
@@ -1119,6 +1284,7 @@ impl PostgresGatewayBackend {
                         fence.frame_heads(),
                     )
                     .map_err(map_room_commit_error);
+                cached.trace_mut().discard_persisted_history();
                 if matches!(
                     &resolution,
                     Ok(RoomCommitResolutionV1::Reprepare
@@ -1149,7 +1315,7 @@ impl PostgresGatewayBackend {
     }
 
     fn member_for_principal(
-        trace: &worldstream_core::CoreTraceV1,
+        trace: &worldstream_core::CanonicalRoomTrace,
         principal_id: &worldstream_core::PrincipalId,
     ) -> Result<MembershipV1, BackendError> {
         trace
@@ -1166,20 +1332,11 @@ impl PostgresGatewayBackend {
 
     fn view_for(
         &self,
-        trace: &worldstream_core::CoreTraceV1,
+        trace: &worldstream_core::CanonicalRoomTrace,
         membership: &MembershipV1,
     ) -> Result<worldstream_core::ValidatedPackViewV1, BackendError> {
-        self.registry
-            .as_ref()
-            .load_retained(trace.head().pack_digest())
-            .map_err(|_| BackendError::InvalidResult)?
-            .host()
-            .view(&worldstream_core::ViewInputV1 {
-                core: trace.core_state(),
-                activity_state: trace.activity_state(),
-                complete_head: trace.head(),
-                viewer: &viewer_for(membership),
-            })
+        trace
+            .view(&viewer_for(membership))
             .map_err(|_| BackendError::InvalidResult)
     }
 
@@ -1277,10 +1434,13 @@ impl PostgresGatewayBackend {
         &self,
         session: &GatewaySession,
         request: &CreateRoomRequest,
+        format: worldstream_core::CanonicalHistoryFormat,
     ) -> Result<CreateAttempt, BackendError> {
         let authenticated = self.authenticate(session)?;
-        let (core_request, identity) = creation_request(&authenticated, request)?;
-        let grant = match authorize_room_creation_operation(
+        let (legacy_request, identity) = creation_request(&authenticated, request)?;
+        let core_request =
+            worldstream_core::RoomCreationRequestWithFormat::new(legacy_request, format);
+        let grant = match worldstream_core::authorize_canonical_room_creation_operation(
             &self.authority(),
             self.store.as_ref(),
             &authenticated.into_presented(),
@@ -1301,7 +1461,7 @@ impl PostgresGatewayBackend {
         let selected = self
             .registry
             .as_ref()
-            .select_for_new_room(core_request.pack_digest())
+            .select_for_new_room(core_request.legacy_request().pack_digest())
             .map_err(|_| BackendError::Rejected)?;
         if selected.descriptor().pack_id != request.pack.id
             || selected.descriptor().explanatory_version != request.pack.version
@@ -1312,39 +1472,48 @@ impl PostgresGatewayBackend {
         let genesis = self
             .registry
             .as_ref()
-            .prepare_genesis_for_new_room(&PackGenesisRequestV1 {
-                room_id,
-                pack_digest: core_request.pack_digest().clone(),
-                configuration: core_request.configuration().clone(),
-                room_seed: random_room_seed()?,
-                created_at: creation_time()?,
-                initial_core_state: worldstream_core::CoreRoomStateV1::active(
-                    request
-                        .members
-                        .iter()
-                        .map(|member| {
-                            MembershipV1::new(
-                                next_core_id()?,
-                                member
-                                    .principal_id
-                                    .parse()
-                                    .map_err(|_| BackendError::Rejected)?,
-                                core_principal_kind(member.principal_kind),
-                                MembershipStandingV1::Enabled,
-                                core_access_mode(member.access_mode),
-                                member.role.clone(),
-                            )
-                            .map_err(|_| BackendError::Rejected)
-                        })
-                        .collect::<Result<Vec<_>, BackendError>>()?,
-                )
-                .map_err(|_| BackendError::Rejected)?,
-            })
+            .prepare_genesis_for_new_room_with_format(
+                &PackGenesisRequestV1 {
+                    room_id,
+                    pack_digest: core_request.legacy_request().pack_digest().clone(),
+                    configuration: core_request.legacy_request().configuration().clone(),
+                    room_seed: random_room_seed()?,
+                    created_at: creation_time()?,
+                    initial_core_state: worldstream_core::CoreRoomStateV1::active(
+                        request
+                            .members
+                            .iter()
+                            .map(|member| {
+                                MembershipV1::new(
+                                    next_core_id()?,
+                                    member
+                                        .principal_id
+                                        .parse()
+                                        .map_err(|_| BackendError::Rejected)?,
+                                    core_principal_kind(member.principal_kind),
+                                    MembershipStandingV1::Enabled,
+                                    core_access_mode(member.access_mode),
+                                    member.role.clone(),
+                                )
+                                .map_err(|_| BackendError::Rejected)
+                            })
+                            .collect::<Result<Vec<_>, BackendError>>()?,
+                    )
+                    .map_err(|_| BackendError::Rejected)?,
+                },
+                format,
+            )
             .map_err(|_| BackendError::Rejected)?;
-        let prepared =
-            PreparedRoomCreationV1::from_registry_genesis(identity, &core_request, grant, genesis)
-                .map_err(|_| BackendError::InvalidResult)?;
-        let (resolution, _, _) = commit_room_creation(self.store.as_ref(), prepared).into_parts();
+        let prepared = worldstream_core::PreparedCanonicalRoomCreation::from_registry_genesis(
+            identity,
+            &core_request,
+            grant,
+            genesis,
+        )
+        .map_err(crate::map_canonical_write_preparation_error)?;
+        let (resolution, _, _, _) =
+            worldstream_core::commit_canonical_room_creation(self.store.as_ref(), prepared)
+                .into_parts();
         match resolution {
             RoomCommitResolutionV1::GenesisCreated { result, .. } => Ok(CreateAttempt::Response(
                 Box::new(create_response_from_result(&result)?),
@@ -1662,8 +1831,35 @@ impl GatewayBackend for PostgresGatewayBackend {
         session: &GatewaySession,
         request: CreateRoomRequest,
     ) -> Result<CreateRoomResponse, BackendError> {
+        self.create_room_with_format(
+            session,
+            worldstream_protocol::CreateRoomRequestWithFormat {
+                request,
+                canonical_history_format: worldstream_protocol::CanonicalHistoryFormatV1::V1,
+            },
+        )
+    }
+
+    fn create_room_with_format(
+        &self,
+        session: &GatewaySession,
+        request: worldstream_protocol::CreateRoomRequestWithFormat,
+    ) -> Result<CreateRoomResponse, BackendError> {
+        let format = match request.canonical_history_format {
+            worldstream_protocol::CanonicalHistoryFormatV1::V1 => {
+                worldstream_core::CanonicalHistoryFormat::V1
+            }
+            worldstream_protocol::CanonicalHistoryFormatV1::V2
+                if crate::COMPACT_ROOM_CREATION_ENABLED =>
+            {
+                worldstream_core::CanonicalHistoryFormat::V2
+            }
+            worldstream_protocol::CanonicalHistoryFormatV1::V2 => {
+                return Err(BackendError::Rejected);
+            }
+        };
         for _ in 0..3 {
-            match self.creation_attempt(session, &request)? {
+            match self.creation_attempt(session, &request.request, format)? {
                 CreateAttempt::Response(response) => return Ok(*response),
                 CreateAttempt::Retry => {}
             }
@@ -1979,6 +2175,223 @@ impl GatewayBackend for PostgresGatewayBackend {
             .collect()
     }
 
+    fn live_observation_page(
+        &self,
+        session: &GatewaySession,
+        room_id: &str,
+        member_id: &str,
+        after_frame_seq: u64,
+        max_frames: usize,
+        max_canonical_payload_bytes: usize,
+    ) -> Result<crate::LiveObservationPage, BackendError> {
+        let room_id = RoomId::from_str(room_id).map_err(|_| BackendError::Rejected)?;
+        let member_id = member_id
+            .parse::<worldstream_core::MemberId>()
+            .map_err(|_| BackendError::Rejected)?;
+        let authenticated = self.authenticate(session)?;
+        let capability_id = authenticated.presented().capability_id().clone();
+        let authority = self
+            .authority()
+            .authorize_member_read(
+                &authenticated.into_presented(),
+                room_id.clone(),
+                member_id.clone(),
+                MemberReadOperationV1::CatchUp,
+                self.checked_at()?,
+            )
+            .map_err(map_authority_error)?;
+        let reset_generation = self.bindings.live_reset_generation(
+            session.session_id(),
+            &capability_id,
+            &room_id,
+            &member_id,
+        )?;
+        let (frames, has_more) = self
+            .store
+            .read_observation_page_bounded(
+                room_id.as_ref(),
+                member_id.as_ref(),
+                &authority.into_adapter_input(),
+                after_frame_seq,
+                reset_generation,
+                max_frames,
+                max_canonical_payload_bytes,
+            )
+            .map_err(map_observation_error)?;
+        let frames = frames
+            .into_iter()
+            .map(|frame| observation_deliver(&frame, &room_id, &member_id))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(crate::LiveObservationPage { frames, has_more })
+    }
+
+    fn supports_shared_live_observation_cut(&self) -> bool {
+        true
+    }
+    fn prepare_live_observation_batch(
+        &self,
+        recipients: &[crate::LiveObservationRecipient],
+        max_frames: usize,
+        max_bytes: usize,
+    ) -> Vec<Result<crate::LiveObservationPreparedPage, BackendError>> {
+        let addresses: std::collections::BTreeSet<_> = recipients
+            .iter()
+            .map(|r| (&r.room_id, &r.member_id, r.after_frame_seq))
+            .collect();
+        if recipients.len() > 16 || addresses.len() > 2 {
+            return recipients
+                .iter()
+                .map(|_| Err(BackendError::InvalidResult))
+                .collect();
+        }
+        let mut results: Vec<Option<Result<crate::LiveObservationPreparedPage, BackendError>>> =
+            (0..recipients.len()).map(|_| None).collect();
+        let mut groups = BTreeMap::new();
+        for (index, recipient) in recipients.iter().enumerate() {
+            let prepare = || {
+                let room: RoomId = recipient
+                    .room_id
+                    .parse()
+                    .map_err(|_| BackendError::Rejected)?;
+                let member: worldstream_core::MemberId = recipient
+                    .member_id
+                    .parse()
+                    .map_err(|_| BackendError::Rejected)?;
+                let authenticated = self.authenticate(&recipient.session)?;
+                let capability = authenticated.presented().capability_id().clone();
+                let grant = self
+                    .authority()
+                    .authorize_member_read(
+                        &authenticated.into_presented(),
+                        room.clone(),
+                        member.clone(),
+                        MemberReadOperationV1::CatchUp,
+                        self.checked_at()?,
+                    )
+                    .map_err(map_authority_error)?;
+                let reset = self.bindings.live_reset_generation(
+                    recipient.session.session_id(),
+                    &capability,
+                    &room,
+                    &member,
+                )?;
+                Ok::<_, BackendError>((
+                    room,
+                    member,
+                    Arc::new(grant.into_adapter_input()),
+                    reset,
+                    capability,
+                ))
+            };
+            match prepare() {
+                Ok((room, member, grant, reset, capability)) => {
+                    groups
+                        .entry((room, member, recipient.after_frame_seq))
+                        .or_insert_with(Vec::new)
+                        .push((index, grant, reset, capability));
+                }
+                Err(error) => results[index] = Some(Err(error)),
+            }
+        }
+        for ((room, member, after), group) in groups {
+            let reset = group[0].2;
+            let grants: Vec<_> = group
+                .iter()
+                .map(|(_, grant, _, _)| Arc::clone(grant))
+                .collect();
+            let shared = if group.iter().all(|item| item.2 == reset) {
+                #[cfg(test)]
+                self.live_payload_page_reads
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.store
+                    .read_shared_observation_page(&grants, after, reset, max_frames, max_bytes)
+                    .ok()
+            } else {
+                None
+            };
+            let mut page = shared.map(|(frames, more, cut)| (frames, more, Arc::new(cut)));
+            let mut page_reset = reset;
+            for (index, grant, reset, _capability) in &group {
+                // A raced invalid grant cannot deny other Sessions. The first
+                // valid independent cut becomes the candidate; every later
+                // grant must prove compatibility using immutable metadata.
+                if page.is_none() {
+                    #[cfg(test)]
+                    self.live_payload_page_reads
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    match self.store.read_shared_observation_page(
+                        &[Arc::clone(grant)],
+                        after,
+                        *reset,
+                        max_frames,
+                        max_bytes,
+                    ) {
+                        Ok((frames, more, cut)) => {
+                            page_reset = *reset;
+                            page = Some((frames, more, Arc::new(cut)));
+                        }
+                        Err(error) => {
+                            results[*index] = Some(Err(map_observation_error(error)));
+                            continue;
+                        }
+                    }
+                }
+                if *reset != page_reset {
+                    results[*index] = Some(Err(BackendError::ResetRequired));
+                    continue;
+                }
+                let Some((_, _, cut)) = page.as_ref() else {
+                    results[*index] = Some(Err(BackendError::InvalidResult));
+                    continue;
+                };
+                if let Err(error) = self.store.revalidate_live_observation(grant, cut) {
+                    results[*index] = Some(Err(map_observation_error(error)));
+                }
+            }
+            if let Some((frames, has_more, cut)) = page {
+                let converted = frames
+                    .iter()
+                    .map(|frame| observation_deliver(frame, &room, &member))
+                    .collect::<Result<Vec<_>, _>>();
+                match converted {
+                    Ok(frames) => {
+                        let frames: Arc<[ObservationDeliver]> = frames.into();
+                        for (index, grant, reset, capability) in group {
+                            if results[index].is_some() {
+                                continue;
+                            }
+                            let fence = PostgresLiveFence {
+                                store: self.store.clone(),
+                                bindings: Arc::clone(&self.bindings),
+                                grant,
+                                cut: Arc::clone(&cut),
+                                session_id: recipients[index].session.session_id().clone(),
+                                capability_id: capability,
+                                reset,
+                            };
+                            results[index] = Some(Ok(crate::LiveObservationPreparedPage {
+                                frames: Arc::clone(&frames),
+                                has_more,
+                                fence: Some(Arc::new(fence)),
+                            }));
+                        }
+                    }
+                    Err(_) => {
+                        for (index, _, _, _) in group {
+                            if results[index].is_none() {
+                                results[index] = Some(Err(BackendError::InvalidResult));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        results
+            .into_iter()
+            .map(|result| result.unwrap_or(Err(BackendError::InvalidResult)))
+            .collect()
+    }
+
     fn observation_ack(
         &self,
         session: &GatewaySession,
@@ -2027,7 +2440,7 @@ impl GatewayBackend for PostgresGatewayBackend {
             .map_err(|_| BackendError::Rejected)?;
         let room_id = RoomId::from_str(room_id).map_err(|_| BackendError::Rejected)?;
         let authenticated = self.authenticate(session)?;
-        self.verified_trace(&room_id)?;
+        self.with_serving_trace(&room_id, |_, _| Ok(()))?;
         let timer_id = TimerId::from_str(&request.timer_id).map_err(|_| BackendError::Rejected)?;
         let generation =
             TimerGenerationV1::new(request.generation).map_err(|_| BackendError::Rejected)?;
@@ -2080,15 +2493,12 @@ impl GatewayBackend for PostgresGatewayBackend {
             .admission_lanes
             .reserve_host_stimulus(&room_id)
             .map_err(|error| map_admission_lane_error(&error))?;
-        let resolution = self
-            .store
-            .commit_authorized_timer_fired(
-                self.registry.as_ref(),
-                authority,
-                timer_request,
-                next_core_id::<TransitionId>()?,
-            )
-            .map_err(map_room_commit_error)?;
+        let resolution = self.commit_cached_timer(
+            &room_id,
+            authority,
+            timer_request,
+            next_core_id::<TransitionId>()?,
+        )?;
         timer_response_from_resolution(timer_request, &resolution)
     }
 
@@ -2147,10 +2557,12 @@ impl GatewayBackend for PostgresGatewayBackend {
                 checked_at,
             )
             .map_err(map_authority_error)?;
-        let (trace, _verification) = self.verified_trace(&plan.room_id)?;
-        if trace.head().pack_digest() != &plan.pack_digest {
-            return Err(BackendError::Conflict);
-        }
+        self.with_serving_trace(&plan.room_id, |trace, _| {
+            if trace.head().pack_digest() != &plan.pack_digest {
+                return Err(BackendError::Conflict);
+            }
+            Ok(())
+        })?;
         let _admission = self
             .admission_lanes
             .reserve_host_stimulus(&plan.room_id)
@@ -2163,17 +2575,13 @@ impl GatewayBackend for PostgresGatewayBackend {
                 &plan.input.recorded_at,
             )
             .map_err(map_external_input_preparation_error)?;
-        let resolution = self
-            .store
-            .commit_authorized_external_input(
-                self.registry.as_ref(),
-                authority,
-                &plan.room_id,
-                plan.based_on_room_seq,
-                &plan.input,
-                next_core_id::<TransitionId>()?,
-            )
-            .map_err(map_room_commit_error)?;
+        let resolution = self.commit_cached_external_input(
+            &plan.room_id,
+            authority,
+            plan.based_on_room_seq,
+            &plan.input,
+            next_core_id::<TransitionId>()?,
+        )?;
         ingress_response_from_result(
             &plan,
             resolution.stored_result().ok_or(BackendError::Busy)?,
@@ -2243,8 +2651,9 @@ impl GatewayBackend for PostgresGatewayBackend {
                 checked_at,
             )
             .map_err(map_authority_error)?;
-        let (contract_trace, _) = self.verified_trace(&plan.room_id)?;
-        let revision_digest = contract_trace.head().pack_digest().clone();
+        let revision_digest = self.with_serving_trace(&plan.room_id, |trace, _| {
+            Ok(trace.head().pack_digest().clone())
+        })?;
         plan.validate_room_pack(self.registry.as_ref(), &revision_digest)?;
         if !self
             .registry
@@ -2276,19 +2685,21 @@ impl GatewayBackend for PostgresGatewayBackend {
             }
             worldstream_core::ResolveOutcomeV1::KnownAbsent => {}
         }
-        let (trace, _) = self.verified_trace(&plan.room_id)?;
-        plan.validate_room_pack(self.registry.as_ref(), trace.head().pack_digest())?;
-        let contract = match self
-            .registry
-            .activity_start_compatibility(trace.head().pack_digest())
-            .map_err(|_| BackendError::InvalidResult)?
-        {
-            worldstream_core::ActivityStartCompatibilityV1::Supported(contract) => contract,
-            _ => return Err(BackendError::WrongPhase),
-        };
-        if !worldstream_core::activity_start_is_applicable(&contract, trace.activity_state()) {
-            return Err(BackendError::WrongPhase);
-        }
+        let contract = self.with_serving_trace(&plan.room_id, |trace, _| {
+            plan.validate_room_pack(self.registry.as_ref(), trace.head().pack_digest())?;
+            let contract = match self
+                .registry
+                .activity_start_compatibility(trace.head().pack_digest())
+                .map_err(|_| BackendError::InvalidResult)?
+            {
+                worldstream_core::ActivityStartCompatibilityV1::Supported(contract) => contract,
+                _ => return Err(BackendError::WrongPhase),
+            };
+            if !worldstream_core::activity_start_is_applicable(&contract, trace.activity_state()) {
+                return Err(BackendError::WrongPhase);
+            }
+            Ok(contract)
+        })?;
         let proposed_recorded_at = self.checked_at()?;
         plan.input.recorded_at = ExternalInputRecordedAt::from_str(proposed_recorded_at.as_str())
             .map_err(|_| BackendError::StorageUnavailable)?;
@@ -2319,25 +2730,20 @@ impl GatewayBackend for PostgresGatewayBackend {
             }
             worldstream_core::ResolveOutcomeV1::KnownAbsent => {}
         }
-        let (trace, _) = self.verified_trace(&plan.room_id)?;
-        plan.validate_room_pack(self.registry.as_ref(), trace.head().pack_digest())?;
-        if !worldstream_core::activity_start_is_applicable(&contract, trace.activity_state()) {
-            return Err(BackendError::WrongPhase);
-        }
-        let resolution = match self.store.commit_authorized_external_input(
-            self.registry.as_ref(),
-            authority,
+        self.with_serving_trace(&plan.room_id, |trace, _| {
+            plan.validate_room_pack(self.registry.as_ref(), trace.head().pack_digest())?;
+            if !worldstream_core::activity_start_is_applicable(&contract, trace.activity_state()) {
+                return Err(BackendError::WrongPhase);
+            }
+            Ok(())
+        })?;
+        let resolution = self.commit_cached_external_input(
             &plan.room_id,
+            authority,
             plan.based_on_room_seq,
             &plan.input,
             next_core_id::<TransitionId>()?,
-        ) {
-            Ok(resolution) => resolution,
-            Err(PostgresRoomCommitError::Recovery(
-                worldstream_core::RoomRecoveryErrorV1::ConcurrentChange,
-            )) => return Err(BackendError::WrongPhase),
-            Err(error) => return Err(map_room_commit_error(error)),
-        };
+        )?;
         lobby_response_from_resolution(
             &plan,
             self.registry.as_ref(),
@@ -2396,8 +2802,9 @@ impl GatewayBackend for PostgresGatewayBackend {
                 Err(BackendError::Indeterminate)
             }
             worldstream_core::ResolveOutcomeV1::KnownAbsent => {
-                let (trace, _) = self.verified_trace(&plan.room_id)?;
-                plan.validate_room_pack(self.registry.as_ref(), trace.head().pack_digest())?;
+                self.with_serving_trace(&plan.room_id, |trace, _| {
+                    plan.validate_room_pack(self.registry.as_ref(), trace.head().pack_digest())
+                })?;
                 Ok(None)
             }
         }
@@ -2416,9 +2823,9 @@ impl GatewayBackend for PostgresGatewayBackend {
         let authenticated = self.authenticate(session)?;
         let principal_id = authenticated.principal_id().clone();
         let presented = authenticated.into_presented();
-        let (trace, _) = self.verified_trace(&room_id)?;
-        let fallback_head = trace.head().clone();
-        let current_status = trace.core_state().room_status();
+        let (fallback_head, current_status) = self.with_serving_trace(&room_id, |trace, _| {
+            Ok((trace.head().clone(), trace.core_state().room_status()))
+        })?;
         let checked_at = self.checked_at()?;
         let recorded_at = CoreRecordedAt::from_str(checked_at.as_str())
             .map_err(|_| BackendError::StorageUnavailable)?;
@@ -2472,16 +2879,13 @@ impl GatewayBackend for PostgresGatewayBackend {
                     .admission_lanes
                     .reserve_host_stimulus(&room_id)
                     .map_err(|error| map_admission_lane_error(&error))?;
-                let resolution = self
-                    .store
-                    .commit_authorized_core_administration(
-                        self.registry.as_ref(),
-                        *authority,
-                        &core_request,
-                        recorded_at,
-                        next_core_id::<TransitionId>()?,
-                    )
-                    .map_err(map_room_commit_error)?;
+                let resolution = self.commit_cached_core_administration(
+                    &room_id,
+                    *authority,
+                    &core_request,
+                    recorded_at,
+                    next_core_id::<TransitionId>()?,
+                )?;
                 archive_response_from_resolution(&core_request, &resolution, &fallback_head)
             }
         }
@@ -2765,7 +3169,7 @@ impl GatewayBackend for PostgresGatewayBackend {
         });
         let preparation = self.with_serving_trace(&room_id, |trace, fence| {
             self.store
-                .prepare_activation_claim_from_serving_trace(
+                .prepare_activation_claim_from_canonical_serving_trace(
                     self.registry.as_ref(),
                     authority,
                     operation,
@@ -3019,7 +3423,7 @@ impl PostgresGatewayBackend {
         recovery_reason: Option<&str>,
         room_id: &RoomId,
         member_id: &worldstream_core::MemberId,
-        trace: &worldstream_core::CoreTraceV1,
+        trace: &worldstream_core::CanonicalRoomTrace,
         integrity: &RoomIntegrityStateV1,
     ) -> Result<ProtocolDelivery, BackendError> {
         match delivery {
@@ -3821,7 +4225,9 @@ fn map_serving_fence_error(
             BackendError::NotFound
         }
         worldstream_postgres::PostgresRoomVerificationError::Connection(_)
-        | worldstream_postgres::PostgresRoomVerificationError::Sql(_) => {
+        | worldstream_postgres::PostgresRoomVerificationError::Sql(_)
+        | worldstream_postgres::PostgresRoomVerificationError::RuntimeUnavailable
+        | worldstream_postgres::PostgresRoomVerificationError::RuntimeFault => {
             BackendError::StorageUnavailable
         }
         worldstream_postgres::PostgresRoomVerificationError::InvalidRoomId
@@ -3845,7 +4251,8 @@ fn map_observation_error(error: PostgresObservationError) -> BackendError {
         PostgresObservationError::Fenced => BackendError::Busy,
         PostgresObservationError::ResetRequired => BackendError::ResetRequired,
         PostgresObservationError::Authority => BackendError::Forbidden,
-        PostgresObservationError::Corrupt
+        PostgresObservationError::Unavailable
+        | PostgresObservationError::Corrupt
         | PostgresObservationError::Connection(_)
         | PostgresObservationError::Sql(_)
         | PostgresObservationError::InvalidProjection => BackendError::StorageUnavailable,
@@ -3857,7 +4264,9 @@ fn map_room_commit_error(error: PostgresRoomCommitError) -> BackendError {
     match error {
         PostgresRoomCommitError::Recovery(error) => map_recovery_error(error),
         PostgresRoomCommitError::Preparation => BackendError::InvalidResult,
-        PostgresRoomCommitError::StaleExternalInputBasis => BackendError::Rejected,
+        PostgresRoomCommitError::Rejected | PostgresRoomCommitError::StaleExternalInputBasis => {
+            BackendError::Rejected
+        }
     }
 }
 
@@ -4219,11 +4628,11 @@ mod tests {
         assert!(!source.contains(&unavailable_call));
         for method in [
             "timer_candidate(",
-            "commit_authorized_timer_fired(",
+            "commit_cached_timer(",
             ".reserve_action(&action_room_id, self.host_clock.as_ref())",
             ".reserve_host_stimulus(&room_id)",
             "offer_activations_authorized(",
-            "prepare_activation_claim_from_serving_trace(",
+            "prepare_activation_claim_from_canonical_serving_trace(",
             "claim_activation_authorized(",
             "operate_activation_lease_authorized(",
         ] {
@@ -4456,6 +4865,394 @@ mod tests {
             !bundle_path.is_empty(),
             "bundle path is part of the test contract"
         );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::unwrap_used)]
+    fn live_postgres_shared_batch_uses_production_adapter() {
+        let Ok(dsn) = env::var("WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN") else {
+            return;
+        };
+        for format in [
+            worldstream_core::CanonicalHistoryFormat::V1,
+            worldstream_core::CanonicalHistoryFormat::V2,
+        ] {
+            // Uses the public P2 host installed by the isolated page fixture.
+            // Every Room, issued capability, operation, and Session is fresh.
+            let store = PostgresRoomStore::new(
+                PostgresConnectionConfig::runtime(dsn.clone(), PostgresConnectionPath::Direct)
+                    .unwrap(),
+            )
+            .unwrap();
+            let backend = PostgresGatewayBackend::new(
+                store,
+                Arc::new(builtin_worldstream_registry().unwrap()),
+            );
+            let host = session(0x72, crate::next_ulid().unwrap().as_str());
+            let principal = "01ARZ3NDEKTSV4RRFFQ69G5FD0";
+            let counter = backend
+                .registry
+                .load_retained(&counter_v2_digest())
+                .unwrap();
+            let request = CreateRoomRequest {
+                pack: PackReference {
+                    id: counter.descriptor().pack_id.clone(),
+                    version: counter.descriptor().explanatory_version.clone(),
+                    digest: counter_v2_digest().to_string(),
+                },
+                configuration: json!({"initial_value":0,"maximum_value":16}),
+                members: vec![worldstream_protocol::CreateMember {
+                    principal_id: principal.into(),
+                    principal_kind: PrincipalKind::Human,
+                    role: Some("counter".into()),
+                    access_mode: AccessMode::Participant,
+                }],
+                idempotency_key: crate::next_ulid().unwrap().to_string(),
+            };
+            let selection = worldstream_protocol::CreateRoomRequestWithFormat {
+                request: request.clone(),
+                canonical_history_format: match format {
+                    worldstream_core::CanonicalHistoryFormat::V1 => {
+                        worldstream_protocol::CanonicalHistoryFormatV1::V1
+                    }
+                    worldstream_core::CanonicalHistoryFormat::V2 => {
+                        worldstream_protocol::CanonicalHistoryFormatV1::V2
+                    }
+                },
+            };
+            let created = backend
+                .create_room_with_format(&host, selection.clone())
+                .unwrap();
+            let retry = backend.create_room_with_format(&host, selection).unwrap();
+            assert_eq!(
+                serde_json::to_vec(&created).unwrap(),
+                serde_json::to_vec(&retry).unwrap()
+            );
+            if format == worldstream_core::CanonicalHistoryFormat::V1 {
+                assert_eq!(
+                    backend.create_room(&host, request.clone()).unwrap(),
+                    created
+                );
+            }
+            let other_selection = worldstream_protocol::CreateRoomRequestWithFormat {
+                request: request.clone(),
+                canonical_history_format: match format {
+                    worldstream_core::CanonicalHistoryFormat::V1 => {
+                        worldstream_protocol::CanonicalHistoryFormatV1::V2
+                    }
+                    worldstream_core::CanonicalHistoryFormat::V2 => {
+                        worldstream_protocol::CanonicalHistoryFormatV1::V1
+                    }
+                },
+            };
+            assert!(matches!(
+                backend.create_room_with_format(&host, other_selection),
+                Err(BackendError::Conflict)
+            ));
+            let room = created.room_id;
+            let member = created.member_ids[0].clone();
+            let mut sessions = Vec::new();
+            let mut capabilities = Vec::new();
+            for _ in 0..2 {
+                let issued = backend
+                    .issue_member_capability(
+                        &host,
+                        MemberCapabilityIssueRequest {
+                            room_id: room.clone(),
+                            member_id: member.clone(),
+                            principal_id: principal.into(),
+                            scopes: vec![
+                                CapabilityScopeV1::RoomAttach,
+                                CapabilityScopeV1::RoomObserveMember,
+                                CapabilityScopeV1::RoomAct,
+                            ],
+                            idempotency_key: crate::next_ulid().unwrap().to_string(),
+                            expires_at: None,
+                        },
+                    )
+                    .unwrap();
+                let peer = Arc::new(GatewaySession::new_with_wire(
+                    crate::next_ulid().unwrap(),
+                    CapabilityBearerV1::from_bytes(
+                        BearerWireV1::parse(&issued.bearer).unwrap().into_bytes(),
+                    ),
+                    BearerWireV1::parse(&issued.bearer).unwrap(),
+                ));
+                let attached = backend
+                    .attach(
+                        &peer,
+                        RoomAttach {
+                            room_id: room.clone(),
+                            member_id: member.clone(),
+                            after_frame_seq: None,
+                        },
+                    )
+                    .unwrap();
+                backend
+                    .sync_ack(
+                        &peer,
+                        RoomSyncAck {
+                            room_id: room.clone(),
+                            member_id: member.clone(),
+                            through_frame_head: attached.attached.frame_head,
+                            sync_token: attached.attached.sync_token,
+                        },
+                    )
+                    .unwrap();
+                capabilities.push(issued.capability_id);
+                sessions.push(peer);
+            }
+            backend.forbid_recovery_for_test();
+            backend
+                .action(
+                    &sessions[0],
+                    ActionSubmit {
+                        room_id: room.clone(),
+                        member_id: member.clone(),
+                        action_id: crate::next_ulid().unwrap().to_string(),
+                        based_on_room_seq: 0,
+                        action_type: "increment".into(),
+                        payload: json!({}),
+                    },
+                )
+                .unwrap();
+            backend
+                .traces
+                .with_room(&room.parse().unwrap(), |slot| {
+                    assert!(slot.as_ref().unwrap().trace().transitions().is_empty());
+                    assert_eq!(slot.as_ref().unwrap().trace().head().room_seq().get(), 1);
+                })
+                .unwrap();
+            let recipients: Vec<_> = sessions
+                .iter()
+                .map(|session| crate::LiveObservationRecipient {
+                    session: Arc::clone(session),
+                    room_id: room.clone(),
+                    member_id: member.clone(),
+                    after_frame_seq: 0,
+                })
+                .collect();
+            let reads = backend
+                .live_payload_page_reads
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let pages = backend.prepare_live_observation_batch(&recipients, 32, 1024 * 1024);
+            assert_eq!(
+                backend
+                    .live_payload_page_reads
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    - reads,
+                1
+            );
+            // The actual production batch (including its independent fallback)
+            // must terminate while an unrelated transaction retains the Room lock.
+            let mut blocker = postgres::Client::connect(&dsn, postgres::NoTls).unwrap();
+            let cursor_before: Option<i64> = blocker.query_one(
+                "SELECT last_ack_frame_seq FROM worldstream_members WHERE room_id=$1 AND member_id=$2",
+                &[&room, &member],
+            ).unwrap().get(0);
+            let mut held = blocker.transaction().unwrap();
+            held.query_one(
+                "SELECT room_id FROM worldstream_room_roots WHERE room_id=$1 FOR UPDATE",
+                &[&room],
+            )
+            .unwrap();
+            let started = std::time::Instant::now();
+            let blocked = worldstream_core::with_storage_read_deadline(
+                started + std::time::Duration::from_millis(100),
+                || backend.prepare_live_observation_batch(&recipients, 32, 1024 * 1024),
+            );
+            assert!(blocked.iter().all(Result::is_err));
+            assert!(started.elapsed() < std::time::Duration::from_millis(600));
+            let fenced = worldstream_core::with_storage_read_deadline(
+                std::time::Instant::now() + std::time::Duration::from_millis(100),
+                || {
+                    pages[0]
+                        .as_ref()
+                        .unwrap()
+                        .fence
+                        .as_ref()
+                        .unwrap()
+                        .revalidate(&sessions[0])
+                },
+            );
+            assert!(matches!(fenced, Err(BackendError::StorageUnavailable)));
+            held.rollback().unwrap();
+            let mut held_authority = blocker.transaction().unwrap();
+            held_authority.query_one(
+                "SELECT capability_id FROM worldstream_authority_capabilities WHERE capability_id=$1 FOR UPDATE",
+                &[&capabilities[0]],
+            ).unwrap();
+            let authority_wait = worldstream_core::with_storage_read_deadline(
+                std::time::Instant::now() + std::time::Duration::from_millis(100),
+                || {
+                    pages[0]
+                        .as_ref()
+                        .unwrap()
+                        .fence
+                        .as_ref()
+                        .unwrap()
+                        .revalidate(&sessions[0])
+                },
+            );
+            // A canceled authority SQL read is operational unavailability,
+            // never a permanent authority rejection or lineage quarantine.
+            assert!(matches!(
+                authority_wait,
+                Err(BackendError::StorageUnavailable)
+            ));
+            held_authority.rollback().unwrap();
+            let cursor_after: Option<i64> = blocker.query_one(
+                "SELECT last_ack_frame_seq FROM worldstream_members WHERE room_id=$1 AND member_id=$2",
+                &[&room, &member],
+            ).unwrap().get(0);
+            assert_eq!(cursor_after, cursor_before);
+            let restored = worldstream_core::with_storage_read_deadline(
+                std::time::Instant::now() + std::time::Duration::from_millis(750),
+                || backend.prepare_live_observation_batch(&recipients, 32, 1024 * 1024),
+            );
+            assert_eq!(restored[0].as_ref().unwrap().frames.len(), 1);
+            assert_eq!(restored[1].as_ref().unwrap().frames.len(), 1);
+            eprintln!(
+                "LIVE_PUBLICATION_ROOM_LOCK_DEADLINE=PASS format={format:?} blocked_then_retry_cursor_unchanged"
+            );
+            let first = pages[0].as_ref().unwrap();
+            let second = pages[1].as_ref().unwrap();
+            assert!(Arc::ptr_eq(&first.frames, &second.frames));
+            assert_eq!(first.frames.len(), 1);
+            first
+                .fence
+                .as_ref()
+                .unwrap()
+                .revalidate(&sessions[0])
+                .unwrap();
+            second
+                .fence
+                .as_ref()
+                .unwrap()
+                .revalidate(&sessions[1])
+                .unwrap();
+            backend
+                .action(
+                    &sessions[0],
+                    ActionSubmit {
+                        room_id: room.clone(),
+                        member_id: member.clone(),
+                        action_id: crate::next_ulid().unwrap().to_string(),
+                        based_on_room_seq: 1,
+                        action_type: "increment".into(),
+                        payload: json!({}),
+                    },
+                )
+                .unwrap();
+            first
+                .fence
+                .as_ref()
+                .unwrap()
+                .revalidate(&sessions[0])
+                .unwrap();
+            second
+                .fence
+                .as_ref()
+                .unwrap()
+                .revalidate(&sessions[1])
+                .unwrap();
+            let positions = [
+                recipients[0].clone(),
+                crate::LiveObservationRecipient {
+                    after_frame_seq: 1,
+                    ..recipients[1].clone()
+                },
+            ];
+            let position_pages =
+                backend.prepare_live_observation_batch(&positions, 32, 1024 * 1024);
+            assert_eq!(position_pages[0].as_ref().unwrap().frames.len(), 2);
+            assert_eq!(position_pages[1].as_ref().unwrap().frames.len(), 1);
+            assert_eq!(
+                backend
+                    .observation_ack(
+                        &sessions[0],
+                        ObservationAck {
+                            room_id: room.clone(),
+                            member_id: member.clone(),
+                            through_frame_seq: 2
+                        }
+                    )
+                    .unwrap(),
+                Some(2)
+            );
+            let reattach = backend
+                .attach(
+                    &sessions[1],
+                    RoomAttach {
+                        room_id: room.clone(),
+                        member_id: member.clone(),
+                        after_frame_seq: Some(2),
+                    },
+                )
+                .unwrap();
+            assert_eq!(reattach.attached.cursor, Some(2));
+            assert!(
+                second
+                    .fence
+                    .as_ref()
+                    .unwrap()
+                    .revalidate(&sessions[1])
+                    .is_err()
+            );
+            first
+                .fence
+                .as_ref()
+                .unwrap()
+                .revalidate(&sessions[0])
+                .unwrap();
+            backend
+                .sync_ack(
+                    &sessions[1],
+                    RoomSyncAck {
+                        room_id: room.clone(),
+                        member_id: member.clone(),
+                        through_frame_head: reattach.attached.frame_head,
+                        sync_token: reattach.attached.sync_token,
+                    },
+                )
+                .unwrap();
+            let authenticated = backend.authenticate(&host).unwrap();
+            backend
+                .authority()
+                .change(
+                    &authenticated.into_presented(),
+                    worldstream_core::AuthorityChangeV1::RevokeCapability {
+                        change_id: crate::next_ulid().unwrap().as_str().parse().unwrap(),
+                        capability_id: capabilities[0].parse().unwrap(),
+                        expected_generation: worldstream_core::AuthorityGenerationV1::new(1)
+                            .unwrap(),
+                        reason_code: worldstream_core::AuthorityReasonCodeV1::new(
+                            "shared_adapter_test",
+                        )
+                        .unwrap(),
+                    },
+                    backend.checked_at().unwrap(),
+                )
+                .unwrap();
+            assert!(
+                first
+                    .fence
+                    .as_ref()
+                    .unwrap()
+                    .revalidate(&sessions[0])
+                    .is_err()
+            );
+            second
+                .fence
+                .as_ref()
+                .unwrap()
+                .revalidate(&sessions[1])
+                .unwrap();
+            let isolated = backend.prepare_live_observation_batch(&recipients, 32, 1024 * 1024);
+            assert!(isolated[0].is_err());
+            assert_eq!(isolated[1].as_ref().unwrap().frames.len(), 2);
+        }
     }
 
     #[test]
@@ -5598,5 +6395,33 @@ mod tests {
         eprintln!(
             "LIVE_POSTGRES_GATEWAY=PASS create+duplicate+conflict+projection+replay+attach+sync+resync+action+stale+live+ack+restart+lobby-launch+sealed-provision-replay-conflict+warm-activation-no-recovery+warm-activation-fresh-leases-no-recovery path={connection_path:?} samples={warm_samples} current_read_p50_us={current_read_p50_us} current_read_p95_us={current_read_p95_us} current_read_p99_us={current_read_p99_us} current_read_callbacks={callbacks_after_current_reads} p50_us={warm_p50_us} p95_us={warm_p95_us} p99_us={warm_p99_us} reducer_callbacks={callbacks_after} canonical_transition_rows_before_claims={warm_transition_rows_before_claims} canonical_transition_rows_after_claims={warm_transition_rows_after_claims}"
         );
+    }
+}
+struct PostgresLiveFence {
+    store: Arc<PostgresRoomStore>,
+    bindings: Arc<SessionBindings>,
+    grant: Arc<worldstream_core::ViewerAdapterInputV1>,
+    cut: Arc<worldstream_postgres::PostgresLiveObservationCut>,
+    session_id: worldstream_protocol::UlidString,
+    capability_id: worldstream_core::CapabilityId,
+    reset: u64,
+}
+impl crate::LiveObservationFence for PostgresLiveFence {
+    fn revalidate(&self, session: &GatewaySession) -> Result<(), BackendError> {
+        if session.session_id() != &self.session_id {
+            return Err(BackendError::Rejected);
+        }
+        let reset = self.bindings.live_reset_generation(
+            session.session_id(),
+            &self.capability_id,
+            self.grant.room_id(),
+            self.grant.membership().member_id(),
+        )?;
+        if reset != self.reset {
+            return Err(BackendError::Rejected);
+        }
+        self.store
+            .revalidate_live_observation(&self.grant, &self.cut)
+            .map_err(map_observation_error)
     }
 }

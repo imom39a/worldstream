@@ -1235,13 +1235,14 @@ fn verify_canonical_room(
             ),
         );
     }
+    let lineage = worldstream_core::GenesisRecord::from_canonical_bytes(&genesis.bytes).ok();
     let mut previous = None;
     for (index, record) in room.records.iter().enumerate() {
         let expected_seq = index as u64;
         if record.room_seq != expected_seq
             || (index > 0 && record.kind != CanonicalRecordKindV1::Transition)
             || record.bytes.len() > limits.max_object_bytes
-            || !canonical_record_hash_matches(record)
+            || !canonical_record_hash_matches_in_lineage(record, lineage.as_ref())
             || record.previous_digest != previous
         {
             push_diagnostic(
@@ -1307,6 +1308,41 @@ pub(crate) fn canonical_record_hash_matches(record: &CanonicalRecordV1) -> bool 
         }
         CanonicalRecordKindV1::Transition => {
             native_sqlite::canonical_transition_hash(&record.bytes).as_ref() == Some(&record.digest)
+        }
+    }
+}
+
+pub(crate) fn canonical_record_hash_matches_in_lineage(
+    record: &CanonicalRecordV1,
+    genesis: Option<&worldstream_core::GenesisRecord>,
+) -> bool {
+    let Some(genesis) = genesis else {
+        // The abstract image contract also supports opaque provider fixtures.
+        // Native Room admission separately requires a closed Genesis tuple.
+        return canonical_record_hash_matches(record);
+    };
+    match record.kind {
+        CanonicalRecordKindV1::Genesis => {
+            record.room_seq == 0
+                && record.previous_digest.is_none()
+                && genesis.canonical_bytes().ok().as_deref() == Some(record.bytes.as_slice())
+                && native_sqlite::canonical_genesis_hash(&record.bytes).as_ref()
+                    == Some(&record.digest)
+        }
+        CanonicalRecordKindV1::Transition => {
+            let Ok(transition) = genesis.decode_transition(&record.bytes) else {
+                return false;
+            };
+            let predecessor = transition.previous_lineage_hash().to_string();
+            record.room_seq == transition.room_seq().get()
+                && transition.room_id() == genesis.room_id()
+                && transition.pack_digest() == genesis.pack_digest()
+                && transition.core_schema_version() == genesis.core_schema_version()
+                && record.previous_digest.as_ref().map(DigestV1::as_str)
+                    == predecessor.strip_prefix("blake3:")
+                && native_sqlite::canonical_transition_hash_with_genesis(genesis, &record.bytes)
+                    .as_ref()
+                    == Some(&record.digest)
         }
     }
 }

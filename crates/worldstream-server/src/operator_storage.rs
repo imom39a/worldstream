@@ -13,6 +13,9 @@ use std::{
 
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
+
+#[path = "mixed_storage_verification.rs"]
+mod mixed_storage_verification;
 use worldstream_backup::native_sqlite::{
     NativeSqliteCaptureWitnessV1, NativeSqliteFileIdentityV1, NativeSqliteLimits,
     NativeSqliteRestoreEvidenceV1, NativeSqliteTransferReportV1, NativeSqliteVerificationReportV1,
@@ -505,7 +508,104 @@ fn verify_ready(
     if !report.is_ready() {
         return Err(SqliteOperatorError::VerificationRejected);
     }
+    verify_retained_execution(envelope, restored)?;
     Ok(report.diagnostics.len())
+}
+
+fn verify_retained_execution(
+    envelope: &NativeSqliteBackupEnvelopeV1,
+    restored: &NativeSqliteRestoreEvidenceV1,
+) -> Result<(), SqliteOperatorError> {
+    use worldstream_core::{
+        CanonicalJsonV1, CanonicalRoomTrace, CompleteHeadV1, GenesisRecord, PackRegistryStatusV1,
+        PackRevisionLockV1, builtin_worldstream_registry,
+    };
+
+    let mut registry =
+        builtin_worldstream_registry().map_err(|_| SqliteOperatorError::VerificationRejected)?;
+    if !envelope.pack_bundles.is_empty() {
+        let host = worldstream_component_host::ComponentPackHostV1::new()
+            .map_err(|_| SqliteOperatorError::VerificationRejected)?;
+        let mut admissions = Vec::with_capacity(envelope.pack_bundles.len());
+        for artifact in &envelope.pack_bundles {
+            let bundle = artifact
+                .verify()
+                .map_err(|_| SqliteOperatorError::VerificationRejected)?;
+            admissions.push(
+                host.admit(
+                    bundle,
+                    PackRegistryStatusV1 {
+                        selectable_for_new_rooms: false,
+                        runnable_for_retained_rooms: true,
+                        approved_for_activity_start: false,
+                    },
+                )
+                .map_err(|_| SqliteOperatorError::VerificationRejected)?,
+            );
+        }
+        registry = registry
+            .admit_portable(admissions)
+            .map_err(|_| SqliteOperatorError::VerificationRejected)?;
+    }
+    for (room_id, (status, _)) in &restored.integrity {
+        if status != "healthy" {
+            continue;
+        }
+        let records = restored
+            .canonical_records
+            .get(room_id)
+            .ok_or(SqliteOperatorError::VerificationRejected)?;
+        let genesis = records
+            .first()
+            .ok_or(SqliteOperatorError::VerificationRejected)?;
+        let transitions = records
+            .iter()
+            .skip(1)
+            .map(|record| record.bytes.clone())
+            .collect::<Vec<_>>();
+        let head = restored
+            .room_heads
+            .get(room_id)
+            .ok_or(SqliteOperatorError::VerificationRejected)?;
+        let expected_head =
+            CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&head.complete_head_bytes)
+                .map_err(|_| SqliteOperatorError::VerificationRejected)?;
+        let (core, activity) = restored
+            .materializations
+            .get(room_id)
+            .ok_or(SqliteOperatorError::VerificationRejected)?;
+        let report = CanonicalRoomTrace::replay_for_storage(
+            &registry,
+            &expected_head,
+            &genesis.bytes,
+            &transitions,
+            Some(core),
+            Some(activity),
+        )
+        .map_err(|_| SqliteOperatorError::VerificationRejected)?;
+        let selected_genesis = GenesisRecord::from_canonical_bytes(&genesis.bytes)
+            .map_err(|_| SqliteOperatorError::VerificationRejected)?;
+        let original_lock = restored
+            .canonical_pack_revision_locks
+            .get(room_id)
+            .ok_or(SqliteOperatorError::VerificationRejected)?;
+        let persisted_lock =
+            PackRevisionLockV1::from_canonical_bytes(original_lock, selected_genesis.pack_digest())
+                .map_err(|_| SqliteOperatorError::VerificationRejected)?;
+        if &persisted_lock != report.retained_pack_revision_lock()
+            || report
+                .retained_pack_revision_lock()
+                .canonical_bytes()
+                .ok()
+                .as_deref()
+                != Some(original_lock.as_slice())
+        {
+            return Err(SqliteOperatorError::VerificationRejected);
+        }
+        mixed_storage_verification::verify_replayed_operational_rows(room_id, &report, restored)
+            .map_err(|_| SqliteOperatorError::VerificationRejected)?;
+    }
+    Ok(())
 }
 
 fn verified_report(
@@ -1767,7 +1867,8 @@ mod tests {
         PrincipalKindV1, builtin_counter_registry, counter_v2_digest,
     };
     use worldstream_protocol::{
-        AccessMode, BearerWireV1, CreateMember, CreateRoomRequest, PackReference, PrincipalKind,
+        AccessMode, ActionSubmit, BearerWireV1, CreateMember, CreateRoomRequest, PackReference,
+        PrincipalKind, RoomAttach, RoomSyncAck,
     };
     use worldstream_runtime::{
         create_owner_only_file, prepare_data_directory, validate_owner_only_file,
@@ -1778,7 +1879,10 @@ mod tests {
         PackIdentityV1 as TransferPackIdentityV1,
     };
 
-    use crate::{GatewayBackend, GatewaySession, sqlite_backend::SqliteGatewayBackend};
+    use crate::{
+        GatewayBackend, GatewaySession, MemberCapabilityIssueRequest,
+        sqlite_backend::SqliteGatewayBackend,
+    };
 
     use super::{
         RestoreInputStage, RetainedArtifact, RetainedInput, SqliteOperatorError, backup_sqlite,
@@ -1796,6 +1900,8 @@ mod tests {
     struct StrictProbe {
         nested: NestedProbe,
     }
+
+    include!("mixed_operator_tests.rs");
 
     #[test]
     fn strict_envelope_decoder_rejects_unknown_nested_fields() {
@@ -1855,6 +1961,258 @@ mod tests {
         let native_only = verify_sqlite(&restored)?;
         assert_eq!(native_only.semantic_verifier, "not_invoked");
         assert_no_restore_snapshot_artifacts(temporary.path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn mixed_history_backup_restore_preserves_original_records_and_receipts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use worldstream_core::{CanonicalHistoryFormat, GenesisRecord};
+        let temporary = tempdir()?;
+        prepare_test_directory(temporary.path())?;
+        let source = temporary.path().join("mixed-source.sqlite3");
+        let (template, rooms) = initialize_room_sources_and_companion(
+            &source,
+            &[CanonicalHistoryFormat::V1, CanonicalHistoryFormat::V2],
+            true,
+        )?;
+        let original = extract_restore_evidence(&source, NativeSqliteLimits::default())?;
+        let native =
+            worldstream_backup::native_sqlite::verify_file(&source, NativeSqliteLimits::default())?;
+        assert!(
+            native.canonical_ready,
+            "mixed native admission: {:?}",
+            native.diagnostics
+        );
+        assert_eq!(native.valid_snapshot_count, 2);
+        assert_eq!(native.disposable_snapshot_count, 0);
+        assert_eq!(original.newest_valid_snapshots.len(), 2);
+        assert!(
+            original
+                .newest_valid_snapshots
+                .values()
+                .all(|snapshot| snapshot.room_seq == 0)
+        );
+        let companion = temporary.path().join("mixed-companion.json");
+        write_envelope(&companion, &template)?;
+        let backup = temporary.path().join("mixed-backup.sqlite3");
+        let envelope = temporary.path().join("mixed-backup.envelope.json");
+        let restored = temporary.path().join("mixed-restored.sqlite3");
+        let backup_result = backup_sqlite(&source, &backup, &companion, &envelope)?;
+        assert_eq!(backup_result.semantic_verifier, "pass");
+        assert_eq!(backup_result.room_count, 2);
+        assert_eq!(backup_result.transition_count, 2);
+        let restore_result = restore_sqlite(&backup, &envelope, &restored)?;
+        assert_eq!(restore_result.semantic_verifier, "pass");
+        let restored_evidence = extract_restore_evidence(&restored, NativeSqliteLimits::default())?;
+        assert_eq!(
+            restored_evidence.canonical_records,
+            original.canonical_records
+        );
+        assert_eq!(
+            restored_evidence.canonical_pack_revision_locks,
+            original.canonical_pack_revision_locks
+        );
+        let source_connection = rusqlite::Connection::open(&source)?;
+        for room_id in &rooms {
+            let original_bytes: Vec<u8> = source_connection.query_row(
+                "SELECT pack_revision_lock_bytes FROM room_genesis WHERE room_id = ?1",
+                [room_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                original.canonical_pack_revision_locks.get(room_id),
+                Some(&original_bytes)
+            );
+            assert_eq!(
+                restored_evidence.canonical_pack_revision_locks.get(room_id),
+                Some(&original_bytes)
+            );
+        }
+        drop(source_connection);
+        assert_eq!(restored_evidence.room_heads, original.room_heads);
+        assert_eq!(
+            restored_evidence.materializations,
+            original.materializations
+        );
+        assert_eq!(restored_evidence.integrity, original.integrity);
+        for table in [
+            "semantic_receipts",
+            "observation_frames",
+            "room_operational_history_roots_v2",
+            "room_operational_mmr_receipts_v1",
+            "room_operational_mmr_nodes_v1",
+        ] {
+            assert_eq!(
+                restored_evidence.operational.tables.get(table),
+                original.operational.tables.get(table)
+            );
+        }
+        let registry = builtin_counter_registry()?;
+        let store = SqliteRoomStore::open(&restored)?;
+        for (room_id, format) in rooms
+            .iter()
+            .zip([CanonicalHistoryFormat::V1, CanonicalHistoryFormat::V2])
+        {
+            let room = room_id.parse()?;
+            let trace = store
+                .recover_canonical_room(&registry, &room)?
+                .ok_or("restored Room")?;
+            assert_eq!(
+                GenesisRecord::from_canonical_bytes(&trace.genesis_bytes()?)?.format(),
+                format
+            );
+            assert_eq!(trace.head().room_seq().get(), 1);
+        }
+        drop(store);
+
+        // A foreign record format must fail at the same offline admission boundary.
+        let connection = rusqlite::Connection::open(&source)?;
+        let bytes: Vec<u8> = connection.query_row(
+            "SELECT transition_bytes FROM transitions WHERE room_id = ?1 AND room_seq = 1",
+            [&rooms[1]],
+            |row| row.get(0),
+        )?;
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        value["transition_version"] = serde_json::json!("worldstream/transition/v1");
+        let malformed = CanonicalJsonV1::parse(&serde_json::to_vec(&value)?)?.to_bytes()?;
+        connection.execute_batch("DROP TRIGGER transitions_immutable_update;")?;
+        connection.execute(
+            "UPDATE transitions SET transition_bytes = ?1 WHERE room_id = ?2 AND room_seq = 1",
+            rusqlite::params![malformed, &rooms[1]],
+        )?;
+        drop(connection);
+        let rejected_backup = temporary.path().join("mixed-rejected.sqlite3");
+        let rejected_envelope = temporary.path().join("mixed-rejected.json");
+        assert!(backup_sqlite(&source, &rejected_backup, &companion, &rejected_envelope).is_err());
+        assert!(!rejected_envelope.exists());
+        if rejected_backup.exists() {
+            assert_eq!(fs::metadata(rejected_backup)?.len(), 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn mixed_native_lock_only_mutations_fail_full_admission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use worldstream_core::{CanonicalHistoryFormat, counter_v1_digest};
+        let temporary = tempdir()?;
+        prepare_test_directory(temporary.path())?;
+        let source = temporary.path().join("lock-source.sqlite3");
+        let (template, rooms) = initialize_room_sources_and_companion(
+            &source,
+            &[CanonicalHistoryFormat::V1, CanonicalHistoryFormat::V2],
+            true,
+        )?;
+        let original = extract_restore_evidence(&source, NativeSqliteLimits::default())?;
+        super::verify_retained_execution(&template, &original)?;
+        let mut missing_lock = original.clone();
+        missing_lock.canonical_pack_revision_locks.remove(&rooms[0]);
+        assert!(matches!(
+            super::verify_retained_execution(&template, &missing_lock),
+            Err(SqliteOperatorError::VerificationRejected)
+        ));
+        let companion = temporary.path().join("lock-companion.json");
+        write_envelope(&companion, &template)?;
+        let registry = builtin_counter_registry()?;
+        let other_revision_lock = registry
+            .load_retained(&counter_v1_digest())?
+            .revision_lock()
+            .canonical_bytes()?;
+        let connection = rusqlite::Connection::open(&source)?;
+        connection.execute_batch("DROP TRIGGER room_genesis_immutable_update;")?;
+        for (index, room_id) in rooms.iter().enumerate() {
+            let exact_lock = original
+                .canonical_pack_revision_locks
+                .get(room_id)
+                .ok_or("original Pack revision lock")?;
+            for (mutation, lock) in [
+                ("malformed", b"{}".as_slice()),
+                ("other-revision", other_revision_lock.as_slice()),
+            ] {
+                assert_eq!(
+                    connection.execute(
+                        "UPDATE room_genesis SET pack_revision_lock_bytes = ?1 WHERE room_id = ?2",
+                        rusqlite::params![lock, room_id],
+                    )?,
+                    1
+                );
+                let tampered = extract_restore_evidence(&source, NativeSqliteLimits::default())?;
+                assert_eq!(
+                    tampered
+                        .canonical_pack_revision_locks
+                        .get(room_id)
+                        .map(Vec::as_slice),
+                    Some(lock)
+                );
+                // The attack changes only stored lock bytes. Head, original
+                // records, receipts, operational facts and state remain exact.
+                let mut without_lock_mutation = tampered.clone();
+                without_lock_mutation.canonical_pack_revision_locks =
+                    original.canonical_pack_revision_locks.clone();
+                assert_eq!(without_lock_mutation, original);
+                assert!(matches!(
+                    super::verify_retained_execution(&template, &tampered),
+                    Err(SqliteOperatorError::VerificationRejected)
+                ));
+                let native = worldstream_backup::native_sqlite::verify_file(
+                    &source,
+                    NativeSqliteLimits::default(),
+                )?;
+                assert!(!native.canonical_ready);
+                assert!(
+                    native
+                        .diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.code == "pack_revision_lock_mismatch")
+                );
+                let rejected_backup = temporary
+                    .path()
+                    .join(format!("lock-{index}-{mutation}.sqlite3"));
+                let rejected_envelope = temporary
+                    .path()
+                    .join(format!("lock-{index}-{mutation}.json"));
+                assert!(
+                    backup_sqlite(&source, &rejected_backup, &companion, &rejected_envelope)
+                        .is_err()
+                );
+                assert!(!rejected_envelope.exists());
+                if rejected_backup.exists() {
+                    assert_eq!(fs::metadata(rejected_backup)?.len(), 0);
+                }
+                connection.execute(
+                    "UPDATE room_genesis SET pack_revision_lock_bytes = ?1 WHERE room_id = ?2",
+                    rusqlite::params![exact_lock, room_id],
+                )?;
+            }
+        }
+        drop(connection);
+        let unchanged = extract_restore_evidence(&source, NativeSqliteLimits::default())?;
+        assert_eq!(unchanged, original);
+        super::verify_retained_execution(&template, &unchanged)?;
+        let connection = rusqlite::Connection::open(&source)?;
+        connection.execute(
+            "UPDATE room_integrity SET status = 'quarantined', generation = generation + 1 WHERE room_id = ?1",
+            [&rooms[0]],
+        )?;
+        connection.execute(
+            "UPDATE room_genesis SET pack_revision_lock_bytes = ?1 WHERE room_id = ?2",
+            rusqlite::params![b"{}".as_slice(), &rooms[0]],
+        )?;
+        drop(connection);
+        let isolated = extract_restore_evidence(&source, NativeSqliteLimits::default())?;
+        assert_eq!(
+            isolated
+                .canonical_pack_revision_locks
+                .get(&rooms[0])
+                .map(Vec::as_slice),
+            Some(b"{}".as_slice())
+        );
+        assert!(
+            worldstream_backup::native_sqlite::verify_file(&source, NativeSqliteLimits::default())?
+                .canonical_ready
+        );
+        super::verify_retained_execution(&template, &isolated)?;
         Ok(())
     }
 
@@ -2306,6 +2664,19 @@ mod tests {
     fn initialize_room_source_and_companion(
         path: &Path,
     ) -> Result<(NativeSqliteBackupEnvelopeV1, String), Box<dyn std::error::Error>> {
+        let (envelope, rooms) = initialize_room_sources_and_companion(
+            path,
+            &[worldstream_core::CanonicalHistoryFormat::V1],
+            false,
+        )?;
+        Ok((envelope, rooms[0].clone()))
+    }
+
+    pub(super) fn initialize_room_sources_and_companion(
+        path: &Path,
+        formats: &[worldstream_core::CanonicalHistoryFormat],
+        apply_actions: bool,
+    ) -> Result<(NativeSqliteBackupEnvelopeV1, Vec<String>), Box<dyn std::error::Error>> {
         initialize_empty_source(path)?;
         let store = SqliteRoomStore::open(path)?;
         let authority = AuthorityV1::new(Arc::new(store.clone()));
@@ -2348,7 +2719,100 @@ mod tests {
             CapabilityBearerV1::from_bytes(BearerWireV1::parse(&wire.to_wire())?.into_bytes()),
             wire,
         );
-        let response = backend.create_room(&session, request)?;
+        let mut rooms = Vec::new();
+        let mut request_preimages = std::collections::BTreeMap::new();
+        for format in formats {
+            let mut request = request.clone();
+            if *format == worldstream_core::CanonicalHistoryFormat::V2 {
+                request.idempotency_key.push_str("-compact");
+            }
+            let response = backend.create_room_for_format_for_test(&session, &request, *format)?;
+            let creation_preimage =
+                canonical_creation_request_bytes_for_format(principal.as_ref(), *format)?;
+            request_preimages.insert(DigestV1::hash(&creation_preimage), creation_preimage);
+            if apply_actions {
+                let capability = backend
+                    .issue_member_capability(
+                        &session,
+                        MemberCapabilityIssueRequest {
+                            room_id: response.room_id.clone(),
+                            member_id: response.member_ids[0].clone(),
+                            principal_id: principal.to_string(),
+                            scopes: vec![
+                                worldstream_core::CapabilityScopeV1::RoomAttach,
+                                worldstream_core::CapabilityScopeV1::RoomObserveMember,
+                                worldstream_core::CapabilityScopeV1::RoomAct,
+                            ],
+                            idempotency_key: if *format
+                                == worldstream_core::CanonicalHistoryFormat::V1
+                            {
+                                "01ARZ3NDEKTSV4RRFFQ69G5FE6".to_owned()
+                            } else {
+                                "01ARZ3NDEKTSV4RRFFQ69G5FE7".to_owned()
+                            },
+                            expires_at: None,
+                        },
+                    )
+                    .map_err(|error| format!("issue mixed fixture capability: {error}"))?;
+                let wire = BearerWireV1::parse(&capability.bearer)?;
+                let member_session = GatewaySession::new_with_wire(
+                    if *format == worldstream_core::CanonicalHistoryFormat::V1 {
+                        "01ARZ3NDEKTSV4RRFFQ69G5FD5"
+                    } else {
+                        "01ARZ3NDEKTSV4RRFFQ69G5FD6"
+                    }
+                    .parse()?,
+                    CapabilityBearerV1::from_bytes(
+                        BearerWireV1::parse(&capability.bearer)?.into_bytes(),
+                    ),
+                    wire,
+                );
+                let attached = backend
+                    .attach(
+                        &member_session,
+                        RoomAttach {
+                            room_id: response.room_id.clone(),
+                            member_id: response.member_ids[0].clone(),
+                            after_frame_seq: None,
+                        },
+                    )
+                    .map_err(|error| format!("attach mixed fixture: {error}"))?;
+                backend
+                    .sync_ack(
+                        &member_session,
+                        RoomSyncAck {
+                            room_id: response.room_id.clone(),
+                            member_id: response.member_ids[0].clone(),
+                            through_frame_head: attached.attached.frame_head,
+                            sync_token: attached.attached.sync_token,
+                        },
+                    )
+                    .map_err(|error| format!("sync mixed fixture: {error}"))?;
+                let action = ActionSubmit {
+                    room_id: response.room_id.clone(),
+                    member_id: response.member_ids[0].clone(),
+                    action_id: "01ARZ3NDEKTSV4RRFFQ69G5FE5".to_owned(),
+                    based_on_room_seq: 0,
+                    action_type: "increment".to_owned(),
+                    payload: serde_json::json!({}),
+                };
+                let reply = backend
+                    .action(&member_session, action.clone())
+                    .map_err(|error| format!("action mixed fixture: {error}"))?;
+                assert!(matches!(reply, crate::ActionReply::Accepted(_)));
+                assert!(
+                    matches!(backend.action(&member_session, action.clone())?, crate::ActionReply::Accepted(value) if value.duplicate)
+                );
+                let preimage = CanonicalJsonV1::parse(&serde_json::to_vec(&serde_json::json!({
+                    "domain": "worldstream/action-idempotency/v1", "protocol": "0.1",
+                    "room_id": action.room_id, "member_id": action.member_id,
+                    "based_on_room_seq": action.based_on_room_seq, "action_type": action.action_type,
+                    "payload": action.payload,
+                }))?)?.to_bytes()?;
+                request_preimages.insert(DigestV1::hash(&preimage), preimage);
+            }
+            rooms.push(response.room_id);
+        }
         drop(backend);
         drop(authority);
         drop(store);
@@ -2360,29 +2824,34 @@ mod tests {
             .tables
             .get("semantic_receipts")
             .ok_or("semantic receipt table")?;
-        let row = semantic_rows.first().ok_or("creation receipt")?;
-        let identity = match row.values.get(2) {
-            Some(NativeSqliteValueV1::Blob(value)) => value.clone(),
-            _ => return Err("creation receipt identity".into()),
-        };
-        let stored_request_digest = match row.values.get(4) {
-            Some(NativeSqliteValueV1::Blob(value)) if value.len() == 32 => value.as_slice(),
-            _ => return Err("creation request digest".into()),
-        };
-        let request_bytes = canonical_creation_request_bytes(principal.as_ref())?;
-        if blake3::hash(&request_bytes).as_bytes() != stored_request_digest {
-            return Err("creation request bytes".into());
-        }
-
         let mut envelope = empty_companion(path)?;
-        envelope
-            .request_witnesses
-            .push(NativeSqliteRequestWitnessV1 {
-                ledger: NativeSqliteRequestLedgerV1::Semantic,
-                identity_bytes: identity,
-                request_digest: DigestV1::hash(&request_bytes),
-                request_bytes,
-            });
+        for row in semantic_rows {
+            let identity = match row.values.get(2) {
+                Some(NativeSqliteValueV1::Blob(value)) => value.clone(),
+                _ => return Err("receipt identity".into()),
+            };
+            let digest = match row.values.get(4) {
+                Some(NativeSqliteValueV1::Blob(value)) if value.len() == 32 => DigestV1::parse(
+                    value
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>(),
+                )?,
+                _ => return Err("request digest".into()),
+            };
+            let request_bytes = request_preimages
+                .get(&digest)
+                .ok_or("request preimage")?
+                .clone();
+            envelope
+                .request_witnesses
+                .push(NativeSqliteRequestWitnessV1 {
+                    ledger: NativeSqliteRequestLedgerV1::Semantic,
+                    identity_bytes: identity,
+                    request_digest: digest,
+                    request_bytes,
+                });
+        }
         for (room_id, head) in &evidence.room_heads {
             let bytes = authoritative_bytes(head)?;
             let digest = DigestV1::hash(&bytes);
@@ -2399,13 +2868,14 @@ mod tests {
                 },
             );
         }
-        Ok((envelope, response.room_id))
+        Ok((envelope, rooms))
     }
 
-    fn canonical_creation_request_bytes(
+    fn canonical_creation_request_bytes_for_format(
         principal_id: &str,
+        format: worldstream_core::CanonicalHistoryFormat,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let value = serde_json::json!({
+        let mut value = serde_json::json!({
             "domain": "worldstream/create-room-request/v1",
             "pack_digest": counter_v2_digest().to_string(),
             "configuration": {"initial_value": 0, "maximum_value": 16},
@@ -2417,6 +2887,11 @@ mod tests {
                 "role": "counter"
             }]
         });
+        if format == worldstream_core::CanonicalHistoryFormat::V2 {
+            value["domain"] = serde_json::json!("worldstream/create-room-request/v2");
+            value["canonical_history_format"] = serde_json::json!("worldstream/transition/v2");
+            value["payload_budget_id"] = serde_json::json!("worldstream/payload-budget/v1");
+        }
         Ok(CanonicalJsonV1::parse(&serde_json::to_vec(&value)?)?.to_bytes()?)
     }
 
@@ -2469,7 +2944,7 @@ mod tests {
         Ok(())
     }
 
-    fn prepare_test_directory(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    pub(super) fn prepare_test_directory(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;

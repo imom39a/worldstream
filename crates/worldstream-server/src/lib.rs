@@ -12,12 +12,14 @@ pub mod operator_storage;
 pub mod operator_transfer;
 mod pack_startup;
 mod postgres_backend;
+mod publication;
+use publication::schedule_live_publication;
 mod rate_limit;
 mod sqlite_backend;
 
 pub mod telemetry;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::Infallible;
 use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -57,13 +59,14 @@ use worldstream_protocol::{
     ActivityPackCatalogRevisionResponse, ActivityPackCatalogRevisionSummary,
     ActivityPackCatalogRole, ActivityPackCatalogSchema, ActivityPackLobbyCompatibility,
     ActivityPackStartCompatibility, BROWSER_WS_TICKET_VERSION, BearerWireV1,
-    BrowserWebSocketTicketIssueResponse, ClientHello, ClientMode, CreateRoomRequest,
-    CreateRoomResponse, ErrorBody, ErrorCode, ErrorEnvelope, ExternalInputIngressRequestV1,
-    ExternalInputIngressResponseV1, HOSTED_BROWSER_WS_SESSION_REVOKE_VERSION,
-    HOSTED_BROWSER_WS_TICKET_VERSION, HistoricalEvidenceResponseV1,
-    HostedBrowserWebSocketSessionRevokeRequest, HostedBrowserWebSocketTicketIssueRequest,
-    HostedRoomCreationRequestV2, HostedRoomCreationResponseV2, LobbyLaunchRequest,
-    LobbyLaunchResponse, MemberCapabilityProvisionRequestV1, MemberCapabilityProvisionResponseV1,
+    BrowserWebSocketTicketIssueResponse, CanonicalHistoryFormatV1, ClientHello, ClientMode,
+    CreateRoomRequest, CreateRoomRequestWithFormat, CreateRoomResponse, ErrorBody, ErrorCode,
+    ErrorEnvelope, ExternalInputIngressRequestV1, ExternalInputIngressResponseV1,
+    HOSTED_BROWSER_WS_SESSION_REVOKE_VERSION, HOSTED_BROWSER_WS_TICKET_VERSION,
+    HistoricalEvidenceResponseV1, HostedBrowserWebSocketSessionRevokeRequest,
+    HostedBrowserWebSocketTicketIssueRequest, HostedRoomCreationRequestV2,
+    HostedRoomCreationResponseV2, LobbyLaunchRequest, LobbyLaunchResponse,
+    MemberCapabilityProvisionRequestV1, MemberCapabilityProvisionResponseV1,
     MembershipStatusResponse, ObservationAck, ObservationDeliver, OperatorActivationStatusV1,
     OperatorBackupProfileStatus, OperatorLiveBackupPrepareRequest, OperatorLiveBackupStatus,
     OperatorRoomInventoryPage, OperatorRoomInventoryRequest, OperatorRoomSummary,
@@ -410,6 +413,37 @@ pub struct AttachReply {
     pub attached: RoomAttached,
     pub reset: Option<ProjectionReset>,
     pub frames: Vec<ObservationDeliver>,
+}
+
+/// One bounded authorized live suffix at a captured storage cut.
+#[derive(Clone, Debug)]
+pub struct LiveObservationPage {
+    pub frames: Vec<ObservationDeliver>,
+    pub has_more: bool,
+}
+
+/// One Session's connection-local addressed live prefix.
+#[derive(Clone)]
+pub struct LiveObservationRecipient {
+    pub session: Arc<GatewaySession>,
+    pub room_id: String,
+    pub member_id: String,
+    pub after_frame_seq: u64,
+}
+/// A Session-specific current-authority and immutable-prefix check.
+/// This is an operational object and never appears on the wire.
+pub trait LiveObservationFence: Send + Sync {
+    /// Revalidates current authority, live binding, and the captured prefix.
+    /// # Errors
+    /// Returns a closed failure if any fenced fact is unavailable or changed.
+    fn revalidate(&self, session: &GatewaySession) -> Result<(), BackendError>;
+}
+/// A bounded immutable page, optionally proven compatible across Sessions.
+#[derive(Clone)]
+pub struct LiveObservationPreparedPage {
+    pub frames: Arc<[ObservationDeliver]>,
+    pub has_more: bool,
+    pub fence: Option<Arc<dyn LiveObservationFence>>,
 }
 
 /// Explicit operator request for one new Room-member Capability.
@@ -1014,6 +1048,21 @@ pub trait GatewayBackend: Send + Sync + 'static {
         session: &GatewaySession,
         request: CreateRoomRequest,
     ) -> Result<CreateRoomResponse, BackendError>;
+    /// Creates a Room using an explicit immutable history format.
+    /// Legacy implementations retain V1 behavior and reject unsupported formats.
+    ///
+    /// # Errors
+    /// Returns a closed error for unsupported formats or creation failures.
+    fn create_room_with_format(
+        &self,
+        session: &GatewaySession,
+        request: CreateRoomRequestWithFormat,
+    ) -> Result<CreateRoomResponse, BackendError> {
+        match request.canonical_history_format {
+            CanonicalHistoryFormatV1::V1 => self.create_room(session, request.request),
+            CanonicalHistoryFormatV1::V2 => Err(BackendError::Rejected),
+        }
+    }
     /// Atomically creates one hosted Room and its fixed non-playing
     /// spectator authorities. Implementations that cannot provide a single
     /// durable transaction must reject this operation.
@@ -1161,6 +1210,85 @@ pub trait GatewayBackend: Send + Sync + 'static {
         let _ = (session, room_id, member_id, after_frame_seq);
         Err(BackendError::StorageUnavailable)
     }
+    /// Reads a consecutive bounded live page without advancing Cursor.
+    /// Production adapters must apply payload limits before materialization
+    /// at the same authority and reset cut. This compatibility implementation
+    /// requires the legacy reader to enforce its 256-frame/4-MiB hard bound;
+    /// it cannot undo an allocation made inside that reader.
+    ///
+    /// # Errors
+    /// Returns a closed authority, storage, integrity, or payload-limit error.
+    fn live_observation_page(
+        &self,
+        session: &GatewaySession,
+        room_id: &str,
+        member_id: &str,
+        after_frame_seq: u64,
+        max_frames: usize,
+        max_canonical_payload_bytes: usize,
+    ) -> Result<LiveObservationPage, BackendError> {
+        let frames = self.live_observation_suffix(session, room_id, member_id, after_frame_seq)?;
+        let mut bytes = 0usize;
+        let mut selected = Vec::new();
+        let total = frames.len();
+        for frame in frames {
+            let mut count = CountingWireWriter(0);
+            serde_json::to_writer(&mut count, &frame).map_err(|_| BackendError::InvalidResult)?;
+            let length = count.0;
+            if selected.len() >= max_frames
+                || bytes.saturating_add(length) > max_canonical_payload_bytes
+            {
+                break;
+            }
+            bytes += length;
+            selected.push(frame);
+        }
+        if selected.is_empty() && total > 0 {
+            return Err(BackendError::InvalidResult);
+        }
+        Ok(LiveObservationPage {
+            has_more: selected.len() < total,
+            frames: selected,
+        })
+    }
+
+    /// Indicates that the batch implementation proves a shared storage cut.
+    fn supports_shared_live_observation_cut(&self) -> bool {
+        false
+    }
+    /// Prepares at most two addressed pages. The default uses independent reads
+    /// and is called with at most two recipients, so advancing cuts stay bounded.
+    /// Publication installs `worldstream_core::storage_read_deadline` on this
+    /// synchronous call. Production readers must enforce that absolute budget
+    /// through authentication, shared reads, and independent fallback reads.
+    /// # Errors
+    /// Each recipient gets its own closed authorization/storage outcome.
+    fn prepare_live_observation_batch(
+        &self,
+        recipients: &[LiveObservationRecipient],
+        max_frames: usize,
+        max_bytes: usize,
+    ) -> Vec<Result<LiveObservationPreparedPage, BackendError>> {
+        recipients
+            .iter()
+            .map(|recipient| {
+                self.live_observation_page(
+                    &recipient.session,
+                    &recipient.room_id,
+                    &recipient.member_id,
+                    recipient.after_frame_seq,
+                    max_frames,
+                    max_bytes,
+                )
+                .map(|page| LiveObservationPreparedPage {
+                    frames: page.frames.into(),
+                    has_more: page.has_more,
+                    fence: None,
+                })
+            })
+            .collect()
+    }
+
     /// Advances the shared Membership Observation Cursor.
     ///
     /// # Errors
@@ -1728,61 +1856,13 @@ struct SchedulerRuntimeOwner {
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
-#[derive(Default)]
-struct ScheduledPublicationState {
-    running: bool,
-    dirty: bool,
-}
-
 fn schedule_scheduler_rooms(
     backend: &Arc<dyn GatewayBackend>,
     live_streams: &LiveStreamRegistry,
     rooms: Vec<String>,
-    scheduled: &Arc<Mutex<HashMap<String, ScheduledPublicationState>>>,
 ) {
     for room in rooms {
-        let should_spawn = {
-            let mut scheduled = scheduled
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let state = scheduled.entry(room.clone()).or_default();
-            if state.running {
-                state.dirty = true;
-                false
-            } else {
-                state.running = true;
-                true
-            }
-        };
-        if !should_spawn {
-            continue;
-        }
-        let backend = Arc::clone(backend);
-        let live_streams = live_streams.clone();
-        let scheduled = Arc::clone(scheduled);
-        tokio::spawn(async move {
-            loop {
-                publish_live_frames(Arc::clone(&backend), &live_streams, &room).await;
-                let run_again = {
-                    let mut scheduled = scheduled
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let Some(state) = scheduled.get_mut(&room) else {
-                        break;
-                    };
-                    if state.dirty {
-                        state.dirty = false;
-                        true
-                    } else {
-                        scheduled.remove(&room);
-                        false
-                    }
-                };
-                if !run_again {
-                    break;
-                }
-            }
-        });
+        schedule_live_publication(Arc::clone(backend), live_streams, &room);
     }
 }
 
@@ -1807,12 +1887,11 @@ impl SchedulerRuntimeOwner {
             .map_err(|_| BackendError::StorageUnavailable)?;
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
-        let scheduled = Arc::new(Mutex::new(HashMap::new()));
         let thread = std::thread::Builder::new()
             .name("worldstream-activation-scheduler".to_owned())
             .spawn(move || {
                 runtime.block_on(async move {
-                    schedule_scheduler_rooms(&backend, &live_streams, initial_rooms, &scheduled);
+                    schedule_scheduler_rooms(&backend, &live_streams, initial_rooms);
                     let mut tick = tokio::time::interval(Duration::from_millis(250));
                     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     while !thread_stop.load(Ordering::Acquire) {
@@ -1832,12 +1911,7 @@ impl SchedulerRuntimeOwner {
                         };
                         match tick_result {
                             Ok(rooms) => {
-                                schedule_scheduler_rooms(
-                                    &backend,
-                                    &live_streams,
-                                    rooms,
-                                    &scheduled,
-                                );
+                                schedule_scheduler_rooms(&backend, &live_streams, rooms);
                             }
                             Err(error) => {
                                 tracing::warn!(?error, "Runtime scheduler tick failed");
@@ -2462,6 +2536,30 @@ async fn operator_runner_presence(
         .ok_or_else(|| ResponseError::from(BackendError::NotFound))
 }
 
+pub(crate) fn map_canonical_trace_preparation_error(
+    error: worldstream_core::TraceErrorV1,
+) -> BackendError {
+    match error {
+        worldstream_core::TraceErrorV1::PayloadBudget(_) => BackendError::Rejected,
+        _ => BackendError::InvalidResult,
+    }
+}
+
+pub(crate) fn map_canonical_write_preparation_error(
+    error: worldstream_core::PrepareRoomWriteErrorV1,
+) -> BackendError {
+    match error {
+        worldstream_core::PrepareRoomWriteErrorV1::Trace(error) => {
+            map_canonical_trace_preparation_error(error)
+        }
+        _ => BackendError::InvalidResult,
+    }
+}
+
+// Root enables this only after the selected-history Rust, compatibility, and live
+// recovery/portability gates pass. Both route and production adapters use this gate.
+pub(crate) const COMPACT_ROOM_CREATION_ENABLED: bool = true;
+
 async fn create_room(
     State(state): State<OperatorState>,
     headers: HeaderMap,
@@ -2479,7 +2577,7 @@ async fn create_room(
             return Err(error);
         }
     };
-    let request = match strict_json::<CreateRoomRequest>(&body) {
+    let request = match strict_json::<CreateRoomRequestWithFormat>(&body) {
         Ok(request) => request,
         Err(error) => {
             record_admission_with_correlation(
@@ -2490,6 +2588,11 @@ async fn create_room(
             return Err(error);
         }
     };
+    if request.canonical_history_format == CanonicalHistoryFormatV1::V2
+        && !COMPACT_ROOM_CREATION_ENABLED
+    {
+        return Err(ResponseError::from(BackendError::Rejected));
+    }
     admit_authenticated_http(
         &state,
         &session,
@@ -2498,11 +2601,11 @@ async fn create_room(
         correlation,
     )
     .await?;
-    let crash_match_id = request.idempotency_key.clone();
+    let crash_match_id = request.request.idempotency_key.clone();
     pause_for_process_crash_evidence("room_create", "before_commit", &crash_match_id);
     let backend = Arc::clone(&state.backend);
     match backend_call(backend, move |backend| {
-        backend.create_room(&session, request)
+        backend.create_room_with_format(&session, request)
     })
     .await
     {
@@ -2958,9 +3061,18 @@ async fn operator_member_presence(
                     )
                     .is_ok();
                 if !authorized {
-                    registry.close(&candidate.session_id, ErrorCode::Unauthenticated);
+                    registry.close_generation(
+                        &candidate.session_id,
+                        candidate.generation,
+                        ErrorCode::Unauthenticated,
+                    );
                 }
-                authorized && registry.is_registered(&candidate.session_id)
+                authorized
+                    && registry.is_current_registration(
+                        &candidate.session_id,
+                        candidate.generation,
+                        &candidate.room_id,
+                    )
             });
         Ok(MembershipPresence {
             version: "membership_presence.v1",
@@ -3158,7 +3270,7 @@ async fn fire_timer(
             // this post-commit publication.  Keep the HTTP response behind
             // the same live-stream seam used by accepted WebSocket actions so
             // externally fired timers advance already-registered observers.
-            publish_live_frames(Arc::clone(&state.backend), &state.live_streams, &room_id).await;
+            schedule_live_publication(Arc::clone(&state.backend), &state.live_streams, &room_id);
             record_admission_with_correlation(
                 state.telemetry.as_ref(),
                 telemetry::ReasonCodeV1::Accepted,
@@ -3220,7 +3332,7 @@ async fn launch_lobby(
     .await
     {
         Ok(response) => {
-            publish_live_frames(Arc::clone(&state.backend), &state.live_streams, &room_id).await;
+            schedule_live_publication(Arc::clone(&state.backend), &state.live_streams, &room_id);
             record_admission_with_correlation(
                 state.telemetry.as_ref(),
                 telemetry::ReasonCodeV1::Accepted,
@@ -3318,7 +3430,7 @@ async fn archive_room(
     .await
     {
         Ok(response) => {
-            publish_live_frames(Arc::clone(&state.backend), &state.live_streams, &room_id).await;
+            schedule_live_publication(Arc::clone(&state.backend), &state.live_streams, &room_id);
             record_admission_with_correlation(
                 state.telemetry.as_ref(),
                 telemetry::ReasonCodeV1::Accepted,
@@ -3523,12 +3635,17 @@ async fn ingest_external_input(
     )
     .await?;
     let backend = Arc::clone(&state.backend);
+    let backend_room_id = room_id.clone();
     match backend_call(backend, move |backend| {
-        backend.ingest_external_input(&session, &room_id, request)
+        backend.ingest_external_input(&session, &backend_room_id, request)
     })
     .await
     {
-        Ok(response) => Ok(Json(response)),
+        Ok(response) => {
+            // Accepted durable retries also recover a notification lost after commit.
+            schedule_live_publication(Arc::clone(&state.backend), &state.live_streams, &room_id);
+            Ok(Json(response))
+        }
         Err(error) => Err(ResponseError::from(error)),
     }
 }
@@ -4562,6 +4679,7 @@ async fn stream_loop(
         let _ = send_error(&mut socket, None, ErrorCode::Internal, false).await;
         return;
     };
+    live_streams.ensure_publication(Arc::clone(&backend));
     let (close_sender, mut close_receiver) = watch::channel(None);
     live_streams.register_connection(session.session_id(), close_sender.clone());
     if hosted_activation
@@ -4912,6 +5030,16 @@ async fn stream_loop(
                         {
                             continue;
                         }
+                        if let Some(recipient) = push.recipient.as_ref() {
+                            if let Err(error) = publication::validate_current_delivery(Arc::clone(&backend), live_streams.publication_budget.clone(),
+                                recipient.clone(), push.fence.clone(), push.frame_seq, push.cause_room_seq, push.frame_hash.clone()).await {
+                                live_streams.close_generation(&recipient.session.session_id().to_string(), push.generation, error.code());
+                                let _ = send_error(&mut socket, None, error.code(), true).await;
+                                break;
+                            }
+                            if close_receiver.borrow().is_some() || !live_streams.is_current_registration(
+                                &recipient.session.session_id().to_string(), push.generation, &recipient.room_id) { continue; }
+                        }
                         if send_websocket_message(
                             socket.send(push.message),
                             WEBSOCKET_SEND_TIMEOUT,
@@ -5190,11 +5318,45 @@ const LIVE_PUSH_CAPACITY: usize = MAX_OUTBOUND_FRAME_BURST;
 
 #[derive(Clone, Default)]
 struct LiveStreamRegistry {
-    sessions: Arc<Mutex<HashMap<String, LiveStreamRegistration>>>,
+    inner: Arc<LiveStreamRegistryInner>,
+    lifetime: Arc<publication::PublicationLifetime>,
+}
+
+#[derive(Default)]
+struct LiveStreamRegistryInner {
+    state: Arc<Mutex<LiveStreamRegistryState>>,
     active_session_ids: Arc<Mutex<HashSet<UlidString>>>,
-    connection_closers: Arc<Mutex<HashMap<String, watch::Sender<Option<ErrorCode>>>>>,
+    connection_closers: Arc<Mutex<HashMap<String, LiveConnectionRegistration>>>,
     room_publication_locks: Arc<Mutex<HashMap<String, Weak<AsyncMutex<()>>>>>,
     queue_metrics: Arc<LiveStreamQueueMetrics>,
+    publication: Mutex<Option<publication::PublicationCoordinator>>,
+    publication_budget: publication::PublicationBudget,
+}
+
+impl std::ops::Deref for LiveStreamRegistry {
+    type Target = LiveStreamRegistryInner;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+#[derive(Default)]
+struct LiveStreamRegistryState {
+    sessions: HashMap<String, LiveStreamRegistration>,
+    rooms: BTreeMap<String, std::collections::BTreeSet<String>>,
+}
+
+impl LiveStreamRegistryState {
+    fn remove(&mut self, session_id: &str) -> Option<LiveStreamRegistration> {
+        let registration = self.sessions.remove(session_id)?;
+        if let Some(sessions) = self.rooms.get_mut(&registration.room_id) {
+            sessions.remove(session_id);
+            if sessions.is_empty() {
+                self.rooms.remove(&registration.room_id);
+            }
+        }
+        Some(registration)
+    }
 }
 
 struct ActiveGatewaySession {
@@ -5228,6 +5390,12 @@ impl Drop for ActiveGatewaySession {
         self.registry.release_session(&self.session_id);
         self.backend.retire_session(&self.session_id);
     }
+}
+
+struct LiveConnectionRegistration {
+    close: watch::Sender<Option<ErrorCode>>,
+    queued_frames: Arc<AtomicUsize>,
+    queued_payload_bytes: Arc<AtomicUsize>,
 }
 
 struct LiveStreamRegistrationInput {
@@ -5291,8 +5459,25 @@ impl LiveQueueCounters {
             self.note_backpressure();
             return None;
         };
+        let process_capacity = if capacity == LIVE_PUSH_CAPACITY {
+            publication::PROCESS_QUEUE_FRAMES
+        } else {
+            publication::PROCESS_QUEUE_BYTES
+        };
+        let Ok(process_previous) =
+            self.process_current
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                    current
+                        .checked_add(amount)
+                        .filter(|next| *next <= process_capacity)
+                })
+        else {
+            unit_current.fetch_sub(amount, Ordering::AcqRel);
+            self.note_backpressure();
+            return None;
+        };
         let unit_depth = previous + amount;
-        let process_depth = self.process_current.fetch_add(amount, Ordering::AcqRel) + amount;
+        let process_depth = process_previous + amount;
         atomic_max_usize(&self.process_high_water, process_depth);
         atomic_max_usize(&self.unit_high_water, unit_depth);
         self.activity_total
@@ -5324,10 +5509,27 @@ impl LiveQueueCounters {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct LiveStreamQueueMetrics {
     frames: Arc<LiveQueueCounters>,
     payload_bytes: Arc<LiveQueueCounters>,
+}
+
+impl Default for LiveStreamQueueMetrics {
+    fn default() -> Self {
+        static PROCESS_METRICS: OnceLock<(Arc<LiveQueueCounters>, Arc<LiveQueueCounters>)> =
+            OnceLock::new();
+        let (frames, payload_bytes) = PROCESS_METRICS.get_or_init(|| {
+            (
+                Arc::new(LiveQueueCounters::default()),
+                Arc::new(LiveQueueCounters::default()),
+            )
+        });
+        Self {
+            frames: Arc::clone(frames),
+            payload_bytes: Arc::clone(payload_bytes),
+        }
+    }
 }
 
 struct LiveQueueReservation {
@@ -5335,6 +5537,24 @@ struct LiveQueueReservation {
     metrics: Arc<LiveQueueCounters>,
     amount: usize,
     activity_amount: u64,
+}
+
+impl LiveQueueReservation {
+    fn shrink(&mut self, amount: usize) {
+        let released = self.amount - amount;
+        self.unit_current.fetch_sub(released, Ordering::AcqRel);
+        self.metrics
+            .process_current
+            .fetch_sub(released, Ordering::AcqRel);
+        let released_activity = self
+            .activity_amount
+            .saturating_sub(u64::try_from(amount).unwrap_or(u64::MAX));
+        self.metrics
+            .activity_total
+            .fetch_sub(released_activity, Ordering::Relaxed);
+        self.amount = amount;
+        self.activity_amount -= released_activity;
+    }
 }
 
 impl Drop for LiveQueueReservation {
@@ -5392,6 +5612,11 @@ impl OutboundFrameReservation {
 
 struct LiveFramePush {
     generation: u64,
+    recipient: Option<LiveObservationRecipient>,
+    fence: Option<Arc<dyn LiveObservationFence>>,
+    frame_seq: u64,
+    frame_hash: String,
+    cause_room_seq: u64,
     #[cfg(test)]
     frame: ObservationDeliver,
     message: Message,
@@ -5422,11 +5647,24 @@ impl LiveStreamRegistry {
         lock
     }
 
+    #[cfg(test)]
     fn is_registered(&self, session_id: &str) -> bool {
-        self.sessions
+        self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .sessions
             .contains_key(session_id)
+    }
+
+    fn is_current_registration(&self, session_id: &str, generation: u64, room_id: &str) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .sessions
+            .get(session_id)
+            .is_some_and(|registration| {
+                registration.generation == generation && registration.room_id == room_id
+            })
     }
 
     #[cfg(test)]
@@ -5455,34 +5693,47 @@ impl LiveStreamRegistry {
         registration: LiveStreamRegistrationInput,
     ) -> Result<(), BackendError> {
         let session_id = registration.session.session_id().to_string();
-        let mut sessions = self
-            .sessions
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match sessions.entry(session_id) {
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(LiveStreamRegistration {
-                    session: registration.session,
-                    room_id: registration.room_id,
-                    member_id: registration.member_id,
-                    generation: registration.generation,
-                    last_delivered_frame_seq: registration.last_delivered_frame_seq,
-                    sender: registration.sender,
-                    queued_frames: Arc::new(AtomicUsize::new(0)),
-                    queued_payload_bytes: Arc::new(AtomicUsize::new(0)),
-                    close: registration.close,
-                });
-                Ok(())
-            }
-            std::collections::hash_map::Entry::Occupied(_) => Err(BackendError::StorageUnavailable),
+        if state.sessions.contains_key(&session_id)
+            || state.sessions.len() >= publication::MAX_REGISTERED_SESSIONS
+        {
+            return Err(BackendError::StorageUnavailable);
         }
+        state
+            .rooms
+            .entry(registration.room_id.clone())
+            .or_default()
+            .insert(session_id.clone());
+        let (queued_frames, queued_payload_bytes) = self.connection_budget(&session_id);
+        state.sessions.insert(
+            session_id,
+            LiveStreamRegistration {
+                session: registration.session,
+                room_id: registration.room_id,
+                member_id: registration.member_id,
+                generation: registration.generation,
+                last_delivered_frame_seq: registration.last_delivered_frame_seq,
+                sender: registration.sender,
+                queued_frames,
+                queued_payload_bytes,
+                close: registration.close,
+            },
+        );
+        Ok(())
     }
 
     fn reserve_session(&self, session_id: &UlidString) -> bool {
-        self.active_session_ids
+        let mut active = self
+            .active_session_ids
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(session_id.clone())
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active.len() >= publication::MAX_REGISTERED_SESSIONS {
+            return false;
+        }
+        active.insert(session_id.clone())
     }
 
     fn release_session(&self, session_id: &UlidString) {
@@ -5493,7 +5744,7 @@ impl LiveStreamRegistry {
     }
 
     fn unregister(&self, session_id: &str) {
-        self.sessions
+        self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(session_id);
@@ -5507,7 +5758,28 @@ impl LiveStreamRegistry {
         self.connection_closers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(session_id.to_string(), close);
+            .insert(
+                session_id.to_string(),
+                LiveConnectionRegistration {
+                    close,
+                    queued_frames: Arc::new(AtomicUsize::new(0)),
+                    queued_payload_bytes: Arc::new(AtomicUsize::new(0)),
+                },
+            );
+    }
+
+    fn connection_budget(&self, session_id: &str) -> (Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        self.connection_closers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .map(|connection| {
+                (
+                    Arc::clone(&connection.queued_frames),
+                    Arc::clone(&connection.queued_payload_bytes),
+                )
+            })
+            .unwrap_or_else(|| (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))))
     }
 
     fn unregister_connection(&self, session_id: &str) {
@@ -5518,11 +5790,16 @@ impl LiveStreamRegistry {
     }
 
     fn snapshots_for_room(&self, room_id: &str) -> Vec<LiveStreamSnapshot> {
-        self.sessions
+        let state = self
+            .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values()
-            .filter(|registration| registration.room_id == room_id)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .rooms
+            .get(room_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|session_id| state.sessions.get(session_id))
             .map(|registration| LiveStreamSnapshot {
                 session_id: registration.session.session_id().to_string(),
                 session: Arc::clone(&registration.session),
@@ -5537,11 +5814,13 @@ impl LiveStreamRegistry {
             .collect()
     }
 
+    #[cfg(test)]
     fn mark_delivered(&self, session_id: &str, generation: u64, frame_seq: u64) {
         if let Some(registration) = self
-            .sessions
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .sessions
             .get_mut(session_id)
             .filter(|registration| registration.generation == generation)
         {
@@ -5551,7 +5830,7 @@ impl LiveStreamRegistry {
 
     fn close(&self, session_id: &str, code: ErrorCode) {
         let stream_close = self
-            .sessions
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(session_id)
@@ -5561,23 +5840,25 @@ impl LiveStreamRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(session_id)
-            .cloned();
+            .map(|connection| connection.close.clone());
         if let Some(close) = stream_close.or(connection_close) {
             let _ = close.send(Some(code));
         }
     }
 
     fn close_generation(&self, session_id: &str, generation: u64, code: ErrorCode) {
-        let stream_close = self
-            .sessions
+        let mut state = self
+            .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state
+            .sessions
             .get(session_id)
-            .filter(|registration| registration.generation == generation)
-            .map(|registration| registration.close.clone());
-        if let Some(close) = stream_close {
-            let _ = close.send(Some(code));
-            self.unregister(session_id);
+            .is_some_and(|registration| registration.generation == generation)
+            && let Some(registration) = state.remove(session_id)
+        {
+            // The check, removal, and signal are atomic against reattachment.
+            let _ = registration.close.send(Some(code));
         }
     }
 
@@ -5594,6 +5875,7 @@ impl LiveStreamRegistry {
     }
 }
 
+#[cfg(test)]
 fn prepare_observation_batch(
     frames: Vec<ObservationDeliver>,
 ) -> Result<Vec<Message>, OutboundMessageError> {
@@ -5615,6 +5897,47 @@ fn prepare_observation_batch(
     Ok(messages)
 }
 
+struct PreparedObservationMessage {
+    message: Message,
+    _payload: OutboundPayloadReservation,
+    _frame: OutboundFrameReservation,
+}
+
+fn prepare_reserved_observation_batch(
+    frames: Vec<ObservationDeliver>,
+    registry: &LiveStreamRegistry,
+    session_id: &str,
+) -> Result<Vec<PreparedObservationMessage>, OutboundMessageError> {
+    if frames.len() > MAX_OUTBOUND_FRAME_BURST {
+        return Err(OutboundMessageError::SlowConsumer);
+    }
+    let (queued_frames, queued_bytes) = registry.connection_budget(session_id);
+    let metrics = &registry.queue_metrics;
+    let mut messages = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let mut payload = OutboundPayloadReservation::try_new(
+            Arc::clone(&queued_bytes),
+            measure_body_message("observation.deliver", None, &frame)?,
+            &metrics.payload_bytes,
+        )
+        .ok_or(OutboundMessageError::SlowConsumer)?;
+        let frame_reservation =
+            OutboundFrameReservation::try_new(Arc::clone(&queued_frames), &metrics.frames)
+                .ok_or(OutboundMessageError::SlowConsumer)?;
+        let message = prepare_body_message("observation.deliver", None, frame)?;
+        payload
+            ._reservation
+            .shrink(outbound_message_payload_bytes(&message));
+        messages.push(PreparedObservationMessage {
+            message,
+            _payload: payload,
+            _frame: frame_reservation,
+        });
+    }
+    Ok(messages)
+}
+
+#[cfg(test)]
 fn prepare_live_push(
     frame: &ObservationDeliver,
     generation: u64,
@@ -5622,21 +5945,28 @@ fn prepare_live_push(
     queued_payload_bytes: Arc<AtomicUsize>,
     metrics: &LiveStreamQueueMetrics,
 ) -> Result<LivePush, OutboundMessageError> {
-    let message = prepare_body_message("observation.deliver", None, frame)?;
-    let payload_bytes = outbound_message_payload_bytes(&message);
-    let Some(payload_reservation) = OutboundPayloadReservation::try_new(
+    let Some(mut payload_reservation) = OutboundPayloadReservation::try_new(
         queued_payload_bytes,
-        payload_bytes,
+        measure_body_message("observation.deliver", None, frame)?,
         &metrics.payload_bytes,
     ) else {
         return Err(OutboundMessageError::SlowConsumer);
     };
+    let message = prepare_body_message("observation.deliver", None, frame)?;
+    payload_reservation
+        ._reservation
+        .shrink(outbound_message_payload_bytes(&message));
     let Some(frame_reservation) = OutboundFrameReservation::try_new(queued_frames, &metrics.frames)
     else {
         return Err(OutboundMessageError::SlowConsumer);
     };
     Ok(LivePush::Frame(LiveFramePush {
         generation,
+        recipient: None,
+        fence: None,
+        frame_seq: frame.frame_seq,
+        frame_hash: frame.frame_payload_hash.clone(),
+        cause_room_seq: frame.cause_room_seq,
         #[cfg(test)]
         frame: frame.clone(),
         message,
@@ -5645,6 +5975,85 @@ fn prepare_live_push(
     }))
 }
 
+#[cfg(test)]
+static LIVE_BODY_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static LIVE_ENVELOPE_ENCODINGS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static LIVE_ENVELOPE_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static SHARED_BODY_PREPARATIONS: AtomicUsize = AtomicUsize::new(0);
+fn serialize_live_body(frame: &ObservationDeliver) -> Result<String, OutboundMessageError> {
+    let mut writer = BoundedWireWriter(Vec::new());
+    serde_json::to_writer(&mut writer, frame).map_err(|_| OutboundMessageError::SlowConsumer)?;
+    #[cfg(test)]
+    {
+        SHARED_BODY_PREPARATIONS.fetch_add(1, Ordering::Relaxed);
+        LIVE_BODY_BYTES.fetch_add(writer.0.len(), Ordering::Relaxed);
+    }
+    String::from_utf8(writer.0).map_err(|_| OutboundMessageError::Internal)
+}
+#[allow(clippy::too_many_arguments)]
+fn prepare_shared_live_push(
+    frame: &ObservationDeliver,
+    body: &str,
+    generation: u64,
+    recipient: LiveObservationRecipient,
+    fence: Option<Arc<dyn LiveObservationFence>>,
+    queued_frames: Arc<AtomicUsize>,
+    queued_bytes: Arc<AtomicUsize>,
+    metrics: &LiveStreamQueueMetrics,
+) -> Result<LivePush, OutboundMessageError> {
+    // Body is the final envelope field. Encode the fresh small envelope first,
+    // then replace its literal null body with the previously verified JSON.
+    let envelope = ProtocolEnvelope {
+        protocol: worldstream_protocol::PROTOCOL_VERSION.to_owned(),
+        message_type: "observation.deliver".to_owned(),
+        message_id: next_ulid().ok_or(OutboundMessageError::Internal)?,
+        request_id: None,
+        body: Value::Null,
+    };
+    let prefix = serde_json::to_string(&envelope).map_err(|_| OutboundMessageError::Internal)?;
+    let prefix = prefix
+        .strip_suffix("null}")
+        .ok_or(OutboundMessageError::Internal)?;
+    let bytes = prefix
+        .len()
+        .checked_add(body.len())
+        .and_then(|n| n.checked_add(1))
+        .ok_or(OutboundMessageError::SlowConsumer)?;
+    if bytes > worldstream_protocol::MAX_MESSAGE_BYTES {
+        return Err(OutboundMessageError::SlowConsumer);
+    }
+    let payload = OutboundPayloadReservation::try_new(queued_bytes, bytes, &metrics.payload_bytes)
+        .ok_or(OutboundMessageError::SlowConsumer)?;
+    let frame_reservation = OutboundFrameReservation::try_new(queued_frames, &metrics.frames)
+        .ok_or(OutboundMessageError::SlowConsumer)?;
+    let mut text = String::with_capacity(bytes);
+    text.push_str(prefix);
+    text.push_str(body);
+    text.push('}');
+    #[cfg(test)]
+    {
+        LIVE_ENVELOPE_ENCODINGS.fetch_add(1, Ordering::Relaxed);
+        LIVE_ENVELOPE_BYTES.fetch_add(text.len(), Ordering::Relaxed);
+    }
+    Ok(LivePush::Frame(LiveFramePush {
+        generation,
+        recipient: Some(recipient),
+        fence,
+        frame_seq: frame.frame_seq,
+        frame_hash: frame.frame_payload_hash.clone(),
+        cause_room_seq: frame.cause_room_seq,
+        #[cfg(test)]
+        frame: frame.clone(),
+        message: Message::Text(text.into()),
+        _frame_reservation: frame_reservation,
+        _payload_reservation: payload,
+    }))
+}
+
+#[cfg(test)]
 async fn publish_live_frames(
     backend: Arc<dyn GatewayBackend>,
     registry: &LiveStreamRegistry,
@@ -6075,14 +6484,18 @@ async fn dispatch_message(
             }
             while push_receiver.try_recv().is_ok() {}
             let request = decode_body::<RoomAttach>(body).map_err(|_| ())?;
-            let reply = match backend_call(Arc::clone(&backend), {
+            let Some(preparation) = live_streams.publication_budget.reserve_preparation() else {
+                send_error(socket, request_id, ErrorCode::SlowConsumer, true).await?;
+                return Err(());
+            };
+            let (reply, _preparation) = match backend_call(Arc::clone(&backend), {
                 let session = Arc::clone(session);
-                move |backend| backend.attach(&session, request)
+                move |backend| Ok((backend.attach(&session, request), preparation))
             })
             .await
             {
-                Ok(reply) => reply,
-                Err(error) => {
+                Ok((Ok(reply), preparation)) => (reply, preparation),
+                Ok((Err(error), _)) | Err(error) => {
                     send_error(socket, request_id, error.code(), is_retryable(&error)).await?;
                     record_frame_with_correlation(
                         telemetry,
@@ -6099,7 +6512,11 @@ async fn dispatch_message(
                 frames,
             } = reply;
             let frame_count = frames.len();
-            let prepared_frames = match prepare_observation_batch(frames) {
+            let prepared_frames = match prepare_reserved_observation_batch(
+                frames,
+                live_streams,
+                session.session_id().as_str(),
+            ) {
                 Ok(prepared) => prepared,
                 Err(error) => {
                     send_error(
@@ -6153,8 +6570,8 @@ async fn dispatch_message(
                 );
                 return Err(());
             }
-            for message in prepared_frames {
-                if send_websocket_message(socket.send(message), WEBSOCKET_SEND_TIMEOUT)
+            for prepared in prepared_frames {
+                if send_websocket_message(socket.send(prepared.message), WEBSOCKET_SEND_TIMEOUT)
                     .await
                     .is_err()
                 {
@@ -6187,24 +6604,32 @@ async fn dispatch_message(
                 send_error(socket, request_id, ErrorCode::SyncBarrierMismatch, true).await?;
                 return Ok(());
             }
+            let Some(preparation) = live_streams.publication_budget.reserve_preparation() else {
+                send_error(socket, request_id, ErrorCode::SlowConsumer, true).await?;
+                return Err(());
+            };
             let current_generation = *stream_generation;
             let sync_result = {
                 let room_lock = live_streams.room_publication_lock(&sync_room_id);
                 let _publication_guard = room_lock.lock().await;
                 match backend_call(Arc::clone(&backend), {
                     let session = Arc::clone(session);
-                    move |backend| backend.sync_ack(&session, request)
+                    move |backend| Ok((backend.sync_ack(&session, request), preparation))
                 })
                 .await
                 {
-                    Ok(frames) => {
+                    Ok((Ok(frames), preparation)) => {
                         let frame_count = frames.len();
                         let registration_frame_seq = frames
                             .iter()
                             .map(|frame| frame.frame_seq)
                             .max()
                             .unwrap_or(through_frame_head);
-                        match prepare_observation_batch(frames) {
+                        match prepare_reserved_observation_batch(
+                            frames,
+                            live_streams,
+                            session.session_id().as_str(),
+                        ) {
                             Ok(prepared_frames) => {
                                 let registration = if *stream_generation == current_generation {
                                     live_streams.register_generation(LiveStreamRegistrationInput {
@@ -6220,16 +6645,16 @@ async fn dispatch_message(
                                     Err(BackendError::ResetRequired)
                                 };
                                 registration
-                                    .map(|()| (prepared_frames, frame_count))
+                                    .map(|()| (prepared_frames, frame_count, preparation))
                                     .map_err(SyncDeliveryError::Backend)
                             }
                             Err(error) => Err(SyncDeliveryError::Outbound { error, frame_count }),
                         }
                     }
-                    Err(error) => Err(SyncDeliveryError::Backend(error)),
+                    Ok((Err(error), _)) | Err(error) => Err(SyncDeliveryError::Backend(error)),
                 }
             };
-            let (prepared_frames, frame_count) = match sync_result {
+            let (prepared_frames, frame_count, _preparation) = match sync_result {
                 Ok(prepared) => prepared,
                 Err(SyncDeliveryError::Backend(error)) => {
                     send_error(socket, request_id, error.code(), is_retryable(&error)).await?;
@@ -6266,8 +6691,8 @@ async fn dispatch_message(
             );
             *live = true;
             *synchronized_generation = Some(current_generation);
-            for message in prepared_frames {
-                if send_websocket_message(socket.send(message), WEBSOCKET_SEND_TIMEOUT)
+            for prepared in prepared_frames {
+                if send_websocket_message(socket.send(prepared.message), WEBSOCKET_SEND_TIMEOUT)
                     .await
                     .is_err()
                 {
@@ -6418,7 +6843,7 @@ async fn dispatch_message(
                         );
                         kill_after_action_commit_before_reply();
                     }
-                    publish_live_frames(Arc::clone(&backend), live_streams, &action_room_id).await;
+                    schedule_live_publication(Arc::clone(&backend), live_streams, &action_room_id);
                     pause_for_process_crash_evidence(
                         "action",
                         "after_publication_before_reply",
@@ -6673,7 +7098,17 @@ async fn send_body<T: Serialize>(
     request_id: Option<&UlidString>,
     body: T,
 ) -> Result<(), ()> {
+    let metrics = LiveStreamQueueMetrics::default();
+    let mut reservation = OutboundPayloadReservation::try_new(
+        Arc::new(AtomicUsize::new(0)),
+        measure_body_message(message_type, request_id, &body).map_err(|_| ())?,
+        &metrics.payload_bytes,
+    )
+    .ok_or(())?;
     let message = prepare_body_message(message_type, request_id, body).map_err(|_| ())?;
+    reservation
+        ._reservation
+        .shrink(outbound_message_payload_bytes(&message));
     send_websocket_message(socket.send(message), WEBSOCKET_SEND_TIMEOUT).await
 }
 
@@ -6700,6 +7135,58 @@ impl OutboundMessageError {
     }
 }
 
+struct CountingWireWriter(usize);
+impl std::io::Write for CountingWireWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self
+            .0
+            .checked_add(bytes.len())
+            .filter(|length| *length <= worldstream_protocol::MAX_MESSAGE_BYTES)
+            .ok_or_else(|| std::io::Error::other("wire byte limit"))?;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn measure_body_message<T: Serialize>(
+    message_type: &str,
+    request_id: Option<&UlidString>,
+    body: &T,
+) -> Result<usize, OutboundMessageError> {
+    let envelope = ProtocolEnvelope {
+        protocol: worldstream_protocol::PROTOCOL_VERSION.to_owned(),
+        message_type: message_type.to_owned(),
+        message_id: next_ulid().ok_or(OutboundMessageError::Internal)?,
+        request_id: request_id.cloned(),
+        body,
+    };
+    let mut writer = CountingWireWriter(0);
+    serde_json::to_writer(&mut writer, &envelope).map_err(|error| {
+        if error.is_io() {
+            OutboundMessageError::SlowConsumer
+        } else {
+            OutboundMessageError::Internal
+        }
+    })?;
+    Ok(writer.0)
+}
+
+struct BoundedWireWriter(Vec<u8>);
+impl std::io::Write for BoundedWireWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.0.len().saturating_add(bytes.len()) > worldstream_protocol::MAX_MESSAGE_BYTES {
+            return Err(std::io::Error::other("wire byte limit"));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn prepare_body_message<T: Serialize>(
     message_type: &str,
     request_id: Option<&UlidString>,
@@ -6715,10 +7202,15 @@ fn prepare_body_message<T: Serialize>(
         request_id: request_id.cloned(),
         body,
     };
-    let text = serde_json::to_string(&envelope).map_err(|_| OutboundMessageError::Internal)?;
-    if text.len() > worldstream_protocol::MAX_MESSAGE_BYTES {
-        return Err(OutboundMessageError::SlowConsumer);
-    }
+    let mut writer = BoundedWireWriter(Vec::new());
+    serde_json::to_writer(&mut writer, &envelope).map_err(|error| {
+        if error.is_io() {
+            OutboundMessageError::SlowConsumer
+        } else {
+            OutboundMessageError::Internal
+        }
+    })?;
+    let text = String::from_utf8(writer.0).map_err(|_| OutboundMessageError::Internal)?;
     Ok(Message::Text(text.into()))
 }
 
@@ -6835,6 +7327,9 @@ pub enum ServerError {
 
 #[cfg(test)]
 mod tests {
+    mod live_ingress_tests;
+    mod publication_lifecycle;
+
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpStream};
     use std::str::FromStr;
@@ -7665,6 +8160,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct AdmissionCountingBackend {
         create_calls: AtomicUsize,
+        create_requests: std::sync::Mutex<Vec<Vec<u8>>>,
         runner_capability_calls: AtomicUsize,
     }
 
@@ -7687,9 +8183,13 @@ mod tests {
         fn create_room(
             &self,
             _: &super::GatewaySession,
-            _: CreateRoomRequest,
+            request: CreateRoomRequest,
         ) -> Result<CreateRoomResponse, super::BackendError> {
             self.create_calls.fetch_add(1, Ordering::SeqCst);
+            self.create_requests
+                .lock()
+                .unwrap()
+                .push(serde_json::to_vec(&request).unwrap());
             Err(super::BackendError::StorageUnavailable)
         }
 
@@ -8295,6 +8795,9 @@ mod tests {
                 .unwrap_or_else(|error| unreachable!("new close receiver: {error}"))
         );
         assert!(registry.is_registered("01ARZ3NDEKTSV4RRFFQ69G5FB2"));
+        assert!(!registry.is_current_registration("01ARZ3NDEKTSV4RRFFQ69G5FB2", 1, "room"));
+        assert!(!registry.is_current_registration("01ARZ3NDEKTSV4RRFFQ69G5FB2", 2, "other-room"));
+        assert!(registry.is_current_registration("01ARZ3NDEKTSV4RRFFQ69G5FB2", 2, "room"));
     }
 
     #[test]
@@ -8875,6 +9378,235 @@ mod tests {
         Body::from(
             r#"{"pack":{"id":"pack","version":"1","digest":"digest"},"configuration":{},"members":[],"idempotency_key":"request"}"#,
         )
+    }
+
+    #[tokio::test]
+    async fn create_route_normalizes_v1_and_rejects_invalid_formats_before_backend_execution() {
+        let backend = Arc::new(AdmissionCountingBackend::default());
+        let state = OperatorState::new(EffectiveConfig::default())
+            .unwrap()
+            .with_backend(backend.clone());
+        let app = operator_router(state);
+        let legacy = serde_json::json!({"pack":{"id":"pack","version":"1","digest":"digest"},
+            "configuration":{},"members":[],"idempotency_key":"format-route"});
+        for selector in [None, Some(serde_json::json!("worldstream/transition/v1"))] {
+            let mut body = legacy.clone();
+            if let Some(selector) = selector {
+                body["canonical_history_format"] = selector;
+            }
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/rooms")
+                        .header(header::AUTHORIZATION, auth_header())
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        }
+        {
+            let requests = backend.create_requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[0], requests[1]);
+        }
+        for selector in [
+            serde_json::json!("future"),
+            serde_json::Value::Null,
+            serde_json::json!(2),
+        ] {
+            let mut body = legacy.clone();
+            body["canonical_history_format"] = selector;
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/rooms")
+                        .header(header::AUTHORIZATION, auth_header())
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(response.status().is_client_error());
+        }
+        let mut extra = legacy.clone();
+        extra["unexpected"] = serde_json::json!(true);
+        let duplicate = format!(
+            "{{\"canonical_history_format\":\"worldstream/transition/v1\",\"canonical_history_format\":\"worldstream/transition/v2\",{}",
+            &legacy.to_string()[1..]
+        );
+        for body in [extra.to_string(), duplicate] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/rooms")
+                        .header(header::AUTHORIZATION, auth_header())
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(response.status().is_client_error());
+        }
+        assert_eq!(backend.create_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::unwrap_used)]
+    async fn sqlite_http_creation_selects_genesis_and_preserves_retry_identity() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = SqliteRoomStore::open(file.path()).unwrap();
+        let principal: worldstream_core::PrincipalId =
+            "01ARZ3NDEKTSV4RRFFQ69G5FC2".parse().unwrap();
+        let host_bytes = [0xa9_u8; 32];
+        AuthorityV1::new(Arc::new(store.clone()))
+            .bootstrap(
+                AuthorityBootstrapV1::new(
+                    "01ARZ3NDEKTSV4RRFFQ69G5FC4".parse().unwrap(),
+                    principal.clone(),
+                    PrincipalKindV1::Human,
+                    "01ARZ3NDEKTSV4RRFFQ69G5FC3".parse().unwrap(),
+                    CapabilityBearerV1::from_bytes(host_bytes).token_hash(),
+                    None,
+                )
+                .unwrap(),
+                "2026-08-15T12:00:00Z".parse().unwrap(),
+            )
+            .unwrap();
+        let registry = Arc::new(builtin_worldstream_registry().unwrap());
+        let counter = registry.load_retained(&counter_v2_digest()).unwrap();
+        let body = serde_json::json!({
+            "pack":{"id":counter.descriptor().pack_id,"version":counter.descriptor().explanatory_version,"digest":counter_v2_digest().to_string()},
+            "configuration":{"initial_value":0,"maximum_value":16},
+            "members":[{"principal_id":principal.to_string(),"principal_kind":"human","role":"counter","access_mode":"participant"}],
+            "idempotency_key":"http-format-legacy"
+        });
+        let legacy = worldstream_core::RoomCreationRequestV1::new(
+            counter_v2_digest(),
+            worldstream_core::CanonicalJsonV1::parse(br#"{"initial_value":0,"maximum_value":16}"#)
+                .unwrap(),
+            vec![
+                worldstream_core::InitialMembershipProposalV1::new(
+                    principal,
+                    PrincipalKindV1::Human,
+                    worldstream_core::MembershipStandingV1::Enabled,
+                    worldstream_core::AccessModeV1::Participant,
+                    Some("counter".into()),
+                )
+                .unwrap(),
+            ],
+        );
+        let app = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap()
+                .with_backend(Arc::new(SqliteGatewayBackend::new(store, registry))),
+        );
+        let host_header = format!("Bearer {}", BearerWireV1::from_bytes(host_bytes).to_wire());
+        let post = |body: serde_json::Value| {
+            app.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/rooms")
+                    .header(header::AUTHORIZATION, &host_header)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+        };
+        let response = post(body.clone()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let default_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let default: CreateRoomResponse = serde_json::from_slice(&default_bytes).unwrap();
+        let mut explicit_v1 = body.clone();
+        explicit_v1["canonical_history_format"] = serde_json::json!("worldstream/transition/v1");
+        let response = post(explicit_v1).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            default_bytes
+        );
+        let mut compact = body.clone();
+        compact["idempotency_key"] = serde_json::json!("http-format-compact");
+        compact["canonical_history_format"] = serde_json::json!("worldstream/transition/v2");
+        let response = post(compact.clone()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let compact_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let created: CreateRoomResponse = serde_json::from_slice(&compact_bytes).unwrap();
+        assert_ne!(created.room_id, default.room_id);
+        let response = post(compact.clone()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            compact_bytes
+        );
+        let mut changed_to_v2 = body.clone();
+        changed_to_v2["canonical_history_format"] = serde_json::json!("worldstream/transition/v2");
+        assert_eq!(
+            post(changed_to_v2).await.unwrap().status(),
+            StatusCode::CONFLICT
+        );
+        compact
+            .as_object_mut()
+            .unwrap()
+            .remove("canonical_history_format");
+        assert_eq!(post(compact).await.unwrap().status(), StatusCode::CONFLICT);
+        let connection = rusqlite::Connection::open(file.path()).unwrap();
+        for (response, format) in [
+            (&default, worldstream_core::CanonicalHistoryFormat::V1),
+            (&created, worldstream_core::CanonicalHistoryFormat::V2),
+        ] {
+            let (genesis_bytes,request_hash): (Vec<u8>,Vec<u8>) = connection.query_row(
+                "SELECT g.genesis_bytes,s.canonical_request_hash FROM room_genesis g JOIN semantic_receipts s ON s.room_id=g.room_id WHERE g.room_id=?1 AND s.resolution_kind='genesis_created'",
+                [&response.room_id], |row| Ok((row.get(0)?,row.get(1)?)),
+            ).unwrap();
+            let genesis =
+                worldstream_core::GenesisRecord::from_canonical_bytes(&genesis_bytes).unwrap();
+            assert_eq!(genesis.format(), format);
+            assert_eq!(
+                genesis
+                    .complete_head()
+                    .genesis_or_transition_hash()
+                    .to_string(),
+                response.room_head.genesis_or_transition_hash
+            );
+            let expected_hash =
+                worldstream_core::RoomCreationRequestWithFormat::new(legacy.clone(), format)
+                    .canonical_request_hash()
+                    .unwrap();
+            assert_eq!(request_hash, expected_hash.as_bytes());
+            if format == worldstream_core::CanonicalHistoryFormat::V2 {
+                assert_eq!(
+                    genesis.payload_budget_id(),
+                    Some(worldstream_core::PAYLOAD_BUDGET_V1_ID)
+                );
+            } else {
+                assert_eq!(expected_hash, legacy.canonical_request_hash().unwrap());
+                assert_eq!(genesis.payload_budget_id(), None);
+            }
+        }
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM rooms", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM semantic_receipts", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
     }
 
     fn lobby_launch_body() -> Body {
@@ -9541,7 +10273,11 @@ mod tests {
             )
             .unwrap_or_else(|error| unreachable!("register stream: {error:?}"));
 
-        let response = operator_router(state)
+        // A running host retains its Router while asynchronous publication runs.
+        // Consuming the final Router in oneshot shuts down its publisher owner.
+        let app = operator_router(state);
+        let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -9557,7 +10293,11 @@ mod tests {
             .unwrap_or_else(|error| unreachable!("response: {error}"));
         assert_eq!(response.status(), StatusCode::OK);
 
-        let Some(super::LivePush::Frame(push)) = receiver.recv().await else {
+        let Some(super::LivePush::Frame(push)) =
+            tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .unwrap_or_else(|error| unreachable!("timer publication deadline: {error}"))
+        else {
             unreachable!("timer commit did not advance the registered live stream")
         };
         let frame = push.frame;
@@ -9566,10 +10306,11 @@ mod tests {
         assert!(
             matches!(
                 tokio::time::timeout(Duration::from_millis(10), receiver.recv()).await,
-                Err(_) | Ok(None)
+                Err(_)
             ),
             "the external timer commit must publish exactly one newly committed frame"
         );
+        drop(app);
     }
 
     #[tokio::test]
@@ -9894,66 +10635,145 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn metrics_route_is_bounded_and_available_when_exporter_is_unhealthy() {
+        // Live queue counters belong to the process and survive a new runtime.
+        let prior_registry = super::LiveStreamRegistry::default();
+        prior_registry.queue_metrics.frames.note_backpressure();
+        prior_registry
+            .queue_metrics
+            .payload_bytes
+            .note_backpressure();
+        let prior_queues = prior_registry.queue_snapshots();
         let runtime = TelemetryRuntime::new(
-            super::telemetry::TelemetryConfig::default(),
+            super::telemetry::TelemetryConfig {
+                batch_size: 1,
+                ..super::telemetry::TelemetryConfig::default()
+            },
             Arc::new(FailingExporter),
         )
         .unwrap_or_else(|error| unreachable!("telemetry runtime: {error:?}"));
         let handle = runtime.handle();
+        let metrics = runtime.metrics();
+        record_timer_with_correlation(
+            Some(&handle),
+            telemetry::ReasonCodeV1::Accepted,
+            telemetry::CorrelationV1::none(),
+        );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while metrics.snapshot().exporter_failures == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|error| unreachable!("exporter must fail: {error}"));
         let app = operator_router(
             OperatorState::new(EffectiveConfig::default())
                 .unwrap_or_else(|error| unreachable!("valid state: {error}"))
                 .with_telemetry(handle),
         );
-        let response = app
-            .oneshot(
+        let scrape = || {
+            app.clone().oneshot(
                 Request::builder()
                     .uri("/metrics")
                     .body(Body::empty())
                     .unwrap_or_else(|error| unreachable!("request: {error}")),
             )
-            .await
-            .unwrap_or_else(|error| unreachable!("response: {error}"));
-        assert_eq!(response.status(), 200);
-        assert_eq!(
-            response.headers()[header::CONTENT_TYPE],
-            "text/plain; version=0.0.4; charset=utf-8"
-        );
-        let body = response
-            .into_body()
-            .collect()
-            .await
-            .unwrap_or_else(|error| unreachable!("metrics body: {error}"))
-            .to_bytes();
-        let body = String::from_utf8(body.to_vec())
-            .unwrap_or_else(|error| unreachable!("metrics UTF-8: {error}"));
-        assert!(body.contains("worldstream_telemetry_events_total{event=\"activation\"} 0"));
-        assert!(body.contains("worldstream_telemetry_queue_capacity 256"));
-        assert!(body.contains("worldstream_telemetry_queued 0"));
-        for (queue, scope, capacity) in [
-            ("telemetry_exporter", "global", 256),
-            ("telemetry_dns_resolver_queue", "global", 2),
-            ("room_admission_lane", "per_room", 256),
-            ("websocket_live_push_frame_queue", "per_connection", 256),
-            (
-                "websocket_outbound_payload_bytes",
-                "per_connection",
-                4 * 1024 * 1024,
-            ),
-        ] {
-            assert!(body.contains(&format!(
-                "worldstream_internal_queue_capacity{{queue=\"{queue}\",scope=\"{scope}\"}} {capacity}"
-            )));
-            assert!(body.contains(&format!(
-                "worldstream_internal_queue_process_current{{queue=\"{queue}\"}} 0"
-            )));
-            assert!(body.contains(&format!(
-                "worldstream_internal_queue_backpressure_total{{queue=\"{queue}\"}} 0"
-            )));
+        };
+        let sample = |body: &str, name: &str| {
+            let prefix = format!("{name} ");
+            let values: Vec<_> = body
+                .lines()
+                .filter_map(|line| line.strip_prefix(&prefix))
+                .collect();
+            assert_eq!(values.len(), 1, "one fixed metric sample: {name}");
+            values[0]
+                .parse::<u64>()
+                .unwrap_or_else(|error| unreachable!("finite nonnegative count: {error}"))
+        };
+        let mut observed = Vec::new();
+        for scrape_index in 0..2 {
+            let response = scrape()
+                .await
+                .unwrap_or_else(|error| unreachable!("response: {error}"));
+            assert_eq!(response.status(), 200);
+            assert_eq!(
+                response.headers()[header::CONTENT_TYPE],
+                "text/plain; version=0.0.4; charset=utf-8"
+            );
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .unwrap_or_else(|error| unreachable!("metrics body: {error}"))
+                .to_bytes();
+            assert!(body.len() < 16 * 1024);
+            let body = String::from_utf8(body.to_vec())
+                .unwrap_or_else(|error| unreachable!("metrics UTF-8: {error}"));
+            assert!(sample(&body, "worldstream_telemetry_exporter_failures_total") > 0);
+            assert!(body.contains("worldstream_telemetry_events_total{event=\"activation\"} 0"));
+            assert!(body.contains("worldstream_telemetry_queue_capacity 256"));
+            for (queue, scope, capacity, process_capacity) in [
+                ("telemetry_exporter", "global", 256, 256),
+                ("telemetry_dns_resolver_queue", "global", 2, 2),
+                ("room_admission_lane", "per_room", 256, 256),
+                (
+                    "websocket_live_push_frame_queue",
+                    "per_connection",
+                    256,
+                    super::publication::PROCESS_QUEUE_FRAMES,
+                ),
+                (
+                    "websocket_outbound_payload_bytes",
+                    "per_connection",
+                    4 * 1024 * 1024,
+                    super::publication::PROCESS_QUEUE_BYTES,
+                ),
+            ] {
+                assert_eq!(
+                    sample(
+                        &body,
+                        &format!(
+                            "worldstream_internal_queue_capacity{{queue=\"{queue}\",scope=\"{scope}\"}}"
+                        )
+                    ),
+                    capacity as u64
+                );
+                assert!(
+                    sample(
+                        &body,
+                        &format!("worldstream_internal_queue_process_current{{queue=\"{queue}\"}}")
+                    ) <= process_capacity as u64
+                );
+                let count = sample(
+                    &body,
+                    &format!("worldstream_internal_queue_backpressure_total{{queue=\"{queue}\"}}"),
+                );
+                if let Some(prior) = prior_queues.iter().find(|prior| prior.name == queue) {
+                    assert!(count >= prior.backpressure_total);
+                    if scrape_index == 0 {
+                        observed.push((queue, count));
+                    } else {
+                        let previous = observed
+                            .iter()
+                            .find(|(name, _)| *name == queue)
+                            .unwrap_or_else(|| unreachable!("prior process counter"));
+                        assert!(
+                            count > previous.1,
+                            "process counter retains new backpressure"
+                        );
+                    }
+                }
+            }
+            assert!(!body.contains("room_id"));
+            assert!(!body.contains("authorization"));
+            assert!(!body.contains("bearer"));
+            prior_registry.queue_metrics.frames.note_backpressure();
+            prior_registry
+                .queue_metrics
+                .payload_bytes
+                .note_backpressure();
         }
-        assert!(!body.contains("room_id"));
-        assert!(!body.contains("authorization"));
         assert_eq!(
             runtime.shutdown(Duration::from_secs(1)),
             super::telemetry::FlushOutcome::Flushed
@@ -10397,6 +11217,7 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::too_many_lines)]
+    #[allow(clippy::unwrap_used)]
     async fn operator_member_capability_route_proves_counter_live_path() {
         let file = tempfile::NamedTempFile::new()
             .unwrap_or_else(|error| unreachable!("temporary SQLite file: {error}"));
@@ -10659,12 +11480,40 @@ mod tests {
             None
         );
 
+        let peer = Arc::new(GatewaySession::new_with_wire(
+            "01ARZ3NDEKTSV4RRFFQ69G5FD7".parse().unwrap(),
+            CapabilityBearerV1::from_bytes(
+                BearerWireV1::parse(&issued.bearer).unwrap().into_bytes(),
+            ),
+            BearerWireV1::parse(&issued.bearer).unwrap(),
+        ));
+        let peer_attach = backend
+            .attach(
+                &peer,
+                RoomAttach {
+                    room_id: room_id.clone(),
+                    member_id: member_id.clone(),
+                    after_frame_seq: None,
+                },
+            )
+            .unwrap();
+        backend
+            .sync_ack(
+                &peer,
+                RoomSyncAck {
+                    room_id: room_id.clone(),
+                    member_id: member_id.clone(),
+                    through_frame_head: peer_attach.attached.frame_head,
+                    sync_token: peer_attach.attached.sync_token,
+                },
+            )
+            .unwrap();
         let action = backend
             .action(
                 &member_session,
                 ActionSubmit {
-                    room_id,
-                    member_id,
+                    room_id: room_id.clone(),
+                    member_id: member_id.clone(),
                     action_id: "01ARZ3NDEKTSV4RRFFQ69G5FD6".to_owned(),
                     based_on_room_seq: 0,
                     action_type: "increment".to_owned(),
@@ -10681,6 +11530,91 @@ mod tests {
                 unreachable!("Counter action rejected: {value:?}")
             }
         }
+        let primary = Arc::new(member_session);
+        let recipients = [
+            super::LiveObservationRecipient {
+                session: Arc::clone(&primary),
+                room_id: room_id.clone(),
+                member_id: member_id.clone(),
+                after_frame_seq: 0,
+            },
+            super::LiveObservationRecipient {
+                session: Arc::clone(&peer),
+                room_id: room_id.clone(),
+                member_id: member_id.clone(),
+                after_frame_seq: 0,
+            },
+        ];
+        let reads = backend.live_payload_page_reads_for_test();
+        let pages = backend.prepare_live_observation_batch(&recipients, 32, 1024 * 1024);
+        assert_eq!(backend.live_payload_page_reads_for_test() - reads, 1);
+        let first = pages[0].as_ref().unwrap();
+        let second = pages[1].as_ref().unwrap();
+        assert!(Arc::ptr_eq(&first.frames, &second.frames));
+        assert_eq!(first.frames.len(), 1);
+        first.fence.as_ref().unwrap().revalidate(&primary).unwrap();
+        second.fence.as_ref().unwrap().revalidate(&peer).unwrap();
+        backend
+            .action(
+                &primary,
+                ActionSubmit {
+                    room_id: room_id.clone(),
+                    member_id: member_id.clone(),
+                    action_id: "01ARZ3NDEKTSV4RRFFQ69G5FD8".into(),
+                    based_on_room_seq: 1,
+                    action_type: "increment".into(),
+                    payload: serde_json::json!({}),
+                },
+            )
+            .unwrap();
+        first.fence.as_ref().unwrap().revalidate(&primary).unwrap();
+        second.fence.as_ref().unwrap().revalidate(&peer).unwrap();
+        let positions = [
+            recipients[0].clone(),
+            super::LiveObservationRecipient {
+                after_frame_seq: 1,
+                ..recipients[1].clone()
+            },
+        ];
+        let pages = backend.prepare_live_observation_batch(&positions, 32, 1024 * 1024);
+        assert_eq!(pages[0].as_ref().unwrap().frames.len(), 2);
+        assert_eq!(pages[1].as_ref().unwrap().frames.len(), 1);
+        assert_eq!(
+            backend
+                .observation_ack(
+                    &primary,
+                    ObservationAck {
+                        room_id: room_id.clone(),
+                        member_id: member_id.clone(),
+                        through_frame_seq: 2
+                    }
+                )
+                .unwrap(),
+            Some(2)
+        );
+        let reattach = backend
+            .attach(
+                &peer,
+                RoomAttach {
+                    room_id: room_id.clone(),
+                    member_id: member_id.clone(),
+                    after_frame_seq: Some(2),
+                },
+            )
+            .unwrap();
+        assert!(second.fence.as_ref().unwrap().revalidate(&peer).is_err());
+        first.fence.as_ref().unwrap().revalidate(&primary).unwrap();
+        backend
+            .sync_ack(
+                &peer,
+                RoomSyncAck {
+                    room_id,
+                    member_id,
+                    through_frame_head: reattach.attached.frame_head,
+                    sync_token: reattach.attached.sync_token,
+                },
+            )
+            .unwrap();
     }
 
     #[tokio::test]

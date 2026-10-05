@@ -83,23 +83,21 @@ use worldstream_core::{
     CapabilityProfileV1, CapabilityRevokedAt, CapabilityScopeSetV1, CapabilityScopeV1,
     CapabilityTokenHashV1, CompleteHeadV1, CoreAdministrationRequestV1, CoreRecordedAt,
     CoreRoomStateV1, CoreTraceV1, DiagnosticAdapterInputV1, DiagnosticOperationV1,
-    DiagnosticTargetV1, ExternalInputRecordedAt, ExternalInputV1, GenesisV1,
-    HistoricalEvidencePageOutcomeV1, HistoricalEvidenceReferenceV1, HistoricalReplayAccumulatorV1,
-    HistoricalReplayErrorV1, HistoricalReplayProjectionRequestV1, HistoricalReplayProjectionV1,
-    HostClockErrorV1, HostClockSampleV1, HostClockV1, IntegrityGenerationV1,
-    MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1, MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES,
-    MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1,
-    MAX_HISTORICAL_EVIDENCE_TIME_MS_V1, MAX_PENDING_REFRESH_AGE_MS_V1,
-    MAX_PENDING_REFRESH_BYTES_V1, MemberId, MemberReadOperationV1, MembershipAuthoritySnapshotV1,
-    MembershipGenerationV1, MembershipStandingV1, MembershipV1, OperationIdentityV1,
-    OperationalHistoryRootV2, OperationalMmrNodeCoordinateV1, OperationalMmrNodeV1,
-    OperationalMmrProofNodeV1, OperationalMmrProofPlanV1, OperationalMmrProofV1,
-    OperationalMmrReceiptV1, OperationalMmrV1, PackRegistryV1, PackRevisionLockV1, PackViewerV1,
-    ParticipantActionAuthorityV1, ParticipantActionRequestV1, ParticipantActionV1,
-    PreparedAdvancePersistenceV1, PreparedAuthorityBootstrapV1, PreparedAuthorityChangeV1,
-    PreparedAuthorityWitnessV1, PreparedCreationPersistenceV1, PreparedExistingIntentV1,
-    PreparedObservationConsequenceV1, PreparedOperationInputWitnessV1, PreparedRoomCommitV1,
-    PreparedRoomWriteV1, PreparedTimerMutationKindV1, PresentedCapabilityV1,
+    DiagnosticTargetV1, ExternalInputRecordedAt, ExternalInputV1, HistoricalEvidencePageOutcomeV1,
+    HistoricalEvidenceReferenceV1, HistoricalReplayErrorV1, HistoricalReplayProjectionRequestV1,
+    HistoricalReplayProjectionV1, HostClockErrorV1, HostClockSampleV1, HostClockV1,
+    IntegrityGenerationV1, MAX_ACTIVATION_EXECUTIONS_PER_MINUTE_V1,
+    MAX_ACTIVATION_INVOCATION_CONTEXT_BYTES, MAX_HISTORICAL_EVIDENCE_BYTES_PER_PAGE_V1,
+    MAX_HISTORICAL_EVIDENCE_ROWS_PER_PAGE_V1, MAX_HISTORICAL_EVIDENCE_TIME_MS_V1,
+    MAX_PENDING_REFRESH_AGE_MS_V1, MAX_PENDING_REFRESH_BYTES_V1, MemberId, MemberReadOperationV1,
+    MembershipAuthoritySnapshotV1, MembershipGenerationV1, MembershipStandingV1, MembershipV1,
+    OperationIdentityV1, OperationalHistoryRootV2, OperationalMmrNodeCoordinateV1,
+    OperationalMmrNodeV1, OperationalMmrProofNodeV1, OperationalMmrProofPlanV1,
+    OperationalMmrProofV1, OperationalMmrReceiptV1, OperationalMmrV1, PackRegistryV1,
+    PackRevisionLockV1, PackViewerV1, ParticipantActionAuthorityV1, ParticipantActionRequestV1,
+    ParticipantActionV1, PreparedAuthorityBootstrapV1, PreparedAuthorityChangeV1,
+    PreparedAuthorityWitnessV1, PreparedObservationConsequenceV1, PreparedOperationInputWitnessV1,
+    PreparedRoomCommitV1, PreparedRoomWriteV1, PreparedTimerMutationKindV1, PresentedCapabilityV1,
     PrincipalAuthoritySnapshotV1, PrincipalAuthorityStatusV1, PrincipalGenerationV1, PrincipalId,
     PrincipalKindV1, ReceiptSemanticInputV1, RecordedStimulusV1, RecoveredActivationDecisionV1,
     RecoveredObservationConsequenceV1, RecoveredObservationFrameV1,
@@ -114,10 +112,28 @@ use worldstream_core::{
     RunnerControlOperationV1, RunnerGenerationV1, RunnerId, RunnerMembershipSetV1,
     SemanticResultV1, SessionBarrierV1, SessionErrorV1, StoredSemanticResultV1,
     TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, TimerId, TimerScheduledFor, TraceErrorV1,
-    TransitionId, TransitionV1, ValidatedAuthorityBootstrapV1, ValidatedAuthorityChangeV1,
-    ValidatedPackViewV1, VerifiedCurrentRoomMaterializationV1, ViewerAdapterInputV1,
-    activation_refresh_budget_allows_v1, commit_existing_room, prepare_activation_context,
-    recover_room_from_storage, resolve_authorized_room_operation_for_adapter,
+    TransitionId, ValidatedAuthorityBootstrapV1, ValidatedAuthorityChangeV1, ValidatedPackViewV1,
+    ViewerAdapterInputV1, activation_refresh_budget_allows_v1, commit_existing_room,
+    prepare_activation_context, recover_room_from_storage,
+    resolve_authorized_room_operation_for_adapter,
+};
+mod canonical_gateway;
+mod canonical_inspection;
+mod canonical_read;
+#[cfg(test)]
+mod canonical_tests;
+mod sealed_persistence;
+use canonical_gateway::SqliteServingTrace;
+pub use canonical_gateway::{SqliteCanonicalGatewayRoomSnapshot, SqliteCanonicalRoomRecovery};
+use canonical_inspection::{SqliteInspectionFacts, SqliteStructuralInspectionFacts};
+use sealed_persistence::{
+    SqliteAdvancePersistence, SqliteCreationPersistence, SqliteExistingIntent,
+};
+use worldstream_core::{
+    CanonicalHistoricalReplayAccumulator, CanonicalRoomCommitStorage, CanonicalRoomRecoveryStorage,
+    CanonicalRoomTrace, CanonicalStorageHistoryPreflight, GenesisRecord,
+    PreparedCanonicalRoomWrite, TransitionRecord, VerifiedCanonicalCurrentRoomMaterialization,
+    VerifiedCanonicalGenesis,
 };
 use worldstream_sqlite_open::{ExactSqliteConnection, ExactSqliteOpenError, open_exact};
 use worldstream_transfer::{
@@ -1776,6 +1792,10 @@ impl SqliteRoomDiagnosticVerificationV1 {
 /// Closed failures for the authenticated host-operator diagnostic seam.
 #[derive(Debug, Error, PartialEq)]
 pub enum SqliteRoomDiagnosticErrorV1 {
+    #[error("diagnostic exact retained runtime is unavailable")]
+    RuntimeUnavailable,
+    #[error("diagnostic exact retained runtime failed")]
+    RuntimeFault,
     #[error("diagnostic authority failed: {0}")]
     Authority(#[from] AuthorityErrorV1),
     #[error("diagnostic target is not a Room")]
@@ -2742,6 +2762,20 @@ impl SqliteRoomRecoveryV1 {
     }
 }
 
+/// An immutable addressed prefix verified at one authority/storage cut.
+/// Payload bytes are absent. Revalidation allows monotonic head advance only
+/// with the same Room/Member, an anchored complete Head, unchanged exact
+/// Pack/schema, integrity/reset, and prefix identities.
+#[derive(Clone)]
+pub struct SqliteLiveObservationCut {
+    head: CompleteHeadV1,
+    member_id: MemberId,
+    integrity: String,
+    integrity_generation: i64,
+    reset_generation: i64,
+    prefix: Vec<(u64, u64, String)>,
+}
+
 /// A durable Observation Frame returned by the `SQLite` delivery seam.
 #[derive(Clone, Eq, PartialEq)]
 pub struct SqliteObservationFrameV1 {
@@ -3250,8 +3284,9 @@ struct AuthorizedReplaySessionV1 {
 }
 
 struct AuthorizedReplayPagingStateV1 {
+    genesis: Option<VerifiedCanonicalGenesis>,
     session: AuthorizedReplaySessionV1,
-    accumulator: Option<HistoricalReplayAccumulatorV1>,
+    accumulator: Option<CanonicalHistoricalReplayAccumulator>,
     receipt_head: Option<CompleteHeadV1>,
     prior_sequence: u64,
 }
@@ -3286,6 +3321,7 @@ impl RoomHistoryInspectionV1 {
 }
 
 struct WriterClient {
+    clock: Arc<dyn TrustedAuthorityClock>,
     commands: SyncSender<WriterCommand>,
     path: PathBuf,
     database_file: File,
@@ -3485,6 +3521,37 @@ enum WriterCommand {
         after_frame_seq: u64,
         installed_reset_generation: u64,
         reply: mpsc::Sender<Result<Vec<SqliteObservationFrameV1>, SqliteObservationErrorV1>>,
+    },
+    ReadObservationPageAtResetGeneration {
+        authority: ViewerAdapterInputV1,
+        after_frame_seq: u64,
+        installed_reset_generation: u64,
+        max_frames: usize,
+        max_canonical_payload_bytes: usize,
+        reply:
+            mpsc::Sender<Result<(Vec<SqliteObservationFrameV1>, bool), SqliteObservationErrorV1>>,
+    },
+    ReadSharedObservationPage {
+        authorities: Vec<Arc<ViewerAdapterInputV1>>,
+        after: u64,
+        reset: u64,
+        max_frames: usize,
+        max_bytes: usize,
+        reply: mpsc::Sender<
+            Result<
+                (
+                    Vec<SqliteObservationFrameV1>,
+                    bool,
+                    SqliteLiveObservationCut,
+                ),
+                SqliteObservationErrorV1,
+            >,
+        >,
+    },
+    RevalidateLiveObservation {
+        authority: Arc<ViewerAdapterInputV1>,
+        cut: Arc<SqliteLiveObservationCut>,
+        reply: mpsc::Sender<Result<(), SqliteObservationErrorV1>>,
     },
     PruneObservationFrames {
         room_id: RoomId,
@@ -3722,12 +3789,12 @@ struct PreparedReceiptRow {
 }
 
 enum PreparedSqliteBranch {
-    Create(Box<PreparedCreationPersistenceV1>),
+    Create(Box<SqliteCreationPersistence>),
     Existing {
         basis: Box<worldstream_core::CompleteHeadV1>,
         integrity_generation: worldstream_core::IntegrityGenerationV1,
         input_witness: PreparedOperationInputWitnessV1,
-        intent: PreparedExistingIntentV1,
+        intent: SqliteExistingIntent,
     },
 }
 
@@ -3850,7 +3917,9 @@ impl SqlitePreparedWrite {
             PreparedRoomWriteV1::Create(create) => (
                 create.authority_witness().clone(),
                 create.semantic_result().clone(),
-                PreparedSqliteBranch::Create(Box::new(create.persistence().clone())),
+                PreparedSqliteBranch::Create(Box::new(SqliteCreationPersistence::from_legacy(
+                    create.persistence(),
+                ))),
             ),
             PreparedRoomWriteV1::Existing(existing) => (
                 existing.authority_witness().clone(),
@@ -3859,10 +3928,61 @@ impl SqlitePreparedWrite {
                     basis: Box::new(existing.basis_complete_head().clone()),
                     integrity_generation: existing.integrity_generation(),
                     input_witness: existing.input_witness().clone(),
-                    intent: existing.intent().clone(),
+                    intent: SqliteExistingIntent::from_legacy(existing.intent()),
                 },
             ),
         };
+        Self::from_components(
+            identity,
+            identity_bytes,
+            request_hash,
+            authority,
+            stored_result,
+            branch,
+        )
+    }
+
+    fn from_canonical(prepared: &PreparedCanonicalRoomWrite) -> Result<Self, ()> {
+        let identity = prepared.identity().clone();
+        let identity_bytes = identity.canonical_bytes().map_err(|_| ())?;
+        let request_hash = prepared.request_hash().clone();
+        let (authority, stored_result, branch) = match prepared {
+            PreparedCanonicalRoomWrite::Create(create) => (
+                create.authority_witness().clone(),
+                create.semantic_result().clone(),
+                PreparedSqliteBranch::Create(Box::new(SqliteCreationPersistence::from_canonical(
+                    create.persistence(),
+                ))),
+            ),
+            PreparedCanonicalRoomWrite::Existing(existing) => (
+                existing.authority_witness().clone(),
+                existing.semantic_result().clone(),
+                PreparedSqliteBranch::Existing {
+                    basis: Box::new(existing.basis_complete_head().clone()),
+                    integrity_generation: existing.integrity_generation(),
+                    input_witness: existing.input_witness().clone(),
+                    intent: SqliteExistingIntent::from_canonical(existing.intent()),
+                },
+            ),
+        };
+        Self::from_components(
+            identity,
+            identity_bytes,
+            request_hash,
+            authority,
+            stored_result,
+            branch,
+        )
+    }
+
+    fn from_components(
+        identity: OperationIdentityV1,
+        identity_bytes: Vec<u8>,
+        request_hash: CanonicalRequestHashV1,
+        authority: PreparedAuthorityWitnessV1,
+        stored_result: StoredSemanticResultV1,
+        branch: PreparedSqliteBranch,
+    ) -> Result<Self, ()> {
         if stored_result.operation_identity() != &identity
             || stored_result.canonical_request_hash() != &request_hash
         {
@@ -3900,11 +4020,11 @@ impl SqlitePreparedWrite {
         let persistence = match &self.branch {
             PreparedSqliteBranch::Create(persistence) => SnapshotPersistence::Create(persistence),
             PreparedSqliteBranch::Existing {
-                intent: PreparedExistingIntentV1::Advance(advance),
+                intent: SqliteExistingIntent::Advance(advance),
                 ..
             } => SnapshotPersistence::Advance(advance),
             PreparedSqliteBranch::Existing {
-                intent: PreparedExistingIntentV1::DurableDisposition,
+                intent: SqliteExistingIntent::DurableDisposition,
                 ..
             } => return None,
         };
@@ -3919,7 +4039,7 @@ impl SqlitePreparedWrite {
                 genesis: true,
             }),
             PreparedSqliteBranch::Existing {
-                intent: PreparedExistingIntentV1::Advance(advance),
+                intent: SqliteExistingIntent::Advance(advance),
                 ..
             } => Some(SnapshotCadenceCandidate {
                 room_id: advance.resulting_complete_head.room_id().as_str(),
@@ -3928,7 +4048,7 @@ impl SqlitePreparedWrite {
                 genesis: false,
             }),
             PreparedSqliteBranch::Existing {
-                intent: PreparedExistingIntentV1::DurableDisposition,
+                intent: SqliteExistingIntent::DurableDisposition,
                 ..
             } => None,
         }
@@ -3936,8 +4056,8 @@ impl SqlitePreparedWrite {
 }
 
 enum SnapshotPersistence<'a> {
-    Create(&'a PreparedCreationPersistenceV1),
-    Advance(&'a PreparedAdvancePersistenceV1),
+    Create(&'a SqliteCreationPersistence),
+    Advance(&'a SqliteAdvancePersistence),
 }
 
 impl PostCommitSnapshotV1 {
@@ -4598,6 +4718,7 @@ impl SqliteRoomStore {
             SqliteSourceTransferStateV1::SourceAuthoritative as u8,
         ));
         let thread_source_transfer_state = Arc::clone(&source_transfer_state);
+        let reader_clock = Arc::clone(&clock);
         let writer_thread = thread::Builder::new()
             .name("worldstream-sqlite-writer".to_owned())
             .spawn(move || {
@@ -4620,6 +4741,7 @@ impl SqliteRoomStore {
             return Err(error);
         }
         let writer = Arc::new(WriterClient {
+            clock: reader_clock,
             commands,
             path,
             database_file: reader_database_file,
@@ -6270,6 +6392,152 @@ impl SqliteRoomStore {
             .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?
     }
 
+    fn read_publication_with_deadline<T>(
+        &self,
+        read: impl FnOnce(&mut Connection) -> Result<T, SqliteObservationErrorV1>,
+    ) -> Result<T, SqliteObservationErrorV1> {
+        let require_named = || {
+            let identity = publication_file_identity(&self.writer.database_file)
+                .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+            require_retained_sqlite_name(&self.writer.path, &self.writer.database_file, identity)
+                .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)
+        };
+        require_named()?;
+        let mut connection = self
+            .writer
+            .open_read_connection()
+            .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+        enforce_source_transfer_mode(&connection, &self.writer.source_transfer_state, false)
+            .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+        let result = read(&mut connection);
+        require_named()?;
+        result
+    }
+
+    /// Reads one consecutive authorized page under the installed reset fence.
+    /// Limits apply to metadata before payload materialization in the same cut.
+    /// The boolean reports remaining frames at the captured frame head.
+    ///
+    /// # Errors
+    /// Returns authority, storage, corruption, or reset-fence errors.
+    pub fn read_observation_page_at_reset_generation(
+        &self,
+        authority: AuthorizedViewerV1,
+        after_frame_seq: u64,
+        installed_reset_generation: u64,
+        max_frames: usize,
+        max_canonical_payload_bytes: usize,
+    ) -> Result<(Vec<SqliteObservationFrameV1>, bool), SqliteObservationErrorV1> {
+        if worldstream_core::storage_read_deadline().is_some() {
+            return self.read_publication_with_deadline(|connection| {
+                read_observation_page_guarded(
+                    connection,
+                    &authority.into_adapter_input(),
+                    after_frame_seq,
+                    installed_reset_generation,
+                    max_frames,
+                    max_canonical_payload_bytes,
+                    self.writer.clock.as_ref(),
+                )
+            });
+        }
+        let (reply, receive) = mpsc::channel();
+        self.writer
+            .commands
+            .send(WriterCommand::ReadObservationPageAtResetGeneration {
+                authority: authority.into_adapter_input(),
+                after_frame_seq,
+                installed_reset_generation,
+                max_frames,
+                max_canonical_payload_bytes,
+                reply,
+            })
+            .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+        receive
+            .recv()
+            .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?
+    }
+
+    /// Reads one shared addressed page after validating every Session grant.
+    /// All grants and the payload/proof prefix use the same transaction.
+    /// # Errors
+    /// Returns a closed authority, reset, integrity, or storage failure.
+    pub fn read_shared_observation_page(
+        &self,
+        authorities: Vec<Arc<ViewerAdapterInputV1>>,
+        after: u64,
+        reset: u64,
+        max_frames: usize,
+        max_bytes: usize,
+    ) -> Result<
+        (
+            Vec<SqliteObservationFrameV1>,
+            bool,
+            SqliteLiveObservationCut,
+        ),
+        SqliteObservationErrorV1,
+    > {
+        if worldstream_core::storage_read_deadline().is_some() {
+            return self.read_publication_with_deadline(|connection| {
+                read_shared_observation_page_guarded(
+                    connection,
+                    &authorities,
+                    after,
+                    reset,
+                    max_frames,
+                    max_bytes,
+                    self.writer.clock.as_ref(),
+                )
+            });
+        }
+        let (reply, receive) = mpsc::channel();
+        self.writer
+            .commands
+            .send(WriterCommand::ReadSharedObservationPage {
+                authorities,
+                after,
+                reset,
+                max_frames,
+                max_bytes,
+                reply,
+            })
+            .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+        receive
+            .recv()
+            .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?
+    }
+    /// Revalidates current authority and immutable prefix metadata without payloads.
+    /// # Errors
+    /// Returns a closed changed-authority, prefix, or storage failure.
+    pub fn revalidate_live_observation(
+        &self,
+        authority: Arc<ViewerAdapterInputV1>,
+        cut: Arc<SqliteLiveObservationCut>,
+    ) -> Result<(), SqliteObservationErrorV1> {
+        if worldstream_core::storage_read_deadline().is_some() {
+            return self.read_publication_with_deadline(|connection| {
+                revalidate_live_observation_guarded(
+                    connection,
+                    &authority,
+                    &cut,
+                    self.writer.clock.as_ref(),
+                )
+            });
+        }
+        let (reply, receive) = mpsc::channel();
+        self.writer
+            .commands
+            .send(WriterCommand::RevalidateLiveObservation {
+                authority,
+                cut,
+                reply,
+            })
+            .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+        receive
+            .recv()
+            .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?
+    }
+
     /// Deletes only the physical frame prefix below `retain_from_frame_seq`.
     /// Durable frame head and Cursor positions never move; deleting an
     /// unacknowledged prefix records a reset marker for the next attach.
@@ -6734,6 +7002,7 @@ impl SqliteRoomStore {
         self.advance_authorized_replay_slice(
             registry,
             AuthorizedReplayPagingStateV1 {
+                genesis: None,
                 session,
                 accumulator: None,
                 receipt_head: None,
@@ -6910,6 +7179,7 @@ impl SqliteRoomStore {
             Ok(true) => {}
         }
         let AuthorizedReplayPagingStateV1 {
+            genesis: _,
             session,
             accumulator,
             receipt_head: _,
@@ -7176,7 +7446,7 @@ impl SqliteRoomStore {
     ) -> Result<Option<SqliteRoomRuntimeStateV1>, SqliteRoomRecoveryErrorV1> {
         let mut retries = 0;
         loop {
-            match self.recover_room_catching_up(registry, room_id, &WallHostClock) {
+            match self.recover_canonical_room_catching_up(registry, room_id, &WallHostClock) {
                 Ok(recovery) => return Ok(recovery.map(|value| value.state())),
                 Err(SqliteRoomRecoveryErrorV1::Recovery(RoomRecoveryErrorV1::ConcurrentChange))
                     if retries < MAX_RUNTIME_STATE_RECOVERY_RETRIES =>
@@ -7663,6 +7933,68 @@ impl RoomCommitStorageV1 for SqliteRoomStore {
     }
 }
 
+impl CanonicalRoomCommitStorage for SqliteRoomStore {
+    fn commit(&self, prepared: &PreparedCanonicalRoomWrite) -> RoomCommitResolutionV1 {
+        let Ok(prepared) = SqlitePreparedWrite::from_canonical(prepared) else {
+            self.emit_telemetry(SqliteTelemetryEventV1::StorageDiagnostic {
+                kind: SqliteStorageDiagnosticKindV1::Query,
+            });
+            return RoomCommitResolutionV1::Fault;
+        };
+        let (reply, receive) = mpsc::channel();
+        if self
+            .writer
+            .commands
+            .send(WriterCommand::Commit(Box::new(prepared), reply))
+            .is_err()
+        {
+            self.emit_telemetry(SqliteTelemetryEventV1::StorageDiagnostic {
+                kind: SqliteStorageDiagnosticKindV1::Connection,
+            });
+            return RoomCommitResolutionV1::Indeterminate;
+        }
+        let result = receive
+            .recv()
+            .unwrap_or(RoomCommitResolutionV1::Indeterminate);
+        if matches!(
+            result,
+            RoomCommitResolutionV1::Fault | RoomCommitResolutionV1::Indeterminate
+        ) {
+            self.emit_telemetry(SqliteTelemetryEventV1::StorageDiagnostic {
+                kind: SqliteStorageDiagnosticKindV1::Query,
+            });
+        }
+        result
+    }
+
+    fn resolve(
+        &self,
+        identity: &OperationIdentityV1,
+        request_hash: &CanonicalRequestHashV1,
+    ) -> ResolveOutcomeV1 {
+        let Ok(identity_bytes) = identity.canonical_bytes() else {
+            return ResolveOutcomeV1::ResolutionUnavailable;
+        };
+        let (reply, receive) = mpsc::channel();
+        if self
+            .writer
+            .commands
+            .send(WriterCommand::Resolve {
+                identity: identity.clone(),
+                identity_bytes,
+                request_hash: request_hash.clone(),
+                reply,
+            })
+            .is_err()
+        {
+            return ResolveOutcomeV1::ResolutionUnavailable;
+        }
+        receive
+            .recv()
+            .unwrap_or(ResolveOutcomeV1::ResolutionUnavailable)
+    }
+}
+
 fn inspect_sqlite_full_recovery_candidate(
     store: &SqliteRoomStore,
     room_id: &RoomId,
@@ -7690,6 +8022,51 @@ fn inspect_sqlite_full_recovery_candidate(
             Err(RoomRecoveryErrorV1::Corrupt)
         }
         Err(error) => Err(map_inspection_error(&error)),
+    }
+}
+
+impl CanonicalRoomRecoveryStorage for SqliteRoomStore {
+    fn inspect_recovery_candidate(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<Option<RoomRecoveryCandidateV1>, RoomRecoveryErrorV1> {
+        RoomRecoveryStorageV1::inspect_recovery_candidate(self, room_id)
+    }
+    fn inspect_full_recovery_candidate(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<Option<RoomRecoveryCandidateV1>, RoomRecoveryErrorV1> {
+        RoomRecoveryStorageV1::inspect_full_recovery_candidate(self, room_id)
+    }
+    fn guard_recovery_install(
+        &self,
+        room_id: &RoomId,
+        expected_head: &CompleteHeadV1,
+        generation: IntegrityGenerationV1,
+        recovered: &RecoveredRoomMaterializationsV1,
+    ) -> Result<(), RoomRecoveryErrorV1> {
+        RoomRecoveryStorageV1::guard_recovery_install(
+            self,
+            room_id,
+            expected_head,
+            generation,
+            recovered,
+        )
+    }
+    fn record_recovery_failure(
+        &self,
+        room_id: &RoomId,
+        expected_head: &CompleteHeadV1,
+        generation: IntegrityGenerationV1,
+        disposition: RecoveryIntegrityDispositionV1,
+    ) -> Result<(), RoomRecoveryErrorV1> {
+        RoomRecoveryStorageV1::record_recovery_failure(
+            self,
+            room_id,
+            expected_head,
+            generation,
+            disposition,
+        )
     }
 }
 
@@ -9160,7 +9537,7 @@ fn replay_room_authority_projection_is_corrupt(
 fn load_authoritative_current_materialization(
     connection: &Connection,
     room_id: &RoomId,
-) -> Result<Option<VerifiedCurrentRoomMaterializationV1>, AuthorityStoreErrorV1> {
+) -> Result<Option<VerifiedCanonicalCurrentRoomMaterialization>, AuthorityStoreErrorV1> {
     let room_id_text = room_id.to_string();
     let stored = connection
         .query_row(
@@ -9265,7 +9642,10 @@ fn load_authoritative_current_materialization(
             .map_err(authority_sql_failure)?
             .ok_or(AuthorityStoreErrorV1::Corrupt)?
     };
-    let verified = VerifiedCurrentRoomMaterializationV1::verify_for_storage(
+    let genesis =
+        canonical_read::load_genesis(connection, room_id).map_err(map_recovery_authority_error)?;
+    let verified = VerifiedCanonicalCurrentRoomMaterialization::verify_for_storage(
+        &genesis,
         &head,
         &canonical_current_record_bytes,
         &canonical_core_state_bytes,
@@ -9279,7 +9659,7 @@ fn load_authoritative_current_materialization(
         (None, None) => {}
         (Some(current), Some(previous_lineage_hash)) => {
             let predecessor_head =
-                load_verified_immediate_predecessor(connection, room_id, head.room_seq())?;
+                load_verified_immediate_predecessor(connection, &genesis, head.room_seq())?;
             let expected_successor = predecessor_head
                 .room_seq()
                 .checked_successor()
@@ -9307,84 +9687,16 @@ fn load_authoritative_current_materialization(
 
 fn load_verified_immediate_predecessor(
     connection: &Connection,
-    room_id: &RoomId,
+    genesis: &VerifiedCanonicalGenesis,
     current_sequence: RoomSequenceV1,
 ) -> Result<CompleteHeadV1, AuthorityStoreErrorV1> {
     let predecessor = current_sequence
         .get()
         .checked_sub(1)
         .ok_or(AuthorityStoreErrorV1::Corrupt)?;
-    if predecessor == 0 {
-        let bytes: Vec<u8> = connection
-            .query_row(
-                "SELECT genesis_bytes FROM room_genesis WHERE room_id = ?1",
-                [room_id.as_str()],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(authority_sql_failure)?
-            .ok_or(AuthorityStoreErrorV1::Corrupt)?;
-        let genesis =
-            GenesisV1::from_canonical_bytes(&bytes).map_err(|_| AuthorityStoreErrorV1::Corrupt)?;
-        let predecessor_head = genesis.complete_head();
-        if predecessor_head.room_id() != room_id || predecessor_head.room_seq().get() != 0 {
-            return Err(AuthorityStoreErrorV1::Corrupt);
-        }
-        let core_bytes = genesis
-            .initial_core_state()
-            .canonical_bytes()
-            .map_err(|_| AuthorityStoreErrorV1::Corrupt)?;
-        let activity_bytes = genesis
-            .initial_activity_state()
-            .to_bytes()
-            .map_err(|_| AuthorityStoreErrorV1::Corrupt)?;
-        VerifiedCurrentRoomMaterializationV1::verify_for_storage(
-            &predecessor_head,
-            &bytes,
-            &core_bytes,
-            &activity_bytes,
-        )
-        .map_err(map_recovery_authority_error)?;
-        return Ok(predecessor_head);
-    }
-    let row: Option<(String, Vec<u8>)> = connection
-        .query_row(
-            "SELECT transition_hash, transition_bytes FROM transitions \
-             WHERE room_id = ?1 AND room_seq = ?2",
-            params![
-                room_id.as_str(),
-                i64::try_from(predecessor).map_err(|_| AuthorityStoreErrorV1::Corrupt)?
-            ],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(authority_sql_failure)?;
-    let (stored_hash, bytes) = row.ok_or(AuthorityStoreErrorV1::Corrupt)?;
-    let transition =
-        TransitionV1::from_canonical_bytes(&bytes).map_err(|_| AuthorityStoreErrorV1::Corrupt)?;
-    let predecessor_head = transition.complete_head();
-    if predecessor_head.room_id() != room_id || predecessor_head.room_seq().get() != predecessor {
-        return Err(AuthorityStoreErrorV1::Corrupt);
-    }
-    let core_bytes = transition
-        .resulting_core_state()
-        .canonical_bytes()
-        .map_err(|_| AuthorityStoreErrorV1::Corrupt)?;
-    let activity_bytes = transition
-        .resulting_activity_state()
-        .to_bytes()
-        .map_err(|_| AuthorityStoreErrorV1::Corrupt)?;
-    VerifiedCurrentRoomMaterializationV1::verify_for_storage(
-        &predecessor_head,
-        &bytes,
-        &core_bytes,
-        &activity_bytes,
-    )
-    .map_err(map_recovery_authority_error)?;
-    if stored_hash != predecessor_head.genesis_or_transition_hash().to_string() {
-        return Err(AuthorityStoreErrorV1::Corrupt);
-    }
-    Ok(predecessor_head)
+    let sequence = RoomSequenceV1::new(predecessor).map_err(|_| AuthorityStoreErrorV1::Corrupt)?;
+    canonical_read::load_record_head(connection, genesis, sequence)
+        .map_err(map_recovery_authority_error)
 }
 
 const fn map_recovery_authority_error(error: RoomRecoveryErrorV1) -> AuthorityStoreErrorV1 {
@@ -9669,7 +9981,10 @@ fn load_current_paired_snapshot_materializations(
     let Some(current_record) = current_record else {
         return Ok(None);
     };
-    if VerifiedCurrentRoomMaterializationV1::verify_for_storage(
+    let genesis = canonical_read::load_genesis(transaction, expected_head.room_id())
+        .map_err(map_recovery_preflight_inspection_error)?;
+    if VerifiedCanonicalCurrentRoomMaterialization::verify_for_storage(
+        &genesis,
         &snapshot_head,
         &current_record,
         &snapshot.8,
@@ -9876,8 +10191,14 @@ fn verify_diagnostic_room(
         .iter()
         .map(|(_, bytes)| bytes.clone())
         .collect::<Vec<_>>();
-    let report = CoreTraceV1::replay(registry, &history.genesis_bytes, &transitions)
-        .map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)?;
+    let report = CanonicalRoomTrace::replay(registry, &history.genesis_bytes, &transitions)
+        .map_err(|failure| match failure.class {
+            ReplayFailureClassV1::RuntimeUnavailable => {
+                SqliteRoomDiagnosticErrorV1::RuntimeUnavailable
+            }
+            ReplayFailureClassV1::RuntimeFault => SqliteRoomDiagnosticErrorV1::RuntimeFault,
+            _ => SqliteRoomDiagnosticErrorV1::Corrupt,
+        })?;
     if report.final_head != head {
         return Err(SqliteRoomDiagnosticErrorV1::Corrupt);
     }
@@ -10052,7 +10373,10 @@ fn inspect_checkpoint_candidate_at_path(
             |row| row.get(0),
         )?
     };
-    if VerifiedCurrentRoomMaterializationV1::verify_for_storage(
+    let genesis = canonical_read::load_genesis(&transaction, head.room_id())
+        .map_err(map_recovery_preflight_inspection_error)?;
+    if VerifiedCanonicalCurrentRoomMaterialization::verify_for_storage(
+        &genesis,
         &checkpoint_head,
         &record_bytes,
         &snapshot.8,
@@ -10102,12 +10426,12 @@ fn inspect_checkpoint_candidate_at_path(
             snapshot.9.clone(),
             witness.timers().to_vec(),
         )
-        .with_bounded_operational_witnesses(witness.observation_frame_heads().clone(), Vec::new())
         .with_operational_witnesses(
             Vec::new(),
             Vec::new(),
             witness.membership_generations().clone(),
         )
+        .with_bounded_operational_witnesses(witness.observation_frame_heads().clone(), Vec::new())
         .with_operational_history_roots(witness.operational_history_roots().clone())
         .with_operational_mmr_receipts(witness.operational_mmr_receipts().clone())
     } else if let Some(witness_row) = witness_v2_row {
@@ -10131,12 +10455,12 @@ fn inspect_checkpoint_candidate_at_path(
             snapshot.9.clone(),
             witness.timers().to_vec(),
         )
-        .with_bounded_operational_witnesses(witness.observation_frame_heads().clone(), Vec::new())
         .with_operational_witnesses(
             Vec::new(),
             Vec::new(),
             witness.membership_generations().clone(),
         )
+        .with_bounded_operational_witnesses(witness.observation_frame_heads().clone(), Vec::new())
         .with_operational_history_roots(witness.operational_history_roots().clone())
     } else {
         let witness_row: (String, Vec<u8>, Vec<u8>) = transaction.query_row(
@@ -10308,7 +10632,7 @@ fn inspect_room_at_path(
         head.pack_digest(),
     )
     .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?;
-    let genesis = GenesisV1::from_canonical_bytes(&canonical_genesis_bytes)
+    let genesis = GenesisRecord::from_canonical_bytes(&canonical_genesis_bytes)
         .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?;
     let receipts = inspect_room_receipts(&transaction, &room_id)?;
     let genesis_receipts = receipts
@@ -10419,7 +10743,8 @@ fn inspect_room_at_path(
             ) = row?;
             let sequence_u64 =
                 u64::try_from(sequence).map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?;
-            let decoded = TransitionV1::from_canonical_bytes(&bytes)
+            let decoded = genesis
+                .decode_transition(&bytes)
                 .map_err(|_| SqliteRoomInspectionErrorV1::Corrupt)?;
             let decoded_head = decoded.complete_head();
             if sequence != expected_sequence
@@ -10468,15 +10793,21 @@ fn inspect_room_at_path(
     if receipts_by_transition.len() != canonical_transition_bytes.len() {
         return Err(SqliteRoomInspectionErrorV1::Corrupt);
     }
+    // The verified vector starts at Genesis sequence zero and is contiguous.
+    // Select by sequence, then compare the complete Head. Each receipt needs
+    // at most one equality check instead of scanning the full history.
     if receipts.iter().any(|receipt| match receipt.result() {
         SemanticResultV1::GenesisCreated { .. } => receipt.basis_complete_head().is_some(),
-        _ => receipt
-            .basis_complete_head()
-            .is_none_or(|basis| !lineage_heads.contains(basis)),
+        _ => receipt.basis_complete_head().is_none_or(|basis| {
+            usize::try_from(basis.room_seq().get())
+                .ok()
+                .and_then(|sequence| lineage_heads.get(sequence))
+                != Some(basis)
+        }),
     }) {
         return Err(SqliteRoomInspectionErrorV1::Corrupt);
     }
-    let recovered = RecoveredRoomMaterializationsV1::preflight_persisted_history_for_storage(
+    let recovered = SqliteStructuralInspectionFacts::verify(
         &head,
         &canonical_genesis_bytes,
         &canonical_transition_bytes,
@@ -10567,18 +10898,28 @@ fn inspect_room_receipts(
     .collect()
 }
 
-fn genesis_receipt_matches_genesis(receipt: &StoredSemanticResultV1, genesis: &GenesisV1) -> bool {
-    let (
+fn genesis_receipt_matches_genesis(
+    receipt: &StoredSemanticResultV1,
+    genesis: &GenesisRecord,
+) -> bool {
+    let (request, created_at) = match receipt.semantic_input() {
         ReceiptSemanticInputV1::RoomCreation {
             request,
             created_at,
-        },
-        SemanticResultV1::GenesisCreated {
-            room_id,
-            initial_member_ids,
-            complete_head,
-        },
-    ) = (receipt.semantic_input(), receipt.result())
+        } if genesis.format() == worldstream_core::CanonicalHistoryFormat::V1 => {
+            (request, created_at)
+        }
+        ReceiptSemanticInputV1::RoomCreationV2 {
+            request,
+            created_at,
+        } if request.format() == genesis.format() => (request.legacy_request(), created_at),
+        _ => return false,
+    };
+    let SemanticResultV1::GenesisCreated {
+        room_id,
+        initial_member_ids,
+        complete_head,
+    } = receipt.result()
     else {
         return false;
     };
@@ -10604,7 +10945,7 @@ fn genesis_receipt_matches_genesis(receipt: &StoredSemanticResultV1, genesis: &G
 
 fn receipt_semantic_input_matches_transition(
     receipt: &StoredSemanticResultV1,
-    transition: &TransitionV1,
+    transition: &TransitionRecord,
 ) -> bool {
     match (receipt.semantic_input(), transition.recorded_stimulus()) {
         (
@@ -10637,12 +10978,15 @@ fn receipt_semantic_input_matches_transition(
 }
 
 fn validate_replay_transition_receipt(
+    genesis: &VerifiedCanonicalGenesis,
     room_id: &RoomId,
     prior_head: &CompleteHeadV1,
     sequence: u64,
     row: &ReplayTransitionPageRowV1,
 ) -> Result<CompleteHeadV1, SqliteAuthorizedReplayErrorV1> {
-    let transition = TransitionV1::from_canonical_bytes(&row.transition_bytes)
+    let transition = genesis
+        .record()
+        .decode_transition(&row.transition_bytes)
         .map_err(|_| SqliteAuthorizedReplayErrorV1::Corrupt)?;
     let complete_head = transition.complete_head();
     if transition.room_seq().get() != sequence
@@ -11472,6 +11816,58 @@ fn writer_main(
                         Some(installed_reset_generation),
                         clock,
                     )
+                );
+            }
+            WriterCommand::ReadObservationPageAtResetGeneration {
+                authority,
+                after_frame_seq,
+                installed_reset_generation,
+                max_frames,
+                max_canonical_payload_bytes,
+                reply,
+            } => {
+                reply_after_namespace_check!(
+                    reply,
+                    read_observation_page_guarded(
+                        &mut connection,
+                        &authority,
+                        after_frame_seq,
+                        installed_reset_generation,
+                        max_frames,
+                        max_canonical_payload_bytes,
+                        clock,
+                    )
+                );
+            }
+            WriterCommand::ReadSharedObservationPage {
+                authorities,
+                after,
+                reset,
+                max_frames,
+                max_bytes,
+                reply,
+            } => {
+                reply_after_namespace_check!(
+                    reply,
+                    read_shared_observation_page_guarded(
+                        &mut connection,
+                        &authorities,
+                        after,
+                        reset,
+                        max_frames,
+                        max_bytes,
+                        clock
+                    )
+                );
+            }
+            WriterCommand::RevalidateLiveObservation {
+                authority,
+                cut,
+                reply,
+            } => {
+                reply_after_namespace_check!(
+                    reply,
+                    revalidate_live_observation_guarded(&mut connection, &authority, &cut, clock)
                 );
             }
             WriterCommand::PruneObservationFrames {
@@ -12546,7 +12942,7 @@ fn verify_inspection_projections(
     room_id: &str,
     stored_room_status: &str,
     expected_head: &CompleteHeadV1,
-    recovered: &RecoveredRoomMaterializationsV1,
+    recovered: &impl SqliteInspectionFacts,
 ) -> Result<(), RoomRecoveryErrorV1> {
     if stored_room_status != room_status(recovered.room_status()) {
         return Err(RoomRecoveryErrorV1::Corrupt);
@@ -12568,7 +12964,7 @@ fn verify_recovery_activation_decisions(
     transaction: &Transaction<'_>,
     room_id: &str,
     expected_head: &CompleteHeadV1,
-    recovered: &RecoveredRoomMaterializationsV1,
+    recovered: &impl SqliteInspectionFacts,
 ) -> Result<(), RoomRecoveryErrorV1> {
     let maximum_sequence =
         i64::try_from(expected_head.room_seq().get()).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
@@ -12693,7 +13089,7 @@ fn inspect_recovery_frame_structure(
     transaction: &Transaction<'_>,
     room_id: &str,
     expected_head: &CompleteHeadV1,
-    recovered: &RecoveredRoomMaterializationsV1,
+    recovered: &impl SqliteInspectionFacts,
 ) -> Result<(BTreeMap<String, i64>, StoredFrameIndex), RoomRecoveryErrorV1> {
     let mut frame_positions = BTreeMap::<String, (i64, i64)>::new();
     {
@@ -12854,7 +13250,7 @@ fn recovery_frame_floors(
 fn verify_recovery_memberships(
     transaction: &Transaction<'_>,
     room_id: &str,
-    recovered: &RecoveredRoomMaterializationsV1,
+    recovered: &impl SqliteInspectionFacts,
     frame_heads: &BTreeMap<String, i64>,
     allow_checkpoint_boundary_successor: bool,
 ) -> Result<bool, RoomRecoveryErrorV1> {
@@ -13000,79 +13396,37 @@ fn recover_membership_generations(
             |row| row.get(0),
         )
         .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
-    let genesis = GenesisV1::from_canonical_bytes(&genesis_bytes)
+    let mut preflight = CanonicalStorageHistoryPreflight::begin(&genesis_bytes)
         .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-    if genesis.room_id().to_string() != room_id {
+    if preflight.structural_state().genesis().room_id().as_str() != room_id {
         return Err(RoomRecoveryErrorV1::Corrupt);
     }
-    let mut previous = genesis.initial_core_state().memberships().clone();
-    let mut generations = previous
-        .keys()
-        .map(|member_id| (member_id.clone(), 1_i64))
-        .collect::<BTreeMap<_, _>>();
-    let mut statement = transaction
-        .prepare(
-            "SELECT room_seq, transition_bytes FROM transitions \
-             WHERE room_id = ?1 ORDER BY room_seq",
-        )
-        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+    let mut statement = transaction.prepare("SELECT room_seq, transition_bytes FROM transitions WHERE room_id = ?1 ORDER BY room_seq").map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
     let rows = statement
         .query_map([room_id], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
         })
         .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
-    let mut expected_room_seq = 1_i64;
     for row in rows {
-        let (stored_room_seq, transition_bytes) =
-            row.map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
-        let transition = TransitionV1::from_canonical_bytes(&transition_bytes)
+        let (sequence, bytes) = row.map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
+        if i64::try_from(preflight.final_head().room_seq().get())
+            .ok()
+            .and_then(|value| value.checked_add(1))
+            != Some(sequence)
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+        preflight
+            .consume_transition_page(&[bytes])
             .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-        if stored_room_seq != expected_room_seq
-            || i64::try_from(transition.room_seq().get()).ok() != Some(stored_room_seq)
-        {
-            return Err(RoomRecoveryErrorV1::Corrupt);
-        }
-        let resulting = transition.resulting_core_state().memberships();
-        if previous
-            .keys()
-            .any(|member_id| !resulting.contains_key(member_id))
-        {
-            return Err(RoomRecoveryErrorV1::Corrupt);
-        }
-        for (member_id, membership) in resulting {
-            match previous.get(member_id) {
-                Some(before) if before != membership => {
-                    let generation = generations
-                        .get_mut(member_id)
-                        .ok_or(RoomRecoveryErrorV1::Corrupt)?;
-                    *generation = generation
-                        .checked_add(1)
-                        .filter(|value| *value <= MAX_SAFE_INTEGER)
-                        .ok_or(RoomRecoveryErrorV1::Corrupt)?;
-                }
-                Some(_) => {}
-                None => {
-                    if generations.insert(member_id.clone(), 1).is_some() {
-                        return Err(RoomRecoveryErrorV1::Corrupt);
-                    }
-                }
-            }
-        }
-        previous = resulting.clone();
-        expected_room_seq = expected_room_seq
-            .checked_add(1)
-            .ok_or(RoomRecoveryErrorV1::Corrupt)?;
     }
-    Ok(generations
-        .into_iter()
-        .map(|(member_id, generation)| (member_id.to_string(), generation))
-        .collect())
+    Ok(preflight.finish().membership_generations().clone())
 }
 
 fn verify_recovery_timers(
     transaction: &Transaction<'_>,
     room_id: &str,
-    recovered: &RecoveredRoomMaterializationsV1,
+    recovered: &impl SqliteInspectionFacts,
 ) -> Result<bool, RoomRecoveryErrorV1> {
     type StoredTimer = (String, i64, String, Vec<u8>, String);
     let stored = {
@@ -15327,15 +15681,44 @@ fn reopen_retained_sqlite_writable(
     }
 }
 
+fn storage_read_busy_handler(_: i32) -> bool {
+    let Some(deadline) = worldstream_core::storage_read_deadline() else {
+        return false;
+    };
+    if Instant::now() >= deadline {
+        return false;
+    }
+    std::thread::sleep(Duration::from_millis(1));
+    Instant::now() < deadline
+}
+
 fn open_retained_sqlite(
     file: &File,
     path: &Path,
     flags: OpenFlags,
 ) -> Result<ExactSqliteConnection, ExactSqliteOpenError> {
+    let deadline = worldstream_core::storage_read_deadline();
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Err(ExactSqliteOpenError::Sqlite(
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
+                None,
+            ),
+        ));
+    }
     let retained = file
         .try_clone()
         .map_err(ExactSqliteOpenError::RetainedFile)?;
-    open_exact(retained, path, flags)
+    let connection = open_exact(retained, path, flags)?;
+    if let Some(deadline) = deadline {
+        connection
+            .busy_handler(Some(storage_read_busy_handler))
+            .map_err(ExactSqliteOpenError::Sqlite)?;
+        connection
+            .progress_handler(1000, Some(move || Instant::now() >= deadline))
+            .map_err(ExactSqliteOpenError::Sqlite)?;
+    }
+    Ok(connection)
 }
 
 #[cfg(test)]
@@ -16959,7 +17342,7 @@ fn commit_creation_with_authority(
 fn commit_create(
     transaction: &Transaction<'_>,
     prepared: &SqlitePreparedWrite,
-    persistence: &PreparedCreationPersistenceV1,
+    persistence: &SqliteCreationPersistence,
     clock: &dyn TrustedAuthorityClock,
     failpoint: Option<WriteBoundary>,
 ) -> Result<(), RoomCommitResolutionV1> {
@@ -17483,7 +17866,7 @@ fn commit_existing(
     basis: &worldstream_core::CompleteHeadV1,
     integrity_generation: worldstream_core::IntegrityGenerationV1,
     input_witness: &PreparedOperationInputWitnessV1,
-    intent: &PreparedExistingIntentV1,
+    intent: &SqliteExistingIntent,
     clock: &dyn TrustedAuthorityClock,
     failpoint: Option<WriteBoundary>,
 ) -> Result<(), RoomCommitResolutionV1> {
@@ -17592,11 +17975,11 @@ fn commit_existing(
         input_witness,
     )?;
     match intent {
-        PreparedExistingIntentV1::DurableDisposition => {
+        SqliteExistingIntent::DurableDisposition => {
             insert_receipt(transaction, prepared).map_err(statement_failure)?;
             fail_at(failpoint, WriteBoundary::ExistingReceipt)
         }
-        PreparedExistingIntentV1::Advance(advance) => commit_advance(
+        SqliteExistingIntent::Advance(advance) => commit_advance(
             transaction,
             prepared,
             basis_head_bytes,
@@ -17995,10 +18378,10 @@ fn prepare_activation_claim_readonly(
 fn prepare_activation_claim_readonly_from_trace(
     file: &File,
     path: &Path,
-    registry: &PackRegistryV1,
+    _registry: &PackRegistryV1,
     authority: &AuthorizedRunnerControlV1,
     request: ActivationOperationRequestV1,
-    trace: &CoreTraceV1,
+    trace: &impl SqliteServingTrace,
     integrity_generation: IntegrityGenerationV1,
 ) -> Result<SqliteActivationClaimV1, SqliteActivationErrorV1> {
     if request.operation_kind != "claim"
@@ -18128,20 +18511,11 @@ fn prepare_activation_claim_readonly_from_trace(
     if trace.core_state().room_status() != RoomStatusV1::Active {
         return Err(SqliteActivationErrorV1::Fenced);
     }
-    let host = registry
-        .load_retained(trace.head().pack_digest())
-        .map_err(|_| SqliteActivationErrorV1::Corrupt)?
-        .host();
     let member_key = member_id
         .parse::<MemberId>()
         .map_err(|_| SqliteActivationErrorV1::Corrupt)?;
-    let view = host
-        .view(&worldstream_core::ViewInputV1 {
-            core: trace.core_state(),
-            activity_state: trace.activity_state(),
-            complete_head: trace.head(),
-            viewer: &PackViewerV1::Participant(member_key.clone()),
-        })
+    let view = trace
+        .view(&PackViewerV1::Participant(member_key.clone()))
         .map_err(|_| SqliteActivationErrorV1::Corrupt)?;
     let projection_bytes = view.canonical_bytes().to_vec();
     let action_offers_bytes = view.action_offers().canonical_bytes().to_vec();
@@ -18993,7 +19367,7 @@ fn commit_advance(
     prepared: &SqlitePreparedWrite,
     basis_head_bytes: &[u8],
     input_witness: &PreparedOperationInputWitnessV1,
-    advance: &PreparedAdvancePersistenceV1,
+    advance: &SqliteAdvancePersistence,
     failpoint: Option<WriteBoundary>,
 ) -> Result<(), RoomCommitResolutionV1> {
     let head = &advance.resulting_complete_head;
@@ -19533,7 +19907,7 @@ fn persist_delivery_consequence(
 fn apply_timer_mutations(
     transaction: &Transaction<'_>,
     room_id: &str,
-    advance: &PreparedAdvancePersistenceV1,
+    advance: &SqliteAdvancePersistence,
 ) -> Result<(), RoomCommitResolutionV1> {
     for mutation in &advance.timer_changes {
         match mutation.kind() {
@@ -20747,6 +21121,281 @@ fn read_observation_suffix_guarded(
     Ok(frames)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn read_observation_page_guarded(
+    connection: &mut Connection,
+    authority: &ViewerAdapterInputV1,
+    after: u64,
+    installed_reset_generation: u64,
+    max_frames: usize,
+    max_canonical_payload_bytes: usize,
+    clock: &dyn TrustedAuthorityClock,
+) -> Result<(Vec<SqliteObservationFrameV1>, bool), SqliteObservationErrorV1> {
+    if max_frames == 0
+        || max_frames > MAX_RETAINED_OBSERVATION_FRAMES
+        || max_canonical_payload_bytes == 0
+        || max_canonical_payload_bytes > MAX_RETAINED_OBSERVATION_BYTES
+    {
+        return Err(SqliteObservationErrorV1::ResetRequired);
+    }
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Deferred)
+        .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+    let result = read_observation_page_in_transaction(
+        &transaction,
+        authority,
+        after,
+        installed_reset_generation,
+        max_frames,
+        max_canonical_payload_bytes,
+        clock,
+    )?;
+    transaction
+        .commit()
+        .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+    Ok(result)
+}
+
+fn read_observation_page_in_transaction(
+    transaction: &Transaction<'_>,
+    authority: &ViewerAdapterInputV1,
+    after: u64,
+    installed_reset_generation: u64,
+    max_frames: usize,
+    max_canonical_payload_bytes: usize,
+    clock: &dyn TrustedAuthorityClock,
+) -> Result<(Vec<SqliteObservationFrameV1>, bool), SqliteObservationErrorV1> {
+    observation_authority(
+        transaction,
+        authority,
+        clock,
+        MemberReadOperationV1::CatchUp,
+    )?;
+    let (head, _, _, frame_head, floor, cursor, reset_through, reset_generation) =
+        observation_room_head(transaction, authority)?;
+    let positions = observation_positions(frame_head, floor, cursor, reset_through)?;
+    if after > positions.frame_head() {
+        return Err(SqliteObservationErrorV1::CursorAhead);
+    }
+    if u64::try_from(reset_generation).ok() != Some(installed_reset_generation)
+        || after.saturating_add(1) < positions.retained_floor()
+    {
+        return Err(SqliteObservationErrorV1::ResetRequired);
+    }
+    let through = {
+        let mut statement = transaction.prepare(
+            "SELECT frame_seq, length(payload_bytes) FROM observation_frames WHERE room_id = ?1 AND member_id = ?2 AND frame_seq > ?3 AND frame_seq <= ?4 ORDER BY frame_seq LIMIT ?5"
+        ).map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+        let rows = statement
+            .query_map(
+                params![
+                    authority.room_id().as_str(),
+                    authority.membership().member_id().as_str(),
+                    i64::try_from(after).map_err(|_| SqliteObservationErrorV1::Corrupt)?,
+                    i64::try_from(positions.frame_head())
+                        .map_err(|_| SqliteObservationErrorV1::Corrupt)?,
+                    i64::try_from(max_frames).map_err(|_| SqliteObservationErrorV1::Corrupt)?
+                ],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+        let mut through = after;
+        let mut bytes = 0usize;
+        for row in rows {
+            let (seq, length) = row.map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+            let seq = u64::try_from(seq).map_err(|_| SqliteObservationErrorV1::Corrupt)?;
+            let length = usize::try_from(length).map_err(|_| SqliteObservationErrorV1::Corrupt)?;
+            if seq != through.saturating_add(1) {
+                return Err(SqliteObservationErrorV1::ResetRequired);
+            }
+            if length > MAX_SINGLE_RETAINED_OBSERVATION_BYTES {
+                return Err(SqliteObservationErrorV1::ResetRequired);
+            }
+            let next = bytes
+                .checked_add(length)
+                .ok_or(SqliteObservationErrorV1::Corrupt)?;
+            if next > max_canonical_payload_bytes {
+                break;
+            }
+            bytes = next;
+            through = seq;
+        }
+        through
+    };
+    if through == after && after < positions.frame_head() {
+        return Err(SqliteObservationErrorV1::ResetRequired);
+    }
+    let frames = read_observation_frames(
+        transaction,
+        authority,
+        after,
+        through,
+        positions.retained_floor(),
+        head.room_seq(),
+    )?;
+    Ok((frames, through < positions.frame_head()))
+}
+
+fn read_shared_observation_page_guarded(
+    connection: &mut Connection,
+    authorities: &[Arc<ViewerAdapterInputV1>],
+    after: u64,
+    reset: u64,
+    max_frames: usize,
+    max_bytes: usize,
+    clock: &dyn TrustedAuthorityClock,
+) -> Result<
+    (
+        Vec<SqliteObservationFrameV1>,
+        bool,
+        SqliteLiveObservationCut,
+    ),
+    SqliteObservationErrorV1,
+> {
+    let first = authorities
+        .first()
+        .ok_or(SqliteObservationErrorV1::WrongOperation)?;
+    if authorities.len() > 16
+        || max_frames == 0
+        || max_frames > MAX_RETAINED_OBSERVATION_FRAMES
+        || max_bytes == 0
+        || max_bytes > MAX_RETAINED_OBSERVATION_BYTES
+    {
+        return Err(SqliteObservationErrorV1::ResetRequired);
+    }
+    let tx = connection
+        .transaction()
+        .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+    for grant in authorities {
+        if grant.room_id() != first.room_id()
+            || grant.membership().member_id() != first.membership().member_id()
+        {
+            return Err(SqliteObservationErrorV1::WrongOperation);
+        }
+        observation_authority(&tx, grant, clock, MemberReadOperationV1::CatchUp)?;
+    }
+    let (frames, more) = read_observation_page_in_transaction(
+        &tx, first, after, reset, max_frames, max_bytes, clock,
+    )?;
+    let (head, integrity, integrity_generation, _, _, _, _, reset_generation) =
+        observation_room_head(&tx, first)?;
+    let cut = SqliteLiveObservationCut {
+        head,
+        member_id: first.membership().member_id().clone(),
+        integrity,
+        integrity_generation,
+        reset_generation,
+        prefix: frames
+            .iter()
+            .map(|frame| {
+                (
+                    frame.frame_seq,
+                    frame.cause_room_seq.get(),
+                    frame.payload_hash.to_string(),
+                )
+            })
+            .collect(),
+    };
+    tx.commit()
+        .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+    Ok((frames, more, cut))
+}
+
+// Compare retained Head metadata only. No canonical record or Frame payload is read.
+fn live_observation_head_is_anchored(
+    tx: &Transaction<'_>,
+    head: &CompleteHeadV1,
+) -> Result<bool, SqliteObservationErrorV1> {
+    let sequence =
+        i64::try_from(head.room_seq().get()).map_err(|_| SqliteObservationErrorV1::Corrupt)?;
+    if sequence == 0 {
+        let stored: Option<Vec<u8>> = tx
+            .query_row(
+                "SELECT complete_head_bytes FROM room_snapshots WHERE room_id=?1 AND room_seq=0",
+                [head.room_id().as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+        return Ok(stored.as_deref()
+            == Some(
+                head.canonical_bytes()
+                    .map_err(|_| SqliteObservationErrorV1::Corrupt)?
+                    .as_slice(),
+            ));
+    }
+    let matches: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM transitions WHERE room_id=?1 AND room_seq=?2 \
+         AND transition_hash=?3 AND core_schema_version=?4 AND pack_digest=?5 \
+         AND core_state_hash=?6 AND activity_state_hash=?7 AND authoritative_state_hash=?8)",
+            params![
+                head.room_id().as_str(),
+                sequence,
+                head.genesis_or_transition_hash().to_string(),
+                head.core_schema_version().to_string(),
+                head.pack_digest().to_string(),
+                head.core_state_hash().to_string(),
+                head.activity_state_hash().to_string(),
+                head.authoritative_state_hash().to_string()
+            ],
+            |row| row.get(0),
+        )
+        .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+    Ok(matches)
+}
+
+fn revalidate_live_observation_guarded(
+    connection: &mut Connection,
+    authority: &ViewerAdapterInputV1,
+    cut: &SqliteLiveObservationCut,
+    clock: &dyn TrustedAuthorityClock,
+) -> Result<(), SqliteObservationErrorV1> {
+    let tx = connection
+        .transaction()
+        .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+    observation_authority(&tx, authority, clock, MemberReadOperationV1::CatchUp)?;
+    let (head, integrity, generation, frame_head, floor, _, _, reset) =
+        observation_room_head(&tx, authority)?;
+    if head.room_id() != cut.head.room_id()
+        || authority.membership().member_id() != &cut.member_id
+        || (head.room_seq() == cut.head.room_seq() && head != cut.head)
+        || head.pack_digest() != cut.head.pack_digest()
+        || head.core_schema_version() != cut.head.core_schema_version()
+        || head.room_seq() < cut.head.room_seq()
+        || integrity != cut.integrity
+        || generation != cut.integrity_generation
+        || reset != cut.reset_generation
+    {
+        return Err(SqliteObservationErrorV1::ResetRequired);
+    }
+    if head.room_seq() > cut.head.room_seq() && !live_observation_head_is_anchored(&tx, &cut.head)?
+    {
+        return Err(SqliteObservationErrorV1::ResetRequired);
+    }
+    for (seq, cause, hash) in &cut.prefix {
+        if i64::try_from(*seq)
+            .ok()
+            .is_none_or(|value| value < floor || value > frame_head)
+        {
+            return Err(SqliteObservationErrorV1::ResetRequired);
+        }
+        let stored: Option<(i64, String)> = tx.query_row("SELECT cause_room_seq, payload_hash FROM observation_frames WHERE room_id=?1 AND member_id=?2 AND frame_seq=?3",
+            params![authority.room_id().as_str(), authority.membership().member_id().as_str(), i64::try_from(*seq).map_err(|_| SqliteObservationErrorV1::Corrupt)?],
+            |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|_| SqliteObservationErrorV1::StorageUnavailable)?;
+        if stored
+            != Some((
+                i64::try_from(*cause).map_err(|_| SqliteObservationErrorV1::Corrupt)?,
+                hash.clone(),
+            ))
+        {
+            return Err(SqliteObservationErrorV1::ResetRequired);
+        }
+    }
+    tx.commit()
+        .map_err(|_| SqliteObservationErrorV1::StorageUnavailable)
+}
+
 fn prune_observation_frames(
     connection: &mut Connection,
     room_id: &RoomId,
@@ -21198,70 +21847,12 @@ fn captured_replay_head_is_still_anchored(
     transaction: &Transaction<'_>,
     expected: &CompleteHeadV1,
 ) -> Result<bool, RoomRecoveryErrorV1> {
-    if expected.room_seq().get() == 0 {
-        let bytes: Option<Vec<u8>> = transaction
-            .query_row(
-                "SELECT genesis_bytes FROM room_genesis WHERE room_id = ?1",
-                [expected.room_id().as_str()],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
-        let Some(bytes) = bytes else {
-            return Ok(false);
-        };
-        let Ok(genesis) = GenesisV1::from_canonical_bytes(&bytes) else {
-            return Ok(false);
-        };
-        let Ok(core_bytes) = genesis.initial_core_state().canonical_bytes() else {
-            return Ok(false);
-        };
-        let Ok(activity_bytes) = genesis.initial_activity_state().to_bytes() else {
-            return Ok(false);
-        };
-        return Ok(genesis.complete_head() == *expected
-            && VerifiedCurrentRoomMaterializationV1::verify_for_storage(
-                expected,
-                &bytes,
-                &core_bytes,
-                &activity_bytes,
-            )
-            .is_ok());
+    let genesis = canonical_read::load_genesis(transaction, expected.room_id())?;
+    match canonical_read::load_record_head(transaction, &genesis, expected.room_seq()) {
+        Ok(head) => Ok(head == *expected),
+        Err(RoomRecoveryErrorV1::Corrupt) => Ok(false),
+        Err(error) => Err(error),
     }
-    let sequence =
-        i64::try_from(expected.room_seq().get()).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-    let row: Option<(String, Vec<u8>)> = transaction
-        .query_row(
-            "SELECT transition_hash, transition_bytes FROM transitions \
-             WHERE room_id = ?1 AND room_seq = ?2",
-            params![expected.room_id().as_str(), sequence],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|_| RoomRecoveryErrorV1::StorageUnavailable)?;
-    let Some((stored_hash, bytes)) = row else {
-        return Ok(false);
-    };
-    let Ok(transition) = TransitionV1::from_canonical_bytes(&bytes) else {
-        return Ok(false);
-    };
-    let Ok(core_bytes) = transition.resulting_core_state().canonical_bytes() else {
-        return Ok(false);
-    };
-    let Ok(activity_bytes) = transition.resulting_activity_state().to_bytes() else {
-        return Ok(false);
-    };
-    Ok(transition.room_seq() == expected.room_seq()
-        && transition.complete_head() == *expected
-        && transition.transition_hash().to_string() == stored_hash
-        && transition.transition_hash() == expected.genesis_or_transition_hash()
-        && VerifiedCurrentRoomMaterializationV1::verify_for_storage(
-            expected,
-            &bytes,
-            &core_bytes,
-            &activity_bytes,
-        )
-        .is_ok())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -21311,7 +21902,7 @@ fn read_authorized_replay_slice(
             .optional()
             .map_err(|_| SqliteAuthorizedReplayErrorV1::StorageUnavailable)?
             .ok_or(SqliteAuthorizedReplayErrorV1::Corrupt)?;
-        let genesis = GenesisV1::from_canonical_bytes(&bytes)
+        let genesis = GenesisRecord::from_canonical_bytes(&bytes)
             .map_err(|_| SqliteAuthorizedReplayErrorV1::Corrupt)?;
         if bytes.len() > REPLAY_MAX_BYTES_PER_SLICE {
             return Err(SqliteAuthorizedReplayErrorV1::Corrupt);
@@ -21387,8 +21978,12 @@ fn read_authorized_replay_slice(
             .take()
             .ok_or(SqliteAuthorizedReplayErrorV1::Corrupt)?;
         paging.accumulator = Some(
-            HistoricalReplayAccumulatorV1::begin(registry, &bytes, request)
+            CanonicalHistoricalReplayAccumulator::begin(registry, &bytes, request)
                 .map_err(SqliteAuthorizedReplayErrorV1::Replay)?,
+        );
+        paging.genesis = Some(
+            VerifiedCanonicalGenesis::from_canonical_bytes(&bytes)
+                .map_err(|_| SqliteAuthorizedReplayErrorV1::Corrupt)?,
         );
         paging.receipt_head = Some(genesis.complete_head());
         rows_read = rows_read
@@ -21515,8 +22110,16 @@ fn read_authorized_replay_slice(
                 .receipt_head
                 .as_ref()
                 .ok_or(SqliteAuthorizedReplayErrorV1::Corrupt)?;
-            let next_head =
-                validate_replay_transition_receipt(room_id, prior_head, sequence, &row)?;
+            let next_head = validate_replay_transition_receipt(
+                paging
+                    .genesis
+                    .as_ref()
+                    .ok_or(SqliteAuthorizedReplayErrorV1::Corrupt)?,
+                room_id,
+                prior_head,
+                sequence,
+                &row,
+            )?;
             let transition_bytes = row.transition_bytes;
             if bytes_read.saturating_add(transition_bytes.len()) > REPLAY_MAX_BYTES_PER_SLICE {
                 if page.is_empty() {
@@ -21552,7 +22155,7 @@ fn read_authorized_replay_slice(
         || !paging
             .accumulator
             .as_ref()
-            .is_some_and(HistoricalReplayAccumulatorV1::is_complete)
+            .is_some_and(CanonicalHistoricalReplayAccumulator::is_complete)
     {
         return Err(SqliteAuthorizedReplayErrorV1::Corrupt);
     }
@@ -23298,6 +23901,7 @@ fn map_participant_action_gateway_error(
 fn map_participant_action_trace_error(error: &TraceErrorV1) -> SqliteParticipantActionErrorV1 {
     match error {
         TraceErrorV1::ActionAdmission(_)
+        | TraceErrorV1::PayloadBudget(_)
         | TraceErrorV1::ParticipantNotEligible
         | TraceErrorV1::ArchivedStimulusForbidden => SqliteParticipantActionErrorV1::Rejected,
         TraceErrorV1::CompleteHeadMismatch => SqliteParticipantActionErrorV1::ConcurrentChange,
@@ -23337,7 +23941,9 @@ fn map_timer_commit_gateway_error(error: &SqliteGatewayErrorV1) -> SqliteTimerCo
 
 fn map_timer_commit_trace_error(error: &TraceErrorV1) -> SqliteTimerCommitErrorV1 {
     match error {
-        TraceErrorV1::ArchivedStimulusForbidden => SqliteTimerCommitErrorV1::Rejected,
+        TraceErrorV1::ArchivedStimulusForbidden | TraceErrorV1::PayloadBudget(_) => {
+            SqliteTimerCommitErrorV1::Rejected
+        }
         TraceErrorV1::CompleteHeadMismatch => SqliteTimerCommitErrorV1::ConcurrentChange,
         _ => SqliteTimerCommitErrorV1::InvalidResult,
     }
@@ -23861,6 +24467,12 @@ mod tests {
     }
 
     fn prepared_two_member_creation() -> (PreparedRoomWriteV1, PreparedAuthorityWitnessV1) {
+        prepared_two_member_creation_for(ROOM)
+    }
+
+    fn prepared_two_member_creation_for(
+        room: &str,
+    ) -> (PreparedRoomWriteV1, PreparedAuthorityWitnessV1) {
         let registry =
             builtin_counter_registry().unwrap_or_else(|error| panic!("Counter registry: {error}"));
         let participant = MembershipV1::new(
@@ -23884,7 +24496,7 @@ mod tests {
         let configuration = canonical(br#"{"initial_value":0,"maximum_value":4}"#);
         let genesis = registry
             .prepare_genesis_for_new_room(&PackGenesisRequestV1 {
-                room_id: parsed(ROOM),
+                room_id: parsed(room),
                 pack_digest: counter_v2_digest(),
                 configuration: configuration.clone(),
                 room_seed: parsed(SEED),
@@ -23926,7 +24538,11 @@ mod tests {
             AdministrationOperationIdentityV1 {
                 authenticated_principal: parsed(PRINCIPAL),
                 versioned_operation_kind: CREATE_ROOM_OPERATION_KIND.to_owned(),
-                idempotency_key: "create-two-member-fixture".to_owned(),
+                idempotency_key: if room == ROOM {
+                    "create-two-member-fixture".to_owned()
+                } else {
+                    format!("create-two-member-fixture-{room}")
+                },
             },
             &request,
             witness.clone(),
@@ -31988,6 +32604,17 @@ mod tests {
                 parsed("2026-08-15T12:00:06Z"),
             )
             .unwrap_or_else(|error| panic!("authorize corrupt-prefix Replay: {error}"));
+        let held_later_replay = authority
+            .authorize_replay(
+                &presented_member_capability(),
+                parsed(ROOM),
+                parsed(PARTICIPANT),
+                RoomSequenceV1::new(0)
+                    .unwrap_or_else(|error| panic!("held later Replay sequence: {error}")),
+                ReplayProjectionKindV1::HistoricalMembership,
+                parsed("2026-08-15T12:00:06Z"),
+            )
+            .unwrap_or_else(|error| panic!("authorize held later Replay: {error}"));
         connection
             .execute("DROP TRIGGER room_genesis_immutable_update", ())
             .unwrap_or_else(|error| panic!("drop Genesis immutability trigger: {error}"));
@@ -32016,8 +32643,10 @@ mod tests {
             RoomCommitResolutionV1::Fenced
         ));
 
-        let later_replay = authority
-            .authorize_replay(
+        // Fresh Membership authority requires valid immutable Genesis evidence.
+        // A grant captured before corruption must still respect quarantine.
+        assert!(matches!(
+            authority.authorize_replay(
                 &presented_member_capability(),
                 parsed(ROOM),
                 parsed(PARTICIPANT),
@@ -32025,14 +32654,35 @@ mod tests {
                     .unwrap_or_else(|error| panic!("later Replay sequence: {error}")),
                 ReplayProjectionKindV1::HistoricalMembership,
                 parsed("2026-08-15T12:00:07Z"),
-            )
-            .unwrap_or_else(|error| panic!("authorize quarantined Replay: {error}"));
+            ),
+            Err(AuthorityErrorV1::Unavailable)
+        ));
         assert!(matches!(
-            store.replay_authorized(&registry, later_replay),
+            store.replay_authorized(&registry, held_later_replay),
             Err(SqliteAuthorizedReplayErrorV1::Replay(
                 HistoricalReplayErrorV1::IntegrityUnavailable
             ))
         ));
+        let diagnostic = authority
+            .authorize_diagnostic(
+                &presented_host_capability(),
+                DiagnosticTargetV1::Room(parsed(ROOM)),
+                DiagnosticOperationV1::Verify,
+                parsed("2026-08-15T12:00:07Z"),
+            )
+            .unwrap_or_else(|error| panic!("authorize corrupt Room diagnostic: {error}"));
+        assert!(matches!(
+            store.diagnostic_verify(&registry, diagnostic, &parsed("2026-08-15T12:00:07Z")),
+            Err(super::SqliteRoomDiagnosticErrorV1::Corrupt)
+        ));
+        let after_diagnostics: (String, i64) = connection
+            .query_row(
+                "SELECT status, generation FROM room_integrity WHERE room_id = ?1",
+                [ROOM],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or_else(|error| panic!("read post-diagnostic integrity: {error}"));
+        assert_eq!(after_diagnostics, integrity);
     }
 
     #[test]
@@ -38263,6 +38913,403 @@ mod tests {
     }
 
     #[test]
+    fn shared_live_empty_cut_binds_room_member_and_exact_head() {
+        let file = NamedTempFile::new().unwrap();
+        let store = SqliteRoomStore::open(file.path()).unwrap();
+        let authority = seed_real_host_authority(&store);
+        authority
+            .change(
+                &presented_host_capability(),
+                AuthorityChangeV1::CreatePrincipal {
+                    change_id: parsed("01ARZ3NDEKTSV4RRFFQ69G5FR0"),
+                    principal_id: parsed(PRINCIPAL_ALT),
+                    kind: PrincipalKindV1::Agent,
+                },
+                parsed("2026-08-15T12:00:00Z"),
+            )
+            .unwrap();
+        let foreign_room = "01ARZ3NDEKTSV4RRFFQ69G5FR9";
+        for room in [ROOM, foreign_room] {
+            let (prepared, witness) = prepared_two_member_creation_for(room);
+            store.seed_authority(&witness, true).unwrap();
+            assert!(matches!(
+                store.commit(&prepared),
+                RoomCommitResolutionV1::GenesisCreated { .. }
+            ));
+        }
+        let mut grants = Vec::new();
+        for (index, (room, member, principal)) in [
+            (ROOM, PARTICIPANT, PRINCIPAL),
+            (ROOM, PARTICIPANT_ALT, PRINCIPAL_ALT),
+            (foreign_room, PARTICIPANT, PRINCIPAL),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let cap = format!("01ARZ3NDEKTSV4RRFFQ69G5FS{index}");
+            let change = format!("01ARZ3NDEKTSV4RRFFQ69G5FT{index}");
+            let bearer = CapabilityBearerV1::from_bytes([u8::try_from(index + 1).unwrap(); 32]);
+            authority
+                .change(
+                    &presented_host_capability(),
+                    AuthorityChangeV1::RegisterCapability {
+                        change_id: parsed(&change),
+                        capability: NewCapabilityV1::new(
+                            parsed(&cap),
+                            bearer.token_hash(),
+                            parsed(principal),
+                            CapabilityProfileV1::RoomMember {
+                                room_id: parsed(room),
+                                member_id: parsed(member),
+                            },
+                            CapabilityScopeSetV1::new([
+                                CapabilityScopeV1::RoomObserveMember,
+                                CapabilityScopeV1::RoomObservePublic,
+                            ])
+                            .unwrap(),
+                            None,
+                        )
+                        .unwrap(),
+                    },
+                    parsed("2026-08-15T12:00:00Z"),
+                )
+                .unwrap();
+            grants.push(Arc::new(
+                authority
+                    .authorize_member_read(
+                        &PresentedCapabilityV1::new(parsed(&cap), bearer),
+                        parsed(room),
+                        parsed(member),
+                        MemberReadOperationV1::CatchUp,
+                        parsed("2026-08-15T12:00:00Z"),
+                    )
+                    .unwrap()
+                    .into_adapter_input(),
+            ));
+        }
+        let (frames, _, cut) = store
+            .read_shared_observation_page(vec![Arc::clone(&grants[0])], 0, 0, 32, 1024 * 1024)
+            .unwrap();
+        assert!(frames.is_empty());
+        let cut = Arc::new(cut);
+        store
+            .revalidate_live_observation(Arc::clone(&grants[0]), Arc::clone(&cut))
+            .unwrap();
+        for grant in &grants[1..] {
+            // Both foreign addresses have valid current grants and empty pages.
+            let (frames, _, own_cut) = store
+                .read_shared_observation_page(vec![Arc::clone(grant)], 0, 0, 32, 1024 * 1024)
+                .unwrap();
+            assert!(frames.is_empty());
+            store
+                .revalidate_live_observation(Arc::clone(grant), Arc::new(own_cut))
+                .unwrap();
+            assert_eq!(
+                store.revalidate_live_observation(Arc::clone(grant), Arc::clone(&cut)),
+                Err(SqliteObservationErrorV1::ResetRequired)
+            );
+        }
+        let mut changed = (*cut).clone();
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&changed.head.canonical_bytes().unwrap()).unwrap();
+        json["genesis_or_transition_hash"] =
+            serde_json::Value::String(format!("blake3:{}", "0".repeat(64)));
+        changed.head = CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(
+            &canonical(&serde_json::to_vec(&json).unwrap())
+                .to_bytes()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(changed.head.room_seq(), cut.head.room_seq());
+        assert_eq!(
+            store.revalidate_live_observation(Arc::clone(&grants[0]), Arc::new(changed)),
+            Err(SqliteObservationErrorV1::ResetRequired)
+        );
+    }
+
+    #[test]
+    fn publication_sql_deadline_ends_an_owned_reader_lock_wait() {
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().canonicalize().unwrap();
+        let held = Connection::open(&path).unwrap();
+        held.execute_batch("CREATE TABLE read_deadline_test(n INTEGER)")
+            .unwrap();
+        let started = Instant::now();
+        worldstream_core::with_storage_read_deadline(started + Duration::from_millis(50), || {
+            let reader = super::open_retained_sqlite(
+                file.as_file(),
+                &path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                    | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+            )
+            .unwrap();
+            held.execute_batch("BEGIN EXCLUSIVE").unwrap();
+            let result = reader.query_row("SELECT count(*) FROM read_deadline_test", [], |row| {
+                row.get::<_, i64>(0)
+            });
+            assert!(
+                matches!(result, Err(rusqlite::Error::SqliteFailure(error, _)) if error.code == rusqlite::ErrorCode::DatabaseBusy)
+            );
+        });
+        let elapsed = started.elapsed();
+        assert!(elapsed >= Duration::from_millis(50));
+        assert!(elapsed < Duration::from_millis(300));
+        held.execute_batch("ROLLBACK; INSERT INTO read_deadline_test VALUES (1)")
+            .unwrap();
+    }
+
+    #[test]
+    fn publication_sql_deadline_interrupts_only_its_owned_reader() {
+        let file = NamedTempFile::new().unwrap();
+        let store = SqliteRoomStore::open(file.path()).unwrap();
+        let started = Instant::now();
+        worldstream_core::with_storage_read_deadline(started + Duration::from_millis(50), || {
+            let reader = store.writer.open_read_connection().unwrap();
+            let result = reader.query_row(
+                "WITH RECURSIVE slow(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM slow WHERE n<1000000000) SELECT sum(n) FROM slow",
+                [], |row| row.get::<_, i64>(0),
+            );
+            assert!(
+                matches!(result, Err(rusqlite::Error::SqliteFailure(error, _)) if error.code == rusqlite::ErrorCode::OperationInterrupted)
+            );
+            assert!(Instant::now() >= worldstream_core::storage_read_deadline().unwrap());
+            assert!(
+                store.writer.open_read_connection().is_err(),
+                "expired fallback opened another reader"
+            );
+        });
+        assert!(started.elapsed() < Duration::from_millis(300));
+        // The guarded writer still executes a complete canonical operation.
+        let (trace, _) = committed_trace_with_real_authority(
+            &store,
+            MembershipStandingV1::Enabled,
+            [
+                CapabilityScopeV1::RoomAct,
+                CapabilityScopeV1::RoomAttach,
+                CapabilityScopeV1::RoomObserveMember,
+            ],
+            None,
+        );
+        assert_eq!(trace.head().room_seq().get(), 0);
+    }
+
+    #[test]
+    fn shared_live_page_fences_authority_prefix_and_reset_with_monotonic_head() {
+        worldstream_core::with_storage_read_deadline(
+            Instant::now() + Duration::from_secs(5),
+            || {
+                let file = NamedTempFile::new().unwrap();
+                let store = SqliteRoomStore::open(file.path()).unwrap();
+                let (mut trace, authority) = committed_trace_with_real_authority(
+                    &store,
+                    MembershipStandingV1::Enabled,
+                    [
+                        CapabilityScopeV1::RoomAct,
+                        CapabilityScopeV1::RoomAttach,
+                        CapabilityScopeV1::RoomObserveMember,
+                    ],
+                    None,
+                );
+                let second_cap = "01ARZ3NDEKTSV4RRFFQ69G5FR1";
+                let second_bearer = CapabilityBearerV1::from_bytes([0xc9; 32]);
+                authority
+                    .change(
+                        &presented_host_capability(),
+                        AuthorityChangeV1::RegisterCapability {
+                            change_id: parsed("01ARZ3NDEKTSV4RRFFQ69G5FR2"),
+                            capability: worldstream_core::NewCapabilityV1::new(
+                                parsed(second_cap),
+                                second_bearer.token_hash(),
+                                parsed(PRINCIPAL),
+                                worldstream_core::CapabilityProfileV1::RoomMember {
+                                    room_id: parsed(ROOM),
+                                    member_id: parsed(PARTICIPANT),
+                                },
+                                worldstream_core::CapabilityScopeSetV1::new([
+                                    CapabilityScopeV1::RoomObserveMember,
+                                ])
+                                .unwrap(),
+                                None,
+                            )
+                            .unwrap(),
+                        },
+                        parsed("2026-08-15T12:00:03Z"),
+                    )
+                    .unwrap();
+                let request = increment_request(&trace, ACTION_A);
+                let prepared = seal_authorized_increment(
+                    &trace,
+                    &request,
+                    ACTION_A,
+                    TRANSITION_A,
+                    "2026-08-15T12:00:04Z",
+                    0,
+                    authorize_enabled_action(
+                        &authority,
+                        &request,
+                        ACTION_A,
+                        "2026-08-15T12:00:04Z",
+                    ),
+                )
+                .unwrap();
+                assert!(matches!(
+                    commit_existing_room_at(&store, &mut trace, prepared).resolution(),
+                    RoomCommitResolutionV1::TransitionCommitted { .. }
+                ));
+                let attach = authority
+                    .authorize_member_read(
+                        &presented_member_capability(),
+                        parsed(ROOM),
+                        parsed(PARTICIPANT),
+                        MemberReadOperationV1::Attach,
+                        parsed("2026-08-15T12:00:04Z"),
+                    )
+                    .unwrap();
+                let reset = store
+                    .attach_observations(attach, current_participant_view(&trace))
+                    .unwrap()
+                    .reset_generation();
+                let first = Arc::new(
+                    authority
+                        .authorize_member_read(
+                            &presented_member_capability(),
+                            parsed(ROOM),
+                            parsed(PARTICIPANT),
+                            MemberReadOperationV1::CatchUp,
+                            parsed("2026-08-15T12:00:04Z"),
+                        )
+                        .unwrap()
+                        .into_adapter_input(),
+                );
+                let second = Arc::new(
+                    authority
+                        .authorize_member_read(
+                            &PresentedCapabilityV1::new(parsed(second_cap), second_bearer),
+                            parsed(ROOM),
+                            parsed(PARTICIPANT),
+                            MemberReadOperationV1::CatchUp,
+                            parsed("2026-08-15T12:00:04Z"),
+                        )
+                        .unwrap()
+                        .into_adapter_input(),
+                );
+                let (frames, more, cut) = store
+                    .read_shared_observation_page(
+                        vec![Arc::clone(&first), Arc::clone(&second)],
+                        0,
+                        reset,
+                        32,
+                        1024 * 1024,
+                    )
+                    .unwrap();
+                assert_eq!(frames.len(), 1);
+                assert!(!more);
+                let cut = Arc::new(cut);
+                store
+                    .revalidate_live_observation(Arc::clone(&first), Arc::clone(&cut))
+                    .unwrap();
+                let request = increment_request(&trace, ACTION_B);
+                let prepared = seal_authorized_increment(
+                    &trace,
+                    &request,
+                    ACTION_B,
+                    TRANSITION_B,
+                    "2026-08-15T12:00:05Z",
+                    1,
+                    authorize_enabled_action(
+                        &authority,
+                        &request,
+                        ACTION_B,
+                        "2026-08-15T12:00:05Z",
+                    ),
+                )
+                .unwrap();
+                assert!(matches!(
+                    commit_existing_room_at(&store, &mut trace, prepared).resolution(),
+                    RoomCommitResolutionV1::TransitionCommitted { .. }
+                ));
+                store
+                    .revalidate_live_observation(Arc::clone(&first), Arc::clone(&cut))
+                    .unwrap();
+                store
+                    .revalidate_live_observation(Arc::clone(&second), Arc::clone(&cut))
+                    .unwrap();
+                // Numeric advance alone cannot validate another captured lineage, even with no frames.
+                let mut changed = (*cut).clone();
+                changed.prefix.clear();
+                let mut json: serde_json::Value =
+                    serde_json::from_slice(&changed.head.canonical_bytes().unwrap()).unwrap();
+                json["genesis_or_transition_hash"] =
+                    serde_json::Value::String(format!("blake3:{}", "0".repeat(64)));
+                changed.head = CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(
+                    &canonical(&serde_json::to_vec(&json).unwrap())
+                        .to_bytes()
+                        .unwrap(),
+                )
+                .unwrap();
+                assert!(trace.head().room_seq() > changed.head.room_seq());
+                assert_eq!(
+                    store.revalidate_live_observation(Arc::clone(&second), Arc::new(changed)),
+                    Err(SqliteObservationErrorV1::ResetRequired)
+                );
+                authority
+                    .change(
+                        &presented_host_capability(),
+                        AuthorityChangeV1::RevokeCapability {
+                            change_id: parsed(REVOKE_MEMBER_CAPABILITY_CHANGE),
+                            capability_id: parsed(MEMBER_CAPABILITY),
+                            expected_generation: AuthorityGenerationV1::new(1).unwrap(),
+                            reason_code: AuthorityReasonCodeV1::new("live_fence_test").unwrap(),
+                        },
+                        parsed("2026-08-15T12:00:06Z"),
+                    )
+                    .unwrap();
+                assert!(matches!(
+                    store.revalidate_live_observation(first, Arc::clone(&cut)),
+                    Err(SqliteObservationErrorV1::Authority(_))
+                ));
+                store
+                    .revalidate_live_observation(Arc::clone(&second), Arc::clone(&cut))
+                    .unwrap();
+                let connection = Connection::open(file.path()).unwrap();
+                let cursor: Option<i64> = connection
+            .query_row(
+                "SELECT last_ack_frame_seq FROM room_members WHERE room_id=?1 AND member_id=?2",
+                params![ROOM, PARTICIPANT],
+                |row| row.get(0),
+            )
+            .unwrap();
+                assert_eq!(cursor, None);
+                let original_hash = frames[0].payload_hash.to_string();
+                let mut altered_hash = original_hash.clone();
+                altered_hash.pop();
+                altered_hash.push(if original_hash.ends_with('0') {
+                    '1'
+                } else {
+                    '0'
+                });
+                connection.execute("UPDATE observation_frames SET payload_hash=?3 WHERE room_id=?1 AND member_id=?2 AND frame_seq=1", params![ROOM, PARTICIPANT, altered_hash]).unwrap();
+                assert!(matches!(
+                    store.revalidate_live_observation(Arc::clone(&second), Arc::clone(&cut)),
+                    Err(SqliteObservationErrorV1::ResetRequired)
+                ));
+                connection.execute("UPDATE observation_frames SET payload_hash=?3 WHERE room_id=?1 AND member_id=?2 AND frame_seq=1", params![ROOM, PARTICIPANT, original_hash]).unwrap();
+                connection.execute("UPDATE room_members SET reset_generation=reset_generation+1 WHERE room_id=?1 AND member_id=?2", params![ROOM, PARTICIPANT]).unwrap();
+                assert!(matches!(
+                    store.revalidate_live_observation(Arc::clone(&second), Arc::clone(&cut)),
+                    Err(SqliteObservationErrorV1::ResetRequired)
+                ));
+                connection.execute("UPDATE room_members SET reset_generation=reset_generation-1, membership_generation=membership_generation+1 WHERE room_id=?1 AND member_id=?2", params![ROOM, PARTICIPANT]).unwrap();
+                assert!(matches!(
+                    store.revalidate_live_observation(second, cut),
+                    Err(SqliteObservationErrorV1::Authority(_))
+                ));
+            },
+        );
+    }
+
+    #[test]
     fn live_suffix_fences_reset_markers_and_pruned_prefixes() {
         let file =
             NamedTempFile::new().unwrap_or_else(|error| panic!("temp live suffix SQLite: {error}"));
@@ -38278,6 +39325,7 @@ mod tests {
             ],
             None,
         );
+        let mut installed_reset_generation = 0;
         for (action_id, transition_id, admitted_at, frame_head) in [
             (ACTION_A, TRANSITION_A, "2026-08-15T12:00:04Z", 0),
             (ACTION_B, TRANSITION_B, "2026-08-15T12:00:05Z", 1),
@@ -38311,9 +39359,10 @@ mod tests {
                         parsed(admitted_at),
                     )
                     .unwrap_or_else(|error| panic!("authorize first suffix attach: {error}"));
-                store
+                installed_reset_generation = store
                     .attach_observations(attach, current_participant_view(&trace))
-                    .unwrap_or_else(|error| panic!("first suffix attach: {error}"));
+                    .unwrap_or_else(|error| panic!("first suffix attach: {error}"))
+                    .reset_generation();
                 let acknowledge = authority
                     .authorize_member_read(
                         &presented_member_capability(),
@@ -38350,6 +39399,89 @@ mod tests {
                 .map(SqliteObservationFrameV1::frame_seq)
                 .collect::<Vec<_>>(),
             [2]
+        );
+        let (first_page, more) = store
+            .read_observation_page_at_reset_generation(
+                catch_up(),
+                0,
+                installed_reset_generation,
+                1,
+                1024 * 1024,
+            )
+            .unwrap_or_else(|error| panic!("first bounded page: {error}"));
+        assert!(more);
+        assert_eq!(
+            first_page
+                .iter()
+                .map(SqliteObservationFrameV1::frame_seq)
+                .collect::<Vec<_>>(),
+            [1]
+        );
+        let first_bytes = first_page[0].payload_bytes().len();
+        let (exact_page, more) = store
+            .read_observation_page_at_reset_generation(
+                catch_up(),
+                0,
+                installed_reset_generation,
+                2,
+                first_bytes,
+            )
+            .unwrap_or_else(|error| panic!("exact byte page: {error}"));
+        assert!(more);
+        assert_eq!(exact_page, first_page);
+        assert_eq!(
+            store.read_observation_page_at_reset_generation(
+                catch_up(),
+                0,
+                installed_reset_generation,
+                2,
+                first_bytes - 1
+            ),
+            Err(SqliteObservationErrorV1::ResetRequired)
+        );
+        let (last_page, more) = store
+            .read_observation_page_at_reset_generation(
+                catch_up(),
+                1,
+                installed_reset_generation,
+                1,
+                1024 * 1024,
+            )
+            .unwrap_or_else(|error| panic!("last bounded page: {error}"));
+        assert!(!more);
+        assert_eq!(
+            last_page
+                .iter()
+                .map(SqliteObservationFrameV1::frame_seq)
+                .collect::<Vec<_>>(),
+            [2]
+        );
+        assert_eq!(
+            store.read_observation_page_at_reset_generation(
+                catch_up(),
+                1,
+                installed_reset_generation + 1,
+                1,
+                1024 * 1024
+            ),
+            Err(SqliteObservationErrorV1::ResetRequired)
+        );
+        // Reads do not move the shared durable Cursor installed by explicit ACK.
+        let attach = authority
+            .authorize_member_read(
+                &presented_member_capability(),
+                parsed(ROOM),
+                parsed(PARTICIPANT),
+                MemberReadOperationV1::Attach,
+                parsed("2026-08-15T12:00:06Z"),
+            )
+            .unwrap_or_else(|error| panic!("authorize page Cursor check: {error}"));
+        assert_eq!(
+            store
+                .attach_observations(attach, current_participant_view(&trace))
+                .unwrap_or_else(|error| panic!("page Cursor check: {error}"))
+                .cursor(),
+            Some(1)
         );
         store
             .prune_observation_frames(&parsed(ROOM), &parsed(PARTICIPANT), 3)

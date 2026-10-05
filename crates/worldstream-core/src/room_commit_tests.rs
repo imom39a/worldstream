@@ -7,6 +7,9 @@ use std::{
 
 use super::*;
 
+#[path = "canonical_room_commit_tests.rs"]
+pub(crate) mod canonical_tests;
+
 const ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const MEMBER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC0";
 const PRINCIPAL: &str = "01ARZ3NDEKTSV4RRFFQ69G5FD0";

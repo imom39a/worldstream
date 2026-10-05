@@ -27,6 +27,8 @@ pub struct CompatibilityManifest {
     pub release_candidate: String,
     /// Frozen product contracts.
     pub contracts: CompatibilityContracts,
+    /// Closed Genesis-selected canonical record tuples supported by this build.
+    pub canonical_lineages: Vec<CanonicalLineageSummary>,
     /// Pinned compiler toolchain.
     pub toolchains: CompatibilityToolchains,
     /// Supported storage selector values.
@@ -92,6 +94,29 @@ pub struct CompatibilityContracts {
     pub hash_suite: String,
 }
 
+/// Exact immutable tuple for one supported canonical Room history format.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalLineageSummary {
+    /// Immutable format selected by Genesis.
+    pub canonical_history_format: String,
+    /// Exact Genesis record version.
+    pub genesis_version: String,
+    /// Exact Genesis codec identity.
+    pub genesis_codec_id: String,
+    /// Exact Genesis hash framing identity.
+    pub genesis_hash_suite: String,
+    /// Exact Transition record version.
+    pub transition_version: String,
+    /// Exact Transition codec identity.
+    pub transition_codec_id: String,
+    /// Exact Transition hash framing identity.
+    pub transition_hash_suite: String,
+    /// Frozen admission policy, present only for compact lineages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload_budget_id: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct CompatibilityToolchains {
     rust: String,
@@ -133,6 +158,8 @@ pub struct CompatibilitySummary {
     pub release_ready: bool,
     /// Canonical product and protocol contracts.
     pub contracts: CompatibilityContracts,
+    /// Exact supported lineage tuples. State hash domains keep their V1 identity.
+    pub canonical_lineages: Vec<CanonicalLineageSummary>,
     /// Exact Rust toolchain pin.
     pub rust_toolchain: String,
     /// Exact Rust edition.
@@ -173,6 +200,7 @@ impl CompatibilityManifest {
                 "release_candidate must equal contracts.product",
             ));
         }
+        self.validate_canonical_lineages()?;
         if self.contracts.config != 1 {
             return Err(ManifestError::UnsupportedConfig(self.contracts.config));
         }
@@ -195,6 +223,40 @@ impl CompatibilityManifest {
             ));
         }
         self.validate_pack_executors()?;
+        Ok(())
+    }
+
+    fn validate_canonical_lineages(&self) -> Result<(), ManifestError> {
+        let rows = &self.canonical_lineages;
+        if self.contracts.hash_suite != "blake3-canonical-json-v1"
+            || rows.len() != 2
+            || rows[0]
+                != (CanonicalLineageSummary {
+                    canonical_history_format: "worldstream/transition/v1".to_owned(),
+                    genesis_version: "worldstream/genesis/v1".to_owned(),
+                    genesis_codec_id: "worldstream/canonical-json/v1".to_owned(),
+                    genesis_hash_suite: "blake3-canonical-json-v1".to_owned(),
+                    transition_version: "worldstream/transition/v1".to_owned(),
+                    transition_codec_id: "worldstream/canonical-json/v1".to_owned(),
+                    transition_hash_suite: "blake3-canonical-json-v1".to_owned(),
+                    payload_budget_id: None,
+                })
+            || rows[1]
+                != (CanonicalLineageSummary {
+                    canonical_history_format: "worldstream/transition/v2".to_owned(),
+                    genesis_version: "worldstream/genesis/v2".to_owned(),
+                    genesis_codec_id: "worldstream/genesis-record/v2".to_owned(),
+                    genesis_hash_suite: "blake3-canonical-json-v2".to_owned(),
+                    transition_version: "worldstream/transition/v2".to_owned(),
+                    transition_codec_id: "worldstream/transition-record/v2".to_owned(),
+                    transition_hash_suite: "blake3-canonical-json-v2".to_owned(),
+                    payload_budget_id: Some("worldstream/payload-budget/v1".to_owned()),
+                })
+        {
+            return Err(ManifestError::Inconsistent(
+                "unsupported canonical lineage inventory",
+            ));
+        }
         Ok(())
     }
 
@@ -343,6 +405,7 @@ impl CompatibilityManifest {
             kind: self.manifest_kind.clone(),
             release_ready: self.release_ready,
             contracts: self.contracts.clone(),
+            canonical_lineages: self.canonical_lineages.clone(),
             rust_toolchain: self.toolchains.rust.clone(),
             rust_edition: self.toolchains.rust_edition.clone(),
             sqlite_version: self.storage.sqlite.version.clone(),
@@ -474,6 +537,30 @@ mod tests {
         let bytes = embedded_manifest_json().as_bytes();
         assert!(bytes.ends_with(b"\n"));
         assert!(!bytes.ends_with(b"\n\n"));
+    }
+
+    #[test]
+    fn lineage_inventory_rejects_unknown_or_inconsistent_selection() {
+        let valid = manifest();
+        assert_eq!(valid.canonical_lineages.len(), 2);
+        assert_eq!(valid.contracts.hash_suite, "blake3-canonical-json-v1");
+        assert!(valid.canonical_lineages[0].payload_budget_id.is_none());
+
+        let mut reordered = manifest();
+        reordered.canonical_lineages.swap(0, 1);
+        assert!(reordered.validate().is_err());
+
+        let mut unknown_codec = manifest();
+        unknown_codec.canonical_lineages[1].transition_codec_id = "unknown".to_owned();
+        assert!(unknown_codec.validate().is_err());
+
+        let mut missing_policy = manifest();
+        missing_policy.canonical_lineages[1].payload_budget_id = None;
+        assert!(missing_policy.validate().is_err());
+
+        let mut changed_legacy_suite = manifest();
+        changed_legacy_suite.contracts.hash_suite = "blake3-canonical-json-v2".to_owned();
+        assert!(changed_legacy_suite.validate().is_err());
     }
 
     #[test]

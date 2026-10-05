@@ -95,5 +95,26 @@
     "binary": "worldstreamctl",
     "build_version": "0.1.0",
     "source_revision": "<build-revision>"
-  }
+  },
+  "canonical_lineages": [
+    {
+      "canonical_history_format": "worldstream/transition/v1",
+      "genesis_version": "worldstream/genesis/v1",
+      "genesis_codec_id": "worldstream/canonical-json/v1",
+      "genesis_hash_suite": "blake3-canonical-json-v1",
+      "transition_version": "worldstream/transition/v1",
+      "transition_codec_id": "worldstream/canonical-json/v1",
+      "transition_hash_suite": "blake3-canonical-json-v1"
+    },
+    {
+      "canonical_history_format": "worldstream/transition/v2",
+      "genesis_version": "worldstream/genesis/v2",
+      "genesis_codec_id": "worldstream/genesis-record/v2",
+      "genesis_hash_suite": "blake3-canonical-json-v2",
+      "transition_version": "worldstream/transition/v2",
+      "transition_codec_id": "worldstream/transition-record/v2",
+      "transition_hash_suite": "blake3-canonical-json-v2",
+      "payload_budget_id": "worldstream/payload-budget/v1"
+    }
+  ]
 }

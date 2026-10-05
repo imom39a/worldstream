@@ -124,11 +124,43 @@ impl Runtime {
         })
     }
 
-    async fn close(self) {
+    async fn close(self) -> TestResult {
         self.server.abort();
-        let _ = self.server.await;
+        match self.server.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return Err(error.into()),
+            Err(error) if error.is_cancelled() => {}
+            Err(error) => return Err(error.into()),
+        }
         drop(self.routes);
-        drop(self.backend);
+        // Aborting the acceptor does not join upgraded connections or queued
+        // publication. A blocking read must retain its writer lease until it
+        // actually returns. Observe all other backend owners releasing, then
+        // drop the final concrete owner synchronously before a single reopen.
+        // The timeout bounds async ownership drain, not the synchronous writer
+        // destructor: its actor shutdown must finish before ownership is free.
+        let retained_owners = Arc::strong_count(&self.backend).saturating_sub(1);
+        let began = std::time::Instant::now();
+        tokio::time::timeout(BOUNDARY_WAIT, async move {
+            let mut backend = self.backend;
+            loop {
+                match Arc::try_unwrap(backend) {
+                    Ok(backend) => {
+                        drop(backend);
+                        break;
+                    }
+                    Err(retained) => backend = retained,
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .map_err(|_| "runtime backend owners did not drain before restart")?;
+        eprintln!(
+            "runtime backend drain completed in {:?}; initial other owners: {retained_owners}",
+            began.elapsed()
+        );
+        Ok(())
     }
 }
 
@@ -429,7 +461,7 @@ async fn overdue_session_survives_runtime_restart_and_duplicate_timer_requests()
     let mut client = fixture.connect().await?;
     tokio::task::spawn_blocking(move || client.submit("stage_wait", json!({}), true)).await??;
     let before = fixture.view().await?;
-    fixture.runtime.close().await;
+    fixture.runtime.close().await?;
     fixture
         .clock
         .set(deadline(&before)? + time::Duration::minutes(10))?;
@@ -491,8 +523,10 @@ async fn overdue_session_survives_runtime_restart_and_duplicate_timer_requests()
     )
     .await?;
     assert_eq!(activity(&replay), activity(&after));
-    let _reentered = fixture.connect().await?;
-    fixture.runtime.close().await;
+    let reentered = fixture.connect().await?;
+    // The restarted client must release its upgraded connection before host drain.
+    drop(reentered);
+    fixture.runtime.close().await?;
     Ok(())
 }
 
@@ -581,7 +615,7 @@ async fn extraction_admission_contends_with_expiry_without_overwriting_either_te
         );
         fixture.runtime.backend.scheduler_tick()?;
         assert_eq!(fixture.view().await?, terminal);
-        fixture.runtime.close().await;
+        fixture.runtime.close().await?;
     }
     Ok(())
 }
@@ -751,6 +785,6 @@ async fn in_flight_http_provider_completion_cannot_contribute_after_session_expi
     .await??;
     assert_eq!(rejected["code"], "action_not_allowed");
     assert_eq!(fixture.view().await?, terminal);
-    fixture.runtime.close().await;
+    fixture.runtime.close().await?;
     Ok(())
 }

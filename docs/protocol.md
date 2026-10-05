@@ -885,6 +885,14 @@ Session presence, Runner availability, and other operational changes do not cons
 
 ### Room creation
 
+The optional `canonical_history_format` field accepts exactly
+`worldstream/transition/v1` or `worldstream/transition/v2`. Omission selects V1.
+Explicit V1 retains the same request hash. V2 selects compact history and binds
+`worldstream/payload-budget/v1` in Genesis and the creation request identity.
+An exact retry returns the original Room. Changing the selection under the same
+operation identity conflicts. Unknown, null, or duplicate selections reject.
+See [Payload and stream limits](payload-and-stream-limits.md).
+
 ~~~json
 {
   "pack": {
@@ -1141,7 +1149,14 @@ For Transition integrity, the following semantic fields are exact even if pre-fr
 
 The Transition version/hash/codec identities are carried by the typed domain and versioned envelope. Canonical authority attribution, idempotency identity, exact expected sequence, reason, and semantic input/time inside `recorded_stimulus` are included. Integrity state/generation/incidents, bearer/commit witnesses, receipts, materializations, snapshots, Projections/Frames/Cursors/resets/Sessions, policy and Activation records, diagnostics, telemetry, and commit wall time are excluded.
 
-Genesis uses `worldstream/genesis/v1` and binds Room/version identities, Core schema, exact pack digest, canonical configuration, normalized initial timers, Room seed, logical creation time, and initial Core, Activity, and aggregate hashes. The immutable Genesis record also stores both initial canonical state values so it is reconstructible without a snapshot.
+V1 Genesis uses `worldstream/genesis/v1` and binds Room/version identities, Core schema, exact pack digest, canonical configuration, normalized initial timers, Room seed, logical creation time, and initial Core, Activity, and aggregate hashes. The immutable Genesis record also stores both initial canonical state values so it is reconstructible without a snapshot.
+
+V2 Genesis retains the complete initial values and binds its exact Transition
+tuple and payload policy. V2 Transitions store the stimulus, ordered effects,
+and resulting state hashes. They omit the resulting state values. Genesis
+selects the only permitted decoder for the Room. Existing state hash domains
+retain their V1 identity. [ADR 0034](adr/0034-compact-canonical-transition-format.md)
+defines the exact tuples and hash preimages.
 
 BLAKE3 hashes canonical JSON bytes for these typed objects. Golden vectors MUST be shared by Rust and Python and define integer, digest, string, and byte representation. Canonical JSON forbids floating point and duplicate keys and sorts object keys.
 

@@ -2457,6 +2457,10 @@ enum ExecutorBindingV1 {
 
 #[derive(Clone)]
 enum ReviewedExecutorProvenanceV1 {
+    #[cfg(feature = "conformance-tracer")]
+    BenchmarkState,
+    #[cfg(feature = "conformance-tracer")]
+    GatewayBenchmark,
     CounterV1,
     CounterV2,
     CounterV3,
@@ -2478,6 +2482,12 @@ enum ReviewedExecutorProvenanceV1 {
 impl ReviewedExecutorProvenanceV1 {
     fn expected_type_id(&self) -> TypeId {
         match self {
+            #[cfg(feature = "conformance-tracer")]
+            Self::BenchmarkState => TypeId::of::<crate::benchmark_state::BenchmarkStatePack>(),
+            #[cfg(feature = "conformance-tracer")]
+            Self::GatewayBenchmark => {
+                TypeId::of::<crate::gateway_benchmark::GatewayBenchmarkPack>()
+            }
             Self::CounterV1 => TypeId::of::<crate::counter::CounterV1>(),
             Self::CounterV2 => TypeId::of::<crate::counter::CounterV2>(),
             Self::CounterV3 => TypeId::of::<crate::counter_attention::CounterV3>(),
@@ -2499,6 +2509,14 @@ impl ReviewedExecutorProvenanceV1 {
 
     fn expected_constructor(&self) -> &'static str {
         match self {
+            #[cfg(feature = "conformance-tracer")]
+            Self::BenchmarkState => {
+                std::any::type_name::<crate::benchmark_state::BenchmarkStatePack>()
+            }
+            #[cfg(feature = "conformance-tracer")]
+            Self::GatewayBenchmark => {
+                std::any::type_name::<crate::gateway_benchmark::GatewayBenchmarkPack>()
+            }
             Self::CounterV1 => std::any::type_name::<crate::counter::CounterV1>(),
             Self::CounterV2 => std::any::type_name::<crate::counter::CounterV2>(),
             Self::CounterV3 => std::any::type_name::<crate::counter_attention::CounterV3>(),
@@ -2523,6 +2541,10 @@ impl ReviewedExecutorProvenanceV1 {
 
     fn executor_artifact_digest(&self) -> Blake3DigestV1 {
         match self {
+            #[cfg(feature = "conformance-tracer")]
+            Self::BenchmarkState => crate::benchmark_state::artifact_digest(),
+            #[cfg(feature = "conformance-tracer")]
+            Self::GatewayBenchmark => crate::gateway_benchmark::artifact_digest(),
             Self::CounterV1 => crate::counter::counter_artifact_digest_v1(),
             Self::CounterV2 => crate::counter::counter_artifact_digest_v2(),
             Self::CounterV3 => crate::counter_attention::counter_artifact_digest_v3(),
@@ -2558,6 +2580,39 @@ fn reviewed_executor_provenance<E: ActivityPackV1>(
 }
 
 impl PackRegistryEntryV1 {
+    #[cfg(feature = "conformance-tracer")]
+    pub(crate) fn benchmark_state(
+        revision_lock: PackRevisionLockV1,
+        descriptor: &'static PackRevisionDescriptorV1,
+        artifacts: PackRegistryArtifactsV1,
+        status: PackRegistryStatusV1,
+    ) -> Self {
+        Self::embedded(
+            revision_lock,
+            descriptor,
+            artifacts,
+            ReviewedExecutorProvenanceV1::BenchmarkState,
+            crate::benchmark_state::BenchmarkStatePack,
+            status,
+        )
+    }
+    #[cfg(feature = "conformance-tracer")]
+    pub(crate) fn gateway_benchmark(
+        revision_lock: PackRevisionLockV1,
+        descriptor: &'static PackRevisionDescriptorV1,
+        artifacts: PackRegistryArtifactsV1,
+        status: PackRegistryStatusV1,
+    ) -> Self {
+        Self::embedded(
+            revision_lock,
+            descriptor,
+            artifacts,
+            ReviewedExecutorProvenanceV1::GatewayBenchmark,
+            crate::gateway_benchmark::GatewayBenchmarkPack,
+            status,
+        )
+    }
+
     fn embedded<E: ActivityPackV1>(
         revision_lock: PackRevisionLockV1,
         descriptor: &'static PackRevisionDescriptorV1,
@@ -2956,6 +3011,14 @@ impl ActivityPackHostV1 {
     /// Fails closed before exposure when authorization, schema, ordering,
     /// Action Offer, output-bound, callback, or panic validation fails.
     pub fn view(&self, input: &ViewInputV1<'_>) -> Result<ValidatedPackViewV1, PackFaultV1> {
+        self.view_with_budget(input, None)
+    }
+
+    pub(crate) fn view_with_budget(
+        &self,
+        input: &ViewInputV1<'_>,
+        payload_budget: Option<crate::PayloadBudgetV1>,
+    ) -> Result<ValidatedPackViewV1, PackFaultV1> {
         self.validate_bound_head(input.core, input.activity_state, input.complete_head)?;
         self.validate_runtime_roles(input.core)?;
         self.validate_value(
@@ -3018,6 +3081,11 @@ impl ActivityPackHostV1 {
                 self.retained.descriptor().limits.maximum_projection_bytes,
                 "complete Activity Projection",
             )?;
+            if let Some(budget) = payload_budget {
+                budget
+                    .check_bytes(crate::PayloadKindV1::Projection, &canonical_bytes)
+                    .map_err(|error| PackFaultV1::OutputBoundExceeded(error.to_string()))?;
+            }
             Ok(ValidatedPackViewV1 {
                 viewer: input.viewer.clone(),
                 complete_head: input.complete_head.clone(),
@@ -3188,6 +3256,15 @@ impl ActivityPackHostV1 {
         &self,
         input: &ObserveTransitionInputV1<'_>,
     ) -> Result<ActivityObservationOutcomeV1, PackFaultV1> {
+        self.observe_with_budget(input, None)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn observe_with_budget(
+        &self,
+        input: &ObserveTransitionInputV1<'_>,
+        payload_budget: Option<crate::PayloadBudgetV1>,
+    ) -> Result<ActivityObservationOutcomeV1, PackFaultV1> {
         self.validate_bound_head(input.core_before, input.activity_before, input.head_before)?;
         self.validate_bound_head(input.core_after, input.activity_after, input.head_after)?;
         if input.head_before.room_id() != input.head_after.room_id()
@@ -3211,30 +3288,39 @@ impl ActivityPackHostV1 {
                 return Ok(ActivityObservationOutcomeV1::VisibilityLost);
             }
             ViewerTransitionV1::Reset(after_viewer) => {
-                let reset = self.view(&ViewInputV1 {
-                    core: input.core_after,
-                    activity_state: input.activity_after,
-                    complete_head: input.head_after,
-                    viewer: &after_viewer,
-                })?;
+                let reset = self.view_with_budget(
+                    &ViewInputV1 {
+                        core: input.core_after,
+                        activity_state: input.activity_after,
+                        complete_head: input.head_after,
+                        viewer: &after_viewer,
+                    },
+                    payload_budget,
+                )?;
                 return Ok(ActivityObservationOutcomeV1::ProjectionReset(Box::new(
                     reset,
                 )));
             }
             ViewerTransitionV1::Incremental => {}
         }
-        let before = self.view(&ViewInputV1 {
-            core: input.core_before,
-            activity_state: input.activity_before,
-            complete_head: input.head_before,
-            viewer: input.viewer,
-        })?;
-        let after = self.view(&ViewInputV1 {
-            core: input.core_after,
-            activity_state: input.activity_after,
-            complete_head: input.head_after,
-            viewer: input.viewer,
-        })?;
+        let before = self.view_with_budget(
+            &ViewInputV1 {
+                core: input.core_before,
+                activity_state: input.activity_before,
+                complete_head: input.head_before,
+                viewer: input.viewer,
+            },
+            payload_budget,
+        )?;
+        let after = self.view_with_budget(
+            &ViewInputV1 {
+                core: input.core_after,
+                activity_state: input.activity_after,
+                complete_head: input.head_after,
+                viewer: input.viewer,
+            },
+            payload_budget,
+        )?;
         let raw = match invoke_pack(ActivityPackOperationV1::Observe, || {
             self.retained.0.executor.observe(&ObserveInputV1 {
                 core_before: input.core_before,
@@ -3318,6 +3404,18 @@ impl ActivityPackHostV1 {
                 self.retained.descriptor().limits.maximum_observation_bytes,
                 "complete Activity observation",
             )?;
+            if let Some(budget) = payload_budget {
+                // Unchanged offers use a wire reuse marker. Accounting retains
+                // the exact authorized after-view offers in the complete value.
+                let complete_bytes = canonical_observation_bytes(
+                    &raw.observation_schema,
+                    &raw.observation,
+                    Some(&after.action_offers),
+                )?;
+                budget
+                    .check_bytes(crate::PayloadKindV1::Observation, &complete_bytes)
+                    .map_err(|error| PackFaultV1::OutputBoundExceeded(error.to_string()))?;
+            }
             Ok(ActivityObservationOutcomeV1::Observation(
                 ValidatedPackObservationV1 {
                     observation_schema: raw.observation_schema,
@@ -8468,4 +8566,6 @@ mod tests {
                 .unwrap_or_else(|error| unreachable!("canonical object: {error}")),
         });
     }
+
+    include!("payload_budget_behavior_tests.rs");
 }

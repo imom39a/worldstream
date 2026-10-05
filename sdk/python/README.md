@@ -48,3 +48,25 @@ This is a protocol/client surface, not live deployment evidence. The checked-in
 offline Agent Heist story under `examples/heist/` remains dependency-free and
 explicitly does not claim daemon, database, browser, model, or power-loss
 execution.
+
+### Explicit compact history selection
+
+`Client.create_room` accepts the optional `canonical_history_format` field. Use
+`worldstream/transition/v1` or `worldstream/transition/v2`. Omission selects V1.
+Explicit V1 sends the same four fields as an omitted selection. The server must
+enable V2 creation before it can accept V2. Null and unknown selections fail
+before HTTP submission. Keep the same request identity and format on retries.
+
+`PAYLOAD_BUDGET_V1_ID` and `PAYLOAD_BUDGET_V1_LIMITS` describe the frozen compact
+Room policy. Call `check_fresh_payload(value, kind=..., policy_id=...)` only when
+you choose to check unresolved fresh work against that exact Room policy. It
+counts canonical UTF-8 bytes, including JSON fields and delimiters. Supply the
+complete array or accounting object for aggregate kinds. The server remains
+responsible for authority, schema validation, and durable receipt resolution.
+Complete authorized views include schema identities, Action Offers, and
+authorized Core fields where present.
+
+The normal Action transport retains its 256 KiB hard guard. Fresh-work hints
+do not run automatically on sends or lost-reply retries. Use
+`check_declared_artifact_reference` only for an application-declared reference
+schema. Validate that schema separately. The helper grants no download authority.

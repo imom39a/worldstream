@@ -1,9 +1,6 @@
 #![allow(clippy::panic)]
 
-use std::{
-    collections::BTreeMap, fmt::Display, process::Command, str::FromStr, sync::Arc, thread,
-    time::Instant,
-};
+use std::{fmt::Display, process::Command, str::FromStr, sync::Arc, thread, time::Instant};
 
 #[cfg(feature = "conformance-tracer")]
 use postgres::{Client, NoTls};
@@ -52,6 +49,209 @@ const RECOVERY_SCALE_ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FZ0";
 const SNAPSHOT_CADENCE_ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FZ1";
 const SEED: &str = "hex:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 
+#[cfg(feature = "conformance-tracer")]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn live_postgres_observation_pages_preserve_bounds_and_cursor() {
+    use worldstream_core::{
+        AuthorityBootstrapV1, AuthorityChangeV1, AuthorityV1, CapabilityBearerV1,
+        CapabilityProfileV1, CapabilityScopeSetV1, CapabilityScopeV1, MemberReadOperationV1,
+        NewCapabilityV1, PresentedCapabilityV1,
+    };
+    let (Ok(admin_dsn), Ok(runtime_dsn)) = (
+        std::env::var("WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN"),
+        std::env::var("WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN"),
+    ) else {
+        return;
+    };
+    let admin =
+        PostgresAdmin::new(PostgresConnectionConfig::direct_admin(admin_dsn).unwrap()).unwrap();
+    admin.migrate().unwrap();
+    let store = PostgresRoomStore::new(
+        PostgresConnectionConfig::runtime(&runtime_dsn, PostgresConnectionPath::Direct).unwrap(),
+    )
+    .unwrap();
+    let room = "01ARZ3NDEKTSV4RRFFQ69G5FP0";
+    let member = "01ARZ3NDEKTSV4RRFFQ69G5FP1";
+    let host_cap = "01ARZ3NDEKTSV4RRFFQ69G5FP2";
+    let member_cap = "01ARZ3NDEKTSV4RRFFQ69G5FP3";
+    let authority = AuthorityV1::new(Arc::new(store.clone()));
+    let host = CapabilityBearerV1::from_bytes([0x72; 32]);
+    authority
+        .bootstrap(
+            AuthorityBootstrapV1::new(
+                parsed("01ARZ3NDEKTSV4RRFFQ69G5FP4"),
+                parsed(PRINCIPAL),
+                PrincipalKindV1::Human,
+                parsed(host_cap),
+                host.token_hash(),
+                None,
+            )
+            .unwrap(),
+            parsed("2026-10-04T12:00:00Z"),
+        )
+        .unwrap();
+    let member_bearer = CapabilityBearerV1::from_bytes([0x73; 32]);
+    let (genesis, request, witness, identity) =
+        creation_fixture_for(room, member, PRINCIPAL, 0, "page-boundary-create");
+    let (trace_genesis, _, _, _) =
+        creation_fixture_for(room, member, PRINCIPAL, 0, "page-boundary-create");
+    let trace = CoreTraceV1::create_from_retained_for_conformance(trace_genesis).unwrap();
+    store.seed_conformance_authority(&witness, true).unwrap();
+    let creation = PreparedRoomCreationV1::from_registry_genesis_for_conformance(
+        identity, &request, witness, genesis,
+    )
+    .unwrap();
+    assert!(matches!(
+        store.commit(&creation.into()),
+        RoomCommitResolutionV1::GenesisCreated { .. }
+    ));
+    authority
+        .change(
+            &PresentedCapabilityV1::new(parsed(host_cap), host),
+            AuthorityChangeV1::RegisterCapability {
+                change_id: parsed("01ARZ3NDEKTSV4RRFFQ69G5FP5"),
+                capability: NewCapabilityV1::new(
+                    parsed(member_cap),
+                    member_bearer.token_hash(),
+                    parsed(PRINCIPAL),
+                    CapabilityProfileV1::RoomMember {
+                        room_id: parsed(room),
+                        member_id: parsed(member),
+                    },
+                    CapabilityScopeSetV1::new([CapabilityScopeV1::RoomObserveMember]).unwrap(),
+                    None,
+                )
+                .unwrap(),
+            },
+            parsed("2026-10-04T12:00:00Z"),
+        )
+        .unwrap();
+    let mut client = Client::connect(&runtime_dsn, NoTls).unwrap();
+    let head: i64 = client
+        .query_one(
+            "SELECT frame_head FROM worldstream_members WHERE room_id=$1 AND member_id=$2",
+            &[&room, &member],
+        )
+        .unwrap()
+        .get(0);
+    if head == 0 {
+        let action_witness = PreparedAuthorityWitnessV1::mint_for_conformance(
+            "postgres-fixture-authority",
+            parsed(PRINCIPAL),
+            1,
+            &canonical(br#"{"scope":"action","revoked":false}"#),
+        )
+        .unwrap();
+        store
+            .seed_conformance_authority(&action_witness, true)
+            .unwrap();
+        let first = prepared_increment_for(
+            &trace,
+            "01ARZ3NDEKTSV4RRFFQ69G5FP6",
+            "01ARZ3NDEKTSV4RRFFQ69G5FP7",
+            0,
+            room,
+            member,
+        );
+        assert!(matches!(
+            store.commit(&first.into()),
+            RoomCommitResolutionV1::TransitionCommitted { .. }
+        ));
+        let registry = builtin_counter_registry().unwrap();
+        let trace = recover_room_from_storage_with_receipt(&store, &registry, &parsed(room))
+            .unwrap()
+            .unwrap()
+            .into_trace();
+        let second = prepared_increment_for(
+            &trace,
+            "01ARZ3NDEKTSV4RRFFQ69G5FP8",
+            "01ARZ3NDEKTSV4RRFFQ69G5FP9",
+            1,
+            room,
+            member,
+        );
+        assert!(matches!(
+            store.commit(&second.into()),
+            RoomCommitResolutionV1::TransitionCommitted { .. }
+        ));
+    }
+    let viewer = authority
+        .authorize_member_read(
+            &PresentedCapabilityV1::new(parsed(member_cap), member_bearer),
+            parsed(room),
+            parsed(member),
+            MemberReadOperationV1::CatchUp,
+            parsed("2026-10-04T12:00:00Z"),
+        )
+        .unwrap()
+        .into_adapter_input();
+    let initial_cursor: Option<i64> = client
+        .query_one(
+            "SELECT last_ack_frame_seq FROM worldstream_members WHERE room_id=$1 AND member_id=$2",
+            &[&room, &member],
+        )
+        .unwrap()
+        .get(0);
+    let reset: i64 = client
+        .query_one(
+            "SELECT reset_generation FROM worldstream_members WHERE room_id=$1 AND member_id=$2",
+            &[&room, &member],
+        )
+        .unwrap()
+        .get(0);
+    let reset = u64::try_from(reset).unwrap();
+    let (first_page, more) = store
+        .read_observation_page_bounded(room, member, &viewer, 0, reset, 1, 1024 * 1024)
+        .unwrap();
+    assert_eq!(first_page.len(), 1);
+    assert_eq!(first_page[0].frame_seq, 1);
+    assert!(more);
+    let exact_bytes = first_page[0].payload_bytes.len();
+    let (byte_page, more) = store
+        .read_observation_page_bounded(room, member, &viewer, 0, reset, 32, exact_bytes)
+        .unwrap();
+    assert_eq!(byte_page, first_page);
+    assert!(more);
+    assert!(matches!(
+        store.read_observation_page_bounded(room, member, &viewer, 0, reset, 32, exact_bytes - 1),
+        Err(worldstream_postgres::PostgresObservationError::ResetRequired)
+    ));
+    let (last, more) = store
+        .read_observation_page_bounded(room, member, &viewer, 1, reset, 32, 1024 * 1024)
+        .unwrap();
+    assert_eq!(last.len(), 1);
+    assert_eq!(last[0].frame_seq, 2);
+    assert!(!more);
+    assert!(matches!(
+        store.read_observation_page_bounded(room, member, &viewer, 0, reset + 1, 32, 1024 * 1024),
+        Err(worldstream_postgres::PostgresObservationError::ResetRequired)
+    ));
+    let cursor: Option<i64> = client
+        .query_one(
+            "SELECT last_ack_frame_seq FROM worldstream_members WHERE room_id=$1 AND member_id=$2",
+            &[&room, &member],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(cursor, initial_cursor);
+    assert_eq!(
+        store.acknowledge_observation(room, member, 1).unwrap(),
+        Some(1)
+    );
+    store
+        .read_observation_page_bounded(room, member, &viewer, 1, reset, 32, 1024 * 1024)
+        .unwrap();
+    let cursor: Option<i64> = client
+        .query_one(
+            "SELECT last_ack_frame_seq FROM worldstream_members WHERE room_id=$1 AND member_id=$2",
+            &[&room, &member],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(cursor, Some(1));
+}
+
 fn parsed<T>(value: &str) -> T
 where
     T: FromStr,
@@ -78,6 +278,29 @@ fn creation_fixture_for(
     PreparedAuthorityWitnessV1,
     AdministrationOperationIdentityV1,
 ) {
+    creation_fixture_for_members(
+        room_id,
+        member_id,
+        principal_id,
+        initial_value,
+        idempotency_key,
+        None,
+    )
+}
+
+fn creation_fixture_for_members(
+    room_id: &str,
+    member_id: &str,
+    principal_id: &str,
+    initial_value: u32,
+    idempotency_key: &str,
+    extra: Option<(&str, &str)>,
+) -> (
+    worldstream_core::PreparedNewRoomGenesisV1,
+    RoomCreationRequestV1,
+    PreparedAuthorityWitnessV1,
+    AdministrationOperationIdentityV1,
+) {
     let registry =
         builtin_counter_registry().unwrap_or_else(|error| panic!("Counter registry: {error}"));
     let member = MembershipV1::new(
@@ -89,6 +312,40 @@ fn creation_fixture_for(
         Some("counter".to_owned()),
     )
     .unwrap_or_else(|error| panic!("membership: {error}"));
+    let mut members = vec![member];
+    let mut proposals = vec![
+        InitialMembershipProposalV1::new(
+            parsed(principal_id),
+            PrincipalKindV1::Human,
+            MembershipStandingV1::Enabled,
+            AccessModeV1::Participant,
+            Some("counter".to_owned()),
+        )
+        .unwrap(),
+    ];
+    if let Some((member, principal)) = extra {
+        members.push(
+            MembershipV1::new(
+                parsed(member),
+                parsed(principal),
+                PrincipalKindV1::Human,
+                MembershipStandingV1::Enabled,
+                AccessModeV1::Spectator,
+                None,
+            )
+            .unwrap(),
+        );
+        proposals.push(
+            InitialMembershipProposalV1::new(
+                parsed(principal),
+                PrincipalKindV1::Human,
+                MembershipStandingV1::Enabled,
+                AccessModeV1::Spectator,
+                None,
+            )
+            .unwrap(),
+        );
+    }
     let configuration =
         canonical(format!(r#"{{"initial_value":{initial_value},"maximum_value":4}}"#).as_bytes());
     let genesis = registry
@@ -98,24 +355,11 @@ fn creation_fixture_for(
             configuration: configuration.clone(),
             room_seed: parsed::<RoomSeedV1>(SEED),
             created_at: parsed("2026-08-15T12:00:00Z"),
-            initial_core_state: CoreRoomStateV1::active([member])
+            initial_core_state: CoreRoomStateV1::active(members)
                 .unwrap_or_else(|error| panic!("Core: {error}")),
         })
         .unwrap_or_else(|error| panic!("Genesis: {error}"));
-    let request = RoomCreationRequestV1::new(
-        counter_v2_digest(),
-        configuration,
-        vec![
-            InitialMembershipProposalV1::new(
-                parsed(principal_id),
-                PrincipalKindV1::Human,
-                MembershipStandingV1::Enabled,
-                AccessModeV1::Participant,
-                Some("counter".to_owned()),
-            )
-            .unwrap_or_else(|error| panic!("proposal: {error}")),
-        ],
-    );
+    let request = RoomCreationRequestV1::new(counter_v2_digest(), configuration, proposals);
     let witness = PreparedAuthorityWitnessV1::mint_for_conformance(
         "postgres-fixture-authority",
         parsed(principal_id),
@@ -166,9 +410,27 @@ fn prepared_increment_with_frame_head(
     transition_id: &str,
     previous_frame_head: u64,
 ) -> PreparedRoomCommitV1 {
+    prepared_increment_for(
+        trace,
+        action_id,
+        transition_id,
+        previous_frame_head,
+        ROOM,
+        MEMBER,
+    )
+}
+
+fn prepared_increment_for(
+    trace: &CoreTraceV1,
+    action_id: &str,
+    transition_id: &str,
+    previous_frame_head: u64,
+    room_id: &str,
+    member_id: &str,
+) -> PreparedRoomCommitV1 {
     let request = ParticipantActionRequestV1::new(
-        parsed(ROOM),
-        parsed(MEMBER),
+        parsed(room_id),
+        parsed(member_id),
         parsed(action_id),
         trace.head().room_seq(),
         "increment",
@@ -184,7 +446,7 @@ fn prepared_increment_with_frame_head(
         .unwrap_or_else(|| panic!("increment descriptor"));
     let transition = trace
         .prepare(RecordedStimulusV1::ParticipantAction(ParticipantActionV1 {
-            member_id: parsed(MEMBER),
+            member_id: parsed(member_id),
             action_id: parsed(action_id),
             action_type: "increment".to_owned(),
             payload_schema_digest: definition.payload_schema.schema_digest.clone(),
@@ -207,7 +469,13 @@ fn prepared_increment_with_frame_head(
             &canonical(br#"{"scope":"action","revoked":false}"#),
         )
         .unwrap_or_else(|error| panic!("authority: {error}")),
-        &BTreeMap::from([(parsed(MEMBER), previous_frame_head)]),
+        &trace
+            .core_state()
+            .memberships()
+            .keys()
+            .cloned()
+            .map(|member| (member, previous_frame_head))
+            .collect(),
     )
     .unwrap_or_else(|error| panic!("seal increment: {error}"))
 }
@@ -2373,3 +2641,386 @@ fn live_direct_runtime_and_optional_pooler_conformance() {
     ));
     println!("LIVE_POSTGRES_POOLER=PASS path=transaction_pool duplicate+resolve");
 }
+
+#[cfg(feature = "conformance-tracer")]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn live_postgres_shared_observation_cut_fences_each_session() {
+    use worldstream_core::{
+        AuthorityBootstrapV1, AuthorityChangeV1, AuthorityGenerationV1, AuthorityReasonCodeV1,
+        AuthorityV1, CapabilityBearerV1, CapabilityProfileV1, CapabilityScopeSetV1,
+        CapabilityScopeV1, MemberReadOperationV1, NewCapabilityV1, PresentedCapabilityV1,
+    };
+    let (Ok(admin_dsn), Ok(runtime_dsn)) = (
+        std::env::var("WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN"),
+        std::env::var("WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN"),
+    ) else {
+        return;
+    };
+    let admin =
+        PostgresAdmin::new(PostgresConnectionConfig::direct_admin(admin_dsn).unwrap()).unwrap();
+    admin.migrate().unwrap();
+    let store = PostgresRoomStore::new(
+        PostgresConnectionConfig::runtime(&runtime_dsn, PostgresConnectionPath::Direct).unwrap(),
+    )
+    .unwrap();
+    let authority = AuthorityV1::new(Arc::new(store.clone()));
+    let host_cap = "01ARZ3NDEKTSV4RRFFQ69G5FP2";
+    authority
+        .bootstrap(
+            AuthorityBootstrapV1::new(
+                parsed("01ARZ3NDEKTSV4RRFFQ69G5FP4"),
+                parsed(PRINCIPAL),
+                PrincipalKindV1::Human,
+                parsed(host_cap),
+                CapabilityBearerV1::from_bytes([0x72; 32]).token_hash(),
+                None,
+            )
+            .unwrap(),
+            parsed("2026-10-04T12:00:00Z"),
+        )
+        .unwrap();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let mut serial = 0_u128;
+    let mut next = || {
+        serial += 1;
+        let mut value = nonce + serial;
+        let alphabet = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+        let mut text = [b'0'; 26];
+        for byte in text.iter_mut().rev() {
+            *byte = alphabet[usize::try_from(value & 31).unwrap()];
+            value >>= 5;
+        }
+        String::from_utf8(text.to_vec()).unwrap()
+    };
+    let room = next();
+    let member = next();
+    let other_member = next();
+    let other_principal = next();
+    let first_cap = next();
+    let second_cap = next();
+    let (genesis, request, witness, identity) = creation_fixture_for_members(
+        &room,
+        &member,
+        PRINCIPAL,
+        0,
+        &next(),
+        Some((&other_member, &other_principal)),
+    );
+    let (trace_genesis, _, _, _) = creation_fixture_for_members(
+        &room,
+        &member,
+        PRINCIPAL,
+        0,
+        "shared-trace",
+        Some((&other_member, &other_principal)),
+    );
+    let trace = CoreTraceV1::create_from_retained_for_conformance(trace_genesis).unwrap();
+    store.seed_conformance_authority(&witness, true).unwrap();
+    let creation = PreparedRoomCreationV1::from_registry_genesis_for_conformance(
+        identity, &request, witness, genesis,
+    )
+    .unwrap();
+    assert!(matches!(
+        store.commit(&creation.into()),
+        RoomCommitResolutionV1::GenesisCreated { .. }
+    ));
+    let mut first_bytes = [0; 32];
+    first_bytes[..16].copy_from_slice(&nonce.to_be_bytes());
+    first_bytes[16..].copy_from_slice(&(nonce + 1).to_be_bytes());
+    let mut second_bytes = first_bytes;
+    second_bytes[31] ^= 1;
+    for (capability, bytes) in [(&first_cap, first_bytes), (&second_cap, second_bytes)] {
+        authority
+            .change(
+                &PresentedCapabilityV1::new(
+                    parsed(host_cap),
+                    CapabilityBearerV1::from_bytes([0x72; 32]),
+                ),
+                AuthorityChangeV1::RegisterCapability {
+                    change_id: parsed(&next()),
+                    capability: NewCapabilityV1::new(
+                        parsed(capability),
+                        CapabilityBearerV1::from_bytes(bytes).token_hash(),
+                        parsed(PRINCIPAL),
+                        CapabilityProfileV1::RoomMember {
+                            room_id: parsed(&room),
+                            member_id: parsed(&member),
+                        },
+                        CapabilityScopeSetV1::new([
+                            CapabilityScopeV1::RoomObserveMember,
+                            CapabilityScopeV1::RoomObservePublic,
+                        ])
+                        .unwrap(),
+                        None,
+                    )
+                    .unwrap(),
+                },
+                parsed("2026-10-04T12:00:00Z"),
+            )
+            .unwrap();
+    }
+    let host =
+        PresentedCapabilityV1::new(parsed(host_cap), CapabilityBearerV1::from_bytes([0x72; 32]));
+    authority
+        .change(
+            &host,
+            AuthorityChangeV1::CreatePrincipal {
+                change_id: parsed(&next()),
+                principal_id: parsed(&other_principal),
+                kind: PrincipalKindV1::Human,
+            },
+            parsed("2026-10-04T12:00:00Z"),
+        )
+        .unwrap();
+    let foreign_room = next();
+    let (genesis, request, witness, identity) =
+        creation_fixture_for(&foreign_room, &member, PRINCIPAL, 0, &next());
+    store.seed_conformance_authority(&witness, true).unwrap();
+    let creation = PreparedRoomCreationV1::from_registry_genesis_for_conformance(
+        identity, &request, witness, genesis,
+    )
+    .unwrap();
+    assert!(matches!(
+        store.commit(&creation.into()),
+        RoomCommitResolutionV1::GenesisCreated { .. }
+    ));
+    let origin = Arc::new(
+        authority
+            .authorize_member_read(
+                &PresentedCapabilityV1::new(
+                    parsed(&first_cap),
+                    CapabilityBearerV1::from_bytes(first_bytes),
+                ),
+                parsed(&room),
+                parsed(&member),
+                MemberReadOperationV1::CatchUp,
+                parsed("2026-10-04T12:00:00Z"),
+            )
+            .unwrap()
+            .into_adapter_input(),
+    );
+    let (frames, _, empty_cut) = store
+        .read_shared_observation_page(&[Arc::clone(&origin)], 0, 0, 32, 1024 * 1024)
+        .unwrap();
+    assert!(frames.is_empty());
+    store
+        .revalidate_live_observation(&origin, &empty_cut)
+        .unwrap();
+    // A same-sequence root with a different lineage identity invalidates the empty cut.
+    let mut mutator = Client::connect(&runtime_dsn, NoTls).unwrap();
+    let original_head: Vec<u8> = mutator
+        .query_one(
+            "SELECT head_bytes FROM worldstream_room_roots WHERE room_id=$1",
+            &[&room],
+        )
+        .unwrap()
+        .get(0);
+    let mut changed_head: serde_json::Value = serde_json::from_slice(&original_head).unwrap();
+    changed_head["genesis_or_transition_hash"] =
+        serde_json::Value::String(format!("blake3:{}", "0".repeat(64)));
+    let changed_head = canonical(&serde_json::to_vec(&changed_head).unwrap())
+        .to_bytes()
+        .unwrap();
+    mutator
+        .execute(
+            "UPDATE worldstream_room_roots SET head_bytes=$2 WHERE room_id=$1",
+            &[&room, &changed_head],
+        )
+        .unwrap();
+    assert!(matches!(
+        store.revalidate_live_observation(&origin, &empty_cut),
+        Err(worldstream_postgres::PostgresObservationError::ResetRequired)
+    ));
+    mutator
+        .execute(
+            "UPDATE worldstream_room_roots SET head_bytes=$2 WHERE room_id=$1",
+            &[&room, &original_head],
+        )
+        .unwrap();
+    store
+        .revalidate_live_observation(&origin, &empty_cut)
+        .unwrap();
+    for (index, (target_room, target_member, principal)) in [
+        (&room, &other_member, &other_principal),
+        (&foreign_room, &member, &PRINCIPAL.to_owned()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let capability = next();
+        let mut bytes = first_bytes;
+        bytes[31] ^= u8::try_from(index + 8).unwrap();
+        authority
+            .change(
+                &host,
+                AuthorityChangeV1::RegisterCapability {
+                    change_id: parsed(&next()),
+                    capability: NewCapabilityV1::new(
+                        parsed(&capability),
+                        CapabilityBearerV1::from_bytes(bytes).token_hash(),
+                        parsed(principal),
+                        CapabilityProfileV1::RoomMember {
+                            room_id: parsed(target_room),
+                            member_id: parsed(target_member),
+                        },
+                        CapabilityScopeSetV1::new([
+                            CapabilityScopeV1::RoomObserveMember,
+                            CapabilityScopeV1::RoomObservePublic,
+                        ])
+                        .unwrap(),
+                        None,
+                    )
+                    .unwrap(),
+                },
+                parsed("2026-10-04T12:00:00Z"),
+            )
+            .unwrap();
+        let grant = Arc::new(
+            authority
+                .authorize_member_read(
+                    &PresentedCapabilityV1::new(
+                        parsed(&capability),
+                        CapabilityBearerV1::from_bytes(bytes),
+                    ),
+                    parsed(target_room),
+                    parsed(target_member),
+                    MemberReadOperationV1::CatchUp,
+                    parsed("2026-10-04T12:00:00Z"),
+                )
+                .unwrap()
+                .into_adapter_input(),
+        );
+        let (frames, _, own_cut) = store
+            .read_shared_observation_page(&[Arc::clone(&grant)], 0, 0, 32, 1024 * 1024)
+            .unwrap();
+        assert!(frames.is_empty());
+        store.revalidate_live_observation(&grant, &own_cut).unwrap();
+        assert!(matches!(
+            store.revalidate_live_observation(&grant, &empty_cut),
+            Err(worldstream_postgres::PostgresObservationError::ResetRequired)
+        ));
+    }
+    let action_witness = PreparedAuthorityWitnessV1::mint_for_conformance(
+        "postgres-fixture-authority",
+        parsed(PRINCIPAL),
+        1,
+        &canonical(br#"{"scope":"action","revoked":false}"#),
+    )
+    .unwrap();
+    store
+        .seed_conformance_authority(&action_witness, true)
+        .unwrap();
+    let first_action = prepared_increment_for(&trace, &next(), &next(), 0, &room, &member);
+    assert!(matches!(
+        store.commit(&first_action.into()),
+        RoomCommitResolutionV1::TransitionCommitted { .. }
+    ));
+    let grant = |capability: &str, bytes| {
+        Arc::new(
+            authority
+                .authorize_member_read(
+                    &PresentedCapabilityV1::new(
+                        parsed(capability),
+                        CapabilityBearerV1::from_bytes(bytes),
+                    ),
+                    parsed(&room),
+                    parsed(&member),
+                    MemberReadOperationV1::CatchUp,
+                    parsed("2026-10-04T12:00:00Z"),
+                )
+                .unwrap()
+                .into_adapter_input(),
+        )
+    };
+    let first = grant(&first_cap, first_bytes);
+    let second = grant(&second_cap, second_bytes);
+    let (frames, more, cut) = store
+        .read_shared_observation_page(
+            &[Arc::clone(&first), Arc::clone(&second)],
+            0,
+            0,
+            32,
+            1024 * 1024,
+        )
+        .unwrap();
+    assert_eq!(frames.len(), 1);
+    assert!(!more);
+    store.revalidate_live_observation(&first, &cut).unwrap();
+    let registry = builtin_counter_registry().unwrap();
+    let trace = recover_room_from_storage_with_receipt(&store, &registry, &parsed(&room))
+        .unwrap()
+        .unwrap()
+        .into_trace();
+    let second_action = prepared_increment_for(&trace, &next(), &next(), 1, &room, &member);
+    assert!(matches!(
+        store.commit(&second_action.into()),
+        RoomCommitResolutionV1::TransitionCommitted { .. }
+    ));
+    store.revalidate_live_observation(&first, &cut).unwrap();
+    store.revalidate_live_observation(&second, &cut).unwrap();
+    // The accepted successor receipt must retain the captured exact basis Head.
+    let basis: Vec<u8> = mutator.query_one("SELECT basis_complete_head_bytes FROM worldstream_semantic_receipts WHERE room_id=$1 AND transition_seq=2", &[&room]).unwrap().get(0);
+    let mut changed_basis = basis.clone();
+    changed_basis[0] ^= 1;
+    mutator.execute("UPDATE worldstream_semantic_receipts SET basis_complete_head_bytes=$2 WHERE room_id=$1 AND transition_seq=2", &[&room, &changed_basis]).unwrap();
+    assert!(matches!(
+        store.revalidate_live_observation(&second, &cut),
+        Err(worldstream_postgres::PostgresObservationError::ResetRequired)
+    ));
+    mutator.execute("UPDATE worldstream_semantic_receipts SET basis_complete_head_bytes=$2 WHERE room_id=$1 AND transition_seq=2", &[&room, &basis]).unwrap();
+    store.revalidate_live_observation(&second, &cut).unwrap();
+    authority
+        .change(
+            &PresentedCapabilityV1::new(
+                parsed(host_cap),
+                CapabilityBearerV1::from_bytes([0x72; 32]),
+            ),
+            AuthorityChangeV1::RevokeCapability {
+                change_id: parsed(&next()),
+                capability_id: parsed(&first_cap),
+                expected_generation: AuthorityGenerationV1::new(1).unwrap(),
+                reason_code: AuthorityReasonCodeV1::new("shared_cut_test").unwrap(),
+            },
+            parsed("2026-10-04T12:00:00Z"),
+        )
+        .unwrap();
+    assert!(matches!(
+        store.revalidate_live_observation(&first, &cut),
+        Err(worldstream_postgres::PostgresObservationError::Authority)
+    ));
+    store.revalidate_live_observation(&second, &cut).unwrap();
+    let mut client = Client::connect(&runtime_dsn, NoTls).unwrap();
+    let cursor: Option<i64> = client
+        .query_one(
+            "SELECT last_ack_frame_seq FROM worldstream_members WHERE room_id=$1 AND member_id=$2",
+            &[&room, &member],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(cursor, None);
+    let mut altered_hash = frames[0].payload_hash.clone();
+    altered_hash[0] ^= 1;
+    client.execute("UPDATE worldstream_frames SET payload_hash=$3 WHERE room_id=$1 AND member_id=$2 AND frame_seq=1", &[&room, &member, &altered_hash]).unwrap();
+    assert!(matches!(
+        store.revalidate_live_observation(&second, &cut),
+        Err(worldstream_postgres::PostgresObservationError::ResetRequired)
+    ));
+    client.execute("UPDATE worldstream_frames SET payload_hash=$3 WHERE room_id=$1 AND member_id=$2 AND frame_seq=1", &[&room, &member, &frames[0].payload_hash]).unwrap();
+    client.execute("UPDATE worldstream_members SET reset_generation=reset_generation+1 WHERE room_id=$1 AND member_id=$2", &[&room, &member]).unwrap();
+    assert!(matches!(
+        store.revalidate_live_observation(&second, &cut),
+        Err(worldstream_postgres::PostgresObservationError::ResetRequired)
+    ));
+    client.execute("UPDATE worldstream_members SET reset_generation=reset_generation-1, membership_generation=membership_generation+1 WHERE room_id=$1 AND member_id=$2", &[&room, &member]).unwrap();
+    assert!(matches!(
+        store.revalidate_live_observation(&second, &cut),
+        Err(worldstream_postgres::PostgresObservationError::Authority)
+    ));
+}
+
+#[cfg(feature = "conformance-tracer")]
+mod canonical_postgres;

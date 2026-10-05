@@ -196,6 +196,97 @@ pub struct CreateRoomRequest {
     pub idempotency_key: String,
 }
 
+/// Closed canonical history selection for additive Room creation.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum CanonicalHistoryFormatV1 {
+    /// Existing complete-state canonical history.
+    #[default]
+    #[serde(rename = "worldstream/transition/v1")]
+    V1,
+    /// Compact canonical history, available only when the server enables it.
+    #[serde(rename = "worldstream/transition/v2")]
+    V2,
+}
+
+/// Additive creation DTO. The legacy request and its literal callers stay unchanged.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateRoomRequestWithFormat {
+    pub request: CreateRoomRequest,
+    pub canonical_history_format: CanonicalHistoryFormatV1,
+}
+
+impl<'de> Deserialize<'de> for CreateRoomRequestWithFormat {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // No flatten: this closed wire type rejects null, duplicates, and unknown fields.
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            pack: PackReference,
+            configuration: Value,
+            members: Vec<CreateMember>,
+            idempotency_key: String,
+            #[serde(default)]
+            canonical_history_format: CanonicalHistoryFormatV1,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        Ok(Self {
+            request: CreateRoomRequest {
+                pack: wire.pack,
+                configuration: wire.configuration,
+                members: wire.members,
+                idempotency_key: wire.idempotency_key,
+            },
+            canonical_history_format: wire.canonical_history_format,
+        })
+    }
+}
+
+impl Serialize for CreateRoomRequestWithFormat {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let compact = self.canonical_history_format == CanonicalHistoryFormatV1::V2;
+        let mut wire = serializer
+            .serialize_struct("CreateRoomRequestWithFormat", if compact { 5 } else { 4 })?;
+        wire.serialize_field("pack", &self.request.pack)?;
+        wire.serialize_field("configuration", &self.request.configuration)?;
+        wire.serialize_field("members", &self.request.members)?;
+        wire.serialize_field("idempotency_key", &self.request.idempotency_key)?;
+        if compact {
+            wire.serialize_field("canonical_history_format", &self.canonical_history_format)?;
+        }
+        wire.end()
+    }
+}
+
+/// Frozen policy selected by compact V2 Genesis. These are fresh-admission
+/// hints; they must not prevent authoritative resolution of accepted retries.
+pub const PAYLOAD_BUDGET_V1_ID: &str = "worldstream/payload-budget/v1";
+
+/// Inclusive canonical decoded UTF-8 ceilings, keyed by explicitly known kind.
+/// Queue and transport ceilings are separate. Artifact references require an
+/// application-declared schema; these names do not classify arbitrary JSON.
+pub const PAYLOAD_BUDGET_V1_LIMITS: [(&str, usize); 19] = [
+    ("control_metadata", 4_096),
+    ("action_payload", 32_768),
+    ("external_input_payload", 32_768),
+    ("creation_configuration", 32_768),
+    ("domain_event_item", 8_192),
+    ("domain_events_array", 262_144),
+    ("timer_change_item", 4_096),
+    ("timer_changes_array", 65_536),
+    ("attention_signal_item", 4_096),
+    ("attention_signals_array", 65_536),
+    ("effects", 393_216),
+    ("transition", 524_288),
+    ("activity_state", 262_144),
+    ("core_state", 131_072),
+    ("authoritative_state", 524_288),
+    ("genesis", 786_432),
+    ("observation", 32_768),
+    ("projection", 262_144),
+    ("artifact_reference", 2_048),
+];
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackReference {

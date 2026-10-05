@@ -21,19 +21,20 @@ use worldstream_conformance::{
 use worldstream_core::{
     AccessModeV1, ActivationOperationRequestV1, AdministrationOperationIdentityV1,
     AuthorityBootstrapV1, AuthorityChangeV1, AuthorityGenerationV1, AuthorityGrantV1,
-    AuthorityUseV1, AuthorityV1, CORE_OPERATION_KIND, CapabilityAuthoritySnapshotPartsV1,
+    AuthorityUseV1, AuthorityV1, CORE_OPERATION_KIND, CanonicalHistoryFormat,
+    CanonicalRoomCommitStorage, CanonicalRoomTrace, CapabilityAuthoritySnapshotPartsV1,
     CapabilityAuthoritySnapshotV1, CapabilityBearerV1, CapabilityProfileV1, CapabilityScopeSetV1,
     CapabilityScopeV1, CoreAdministrationRequestV1, CoreChangeSetV1, CoreProposedKindV1,
-    CoreProposedV1, CoreRoomStateV1, CoreTraceV1, InMemoryAuthorityStoreV1,
-    InitialMembershipProposalV1, IntegrityGenerationV1, MemberAuthorityUseV1, MemberId,
-    MemberReadOperationV1, MembershipAuthoritySnapshotV1, MembershipChangeV1,
-    MembershipGenerationV1, MembershipStandingV1, MembershipV1, NewCapabilityV1,
-    PackGenesisRequestV1, PackRegistryV1, ParticipantActionRequestV1, ParticipantActionV1,
-    PreparedRoomCommitV1, PreparedRoomCreationV1, PreparedRoomWriteV1, PresentedCapabilityV1,
-    PrincipalKindV1, RecordedStimulusV1, RoomCommitResolutionV1, RoomCommitStorageV1,
-    RoomCreationRequestV1, RoomId, RoomMembershipKeyV1, RoomSeedV1, RunnerAuthoritySnapshotV1,
-    RunnerAuthorityStatusV1, RunnerControlOperationV1, RunnerGenerationV1, RunnerMembershipSetV1,
-    TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, ValidatedPackViewV1, agent_heist_digest,
+    CoreRoomStateV1, InMemoryAuthorityStoreV1, InitialMembershipProposalV1, IntegrityGenerationV1,
+    MemberAuthorityUseV1, MemberId, MemberReadOperationV1, MembershipAuthoritySnapshotV1,
+    MembershipChangeV1, MembershipGenerationV1, MembershipStandingV1, MembershipV1,
+    NewCapabilityV1, PackGenesisRequestV1, PackRegistryV1, ParticipantActionRequestV1,
+    ParticipantActionV1, PreparedCanonicalRoomCommit, PreparedCanonicalRoomCreation,
+    PreparedCanonicalRoomWrite, PresentedCapabilityV1, PrincipalKindV1, RecordedStimulusV1,
+    RoomCommitResolutionV1, RoomCreationRequestV1, RoomCreationRequestWithFormat, RoomId,
+    RoomMembershipKeyV1, RoomSeedV1, RunnerAuthoritySnapshotV1, RunnerAuthorityStatusV1,
+    RunnerControlOperationV1, RunnerGenerationV1, RunnerMembershipSetV1, TimerFiredRequestV1,
+    TimerFiredV1, TimerGenerationV1, ValidatedPackViewV1, agent_heist_digest,
     builtin_agent_heist_registry,
 };
 use worldstream_postgres::{
@@ -141,7 +142,7 @@ fn outcome(
     )
 }
 
-fn projection(trace: &CoreTraceV1, member_id: &MemberId) -> ProjectionOutcome {
+fn projection(trace: &CanonicalRoomTrace, member_id: &MemberId) -> ProjectionOutcome {
     let membership = trace
         .core_state()
         .membership(member_id)
@@ -152,15 +153,7 @@ fn projection(trace: &CoreTraceV1, member_id: &MemberId) -> ProjectionOutcome {
         AccessModeV1::Operator => worldstream_core::PackViewerV1::Operator(member_id.clone()),
     };
     let view = trace
-        .retained_pack()
-        .unwrap_or_else(|| panic!("retained pack"))
-        .host()
-        .view(&worldstream_core::ViewInputV1 {
-            core: trace.core_state(),
-            activity_state: trace.activity_state(),
-            complete_head: trace.head(),
-            viewer: &viewer,
-        })
+        .view(&viewer)
         .unwrap_or_else(|error| panic!("projection: {error}"));
     ProjectionOutcome {
         operation: "current-view".to_owned(),
@@ -170,7 +163,7 @@ fn projection(trace: &CoreTraceV1, member_id: &MemberId) -> ProjectionOutcome {
     }
 }
 
-fn validated_view(trace: &CoreTraceV1, member_id: &MemberId) -> ValidatedPackViewV1 {
+fn validated_view(trace: &CanonicalRoomTrace, member_id: &MemberId) -> ValidatedPackViewV1 {
     let membership = trace
         .core_state()
         .membership(member_id)
@@ -181,16 +174,18 @@ fn validated_view(trace: &CoreTraceV1, member_id: &MemberId) -> ValidatedPackVie
         AccessModeV1::Operator => worldstream_core::PackViewerV1::Operator(member_id.clone()),
     };
     trace
-        .retained_pack()
-        .unwrap_or_else(|| panic!("retained pack"))
-        .host()
-        .view(&worldstream_core::ViewInputV1 {
-            core: trace.core_state(),
-            activity_state: trace.activity_state(),
-            complete_head: trace.head(),
-            viewer: &viewer,
-        })
+        .view(&viewer)
         .unwrap_or_else(|error| panic!("projection: {error}"))
+}
+
+fn transition_bytes(
+    trace: &CanonicalRoomTrace,
+) -> Result<Vec<Vec<u8>>, worldstream_core::CanonicalJsonError> {
+    trace
+        .transitions()
+        .iter()
+        .map(worldstream_core::TransitionRecord::canonical_bytes)
+        .collect()
 }
 
 fn plan_memberships(plan: &ScenarioPlan) -> Vec<MembershipV1> {
@@ -240,15 +235,18 @@ fn build_genesis(plan: &ScenarioPlan) -> worldstream_core::PreparedNewRoomGenesi
         .unwrap_or_else(|error| panic!("Genesis: {error}"))
 }
 
-fn creation_request(plan: &ScenarioPlan) -> RoomCreationRequestV1 {
-    RoomCreationRequestV1::new(
+fn creation_request(
+    plan: &ScenarioPlan,
+    format: CanonicalHistoryFormat,
+) -> RoomCreationRequestWithFormat {
+    RoomCreationRequestWithFormat::new(RoomCreationRequestV1::new(
         agent_heist_digest(),
         canonical(br#"{"briefing_duration_seconds":30,"commitment_duration_seconds":30,"commitment_reminder_seconds_before_deadline":10,"maximum_open_offers_per_role":4,"maximum_plans":12,"negotiation_duration_seconds":90,"pack_id":"worldstream.agent-heist","pack_schema":1,"result_duration_seconds":20,"roles":["navigator","insider","broker"]}"#),
         plan_memberships(plan)
             .into_iter()
             .map(|membership| InitialMembershipProposalV1::new(membership.principal_id().clone(), membership.principal_kind(), membership.standing(), membership.access_mode(), membership.role().map(str::to_owned)).unwrap_or_else(|error| panic!("proposal: {error}")))
             .collect(),
-    )
+    ), format)
 }
 
 fn creation_identity(plan: &ScenarioPlan, key: &str) -> AdministrationOperationIdentityV1 {
@@ -269,11 +267,12 @@ struct SqliteAdapter {
     authority: AuthorityV1,
     plan: ScenarioPlan,
     registry: PackRegistryV1,
-    trace: Option<CoreTraceV1>,
+    trace: Option<CanonicalRoomTrace>,
+    format: CanonicalHistoryFormat,
 }
 
 impl SqliteAdapter {
-    fn new(plan: ScenarioPlan) -> Self {
+    fn new(plan: ScenarioPlan, format: CanonicalHistoryFormat) -> Self {
         let file = NamedTempFile::new().unwrap_or_else(|error| panic!("SQLite temp file: {error}"));
         let store = Arc::new(
             SqliteRoomStore::open(file.path())
@@ -302,6 +301,7 @@ impl SqliteAdapter {
             plan,
             registry: registry(),
             trace: None,
+            format,
         }
     }
 
@@ -402,7 +402,7 @@ impl SqliteAdapter {
             .unwrap_or_else(|error| panic!("SQLite runner capability registration: {error}"));
     }
 
-    fn trace(&self) -> &CoreTraceV1 {
+    fn trace(&self) -> &CanonicalRoomTrace {
         self.trace
             .as_ref()
             .unwrap_or_else(|| panic!("SQLite trace is not initialized"))
@@ -444,11 +444,7 @@ impl SqliteAdapter {
     }
 
     fn action_stimulus(&self, _request: &ParticipantActionRequestV1) -> ParticipantActionV1 {
-        let descriptor = self
-            .trace()
-            .retained_pack()
-            .unwrap_or_else(|| panic!("pack"))
-            .descriptor();
+        let descriptor = self.trace().retained_pack().descriptor();
         ParticipantActionV1 {
             member_id: parsed(&self.plan.member_id),
             action_id: parsed(&self.plan.action_id),
@@ -469,17 +465,17 @@ impl SqliteAdapter {
 
     fn frame_heads(&self) -> BTreeMap<MemberId, u64> {
         self.store
-            .gateway_room_snapshot(&self.registry, &parsed(&self.plan.room_id))
+            .gateway_canonical_room_snapshot(&self.registry, &parsed(&self.plan.room_id))
             .unwrap_or_else(|error| panic!("SQLite snapshot: {error}"))
             .map(|snapshot| snapshot.frame_heads().clone())
             .unwrap_or_else(|| panic!("SQLite room snapshot missing"))
     }
 
-    fn create_write(&self, key: &str, initial_value: u32) -> PreparedRoomWriteV1 {
+    fn create_write(&self, key: &str, initial_value: u32) -> PreparedCanonicalRoomWrite {
         let genesis = build_genesis(&self.plan);
-        let request = creation_request(&self.plan);
+        let request = creation_request(&self.plan, self.format);
         let identity = creation_identity(&self.plan, key);
-        let grant = match worldstream_core::authorize_room_creation_operation(
+        let grant = match worldstream_core::authorize_canonical_room_creation_operation(
             &self.authority,
             self.store.as_ref(),
             &self.host(),
@@ -493,7 +489,7 @@ impl SqliteAdapter {
             other => panic!("unexpected creation ingress: {other:?}"),
         };
         let _ = initial_value;
-        PreparedRoomCreationV1::from_registry_genesis(identity, &request, grant, genesis)
+        PreparedCanonicalRoomCreation::from_registry_genesis(identity, &request, grant, genesis)
             .unwrap_or_else(|error| panic!("SQLite creation preparation: {error}"))
             .into()
     }
@@ -507,10 +503,13 @@ impl KernelConformanceAdapter for SqliteAdapter {
     fn create(&mut self, plan: &ScenarioPlan) -> Result<ScenarioEvidence, AdapterError> {
         let write = self.create_write("shared-create", 0);
         let duplicate = self.create_write("shared-create", 0);
-        let first = RoomCommitStorageV1::commit(self.store.as_ref(), &write);
-        let second = RoomCommitStorageV1::commit(self.store.as_ref(), &duplicate);
-        let trace = CoreTraceV1::create_from_retained_for_conformance(build_genesis(plan))
-            .map_err(|error| AdapterError::new("sqlite-create", error.to_string()))?;
+        let first = CanonicalRoomCommitStorage::commit(self.store.as_ref(), &write);
+        let second = CanonicalRoomCommitStorage::commit(self.store.as_ref(), &duplicate);
+        let trace = CanonicalRoomTrace::create_from_retained_for_conformance(
+            build_genesis(plan),
+            self.format,
+        )
+        .map_err(|error| AdapterError::new("sqlite-create", error.to_string()))?;
         self.trace = Some(trace);
         self.install_runtime_authority();
         let mut outcomes = vec![
@@ -518,7 +517,7 @@ impl KernelConformanceAdapter for SqliteAdapter {
             outcome("create-duplicate", &second),
         ];
         let conflict = self.create_write("shared-create-conflict", 0);
-        let conflict = RoomCommitStorageV1::commit(self.store.as_ref(), &conflict);
+        let conflict = CanonicalRoomCommitStorage::commit(self.store.as_ref(), &conflict);
         outcomes.push(outcome("create-conflict", &conflict));
         let head = self
             .trace()
@@ -552,7 +551,7 @@ impl KernelConformanceAdapter for SqliteAdapter {
                 ));
             }
         };
-        let prepared = PreparedRoomCommitV1::for_authorized_core_administration(
+        let prepared = PreparedCanonicalRoomCommit::for_authorized_core_administration(
             self.trace(),
             &request,
             parsed("2026-08-15T12:00:06Z"),
@@ -562,31 +561,15 @@ impl KernelConformanceAdapter for SqliteAdapter {
             &self.frame_heads(),
         )
         .map_err(|error| AdapterError::new("sqlite-core-admin", format!("{error:?}")))?;
-        let resolution = RoomCommitStorageV1::commit(self.store.as_ref(), &prepared.into());
-        if matches!(
-            resolution,
-            RoomCommitResolutionV1::TransitionCommitted { .. }
-        ) {
-            let proposal = CoreProposedV1::new(
-                request.kind(),
-                worldstream_core::CoreAuthorityAttributionV1 {
-                    principal_id: parsed(&self.plan.principal_id),
-                    authority_kind: worldstream_core::CoreAuthorityKindV1::HostOperator,
-                },
-                request.operation_identity().clone(),
-                request.expected_room_seq(),
-                request.reason_code(),
-                parsed("2026-08-15T12:00:06Z"),
-                request.changeset().clone(),
-            );
+        let resolution = worldstream_core::commit_canonical_existing_room(
+            self.store.as_ref(),
             self.trace
                 .as_mut()
-                .unwrap_or_else(|| panic!("SQLite trace is not initialized"))
-                .advance_for_conformance(RecordedStimulusV1::CoreProposed(proposal))
-                .map_err(|error| {
-                    AdapterError::new("sqlite-core-admin", format!("trace advance: {error:?}"))
-                })?;
-        }
+                .unwrap_or_else(|| panic!("SQLite trace missing")),
+            prepared,
+        )
+        .into_parts()
+        .0;
         let bytes = self
             .trace()
             .head()
@@ -633,7 +616,7 @@ impl KernelConformanceAdapter for SqliteAdapter {
         let prepared_transition = trace
             .prepare(RecordedStimulusV1::ParticipantAction(stimulus.clone()))
             .map_err(|error| AdapterError::new("sqlite-action", format!("{error:?}")))?;
-        let prepared = PreparedRoomCommitV1::for_authorized_action(
+        let prepared = PreparedCanonicalRoomCommit::for_authorized_action(
             trace,
             &request,
             prepared_transition,
@@ -643,19 +626,15 @@ impl KernelConformanceAdapter for SqliteAdapter {
             &self.frame_heads(),
         )
         .map_err(|error| AdapterError::new("sqlite-action", format!("{error:?}")))?;
-        let resolution = RoomCommitStorageV1::commit(self.store.as_ref(), &prepared.into());
-        if matches!(
-            resolution,
-            RoomCommitResolutionV1::TransitionCommitted { .. }
-        ) {
+        let resolution = worldstream_core::commit_canonical_existing_room(
+            self.store.as_ref(),
             self.trace
                 .as_mut()
-                .unwrap_or_else(|| panic!("SQLite trace is not initialized"))
-                .advance_for_conformance(RecordedStimulusV1::ParticipantAction(stimulus))
-                .map_err(|error| {
-                    AdapterError::new("sqlite-action", format!("trace advance: {error:?}"))
-                })?;
-        }
+                .unwrap_or_else(|| panic!("SQLite trace missing")),
+            prepared,
+        )
+        .into_parts()
+        .0;
         let bytes = self
             .trace()
             .head()
@@ -700,7 +679,7 @@ impl KernelConformanceAdapter for SqliteAdapter {
                 canonical_payload: request.canonical_payload().clone(),
             }))
             .map_err(|error| AdapterError::new("sqlite-timer", format!("{error:?}")))?;
-        let prepared = PreparedRoomCommitV1::for_authorized_timer_fired(
+        let prepared = PreparedCanonicalRoomCommit::for_authorized_timer_fired(
             trace,
             &request,
             prepared_transition,
@@ -710,24 +689,15 @@ impl KernelConformanceAdapter for SqliteAdapter {
             &self.frame_heads(),
         )
         .map_err(|error| AdapterError::new("sqlite-timer", format!("{error:?}")))?;
-        let resolution = RoomCommitStorageV1::commit(self.store.as_ref(), &prepared.into());
-        if matches!(
-            resolution,
-            RoomCommitResolutionV1::TransitionCommitted { .. }
-        ) {
+        let resolution = worldstream_core::commit_canonical_existing_room(
+            self.store.as_ref(),
             self.trace
                 .as_mut()
-                .unwrap_or_else(|| panic!("SQLite trace is not initialized"))
-                .advance_for_conformance(RecordedStimulusV1::TimerFired(TimerFiredV1 {
-                    timer_id: request.timer_id().clone(),
-                    generation: request.generation(),
-                    scheduled_for: request.scheduled_for().clone(),
-                    canonical_payload: request.canonical_payload().clone(),
-                }))
-                .map_err(|error| {
-                    AdapterError::new("sqlite-timer", format!("trace advance: {error:?}"))
-                })?;
-        }
+                .unwrap_or_else(|| panic!("SQLite trace missing")),
+            prepared,
+        )
+        .into_parts()
+        .0;
         let bytes = self
             .trace()
             .head()
@@ -919,7 +889,7 @@ impl KernelConformanceAdapter for SqliteAdapter {
     fn recovery(&mut self, plan: &ScenarioPlan) -> Result<ScenarioEvidence, AdapterError> {
         let recovered = self
             .store
-            .recover_room(&self.registry, &parsed(&plan.room_id))
+            .recover_canonical_room(&self.registry, &parsed(&plan.room_id))
             .map_err(|error| AdapterError::new("sqlite-recovery", error.to_string()))?
             .ok_or_else(|| {
                 AdapterError::new(
@@ -933,8 +903,7 @@ impl KernelConformanceAdapter for SqliteAdapter {
             .genesis_bytes()
             .map_err(|error| AdapterError::new("sqlite-recovery", error.to_string()))?;
         let transitions = json_bytes(
-            &trace
-                .transition_bytes()
+            &transition_bytes(trace)
                 .map_err(|error| AdapterError::new("sqlite-recovery", error.to_string()))?,
         );
         let head = trace
@@ -971,7 +940,8 @@ struct PostgresAdapter {
     _memory: Arc<InMemoryAuthorityStoreV1>,
     plan: ScenarioPlan,
     registry: PackRegistryV1,
-    trace: Option<CoreTraceV1>,
+    trace: Option<CanonicalRoomTrace>,
+    format: CanonicalHistoryFormat,
 }
 
 impl PostgresAdapter {
@@ -980,6 +950,7 @@ impl PostgresAdapter {
         admin_dsn: String,
         dsn: String,
         path: PostgresConnectionPath,
+        format: CanonicalHistoryFormat,
     ) -> Self {
         let admin = PostgresAdmin::new(
             PostgresConnectionConfig::direct_admin(admin_dsn.clone())
@@ -1106,12 +1077,13 @@ impl PostgresAdapter {
             plan,
             registry: registry(),
             trace: None,
+            format,
         }
     }
 
-    fn create_write(&self, key: &str) -> PreparedRoomWriteV1 {
+    fn create_write(&self, key: &str) -> PreparedCanonicalRoomWrite {
         let identity = creation_identity(&self.plan, key);
-        let request = creation_request(&self.plan);
+        let request = creation_request(&self.plan, self.format);
         let request_hash = request
             .canonical_request_hash()
             .unwrap_or_else(|error| panic!("PG creation hash: {error}"));
@@ -1133,7 +1105,7 @@ impl PostgresAdapter {
             AuthorityGrantV1::RoomCreation(grant) => grant,
             _ => panic!("wrong PG creation grant"),
         };
-        let prepared = PreparedRoomCreationV1::from_registry_genesis(
+        let prepared = PreparedCanonicalRoomCreation::from_registry_genesis(
             identity,
             &request,
             grant,
@@ -1143,7 +1115,7 @@ impl PostgresAdapter {
         prepared.into()
     }
 
-    fn trace(&self) -> &CoreTraceV1 {
+    fn trace(&self) -> &CanonicalRoomTrace {
         self.trace
             .as_ref()
             .unwrap_or_else(|| panic!("PG trace is not initialized"))
@@ -1152,9 +1124,18 @@ impl PostgresAdapter {
     fn refresh_trace(&mut self) {
         self.trace = Some(
             self.store
-                .recover_conformance_trace(&self.registry, &self.plan.room_id)
+                .recover_canonical_conformance_trace(&self.registry, &self.plan.room_id)
                 .unwrap_or_else(|error| panic!("PG refresh: {error}")),
         );
+    }
+
+    fn frame_heads(&self) -> BTreeMap<MemberId, u64> {
+        self.store
+            .current_room_serving_fence(&parsed(&self.plan.room_id))
+            .unwrap_or_else(|error| panic!("PG serving fence: {error}"))
+            .unwrap_or_else(|| panic!("PG serving fence missing"))
+            .frame_heads()
+            .clone()
     }
 
     fn core_request(&self) -> CoreAdministrationRequestV1 {
@@ -1193,11 +1174,7 @@ impl PostgresAdapter {
     }
 
     fn action_stimulus(&self) -> ParticipantActionV1 {
-        let descriptor = self
-            .trace()
-            .retained_pack()
-            .unwrap_or_else(|| panic!("PG pack"))
-            .descriptor();
+        let descriptor = self.trace().retained_pack().descriptor();
         ParticipantActionV1 {
             member_id: parsed(&self.plan.member_id),
             action_id: parsed(&self.plan.action_id),
@@ -1224,16 +1201,25 @@ impl KernelConformanceAdapter for PostgresAdapter {
 
     fn create(&mut self, plan: &ScenarioPlan) -> Result<ScenarioEvidence, AdapterError> {
         let write = self.create_write("shared-create");
-        let first = self.store.commit_conformance_write_for_conformance(&write);
+        let first = self
+            .store
+            .commit_canonical_conformance_write_for_conformance(&write);
         let duplicate = self
             .store
-            .commit_conformance_write_for_conformance(&self.create_write("shared-create"));
-        let trace = CoreTraceV1::create_from_retained_for_conformance(build_genesis(plan))
-            .map_err(|error| AdapterError::new("postgres-create", error.to_string()))?;
+            .commit_canonical_conformance_write_for_conformance(
+                &self.create_write("shared-create"),
+            );
+        let trace = CanonicalRoomTrace::create_from_retained_for_conformance(
+            build_genesis(plan),
+            self.format,
+        )
+        .map_err(|error| AdapterError::new("postgres-create", error.to_string()))?;
         self.trace = Some(trace);
         let conflict = self
             .store
-            .commit_conformance_write_for_conformance(&self.create_write("shared-create-conflict"));
+            .commit_canonical_conformance_write_for_conformance(
+                &self.create_write("shared-create-conflict"),
+            );
         let head = self
             .trace()
             .head()
@@ -1284,16 +1270,19 @@ impl KernelConformanceAdapter for PostgresAdapter {
                 ));
             }
         };
+        let prepared = PreparedCanonicalRoomCommit::for_authorized_core_administration(
+            self.trace(),
+            &request,
+            parsed("2026-08-15T12:00:06Z"),
+            parsed(TRANSITION_ADMIN),
+            IntegrityGenerationV1::new(1).unwrap(),
+            grant,
+            &self.frame_heads(),
+        )
+        .map_err(|error| AdapterError::new("postgres-core-admin", format!("{error:?}")))?;
         let resolution = self
             .store
-            .commit_conformance_core_administration(
-                &self.registry,
-                grant,
-                &request,
-                parsed("2026-08-15T12:00:06Z"),
-                parsed(TRANSITION_ADMIN),
-            )
-            .map_err(|error| AdapterError::new("postgres-core-admin", error.to_string()))?;
+            .commit_canonical_conformance_write_for_conformance(&prepared.into());
         self.refresh_trace();
         let bytes = self
             .trace()
@@ -1347,16 +1336,25 @@ impl KernelConformanceAdapter for PostgresAdapter {
                 ));
             }
         };
+        let transition = self
+            .trace()
+            .prepare(RecordedStimulusV1::ParticipantAction(
+                self.action_stimulus(),
+            ))
+            .map_err(|error| AdapterError::new("postgres-action", format!("{error:?}")))?;
+        let prepared = PreparedCanonicalRoomCommit::for_authorized_action(
+            self.trace(),
+            &request,
+            transition,
+            parsed(TRANSITION_ACTION),
+            IntegrityGenerationV1::new(1).unwrap(),
+            grant,
+            &self.frame_heads(),
+        )
+        .map_err(|error| AdapterError::new("postgres-action", format!("{error:?}")))?;
         let resolution = self
             .store
-            .commit_conformance_participant_action(
-                &self.registry,
-                grant,
-                &request,
-                self.action_stimulus(),
-                parsed(TRANSITION_ACTION),
-            )
-            .map_err(|error| AdapterError::new("postgres-action", error.to_string()))?;
+            .commit_canonical_conformance_write_for_conformance(&prepared.into());
         self.refresh_trace();
         let bytes = self
             .trace()
@@ -1405,21 +1403,28 @@ impl KernelConformanceAdapter for PostgresAdapter {
             AuthorityGrantV1::TimerFired(grant) => grant,
             _ => return Err(AdapterError::new("postgres-timer", "wrong authority grant")),
         };
+        let transition = self
+            .trace()
+            .prepare(RecordedStimulusV1::TimerFired(TimerFiredV1 {
+                timer_id: request.timer_id().clone(),
+                generation: request.generation(),
+                scheduled_for: request.scheduled_for().clone(),
+                canonical_payload: request.canonical_payload().clone(),
+            }))
+            .map_err(|error| AdapterError::new("postgres-timer", format!("{error:?}")))?;
+        let prepared = PreparedCanonicalRoomCommit::for_authorized_timer_fired(
+            self.trace(),
+            &request,
+            transition,
+            parsed(TRANSITION_TIMER),
+            IntegrityGenerationV1::new(1).unwrap(),
+            grant,
+            &self.frame_heads(),
+        )
+        .map_err(|error| AdapterError::new("postgres-timer", format!("{error:?}")))?;
         let resolution = self
             .store
-            .commit_conformance_timer_fired(
-                &self.registry,
-                grant,
-                &request,
-                TimerFiredV1 {
-                    timer_id: request.timer_id().clone(),
-                    generation: request.generation(),
-                    scheduled_for: request.scheduled_for().clone(),
-                    canonical_payload: request.canonical_payload().clone(),
-                },
-                parsed(TRANSITION_TIMER),
-            )
-            .map_err(|error| AdapterError::new("postgres-timer", error.to_string()))?;
+            .commit_canonical_conformance_write_for_conformance(&prepared.into());
         self.refresh_trace();
         let bytes = self
             .trace()
@@ -1587,7 +1592,7 @@ impl KernelConformanceAdapter for PostgresAdapter {
             .delete_snapshot_cache(&plan.room_id)
             .map_err(|error| AdapterError::new("postgres-recovery", error.to_string()))?;
         self.admin
-            .rebuild_snapshot_cache(&plan.room_id)
+            .rebuild_canonical_snapshot_cache(&self.registry, &plan.room_id)
             .map_err(|error| AdapterError::new("postgres-recovery", error.to_string()))?;
         let corrupted = self
             .admin
@@ -1600,7 +1605,7 @@ impl KernelConformanceAdapter for PostgresAdapter {
             ));
         }
         self.admin
-            .rebuild_snapshot_cache(&plan.room_id)
+            .rebuild_canonical_snapshot_cache(&self.registry, &plan.room_id)
             .map_err(|error| AdapterError::new("postgres-recovery", error.to_string()))?;
         let after = self
             .store
@@ -1619,7 +1624,7 @@ impl KernelConformanceAdapter for PostgresAdapter {
         }
         let trace = self
             .store
-            .recover_conformance_trace(&self.registry, &plan.room_id)
+            .recover_canonical_conformance_trace(&self.registry, &plan.room_id)
             .map_err(|error| AdapterError::new("postgres-recovery", error.to_string()))?;
         self.trace = Some(trace);
         let replay = self.trace();
@@ -1627,8 +1632,7 @@ impl KernelConformanceAdapter for PostgresAdapter {
             .genesis_bytes()
             .map_err(|error| AdapterError::new("postgres-recovery", error.to_string()))?;
         let transitions = json_bytes(
-            &replay
-                .transition_bytes()
+            &transition_bytes(replay)
                 .map_err(|error| AdapterError::new("postgres-recovery", error.to_string()))?,
         );
         let head = replay
@@ -1645,26 +1649,37 @@ impl KernelConformanceAdapter for PostgresAdapter {
 }
 
 #[test]
-fn real_shared_catalog_runs_sqlite_and_postgres_without_fixture_adapters() {
-    let admin_dsn = env::var("WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN")
+fn real_shared_catalog_runs_both_canonical_formats_on_sqlite_and_postgres() {
+    let v1 = run_shared_catalog(CanonicalHistoryFormat::V1, "");
+    let v2 = run_shared_catalog(CanonicalHistoryFormat::V2, "_V2");
+    assert_eq!(
+        v1, v2,
+        "logical state, ordered effects, and all authorized views must match across formats"
+    );
+    println!("IMO50_SHARED_FORMAT_PARITY=PASS formats=2 scenarios_per_format=7");
+}
+
+fn run_shared_catalog(format: CanonicalHistoryFormat, suffix: &str) -> serde_json::Value {
+    let admin_dsn = env::var(format!("WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN{suffix}"))
         .unwrap_or_else(|_| panic!("WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN is required"));
-    let runtime_dsn = env::var("WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN")
+    let runtime_dsn = env::var(format!("WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN{suffix}"))
         .unwrap_or_else(|_| panic!("WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN is required"));
     let path = match env::var("WORLDSTREAM_POSTGRES_TEST_PATH").as_deref() {
         Ok("pooler") => PostgresConnectionPath::TransactionPool,
         _ => PostgresConnectionPath::Direct,
     };
     let plan = ScenarioPlan::counter();
-    let mut sqlite = SqliteAdapter::new(plan.clone());
+    let mut sqlite = SqliteAdapter::new(plan.clone(), format);
     let mut postgres = PostgresAdapter::new(
         plan.clone(),
         admin_dsn,
         if path == PostgresConnectionPath::Direct {
             runtime_dsn
         } else {
-            env::var("WORLDSTREAM_POSTGRES_TEST_POOLER_DSN").unwrap_or(runtime_dsn)
+            env::var(format!("WORLDSTREAM_POSTGRES_TEST_POOLER_DSN{suffix}")).unwrap_or(runtime_dsn)
         },
         path,
+        format,
     );
     let sqlite_results = run_catalog(&mut sqlite, &plan).unwrap_or_else(|error| {
         panic!(
@@ -1692,29 +1707,63 @@ fn real_shared_catalog_runs_sqlite_and_postgres_without_fixture_adapters() {
             .iter()
             .all(|result| result.status == ScenarioStatus::Pass)
     );
+    worldstream_conformance::ConformanceArtifact::compare_adapters(
+        &sqlite_results,
+        &postgres_results,
+    )
+    .unwrap_or_else(|error| panic!("exact provider-neutral comparison: {error}"));
     println!(
-        "IMO50_SHARED=PASS path={path:?} scenarios=7 hash={:02x?}",
+        "IMO50_SHARED=PASS format={format:?} path={path:?} scenarios=7 hash={:02x?}",
         left.canonical_hash
     );
-    if let Ok(path) = env::var("WORLDSTREAM_IMO50_COMPARISON_FILE") {
+    if let Ok(report_path) = env::var(format!("WORLDSTREAM_IMO50_COMPARISON_FILE{suffix}")) {
         let report = serde_json::json!({
             "schema": "worldstream/imo-50/shared-comparison/v1",
             "connection_path": format!("{path:?}"),
+            "canonical_history_format": format!("{format:?}"),
             "scenario_count": worldstream_conformance::SCENARIOS.len(),
             "canonical_equal": true,
             "sqlite": serde_json::to_value(&left).unwrap_or_else(|error| panic!("SQLite comparison report: {error}")),
             "postgres": serde_json::to_value(&right).unwrap_or_else(|error| panic!("PostgreSQL comparison report: {error}")),
         });
         std::fs::write(
-            &path,
+            &report_path,
             serde_json::to_vec_pretty(&report)
                 .unwrap_or_else(|error| panic!("comparison report: {error}")),
         )
         .unwrap_or_else(|error| panic!("comparison report write: {error}"));
     }
-    worldstream_conformance::ConformanceArtifact::compare_adapters(
-        &sqlite_results,
-        &postgres_results,
-    )
-    .unwrap_or_else(|error| panic!("exact provider-neutral comparison: {error}"));
+    let logical = |trace: &CanonicalRoomTrace| {
+        serde_json::json!({
+            "core": trace.core_state(),
+            "activity": trace.activity_state(),
+            "ordered_effects": trace.transitions().iter().map(|record| serde_json::json!({
+                "room_seq": record.room_seq(),
+                "domain_events": record.ordered_domain_events(),
+                "timer_changes": record.ordered_timer_changes(),
+                "attention_signals": record.ordered_attention_signals(),
+            })).collect::<Vec<_>>(),
+            "authorized_views": std::iter::once(&plan.member_id).chain(plan.secondary_member_ids.iter())
+                .map(|member| validated_view(trace, &parsed(member)).canonical_bytes().to_vec()).collect::<Vec<_>>(),
+        })
+    };
+    let left_logical = logical(sqlite.trace());
+    assert_eq!(
+        left_logical,
+        logical(postgres.trace()),
+        "provider logical parity"
+    );
+    serde_json::json!({
+        "final_state_effects_views": left_logical,
+        "scenario_operations": sqlite_results.iter().map(|scenario| serde_json::json!({
+            "scenario": scenario.scenario,
+            "status": scenario.status,
+            "operations": scenario.outcomes.iter().map(|outcome| serde_json::json!({
+                "operation": outcome.operation,
+                "resolution": outcome.resolution,
+                "duplicate": outcome.duplicate,
+                "resolved": outcome.resolved,
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+    })
 }

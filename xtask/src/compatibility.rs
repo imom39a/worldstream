@@ -33,11 +33,47 @@ pub fn verify(repository_root: &Path) -> Result<()> {
     let manifest: Value = serde_json::from_slice(&checked_in)
         .with_context(|| format!("invalid JSON in {}", json_path.display()))?;
     verify_required_identity(&manifest)?;
+    verify_canonical_lineages(&manifest)?;
     verify_workspace_toolchain(repository_root, &manifest)?;
     verify_embedded_storage_identity(&manifest)?;
     counter_dependency_closure::verify(repository_root)?;
     verify_embedded_counter_registry(&manifest)?;
     verify_embedded_agent_heist_registry(&manifest)?;
+    Ok(())
+}
+
+fn verify_canonical_lineages(manifest: &Value) -> Result<()> {
+    use worldstream_core::{
+        CANONICAL_CODEC_ID, GENESIS_V2_CODEC_ID, GENESIS_V2_VERSION, GENESIS_VERSION,
+        HASH_SUITE_ID, LINEAGE_V2_HASH_SUITE_ID, PAYLOAD_BUDGET_V1_ID, TRANSITION_V2_CODEC_ID,
+        TRANSITION_V2_VERSION, TRANSITION_VERSION,
+    };
+    let expected = serde_json::json!([
+        {
+            "canonical_history_format": TRANSITION_VERSION,
+            "genesis_version": GENESIS_VERSION,
+            "genesis_codec_id": CANONICAL_CODEC_ID,
+            "genesis_hash_suite": HASH_SUITE_ID,
+            "transition_version": TRANSITION_VERSION,
+            "transition_codec_id": CANONICAL_CODEC_ID,
+            "transition_hash_suite": HASH_SUITE_ID,
+        },
+        {
+            "canonical_history_format": TRANSITION_V2_VERSION,
+            "genesis_version": GENESIS_V2_VERSION,
+            "genesis_codec_id": GENESIS_V2_CODEC_ID,
+            "genesis_hash_suite": LINEAGE_V2_HASH_SUITE_ID,
+            "transition_version": TRANSITION_V2_VERSION,
+            "transition_codec_id": TRANSITION_V2_CODEC_ID,
+            "transition_hash_suite": LINEAGE_V2_HASH_SUITE_ID,
+            "payload_budget_id": PAYLOAD_BUDGET_V1_ID,
+        }
+    ]);
+    if manifest["canonical_lineages"] != expected
+        || manifest["contracts"]["hash_suite"] != HASH_SUITE_ID
+    {
+        bail!("manifest canonical lineage tuples differ from the embedded Core codecs");
+    }
     Ok(())
 }
 

@@ -19,7 +19,8 @@ use rusqlite::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use worldstream_core::{
-    CORE_SCHEMA_VERSION, CanonicalJsonV1, CompleteHeadV1, GenesisV1, TransitionV1,
+    CORE_SCHEMA_VERSION, CanonicalJsonV1, CompleteHeadV1, GenesisRecord, PackRevisionLockV1,
+    TransitionV1,
 };
 use worldstream_sqlite_open::{ExactSqliteConnection, open_exact};
 
@@ -239,6 +240,13 @@ pub struct NativeSqliteRestoreEvidenceV1 {
     pub operational: NativeSqliteOperationalRowsV1,
     /// Exact Genesis and Transition rows grouped by Room.
     pub canonical_records: BTreeMap<String, Vec<NativeSqliteCanonicalRecordV1>>,
+    /// Original persisted Pack revision lock bytes by Room.
+    ///
+    /// Legacy abstract schemas can omit this map. Structural diagnostics do
+    /// not synthesize lock evidence. Full operator admission requires every
+    /// healthy Room to carry its exact retained lock.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub canonical_pack_revision_locks: BTreeMap<String, Vec<u8>>,
     /// Exact current Core/Activity materialization bytes by Room.
     pub materializations: BTreeMap<String, (Vec<u8>, Vec<u8>)>,
     /// Newest valid paired snapshot per Room; corrupt newest snapshots fall
@@ -635,6 +643,12 @@ pub fn project_restore_input(
             .cloned()
             .unwrap_or_default();
         if disposition == NativeSqliteRoomDispositionV1::Healthy {
+            let first_record = canonical_records
+                .first()
+                .ok_or(NativeSqliteRestoreProjectionError::IncompleteHealthyRoom)?;
+            let genesis = GenesisRecord::from_canonical_bytes(&first_record.bytes)
+                .map_err(|_| NativeSqliteRestoreProjectionError::CorruptCanonicalBytes)?;
+            let mut verified_head = genesis.complete_head();
             let mut expected_seq = 0_u64;
             let mut previous_digest = None;
             for record in &canonical_records {
@@ -642,23 +656,22 @@ pub fn project_restore_input(
                     return Err(NativeSqliteRestoreProjectionError::CorruptCanonicalBytes);
                 }
                 let record_digest = match record.room_seq {
-                    0 => GenesisV1::from_canonical_bytes(&record.bytes)
-                        .ok()
-                        .and_then(|genesis| {
-                            (genesis.room_id().to_string() == room_id).then(|| {
-                                storage_digest_from_core(&genesis.genesis_hash().to_string())
-                            })
-                        }),
-                    _ => TransitionV1::from_canonical_bytes(&record.bytes)
+                    0 => (genesis.room_id().to_string() == room_id)
+                        .then(|| storage_digest_from_core(&genesis.genesis_hash().to_string())),
+                    _ => genesis
+                        .decode_transition(&record.bytes)
                         .ok()
                         .and_then(|transition| {
-                            (transition.complete_head().room_id().to_string() == room_id
-                                && transition.room_seq().get() == record.room_seq)
-                                .then(|| {
-                                    storage_digest_from_core(
-                                        &transition.transition_hash().to_string(),
-                                    )
-                                })
+                            if transition.room_id().to_string() != room_id
+                                || transition.room_seq().get() != record.room_seq
+                                || transition.verify_successor(&verified_head).is_err()
+                            {
+                                return None;
+                            }
+                            verified_head = transition.complete_head();
+                            Some(storage_digest_from_core(
+                                &transition.transition_hash().to_string(),
+                            ))
                         }),
                 };
                 if record.room_seq != expected_seq
@@ -674,9 +687,7 @@ pub fn project_restore_input(
             let Some(last_record) = canonical_records.last() else {
                 return Err(NativeSqliteRestoreProjectionError::IncompleteHealthyRoom);
             };
-            let Some(last_head) = complete_head_for_record(last_record) else {
-                return Err(NativeSqliteRestoreProjectionError::CorruptCanonicalBytes);
-            };
+            let last_head = verified_head;
             let pack_digest = storage_digest_from_core(&last_head.pack_digest().to_string());
             let Some((core, activity)) = evidence.materializations.get(&room_id) else {
                 return Err(NativeSqliteRestoreProjectionError::IncompleteHealthyRoom);
@@ -699,7 +710,7 @@ pub fn project_restore_input(
             let Some(snapshot) = evidence.newest_valid_snapshots.get(&room_id) else {
                 return Err(NativeSqliteRestoreProjectionError::IncompleteHealthyRoom);
             };
-            if !snapshot_matches_records(snapshot, &canonical_records) {
+            if !snapshot_matches_records(snapshot, &canonical_records, &genesis) {
                 return Err(NativeSqliteRestoreProjectionError::CorruptCanonicalBytes);
             }
         }
@@ -720,13 +731,16 @@ pub fn project_restore_input(
     })
 }
 
-fn complete_head_for_record(record: &NativeSqliteCanonicalRecordV1) -> Option<CompleteHeadV1> {
+fn complete_head_for_record(
+    record: &NativeSqliteCanonicalRecordV1,
+    genesis: &GenesisRecord,
+) -> Option<CompleteHeadV1> {
     if record.room_seq == 0 {
-        GenesisV1::from_canonical_bytes(&record.bytes)
-            .ok()
-            .map(|genesis| genesis.complete_head())
+        (genesis.canonical_bytes().ok()?.as_slice() == record.bytes.as_slice())
+            .then(|| genesis.complete_head())
     } else {
-        TransitionV1::from_canonical_bytes(&record.bytes)
+        genesis
+            .decode_transition(&record.bytes)
             .ok()
             .map(|transition| transition.complete_head())
     }
@@ -735,6 +749,7 @@ fn complete_head_for_record(record: &NativeSqliteCanonicalRecordV1) -> Option<Co
 fn snapshot_matches_records(
     snapshot: &NativeSqliteSnapshotEvidenceV1,
     records: &[NativeSqliteCanonicalRecordV1],
+    genesis: &GenesisRecord,
 ) -> bool {
     let Some(record) = records
         .iter()
@@ -748,7 +763,8 @@ fn snapshot_matches_records(
         return false;
     };
     let pack_digest = storage_digest_from_core(&head.pack_digest().to_string());
-    head.room_id().to_string() == snapshot.room_id
+    complete_head_for_record(record, genesis).as_ref() == Some(&head)
+        && head.room_id().to_string() == snapshot.room_id
         && head.room_seq().get() == snapshot.room_seq
         && storage_digest_from_core(&head.genesis_or_transition_hash().to_string())
             == snapshot.lineage
@@ -1487,11 +1503,27 @@ fn extract_restore_evidence_at_coordinate(
         None
     };
 
+    let has_pack_revision_locks = rows(
+        file,
+        path,
+        "SELECT name FROM pragma_table_info('room_genesis');",
+        limits,
+    )?
+    .iter()
+    .any(|row| {
+        row.first()
+            .is_some_and(|name| name == "pack_revision_lock_bytes")
+    });
+    let lock_column = if has_pack_revision_locks {
+        ", pack_revision_lock_bytes"
+    } else {
+        ""
+    };
     let genesis = native_rows(
         file,
         path,
         &format!(
-            "SELECT room_id, genesis_bytes \
+            "SELECT room_id, genesis_bytes{lock_column} \
              FROM room_genesis \
              ORDER BY room_id LIMIT {};",
             bounded_limit(limits.max_rows)?
@@ -1509,9 +1541,21 @@ fn extract_restore_evidence_at_coordinate(
         limits,
     )?;
     let mut canonical_records = BTreeMap::<String, Vec<NativeSqliteCanonicalRecordV1>>::new();
+    let mut canonical_pack_revision_locks = BTreeMap::new();
     for row in genesis {
         let room_id = native_text(&row, 0, "genesis room")?.to_owned();
         let bytes = native_blob(&row, 1, "genesis bytes")?.to_vec();
+        if has_pack_revision_locks {
+            let lock = native_blob(&row, 2, "Pack revision lock bytes")?.to_vec();
+            if canonical_pack_revision_locks
+                .insert(room_id.clone(), lock)
+                .is_some()
+            {
+                return Err(NativeSqliteError::InvalidRow {
+                    what: "duplicate Pack revision lock",
+                });
+            }
+        }
         let digest = canonical_genesis_hash(&bytes).ok_or(NativeSqliteError::InvalidRow {
             what: "genesis bytes",
         })?;
@@ -1666,13 +1710,25 @@ fn extract_restore_evidence_at_coordinate(
     let mut newest_valid_snapshots = BTreeMap::new();
     for row in snapshots {
         let snapshot = SnapshotRow::parse(&row)?;
+        let expected_head = canonical_records
+            .get(&snapshot.room_id)
+            .and_then(|records| {
+                let selected = GenesisRecord::from_canonical_bytes(&records.first()?.bytes).ok()?;
+                let record = records
+                    .iter()
+                    .find(|record| record.room_seq == snapshot.room_seq)?;
+                complete_head_for_record(record, &selected)
+            });
         let valid = rooms
             .iter()
             .find(|room| room.id == snapshot.room_id)
             .is_some_and(|room| {
                 snapshot.schema == PAIRED_SNAPSHOT_SCHEMA_V1
                     && snapshot.room_seq <= room.room_seq
-                    && snapshot.authoritative_hash == room.authoritative_hash
+                    && expected_head.as_ref().is_some_and(|head| {
+                        CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&snapshot.complete_head)
+                            .is_ok_and(|stored| stored == *head)
+                    })
                     && complete_head_matches_snapshot(&snapshot)
                     && canonical_core_materialization_hash(
                         &snapshot.core_bytes,
@@ -1712,6 +1768,7 @@ fn extract_restore_evidence_at_coordinate(
     Ok(NativeSqliteRestoreEvidenceV1 {
         operational,
         canonical_records,
+        canonical_pack_revision_locks,
         materializations,
         newest_valid_snapshots,
         integrity,
@@ -2434,11 +2491,40 @@ fn verify_file_at_coordinate(
         &actual_tables,
         "rooms",
     )?;
+    let isolated_rooms = rows_if_table(
+        file,
+        path,
+        "SELECT room_id, status FROM room_integrity WHERE status IN ('faulted', 'quarantined') ORDER BY room_id;",
+        limits,
+        &actual_tables,
+        "room_integrity",
+    )?
+    .into_iter()
+    .filter_map(|row| row.into_iter().next())
+    .collect::<BTreeSet<_>>();
+    let has_pack_revision_locks = rows_if_table(
+        file,
+        path,
+        "SELECT name FROM pragma_table_info('room_genesis');",
+        limits,
+        &actual_tables,
+        "room_genesis",
+    )?
+    .iter()
+    .any(|row| {
+        row.first()
+            .is_some_and(|name| name == "pack_revision_lock_bytes")
+    });
+    let lock_column = if has_pack_revision_locks {
+        ", hex(pack_revision_lock_bytes)"
+    } else {
+        ""
+    };
     let genesis_rows = rows_if_table(
         file,
         path,
         &format!(
-            "SELECT room_id, hex(genesis_bytes) FROM room_genesis ORDER BY room_id LIMIT {};",
+            "SELECT room_id, hex(genesis_bytes){lock_column} FROM room_genesis ORDER BY room_id LIMIT {};",
             bounded_limit(limits.max_rows)?
         ),
         limits,
@@ -2495,8 +2581,18 @@ fn verify_file_at_coordinate(
         }
     }
     let mut genesis = BTreeMap::new();
+    let mut pack_revision_locks = BTreeMap::new();
     for row in genesis_rows {
-        let (room_id, bytes) = two_fields(&row, "genesis")?;
+        let (room_id, bytes) = if has_pack_revision_locks {
+            let (room_id, bytes, lock) = three_fields(&row, "genesis and Pack revision lock")?;
+            pack_revision_locks.insert(
+                room_id.to_owned(),
+                decode_hex(lock, "Pack revision lock bytes")?,
+            );
+            (room_id, bytes)
+        } else {
+            two_fields(&row, "genesis")?
+        };
         if genesis
             .insert(room_id.to_owned(), decode_hex(bytes, "genesis bytes")?)
             .is_some()
@@ -2531,10 +2627,35 @@ fn verify_file_at_coordinate(
             diagnostic(&mut diagnostics, "genesis_missing", true, room_id);
             continue;
         };
-        let Some(genesis_digest) = canonical_genesis_hash(genesis_bytes) else {
+        let Ok(selected_genesis) = GenesisRecord::from_canonical_bytes(genesis_bytes) else {
             diagnostic(&mut diagnostics, "lineage_hash_mismatch", true, room_id);
             continue;
         };
+        // Legacy abstract schemas lack a stored lock column. This structural
+        // diagnostic path does not claim retained-executor admission for them.
+        // Healthy current-schema Rooms must bind their original lock to the
+        // selected Genesis. Isolated Rooms retain opaque bytes and cannot serve.
+        if has_pack_revision_locks
+            && !isolated_rooms.contains(room_id)
+            && pack_revision_locks.get(room_id).is_none_or(|bytes| {
+                PackRevisionLockV1::from_canonical_bytes(bytes, selected_genesis.pack_digest())
+                    .is_err()
+            })
+        {
+            diagnostic(
+                &mut diagnostics,
+                "pack_revision_lock_mismatch",
+                true,
+                room_id,
+            );
+            valid = false;
+        }
+        let genesis_digest = storage_digest_from_core(&selected_genesis.genesis_hash().to_string());
+        let mut verified_head = selected_genesis.complete_head();
+        if selected_genesis.room_id().as_str() != room_id {
+            diagnostic(&mut diagnostics, "lineage_hash_mismatch", true, room_id);
+            valid = false;
+        }
         let room_transitions = transitions.get(room_id).cloned().unwrap_or_default();
         if usize::try_from(room.room_seq).ok() != Some(room_transitions.len()) {
             diagnostic(&mut diagnostics, "transition_count_mismatch", true, room_id);
@@ -2543,20 +2664,43 @@ fn verify_file_at_coordinate(
         let mut previous = genesis_digest.clone();
         for (index, transition) in room_transitions.iter().enumerate() {
             let expected_seq = index + 1;
+            let decoded = selected_genesis.decode_transition(&transition.bytes).ok();
+            let record_matches = decoded.as_ref().is_some_and(|record| {
+                record.verify_successor(&verified_head).is_ok()
+                    && transition.core_schema == record.core_schema_version()
+                    && transition.pack_digest
+                        == storage_digest_from_core(&record.pack_digest().to_string()).as_str()
+                    && transition.core_hash
+                        == storage_digest_from_core(&record.resulting_core_state_hash().to_string())
+                            .as_str()
+                    && transition.activity_hash
+                        == storage_digest_from_core(
+                            &record.resulting_activity_state_hash().to_string(),
+                        )
+                        .as_str()
+                    && transition.authoritative_hash
+                        == storage_digest_from_core(
+                            &record.resulting_authoritative_state_hash().to_string(),
+                        )
+                        .as_str()
+            });
             if transition.room_seq != expected_seq as u64
-                || canonical_transition_hash(&transition.bytes).as_ref() != Some(&transition.hash)
+                || canonical_transition_hash_with_genesis(&selected_genesis, &transition.bytes)
+                    .as_ref()
+                    != Some(&transition.hash)
                 || transition.previous != previous
-                || transition.core_schema != room.core_schema
-                || transition.pack_digest != room.pack_digest
-                || transition.core_hash != room.core_hash
-                || transition.activity_hash != room.activity_hash
-                || transition.authoritative_hash != room.authoritative_hash
+                || !record_matches
                 || DigestV1::parse(&transition.core_hash).is_err()
                 || DigestV1::parse(&transition.activity_hash).is_err()
                 || DigestV1::parse(&transition.authoritative_hash).is_err()
             {
                 diagnostic(&mut diagnostics, "lineage_hash_mismatch", true, room_id);
                 valid = false;
+            }
+            if record_matches {
+                if let Some(record) = decoded {
+                    verified_head = record.complete_head();
+                }
             }
             previous = transition.hash.clone();
         }
@@ -2567,6 +2711,14 @@ fn verify_file_at_coordinate(
             || DigestV1::parse(&room.activity_hash).is_err()
             || DigestV1::parse(&room.authoritative_hash).is_err()
             || !complete_head_matches_room(room)
+            || verified_head.room_seq().get() != room.room_seq
+            || storage_digest_from_core(&verified_head.core_state_hash().to_string()).as_str()
+                != room.core_hash
+            || storage_digest_from_core(&verified_head.activity_state_hash().to_string()).as_str()
+                != room.activity_hash
+            || storage_digest_from_core(&verified_head.authoritative_state_hash().to_string())
+                .as_str()
+                != room.authoritative_hash
         {
             diagnostic(&mut diagnostics, "complete_head_mismatch", true, room_id);
             valid = false;
@@ -2612,19 +2764,28 @@ fn verify_file_at_coordinate(
             );
         }
         let valid = rooms.get(&snapshot.room_id).is_some_and(|room| {
-            let expected_lineage = if snapshot.room_seq == 0 {
-                genesis
-                    .get(&snapshot.room_id)
-                    .and_then(|bytes| canonical_genesis_hash(bytes))
-            } else {
-                transitions
-                    .get(&snapshot.room_id)
-                    .and_then(|items| items.iter().find(|item| item.room_seq == snapshot.room_seq))
-                    .map(|item| item.hash.clone())
-            };
+            let expected_head = genesis
+                .get(&snapshot.room_id)
+                .and_then(|bytes| GenesisRecord::from_canonical_bytes(bytes).ok())
+                .and_then(|selected| {
+                    if snapshot.room_seq == 0 {
+                        Some(selected.complete_head())
+                    } else {
+                        transitions
+                            .get(&snapshot.room_id)
+                            .and_then(|items| {
+                                items.iter().find(|item| item.room_seq == snapshot.room_seq)
+                            })
+                            .and_then(|item| selected.decode_transition(&item.bytes).ok())
+                            .map(|record| record.complete_head())
+                    }
+                });
             snapshot.schema == PAIRED_SNAPSHOT_SCHEMA_V1
                 && snapshot.room_seq <= room.room_seq
-                && expected_lineage.as_ref() == Some(&snapshot.lineage)
+                && expected_head.as_ref().is_some_and(|head| {
+                    CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&snapshot.complete_head)
+                        .is_ok_and(|stored| stored == *head)
+                })
                 && snapshot.core_schema == room.core_schema
                 && snapshot.pack_digest == room.pack_digest
                 && canonical_core_materialization_hash(&snapshot.core_bytes, &snapshot.pack_digest)
@@ -2636,7 +2797,6 @@ fn verify_file_at_coordinate(
                 )
                 .as_ref()
                     == Some(&parse_digest_value(&snapshot.activity_hash))
-                && snapshot.authoritative_hash == room.authoritative_hash
                 && complete_head_matches_snapshot(&snapshot)
         });
         if valid {
@@ -2924,8 +3084,9 @@ fn verify_operational_rows(
                             member_id.unwrap_or_default().to_owned(),
                         ))
                         && frame_ids.insert(identity)
-                        && payload_hash.and_then(|value| DigestV1::parse(value.to_owned()).ok())
-                            == expected_hash
+                        && payload_hash.and_then(|value| {
+                            parse_storage_digest(value, "frame payload hash").ok()
+                        }) == expected_hash
                         && retained_at.is_some_and(|value| !value.is_empty())
                         && frame_seq.is_some_and(|value| {
                             member_heads
@@ -5335,9 +5496,15 @@ fn native_row_to_values(
                 "REAL".to_owned(),
                 rusqlite::types::Type::Real,
             )),
-            ValueRef::Text(value) => Ok(NativeSqliteValueV1::Text(
-                String::from_utf8_lossy(value).into_owned(),
-            )),
+            ValueRef::Text(value) => std::str::from_utf8(value)
+                .map(|text| NativeSqliteValueV1::Text(text.to_owned()))
+                .map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        index,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                }),
             ValueRef::Blob(value) => Ok(NativeSqliteValueV1::Blob(value.to_vec())),
         })
         .collect()
@@ -5436,13 +5603,24 @@ fn storage_digest(value: &DigestV1) -> String {
 /// Computes the persisted Genesis hash from typed canonical bytes.
 #[must_use]
 pub fn canonical_genesis_hash(bytes: &[u8]) -> Option<DigestV1> {
-    GenesisV1::from_canonical_bytes(bytes)
+    GenesisRecord::from_canonical_bytes(bytes)
         .ok()
         .map(|genesis| storage_digest_from_core(&genesis.genesis_hash().to_string()))
 }
 
 pub(crate) fn canonical_transition_hash(bytes: &[u8]) -> Option<DigestV1> {
     TransitionV1::from_canonical_bytes(bytes)
+        .ok()
+        .map(|transition| storage_digest_from_core(&transition.transition_hash().to_string()))
+}
+
+/// Decodes a Transition using only its immutable, verified Genesis selection.
+pub(crate) fn canonical_transition_hash_with_genesis(
+    genesis: &GenesisRecord,
+    bytes: &[u8],
+) -> Option<DigestV1> {
+    genesis
+        .decode_transition(bytes)
         .ok()
         .map(|transition| storage_digest_from_core(&transition.transition_hash().to_string()))
 }
@@ -5622,11 +5800,28 @@ mod tests {
         ResourceIdentityV1, VerifierLimits, native_evidence_digest, native_membership_digest,
     };
     use rusqlite::{Connection, params};
+    use worldstream_core::GenesisV1;
     use worldstream_core::{
         AccessModeV1, ActionId, CoreTraceV1, MembershipStandingV1, MembershipV1,
         PackGenesisRequestV1, ParticipantActionV1, PrincipalKindV1, RecordedStimulusV1,
         builtin_counter_registry, builtin_worldstream_registry, counter_v2_digest,
     };
+
+    #[test]
+    fn native_text_rows_reject_invalid_utf8_without_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let connection = Connection::open_in_memory()?;
+        let invalid = connection.query_row("SELECT CAST(x'ff' AS TEXT)", [], |row| {
+            native_row_to_values(row, 1)
+        });
+        assert!(matches!(
+            invalid,
+            Err(rusqlite::Error::FromSqlConversionFailure(_, _, _))
+        ));
+        let valid = connection.query_row("SELECT 'é'", [], |row| native_row_to_values(row, 1))?;
+        assert_eq!(valid, vec![NativeSqliteValueV1::Text("é".to_owned())]);
+        Ok(())
+    }
 
     fn fixture_path(name: &str) -> std::path::PathBuf {
         let directory = std::env::temp_dir().join(format!(
@@ -6975,6 +7170,21 @@ mod tests {
         assert_eq!(evidence.pack_metadata, None);
         assert_eq!(evidence.resource_metadata, None);
         let _ = fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_abstract_evidence_does_not_invent_a_pack_revision_lock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path = create_fixture("legacy-abstract-lock-evidence")?;
+        let evidence = extract_restore_evidence(&path, NativeSqliteLimits::default())?;
+        assert!(evidence.canonical_pack_revision_locks.is_empty());
+        let encoded = serde_json::to_value(&evidence)?;
+        assert!(encoded.get("canonical_pack_revision_locks").is_none());
+        let decoded: super::NativeSqliteRestoreEvidenceV1 = serde_json::from_value(encoded)?;
+        assert_eq!(decoded, evidence);
+        assert!(verify_file(&path, NativeSqliteLimits::default())?.canonical_ready);
+        fs::remove_file(path)?;
         Ok(())
     }
 

@@ -10,3 +10,4 @@ export * from "./publicProjectionSession";
 export * from "./retainedRoomSession";
 export * from "./serialRequestQueue";
 export * from "./transport";
+export * from "./payloadBudgets";

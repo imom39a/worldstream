@@ -51,6 +51,26 @@ macro_rules! redacted_debug {
 /// Frozen operation kind for the sole no-basis Room creation operation.
 pub const CREATE_ROOM_OPERATION_KIND: &str = "worldstream/create-room/v1";
 
+#[path = "canonical_room_commit.rs"]
+mod canonical_room_commit;
+pub(crate) use canonical_room_commit::prepare_canonical_transition_consequences;
+pub use canonical_room_commit::{
+    CanonicalRoomCommitOutcome, CanonicalRoomCommitStorage, CanonicalRoomPendingAttempt,
+    CanonicalRoomResolve, CanonicalRoomRetry, PreparedCanonicalAdvancePersistence,
+    PreparedCanonicalCreationPersistence, PreparedCanonicalExistingIntent,
+    PreparedCanonicalRoomCommit, PreparedCanonicalRoomCreation, PreparedCanonicalRoomWrite,
+    commit_canonical_existing_room, commit_canonical_room_creation,
+};
+#[path = "canonical_recovery.rs"]
+mod canonical_recovery;
+pub(crate) use canonical_recovery::CanonicalTimerLedger;
+pub use canonical_recovery::{
+    CanonicalRoomRecoveryStorage, RecoveredCanonicalRoomExecution,
+    VerifiedCanonicalCurrentRoomMaterialization, VerifiedCanonicalGenesis,
+    VerifiedCanonicalLineageRecord, recover_canonical_room_from_full_storage,
+    recover_canonical_room_from_storage, recover_canonical_room_from_storage_with_receipt,
+};
+
 /// Domain-specific hash of one versioned caller-semantic canonical request.
 /// It cannot be substituted with a pack, state, lineage, or artifact digest.
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
@@ -573,7 +593,7 @@ impl ParticipantActionRequestV1 {
     }
 }
 
-fn participant_action_authority_use(
+pub(crate) fn participant_action_authority_use(
     request: &ParticipantActionRequestV1,
 ) -> Result<AuthorityUseV1, PrepareRoomWriteErrorV1> {
     let request_hash = request.canonical_request_hash()?;
@@ -1119,10 +1139,19 @@ impl PreparedActivationDecisionV1 {
 fn prepare_activation_decisions(
     transition: &TransitionV1,
 ) -> Result<Vec<PreparedActivationDecisionV1>, CanonicalJsonError> {
-    transition
-        .ordered_attention_signals()
+    prepare_activation_decisions_from_effects(
+        transition.room_seq(),
+        transition.ordered_attention_signals(),
+    )
+}
+
+fn prepare_activation_decisions_from_effects(
+    room_seq: RoomSequenceV1,
+    signals: &[CanonicalJsonV1],
+) -> Result<Vec<PreparedActivationDecisionV1>, CanonicalJsonError> {
+    signals
         .iter()
-        .map(|signal| PreparedActivationDecisionV1::from_attention(signal, transition.room_seq()))
+        .map(|signal| PreparedActivationDecisionV1::from_attention(signal, room_seq))
         .collect()
 }
 
@@ -1378,6 +1407,12 @@ pub struct ActionAdmissionContextV1 {
     deny_unknown_fields
 )]
 pub enum ReceiptSemanticInputV1 {
+    /// Additive compact creation input. It retains the exact selected format
+    /// and its implied immutable policy for receipt hash reconstruction.
+    RoomCreationV2 {
+        request: crate::RoomCreationRequestWithFormat,
+        created_at: CreationRecordedAt,
+    },
     RoomCreation {
         request: RoomCreationRequestV1,
         created_at: CreationRecordedAt,
@@ -1405,7 +1440,7 @@ redacted_debug!(ReceiptSemanticInputV1);
 impl ReceiptSemanticInputV1 {
     fn semantic_time(&self) -> ReceiptSemanticTimeV1 {
         match self {
-            Self::RoomCreation { created_at, .. } => {
+            Self::RoomCreation { created_at, .. } | Self::RoomCreationV2 { created_at, .. } => {
                 ReceiptSemanticTimeV1::Creation(created_at.clone())
             }
             Self::ParticipantAction { admitted_at, .. } => {
@@ -1428,6 +1463,12 @@ impl ReceiptSemanticInputV1 {
         basis: Option<&CompleteHeadV1>,
     ) -> Result<CanonicalRequestHashV1, CanonicalJsonError> {
         match self {
+            Self::RoomCreationV2 { request, .. } => {
+                if basis.is_some() || request.format() != crate::CanonicalHistoryFormat::V2 {
+                    return semantic_receipt_mismatch();
+                }
+                request.canonical_request_hash()
+            }
             Self::RoomCreation { request, .. } => {
                 if basis.is_some() {
                     return semantic_receipt_mismatch();
@@ -1764,6 +1805,28 @@ fn validate_semantic_result(
         }
     }
     let valid = match (identity, basis, semantic_input, result) {
+        (
+            OperationIdentityV1::Administration(identity),
+            None,
+            ReceiptSemanticInputV1::RoomCreationV2 { request, .. },
+            SemanticResultV1::GenesisCreated {
+                room_id,
+                initial_member_ids,
+                complete_head,
+            },
+        ) => {
+            let unique = initial_member_ids
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            request.format() == crate::CanonicalHistoryFormat::V2
+                && identity.versioned_operation_kind == CREATE_ROOM_OPERATION_KIND
+                && complete_head.room_seq().get() == 0
+                && complete_head.room_id() == room_id
+                && complete_head.pack_digest() == request.legacy_request().pack_digest()
+                && initial_member_ids.len()
+                    == request.legacy_request().ordered_initial_memberships().len()
+                && unique.len() == initial_member_ids.len()
+        }
         (
             OperationIdentityV1::Administration(identity),
             None,
@@ -3400,9 +3463,27 @@ pub(crate) fn prepare_transition_consequences(
     cause_room_seq: RoomSequenceV1,
     current_frame_heads: &BTreeMap<MemberId, u64>,
 ) -> Result<Vec<PreparedObservationConsequenceV1>, PrepareRoomWriteErrorV1> {
-    if current_frame_heads.len() != trace.core_state().memberships().len()
-        || !trace
-            .core_state()
+    prepare_observation_consequences(
+        trace.core_state(),
+        resulting_core,
+        cause_room_seq,
+        current_frame_heads,
+        |viewer| trace.observe_prepared(prepared, viewer),
+    )
+}
+
+fn prepare_observation_consequences<F>(
+    core_before: &CoreRoomStateV1,
+    resulting_core: &CoreRoomStateV1,
+    cause_room_seq: RoomSequenceV1,
+    current_frame_heads: &BTreeMap<MemberId, u64>,
+    mut observe: F,
+) -> Result<Vec<PreparedObservationConsequenceV1>, PrepareRoomWriteErrorV1>
+where
+    F: FnMut(&PackViewerV1) -> Result<ActivityObservationOutcomeV1, TraceErrorV1>,
+{
+    if current_frame_heads.len() != core_before.memberships().len()
+        || !core_before
             .memberships()
             .keys()
             .all(|member_id| current_frame_heads.contains_key(member_id))
@@ -3410,15 +3491,14 @@ pub(crate) fn prepare_transition_consequences(
         return Err(PrepareRoomWriteErrorV1::FrameHeadWitnessMismatch);
     }
     let mut consequences = Vec::new();
-    let mut member_ids = trace
-        .core_state()
+    let mut member_ids = core_before
         .memberships()
         .keys()
         .cloned()
         .collect::<std::collections::BTreeSet<_>>();
     member_ids.extend(resulting_core.memberships().keys().cloned());
     for member_id in member_ids {
-        let before = trace.core_state().membership(&member_id);
+        let before = core_before.membership(&member_id);
         let after = resulting_core.membership(&member_id);
         let viewer_membership = match (before, after) {
             (Some(before), _) if before.standing() == MembershipStandingV1::Enabled => before,
@@ -3430,7 +3510,7 @@ pub(crate) fn prepare_transition_consequences(
             AccessModeV1::Spectator => PackViewerV1::Public(member_id.clone()),
             AccessModeV1::Operator => PackViewerV1::Operator(member_id.clone()),
         };
-        let outcome = trace.observe_prepared(prepared, &viewer)?;
+        let outcome = observe(&viewer)?;
         match outcome {
             ActivityObservationOutcomeV1::Hidden => {}
             ActivityObservationOutcomeV1::Observation(observation) => {
@@ -4374,6 +4454,14 @@ fn duplicate_result_matches_prepared(
         return false;
     }
     match (stored.semantic_input(), prepared.semantic_input()) {
+        (
+            ReceiptSemanticInputV1::RoomCreationV2 {
+                request: stored, ..
+            },
+            ReceiptSemanticInputV1::RoomCreationV2 {
+                request: prepared, ..
+            },
+        ) => stored == prepared,
         (
             ReceiptSemanticInputV1::RoomCreation {
                 request: stored, ..
@@ -6204,13 +6292,48 @@ fn recover_materializations(
     candidate: &RoomRecoveryCandidateV1,
     report: &crate::ReplayReportV1,
 ) -> Result<RecoveredRoomMaterializationsV1, RoomRecoveryErrorV1> {
-    let canonical_core_state_bytes = report
-        .final_state()
+    let timers = if let Some(checkpoint) = candidate.checkpoint() {
+        recover_timer_ledger_from_checkpoint(checkpoint, &candidate.canonical_transition_bytes)?
+    } else {
+        recover_timer_ledger(
+            &candidate.canonical_genesis_bytes,
+            &candidate.canonical_transition_bytes,
+        )?
+    };
+    let generations = candidate
+        .checkpoint()
+        .map(|checkpoint| {
+            recover_membership_generations_from_checkpoint(
+                checkpoint,
+                &candidate.canonical_transition_bytes,
+            )
+        })
+        .transpose()?;
+    let decisions = recover_activation_decisions(&candidate.canonical_transition_bytes)?;
+    recover_materializations_from_facts(
+        candidate,
+        report.final_state(),
+        report.observation_consequences(),
+        timers,
+        generations,
+        decisions,
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+fn recover_materializations_from_facts(
+    candidate: &RoomRecoveryCandidateV1,
+    state: &crate::RoomTransitionStateV1,
+    observations: &[crate::trace::ReplayObservationConsequenceV1],
+    timers: Vec<RecoveredTimerMaterializationV1>,
+    membership_generations: Option<BTreeMap<String, i64>>,
+    tail_decisions: Vec<RecoveredActivationDecisionV1>,
+) -> Result<RecoveredRoomMaterializationsV1, RoomRecoveryErrorV1> {
+    let canonical_core_state_bytes = state
         .core_state()
         .canonical_bytes()
         .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-    let canonical_activity_state_bytes = report
-        .final_state()
+    let canonical_activity_state_bytes = state
         .activity_state()
         .to_bytes()
         .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
@@ -6225,8 +6348,7 @@ fn recover_materializations(
     {
         return Err(RoomRecoveryErrorV1::Corrupt);
     }
-    let memberships = report
-        .final_state()
+    let memberships = state
         .core_state()
         .memberships()
         .values()
@@ -6241,41 +6363,27 @@ fn recover_materializations(
     let operational_history_roots = candidate
         .checkpoint()
         .and_then(RoomRecoveryCheckpointV1::operational_history_roots)
-        .map(|roots| {
-            advance_operational_history_roots(roots, report, &candidate.canonical_transition_bytes)
-        })
+        .map(|roots| advance_operational_history_roots(roots, observations, &tail_decisions))
         .transpose()?;
     let operational_mmr_receipts = candidate
         .checkpoint()
         .and_then(RoomRecoveryCheckpointV1::operational_mmr_receipts)
-        .map(|receipts| {
-            advance_operational_mmr_receipts(
-                receipts,
-                report,
-                &candidate.canonical_transition_bytes,
-            )
-        })
+        .map(|receipts| advance_operational_mmr_receipts(receipts, observations, &tail_decisions))
         .transpose()?;
     Ok(RecoveredRoomMaterializationsV1 {
-        room_status: report.final_state().core_state().room_status(),
+        room_status: state.core_state().room_status(),
         canonical_core_state_bytes,
         canonical_activity_state_bytes,
         memberships,
-        timers: if let Some(checkpoint) = candidate.checkpoint() {
-            recover_timer_ledger_from_checkpoint(checkpoint, &candidate.canonical_transition_bytes)?
-        } else {
-            recover_timer_ledger(
-                &candidate.canonical_genesis_bytes,
-                &candidate.canonical_transition_bytes,
-            )?
-        },
+        timers,
         observation_frames: {
             let mut frames = candidate.checkpoint().map_or_else(Vec::new, |checkpoint| {
                 checkpoint.observation_frames().to_vec()
             });
             frames.extend(
-                report.observation_consequences().iter().filter_map(
-                    |consequence| match consequence {
+                observations
+                    .iter()
+                    .filter_map(|consequence| match consequence {
                         crate::trace::ReplayObservationConsequenceV1::ObservationFrame(frame) => {
                             Some(RecoveredObservationFrameV1 {
                                 member_id: frame.member_id().clone(),
@@ -6288,8 +6396,7 @@ fn recover_materializations(
                         | crate::trace::ReplayObservationConsequenceV1::VisibilityLost { .. } => {
                             None
                         }
-                    },
-                ),
+                    }),
             );
             frames
         },
@@ -6297,34 +6404,35 @@ fn recover_materializations(
             let mut consequences = candidate.checkpoint().map_or_else(Vec::new, |checkpoint| {
                 checkpoint.observation_consequences().to_vec()
             });
-            consequences.extend(report.observation_consequences().iter().filter_map(
-                |consequence| match consequence {
-                    crate::trace::ReplayObservationConsequenceV1::ObservationFrame(_) => None,
-                    crate::trace::ReplayObservationConsequenceV1::ResetRequired {
-                        member_id,
-                        cause_room_seq,
-                        projection_hash,
-                    } => Some(RecoveredObservationConsequenceV1::ResetRequired {
-                        member_id: member_id.clone(),
-                        cause_room_seq: *cause_room_seq,
-                        projection_hash: projection_hash.clone(),
+            consequences.extend(
+                observations
+                    .iter()
+                    .filter_map(|consequence| match consequence {
+                        crate::trace::ReplayObservationConsequenceV1::ObservationFrame(_) => None,
+                        crate::trace::ReplayObservationConsequenceV1::ResetRequired {
+                            member_id,
+                            cause_room_seq,
+                            projection_hash,
+                        } => Some(RecoveredObservationConsequenceV1::ResetRequired {
+                            member_id: member_id.clone(),
+                            cause_room_seq: *cause_room_seq,
+                            projection_hash: projection_hash.clone(),
+                        }),
+                        crate::trace::ReplayObservationConsequenceV1::VisibilityLost {
+                            member_id,
+                            cause_room_seq,
+                        } => Some(RecoveredObservationConsequenceV1::VisibilityLost {
+                            member_id: member_id.clone(),
+                            cause_room_seq: *cause_room_seq,
+                        }),
                     }),
-                    crate::trace::ReplayObservationConsequenceV1::VisibilityLost {
-                        member_id,
-                        cause_room_seq,
-                    } => Some(RecoveredObservationConsequenceV1::VisibilityLost {
-                        member_id: member_id.clone(),
-                        cause_room_seq: *cause_room_seq,
-                    }),
-                },
-            ));
+            );
             consequences
         },
         observation_frame_heads: {
             let mut heads = candidate.checkpoint().map_or_else(
                 || {
-                    report
-                        .final_state()
+                    state
                         .core_state()
                         .memberships()
                         .keys()
@@ -6334,41 +6442,25 @@ fn recover_materializations(
                 },
                 |checkpoint| checkpoint.observation_frame_heads().clone(),
             );
-            for consequence in report.observation_consequences() {
+            for consequence in observations {
                 if let crate::trace::ReplayObservationConsequenceV1::ObservationFrame(frame) =
                     consequence
                 {
                     heads.insert(frame.member_id().clone(), frame.frame_seq());
                 }
             }
-            heads.retain(|member_id, _| {
-                report
-                    .final_state()
-                    .core_state()
-                    .memberships()
-                    .contains_key(member_id)
-            });
-            for member_id in report.final_state().core_state().memberships().keys() {
+            heads.retain(|member_id, _| state.core_state().memberships().contains_key(member_id));
+            for member_id in state.core_state().memberships().keys() {
                 heads.entry(member_id.clone()).or_insert(0);
             }
             heads
         },
-        membership_generations: candidate
-            .checkpoint()
-            .map(|checkpoint| {
-                recover_membership_generations_from_checkpoint(
-                    checkpoint,
-                    &candidate.canonical_transition_bytes,
-                )
-            })
-            .transpose()?,
+        membership_generations,
         activation_decisions: {
             let mut decisions = candidate.checkpoint().map_or_else(Vec::new, |checkpoint| {
                 checkpoint.activation_decisions().to_vec()
             });
-            decisions.extend(recover_activation_decisions(
-                &candidate.canonical_transition_bytes,
-            )?);
+            decisions.extend(tail_decisions);
             decisions
         },
         operational_history_roots,
@@ -6378,8 +6470,8 @@ fn recover_materializations(
 
 fn advance_operational_mmr_receipts(
     receipts: &BTreeMap<String, OperationalMmrReceiptV1>,
-    report: &crate::ReplayReportV1,
-    tail_transition_bytes: &[Vec<u8>],
+    observations: &[crate::trace::ReplayObservationConsequenceV1],
+    decisions: &[RecoveredActivationDecisionV1],
 ) -> Result<BTreeMap<String, OperationalMmrReceiptV1>, RoomRecoveryErrorV1> {
     let mut accumulators = BTreeMap::new();
     for domain in OPERATIONAL_HISTORY_ROOT_DOMAINS_V2 {
@@ -6397,7 +6489,7 @@ fn advance_operational_mmr_receipts(
     if accumulators.len() != receipts.len() {
         return Err(RoomRecoveryErrorV1::Corrupt);
     }
-    for consequence in report.observation_consequences() {
+    for consequence in observations {
         let (domain, entry) = match consequence {
             crate::trace::ReplayObservationConsequenceV1::ObservationFrame(frame) => (
                 "frames",
@@ -6439,7 +6531,7 @@ fn advance_operational_mmr_receipts(
             .append(&entry)
             .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
     }
-    for decision in recover_activation_decisions(tail_transition_bytes)? {
+    for decision in decisions {
         let target_member_id = decision
             .target_member_id()
             .map(ToString::to_string)
@@ -6469,11 +6561,11 @@ fn advance_operational_mmr_receipts(
 
 fn advance_operational_history_roots(
     roots: &BTreeMap<String, OperationalHistoryRootV2>,
-    report: &crate::ReplayReportV1,
-    tail_transition_bytes: &[Vec<u8>],
+    observations: &[crate::trace::ReplayObservationConsequenceV1],
+    decisions: &[RecoveredActivationDecisionV1],
 ) -> Result<BTreeMap<String, OperationalHistoryRootV2>, RoomRecoveryErrorV1> {
     let mut advanced = roots.clone();
-    for consequence in report.observation_consequences() {
+    for consequence in observations {
         match consequence {
             crate::trace::ReplayObservationConsequenceV1::ObservationFrame(frame) => {
                 append_operational_history_root_v2(
@@ -6519,7 +6611,7 @@ fn advance_operational_history_roots(
             }
         }
     }
-    for decision in recover_activation_decisions(tail_transition_bytes)? {
+    for decision in decisions {
         let target_member_id = decision
             .target_member_id()
             .map(ToString::to_string)
@@ -6662,7 +6754,8 @@ fn recover_membership_generations_from_checkpoint(
     let checkpoint_core =
         CanonicalJsonV1::decode_canonical::<CoreRoomStateV1>(checkpoint.core_state_bytes())
             .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-    let mut previous = checkpoint_core.memberships().clone();
+    let previous = checkpoint_core.memberships().clone();
+    let mut previous_core = checkpoint_core;
     let mut generations = checkpoint.membership_generations().clone();
     if generations.len() != previous.len()
         || previous.keys().any(|member_id| {
@@ -6676,37 +6769,13 @@ fn recover_membership_generations_from_checkpoint(
     for bytes in canonical_transition_bytes {
         let transition =
             TransitionV1::from_canonical_bytes(bytes).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-        for (member_id, membership) in transition.resulting_core_state().memberships() {
-            let key = member_id.to_string();
-            match previous.get(member_id) {
-                Some(prior) if prior != membership => {
-                    let generation = generations
-                        .get_mut(&key)
-                        .ok_or(RoomRecoveryErrorV1::Corrupt)?;
-                    *generation = generation
-                        .checked_add(1)
-                        .filter(|value| {
-                            *value <= i64::try_from(MAX_SAFE_INTEGER_U64).unwrap_or(i64::MAX)
-                        })
-                        .ok_or(RoomRecoveryErrorV1::Corrupt)?;
-                }
-                Some(_) => {}
-                None => {
-                    if generations.insert(key, 1).is_some() {
-                        return Err(RoomRecoveryErrorV1::Corrupt);
-                    }
-                }
-            }
-        }
-        if previous.keys().any(|member_id| {
-            !transition
-                .resulting_core_state()
-                .memberships()
-                .contains_key(member_id)
-        }) {
-            return Err(RoomRecoveryErrorV1::Corrupt);
-        }
-        previous = transition.resulting_core_state().memberships().clone();
+        crate::trace::advance_membership_generations(
+            &previous_core,
+            transition.resulting_core_state(),
+            &mut generations,
+        )
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        previous_core = transition.resulting_core_state().clone();
     }
     Ok(generations)
 }
@@ -7124,6 +7193,34 @@ pub fn authorize_room_creation_operation(
     request: &RoomCreationRequestV1,
     checked_at: AuthorityCheckedAt,
 ) -> Result<RoomCreationIngressV1, RoomOperationIngressErrorV1> {
+    authorize_canonical_room_creation_operation(
+        authority,
+        resolver,
+        presented,
+        identity,
+        &crate::RoomCreationRequestWithFormat::new(
+            request.clone(),
+            crate::CanonicalHistoryFormat::V1,
+        ),
+        checked_at,
+    )
+}
+
+/// Resolves exact creation receipts before fresh admission or initialization.
+/// The immutable selected format is part of the caller-semantic request hash.
+///
+/// # Errors
+///
+/// Returns an authority, guarded-resolution, or stored-result failure. No
+/// generated identity or Pack callback is evaluated before guarded absence.
+pub fn authorize_canonical_room_creation_operation(
+    authority: &AuthorityV1,
+    resolver: &dyn AuthorizedReceiptResolverV1,
+    presented: &PresentedCapabilityV1,
+    identity: &AdministrationOperationIdentityV1,
+    request: &crate::RoomCreationRequestWithFormat,
+    checked_at: AuthorityCheckedAt,
+) -> Result<RoomCreationIngressV1, RoomOperationIngressErrorV1> {
     let request_hash = request
         .canonical_request_hash()
         .map_err(|_| AuthorityErrorV1::InvalidAuthorityRequest)?;
@@ -7139,11 +7236,7 @@ pub fn authorize_room_creation_operation(
         ResolveOutcomeV1::StoredResolution(result)
             if result.operation_identity() == &operation_identity
                 && result.canonical_request_hash() == &request_hash
-                && matches!(
-                    result.semantic_input(),
-                    ReceiptSemanticInputV1::RoomCreation { request: stored, .. }
-                        if stored == request
-                )
+                && creation_semantic_input_matches(result.semantic_input(), request)
                 && matches!(result.result(), SemanticResultV1::GenesisCreated { .. }) =>
         {
             Ok(RoomCreationIngressV1::Existing(result))
@@ -7156,13 +7249,47 @@ pub fn authorize_room_creation_operation(
         } => Ok(RoomCreationIngressV1::Conflict {
             existing_request_hash,
         }),
-        ResolveOutcomeV1::KnownAbsent => authority
-            .authorize_room_creation(presented, identity.clone(), request, checked_at)
-            .map(|grant| RoomCreationIngressV1::Authorized(Box::new(grant)))
-            .map_err(Into::into),
+        ResolveOutcomeV1::KnownAbsent => {
+            let grant = match request.format() {
+                crate::CanonicalHistoryFormat::V1 => authority.authorize_room_creation(
+                    presented,
+                    identity.clone(),
+                    request.legacy_request(),
+                    checked_at,
+                ),
+                crate::CanonicalHistoryFormat::V2 => authority.authorize_room_creation_with_format(
+                    presented,
+                    identity.clone(),
+                    request,
+                    checked_at,
+                ),
+            }?;
+            Ok(RoomCreationIngressV1::Authorized(Box::new(grant)))
+        }
         ResolveOutcomeV1::ResolutionUnavailable => {
             Err(RoomOperationIngressErrorV1::ResolutionUnavailable)
         }
+    }
+}
+
+fn creation_semantic_input_matches(
+    input: &ReceiptSemanticInputV1,
+    request: &crate::RoomCreationRequestWithFormat,
+) -> bool {
+    match (request.format(), input) {
+        (
+            crate::CanonicalHistoryFormat::V1,
+            ReceiptSemanticInputV1::RoomCreation {
+                request: stored, ..
+            },
+        ) => stored == request.legacy_request(),
+        (
+            crate::CanonicalHistoryFormat::V2,
+            ReceiptSemanticInputV1::RoomCreationV2 {
+                request: stored, ..
+            },
+        ) => stored == request,
+        _ => false,
     }
 }
 

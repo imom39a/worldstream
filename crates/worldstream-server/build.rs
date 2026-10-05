@@ -3,6 +3,7 @@ use std::{env, error::Error, fs, path::PathBuf, process::Command};
 const REVISION_FILE: &str = ".worldstream-source-revision";
 
 fn main() -> Result<(), Box<dyn Error>> {
+    println!("cargo::rustc-check-cfg=cfg(worldstream_gateway_measurement)");
     let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let root = crate_dir.join("../..");
     let revision_file = root.join(REVISION_FILE);

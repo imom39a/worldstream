@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{CoreTraceV1, RoomId, RoomIntegrityStateV1};
+use crate::{CanonicalRoomTrace, CoreTraceV1, RoomId, RoomIntegrityStateV1};
 
 /// A recovered executor and the operational integrity fence it was recovered at.
 /// Adapters must compare its complete Head and integrity with storage before use.
@@ -63,17 +63,25 @@ pub enum RoomTraceCacheErrorV1 {
     Poisoned,
 }
 
-type RoomSlot = Arc<Mutex<Option<CachedRoomTraceV1>>>;
+type RoomSlot<T> = Arc<Mutex<Option<T>>>;
 
-struct CacheEntry {
-    slot: RoomSlot,
+struct CacheEntry<T> {
+    slot: RoomSlot<T>,
     touched: u64,
 }
 
-#[derive(Default)]
-struct CacheState {
-    entries: BTreeMap<RoomId, CacheEntry>,
+struct CacheState<T> {
+    entries: BTreeMap<RoomId, CacheEntry<T>>,
     clock: u64,
+}
+
+impl<T> Default for CacheState<T> {
+    fn default() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            clock: 0,
+        }
+    }
 }
 
 /// Keeps a bounded number of unique Room executors, serializing only borrowers
@@ -85,11 +93,23 @@ struct CacheState {
 /// mismatch invalidates the entry and requires fenced recovery. Failed or
 /// indeterminate commits must not install an in-memory advance.
 pub struct RoomTraceCacheV1 {
+    ownership: RoomExecutorCache<CachedRoomTraceV1>,
+}
+
+struct RoomExecutorCache<T> {
     capacity: usize,
-    state: Mutex<CacheState>,
+    state: Mutex<CacheState<T>>,
 }
 
 impl Default for RoomTraceCacheV1 {
+    fn default() -> Self {
+        Self {
+            ownership: RoomExecutorCache::default(),
+        }
+    }
+}
+
+impl<T> Default for RoomExecutorCache<T> {
     fn default() -> Self {
         Self {
             capacity: 128,
@@ -104,12 +124,8 @@ impl RoomTraceCacheV1 {
     /// # Errors
     /// Returns [`RoomTraceCacheErrorV1::InvalidCapacity`] for zero capacity.
     pub fn new(capacity: usize) -> Result<Self, RoomTraceCacheErrorV1> {
-        if capacity == 0 {
-            return Err(RoomTraceCacheErrorV1::InvalidCapacity);
-        }
         Ok(Self {
-            capacity,
-            state: Mutex::new(CacheState::default()),
+            ownership: RoomExecutorCache::new(capacity)?,
         })
     }
 
@@ -124,6 +140,32 @@ impl RoomTraceCacheV1 {
         &self,
         room_id: &RoomId,
         operation: impl FnOnce(&mut Option<CachedRoomTraceV1>) -> R,
+    ) -> Result<R, RoomTraceCacheErrorV1> {
+        self.ownership.with_room(room_id, |cached| {
+            let result = operation(cached);
+            if let Some(cached) = cached.as_mut() {
+                cached.trace.discard_persisted_history();
+            }
+            result
+        })
+    }
+}
+
+impl<T> RoomExecutorCache<T> {
+    fn new(capacity: usize) -> Result<Self, RoomTraceCacheErrorV1> {
+        if capacity == 0 {
+            return Err(RoomTraceCacheErrorV1::InvalidCapacity);
+        }
+        Ok(Self {
+            capacity,
+            state: Mutex::new(CacheState::default()),
+        })
+    }
+
+    fn with_room<R>(
+        &self,
+        room_id: &RoomId,
+        operation: impl FnOnce(&mut Option<T>) -> R,
     ) -> Result<R, RoomTraceCacheErrorV1> {
         let slot = {
             let mut state = self
@@ -158,11 +200,93 @@ impl RoomTraceCacheV1 {
             }
         };
         let mut guard = slot.lock().map_err(|_| RoomTraceCacheErrorV1::Poisoned)?;
-        let result = operation(&mut guard);
-        if let Some(cached) = guard.as_mut() {
-            cached.trace.discard_persisted_history();
+        Ok(operation(&mut guard))
+    }
+}
+
+/// A uniquely owned canonical executor and its recovered integrity fence.
+/// Storage must validate the complete Head and current authority before use.
+pub struct CachedCanonicalRoomTrace {
+    trace: CanonicalRoomTrace,
+    integrity: RoomIntegrityStateV1,
+}
+
+impl CachedCanonicalRoomTrace {
+    /// Retains a recovered executor without historical record copies.
+    #[must_use]
+    pub fn new(mut trace: CanonicalRoomTrace, integrity: RoomIntegrityStateV1) -> Self {
+        trace.discard_persisted_history();
+        Self { trace, integrity }
+    }
+
+    /// Returns the current complete execution basis.
+    #[must_use]
+    pub const fn trace(&self) -> &CanonicalRoomTrace {
+        &self.trace
+    }
+
+    /// Borrows the executor exclusively for a storage-fenced commit.
+    pub const fn trace_mut(&mut self) -> &mut CanonicalRoomTrace {
+        &mut self.trace
+    }
+
+    /// Returns the operational integrity fence established by recovery.
+    #[must_use]
+    pub const fn integrity(&self) -> &RoomIntegrityStateV1 {
+        &self.integrity
+    }
+
+    /// Transfers unique ownership of the complete current executor.
+    #[must_use]
+    pub fn into_trace(self) -> CanonicalRoomTrace {
+        self.trace
+    }
+}
+
+/// Bounded current executor ownership for Genesis-selected V1 or V2 Rooms.
+/// Adapters resolve durable receipts before using a cached execution basis.
+/// Same-Room borrowers are serialized. An active slot cannot be evicted.
+pub struct CanonicalRoomTraceCache {
+    ownership: RoomExecutorCache<CachedCanonicalRoomTrace>,
+}
+
+impl Default for CanonicalRoomTraceCache {
+    fn default() -> Self {
+        Self {
+            ownership: RoomExecutorCache::default(),
         }
-        Ok(result)
+    }
+}
+
+impl CanonicalRoomTraceCache {
+    /// Sets the maximum number of resident Room slots.
+    ///
+    /// # Errors
+    /// Returns `InvalidCapacity` for zero slots.
+    pub fn new(capacity: usize) -> Result<Self, RoomTraceCacheErrorV1> {
+        Ok(Self {
+            ownership: RoomExecutorCache::new(capacity)?,
+        })
+    }
+
+    /// Borrows one Room's uniquely owned executor throughout `operation`.
+    /// An empty slot requires fenced recovery. Set it to `None` to invalidate
+    /// a stale basis. Do not recursively acquire the same cache.
+    ///
+    /// # Errors
+    /// Returns `Busy` when all slots are active, or `Poisoned` after a panic.
+    pub fn with_room<R>(
+        &self,
+        room_id: &RoomId,
+        operation: impl FnOnce(&mut Option<CachedCanonicalRoomTrace>) -> R,
+    ) -> Result<R, RoomTraceCacheErrorV1> {
+        self.ownership.with_room(room_id, |cached| {
+            let result = operation(cached);
+            if let Some(cached) = cached.as_mut() {
+                cached.trace.discard_persisted_history();
+            }
+            result
+        })
     }
 }
 

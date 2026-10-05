@@ -53,8 +53,8 @@ use worldstream_backup::{
 };
 use worldstream_core::{
     AccessModeV1, ActivationOperationResultV1, CanonicalJsonV1,
-    CompleteHeadV1 as CoreCompleteHeadV1, GenesisV1, OperationIdentityV1, PrincipalKindV1,
-    StoredSemanticResultV1, TransitionV1,
+    CompleteHeadV1 as CoreCompleteHeadV1, GenesisRecord, OperationIdentityV1, PrincipalKindV1,
+    StoredSemanticResultV1,
 };
 use worldstream_runtime::prepare_data_directory;
 #[cfg(windows)]
@@ -1114,6 +1114,8 @@ pub fn rebuild_native_snapshot_cache(
             .map_err(|_| NativePostgresError::Configuration("source admin configuration failed"))?,
     )
     .map_err(|_| NativePostgresError::Configuration("source admin adapter failed"))?;
+    let registry = worldstream_core::builtin_worldstream_registry()
+        .map_err(|_| NativePostgresError::Incomplete)?;
     let mut rebuilt = 0;
     for (room_id, integrity_generation, integrity_status) in room_ids {
         if integrity_generation <= 0
@@ -1128,7 +1130,8 @@ pub fn rebuild_native_snapshot_cache(
             continue;
         }
         rebuilt += admin
-            .rebuild_snapshot_cache_for_native_restore(
+            .rebuild_canonical_snapshot_cache_for_native_restore(
+                &registry,
                 &room_id,
                 &mut budget,
                 &source_provider_identity,
@@ -7351,25 +7354,34 @@ fn room_capture(
     budget: &mut ProviderReadBudgetV1,
     verification: &crate::PostgresRoomVerification,
 ) -> Result<RoomCapture, NativePostgresError> {
-    let genesis = GenesisV1::from_canonical_bytes(&verification.genesis_bytes)
+    let genesis = GenesisRecord::from_canonical_bytes(&verification.genesis_bytes)
         .map_err(|_| NativePostgresError::MalformedRow)?;
+    let mut record_head = genesis.complete_head();
     let mut records = vec![CanonicalRecordV1 {
         kind: CanonicalRecordKindV1::Genesis,
         room_seq: 0,
         bytes: verification.genesis_bytes.clone(),
-        digest: core_digest(&genesis.genesis_hash())?,
+        digest: core_digest(genesis.genesis_hash())?,
         previous_digest: None,
     }];
     for (index, bytes) in verification.transition_bytes.iter().enumerate() {
-        let transition = TransitionV1::from_canonical_bytes(bytes)
+        let transition = genesis
+            .decode_transition(bytes)
             .map_err(|_| NativePostgresError::MalformedRow)?;
+        transition
+            .verify_successor(&record_head)
+            .map_err(|_| NativePostgresError::MalformedRow)?;
+        record_head = transition.complete_head();
         records.push(CanonicalRecordV1 {
             kind: CanonicalRecordKindV1::Transition,
             room_seq: u64::try_from(index + 1).map_err(|_| NativePostgresError::MalformedRow)?,
             bytes: bytes.clone(),
-            digest: core_digest(&transition.transition_hash())?,
-            previous_digest: Some(core_digest(&transition.previous_lineage_hash())?),
+            digest: core_digest(transition.transition_hash())?,
+            previous_digest: Some(core_digest(transition.previous_lineage_hash())?),
         });
+    }
+    if record_head != verification.head {
+        return Err(NativePostgresError::MalformedRow);
     }
     let head = convert_head(&verification.head)?;
     let authoritative = authoritative_bytes(&verification.head)?;
@@ -8520,7 +8532,7 @@ fn validate_global_authority_relations(
     let member_rows = durable_domain_arrays(
         domains,
         NativeRestoreDurableDomainV1::MemberDeliveryState,
-        8,
+        9,
     )?;
     let mut members = BTreeMap::new();
     for row in &member_rows {
@@ -9833,7 +9845,8 @@ mod tests {
                 1,
                 1,
                 null,
-                null
+                null,
+                0
             ])],
         );
         insert_domain_rows(
@@ -10068,6 +10081,54 @@ mod tests {
     #[test]
     fn global_authority_relations_accept_complete_exact_graph() {
         assert!(validate_global_authority_relations(&authority_relation_fixture()).is_ok());
+    }
+
+    #[test]
+    fn native_member_delivery_rows_require_exact_nine_column_shape()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let original = authority_relation_fixture();
+        let row = original
+            .get(&NativeRestoreDurableDomainV1::MemberDeliveryState)
+            .and_then(|rows| rows.first())
+            .ok_or("Member delivery fixture")?;
+        let full_row: Vec<serde_json::Value> = serde_json::from_slice(&row.canonical_bytes)?;
+        assert_eq!(full_row.len(), 9);
+        assert_eq!(full_row[8], serde_json::json!(0));
+        validate_global_authority_relations(&original)?;
+
+        // Reset generation is retained delivery metadata. Healthy Room
+        // capture validates its nonnegative bigint before this authority pass.
+        let mut nonzero = original.clone();
+        let mut nonzero_row = full_row.clone();
+        nonzero_row[8] = serde_json::json!(7);
+        replace_first_domain_row(
+            &mut nonzero,
+            NativeRestoreDurableDomainV1::MemberDeliveryState,
+            serde_json::Value::Array(nonzero_row),
+        );
+        validate_global_authority_relations(&nonzero)?;
+        assert_ne!(
+            durable_domains_digest(&original),
+            durable_domains_digest(&nonzero)
+        );
+
+        let mut truncated_row = full_row.clone();
+        truncated_row.pop();
+        let mut extra_row = full_row;
+        extra_row.push(serde_json::Value::Null);
+        for malformed in [truncated_row, extra_row] {
+            let mut domains = original.clone();
+            replace_first_domain_row(
+                &mut domains,
+                NativeRestoreDurableDomainV1::MemberDeliveryState,
+                serde_json::Value::Array(malformed),
+            );
+            assert!(matches!(
+                validate_global_authority_relations(&domains),
+                Err(NativePostgresError::MalformedRow)
+            ));
+        }
+        Ok(())
     }
 
     #[test]
@@ -11209,7 +11270,7 @@ mod tests {
         assert!(body.contains("verify_runtime_schema_for_native_restore"));
         assert!(body.contains("bounded_global_provider_rows"));
         assert!(body.contains("ORDER BY room_id LIMIT $1"));
-        assert!(body.contains("rebuild_snapshot_cache_for_native_restore"));
+        assert!(body.contains("rebuild_canonical_snapshot_cache_for_native_restore"));
         assert!(!body.contains(".rebuild_snapshot_cache("));
     }
 

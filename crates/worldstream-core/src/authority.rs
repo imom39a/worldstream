@@ -19,10 +19,11 @@ use crate::{
     AuthorityGenerationV1, Blake3DigestV1, CREATE_ROOM_OPERATION_KIND, CanonicalJsonError,
     CanonicalRequestHashV1, CapabilityExpiresAt, CapabilityId, CapabilityRevokedAt,
     CoreAdministrationRequestV1, CoreAuthorityAttributionV1, CoreAuthorityKindV1,
-    CoreProposedKindV1, MemberId, MembershipGenerationV1, MembershipStandingV1, MembershipV1,
-    OperationIdentityV1, ParticipantActionOperationIdentityV1, ParticipantActionRequestV1,
-    PrincipalGenerationV1, PrincipalId, PrincipalKindV1, RoomCreationRequestV1, RoomId,
-    RoomSequenceV1, RunnerGenerationV1, RunnerId, TimerFiredRequestV1, canonical::encode,
+    CoreProposedKindV1, ExternalInputOperationIdentityV1, ExternalInputV1, MemberId,
+    MembershipGenerationV1, MembershipStandingV1, MembershipV1, OperationIdentityV1,
+    ParticipantActionOperationIdentityV1, ParticipantActionRequestV1, PrincipalGenerationV1,
+    PrincipalId, PrincipalKindV1, RoomCreationRequestV1, RoomId, RoomSequenceV1,
+    RunnerGenerationV1, RunnerId, TimerFiredRequestV1, canonical::encode,
     primitives::compare_timestamp_text,
 };
 
@@ -1363,6 +1364,147 @@ pub struct ReceiptReadAdapterInputV1 {
 opaque_grant_debug!(ReceiptReadAdapterInputV1);
 
 impl AuthorizedReceiptReadV1 {
+    fn from_operation_fence(
+        fence: &AuthorityFenceFactsV1,
+        use_: &AuthorityUseV1,
+        identity: OperationIdentityV1,
+        request_hash: CanonicalRequestHashV1,
+        room_id: &RoomId,
+    ) -> Result<Self, AuthorityErrorV1> {
+        if !fence.binds_use(use_) {
+            return Err(AuthorityErrorV1::InvalidAuthorityRequest);
+        }
+        Ok(Self {
+            fence: fence.clone(),
+            identity,
+            request_hash,
+            target_policy: ReceiptReadTargetPolicyV1::ExactRoom(room_id.clone()),
+        })
+    }
+
+    /// Derives one receipt lookup from the exact admitted participant request.
+    /// The original grant stays available for fresh preparation. The Adapter
+    /// must revalidate its sealed authority in the receipt-read transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid request if the grant was issued for another use.
+    pub fn from_participant_action_authority(
+        authority: &ParticipantActionAuthorityV1,
+        request: &ParticipantActionRequestV1,
+    ) -> Result<Self, AuthorityErrorV1> {
+        let fence = match authority {
+            ParticipantActionAuthorityV1::EnabledParticipant(grant) => &grant.fence,
+            ParticipantActionAuthorityV1::StableMembershipNotEnabled(grant) => &grant.fence,
+        };
+        let use_ = crate::room_commit::participant_action_authority_use(request)
+            .map_err(|_| AuthorityErrorV1::InvalidAuthorityRequest)?;
+        let request_hash = request
+            .canonical_request_hash()
+            .map_err(|_| AuthorityErrorV1::InvalidAuthorityRequest)?;
+        Self::from_operation_fence(
+            fence,
+            &use_,
+            request.operation_identity(),
+            request_hash,
+            request.room_id(),
+        )
+    }
+
+    /// Derives one receipt lookup from the exact admitted Timer firing.
+    /// The Adapter must revalidate the original grant in its transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid request if the Room or request purpose differs.
+    pub fn from_timer_fired_authority(
+        authority: &AuthorizedTimerFiredV1,
+        request: &TimerFiredRequestV1,
+    ) -> Result<Self, AuthorityErrorV1> {
+        let request_hash = request
+            .canonical_request_hash()
+            .map_err(|_| AuthorityErrorV1::InvalidAuthorityRequest)?;
+        let use_ = AuthorityUseV1::TimerFired {
+            room_id: request.room_id().clone(),
+            request_hash: request_hash.clone(),
+        };
+        Self::from_operation_fence(
+            &authority.fence,
+            &use_,
+            request.operation_identity(),
+            request_hash,
+            request.room_id(),
+        )
+    }
+
+    /// Derives one receipt lookup from the exact admitted Core request.
+    /// The Adapter must revalidate the original grant in its transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid request if its classification, identity or purpose differs.
+    pub fn from_core_administration_authority(
+        authority: &AuthorizedCoreAdministrationV1,
+        request: &CoreAdministrationRequestV1,
+    ) -> Result<Self, AuthorityErrorV1> {
+        let classified = request
+            .classified()
+            .map_err(|_| AuthorityErrorV1::InvalidAuthorityRequest)?;
+        let request_hash = request
+            .canonical_request_hash()
+            .map_err(|_| AuthorityErrorV1::InvalidAuthorityRequest)?;
+        if authority.classified != classified
+            || authority.attribution.principal_id
+                != request.operation_identity().authenticated_principal
+        {
+            return Err(AuthorityErrorV1::InvalidAuthorityRequest);
+        }
+        let use_ = AuthorityUseV1::CoreAdministration {
+            room_id: request.room_id().clone(),
+            classified,
+            identity: request.operation_identity().clone(),
+            request_hash: request_hash.clone(),
+        };
+        Self::from_operation_fence(
+            &authority.fence,
+            &use_,
+            OperationIdentityV1::Administration(Box::new(request.operation_identity().clone())),
+            request_hash,
+            request.room_id(),
+        )
+    }
+
+    /// Derives one receipt lookup from the exact admitted external input.
+    /// The Adapter must revalidate the original grant in its transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid request if the Room, basis or input purpose differs.
+    pub fn from_external_input_authority(
+        authority: &AuthorizedExternalInputV1,
+        room_id: &RoomId,
+        based_on_room_seq: RoomSequenceV1,
+        input: &ExternalInputV1,
+    ) -> Result<Self, AuthorityErrorV1> {
+        let request_hash = crate::external_input_request_hash(room_id, based_on_room_seq, input)
+            .map_err(|_| AuthorityErrorV1::InvalidAuthorityRequest)?;
+        let use_ = AuthorityUseV1::ExternalInput {
+            room_id: room_id.clone(),
+            request_hash: request_hash.clone(),
+        };
+        Self::from_operation_fence(
+            &authority.fence,
+            &use_,
+            OperationIdentityV1::ExternalInput(Box::new(ExternalInputOperationIdentityV1 {
+                room_id: room_id.clone(),
+                source_id: input.source_id.clone(),
+                input_id: input.input_id.clone(),
+            })),
+            request_hash,
+            room_id,
+        )
+    }
+
     #[must_use]
     pub const fn authenticated_principal(&self) -> &PrincipalId {
         self.fence.authenticated_principal()
@@ -3328,6 +3470,25 @@ impl AuthorityV1 {
         presented: &PresentedCapabilityV1,
         identity: AdministrationOperationIdentityV1,
         request: &RoomCreationRequestV1,
+        checked_at: AuthorityCheckedAt,
+    ) -> Result<AuthorizedRoomCreationV1, AuthorityErrorV1> {
+        self.authorize_room_creation_with_format(
+            presented,
+            identity,
+            &crate::RoomCreationRequestWithFormat::new(
+                request.clone(),
+                crate::CanonicalHistoryFormat::V1,
+            ),
+            checked_at,
+        )
+    }
+
+    /// Binds the selected immutable history format into creation authority.
+    pub(crate) fn authorize_room_creation_with_format(
+        &self,
+        presented: &PresentedCapabilityV1,
+        identity: AdministrationOperationIdentityV1,
+        request: &crate::RoomCreationRequestWithFormat,
         checked_at: AuthorityCheckedAt,
     ) -> Result<AuthorizedRoomCreationV1, AuthorityErrorV1> {
         if identity.versioned_operation_kind != CREATE_ROOM_OPERATION_KIND

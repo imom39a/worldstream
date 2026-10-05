@@ -16,6 +16,6 @@ pub use filesystem::{
     validate_owner_only_file, validate_sqlite_data_filesystem,
 };
 pub use manifest::{
-    CompatibilityContracts, CompatibilityManifest, CompatibilitySummary, ManifestError,
-    embedded_manifest, embedded_manifest_json,
+    CanonicalLineageSummary, CompatibilityContracts, CompatibilityManifest, CompatibilitySummary,
+    ManifestError, embedded_manifest, embedded_manifest_json,
 };

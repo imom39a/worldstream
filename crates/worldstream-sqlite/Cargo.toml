@@ -10,7 +10,7 @@ repository.workspace = true
 [dependencies]
 blake3.workspace = true
 getrandom.workspace = true
-rusqlite = { workspace = true, features = ["backup"] }
+rusqlite = { workspace = true, features = ["backup", "hooks"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

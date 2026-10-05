@@ -1204,7 +1204,11 @@ class Client:
         """Create a Counter/Activity room through the versioned HTTP API."""
 
         self._validate_create_request(request)
-        return await asyncio.to_thread(self._post_json, "/v1/rooms", request)
+        wire_request = request
+        if request.get("canonical_history_format") == "worldstream/transition/v1":
+            wire_request = {key: value for key, value in request.items()
+                            if key != "canonical_history_format"}
+        return await asyncio.to_thread(self._post_json, "/v1/rooms", wire_request)
 
     async def projection(self, room_id: str) -> dict[str, Any]:
         safe_room_id = _validate_scope_id(room_id, "room_id")
@@ -1384,8 +1388,12 @@ class Client:
     @staticmethod
     def _validate_create_request(request: Any) -> None:
         fields = {"pack", "configuration", "members", "idempotency_key"}
-        if not isinstance(request, dict) or set(request) != fields:
+        if not isinstance(request, dict) or set(request) not in (fields, fields | {"canonical_history_format"}):
             raise ValueError("room creation request does not match its schema")
+        if "canonical_history_format" in request and request["canonical_history_format"] not in (
+            "worldstream/transition/v1", "worldstream/transition/v2"
+        ):
+            raise ValueError("canonical_history_format is invalid")
         _validate_pack(request["pack"])
         _validate_canonical_value(request["configuration"], "configuration")
         members = request["members"]

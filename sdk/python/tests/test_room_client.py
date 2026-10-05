@@ -220,7 +220,8 @@ def test_http_error_details_redact_bearer_values() -> None:
     assert VALID_BEARER not in repr(error.details)
 
 
-def test_lost_action_reply_reuses_exact_identity() -> None:
+@pytest.mark.parametrize("payload", [{}, "é" * 20_000])
+def test_lost_action_reply_reuses_exact_identity(payload) -> None:
     fake = FakeWebSocket()
     client = Client("http://localhost", VALID_BEARER, ws_factory=lambda *_args, **_kwargs: fake)
     room = Room(client, "room", "member")
@@ -230,7 +231,7 @@ def test_lost_action_reply_reuses_exact_identity() -> None:
 
     async def run() -> None:
         with pytest.raises(LostActionReply) as caught:
-            await room.act("increment", {}, timeout=0.001)
+            await room.act("increment", payload, timeout=0.001)
         lost = caught.value
         fake.incoming.put_nowait(
             message(
@@ -245,6 +246,7 @@ def test_lost_action_reply_reuses_exact_identity() -> None:
         )
         await lost.retry()
         assert fake.sent[-1]["body"]["action_id"] == lost.request["body"]["action_id"]
+        assert fake.sent[-1]["body"] == fake.sent[0]["body"]
 
     asyncio.run(run())
 
